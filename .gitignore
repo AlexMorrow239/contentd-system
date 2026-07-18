@@ -1,0 +1,10 @@
+node_modules/
+dist/
+runs/
+data/
+.env
+.remotion/
+assets/bg/*
+assets/bgm/*
+!assets/bg/.gitkeep
+!assets/bgm/.gitkeep
