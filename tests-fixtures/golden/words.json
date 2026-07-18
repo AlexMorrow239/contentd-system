@@ -1,0 +1,12 @@
+{
+  "words": [
+    { "word": "Did", "startMs": 0, "endMs": 300 },
+    { "word": "you", "startMs": 300, "endMs": 550 },
+    { "word": "know", "startMs": 550, "endMs": 900 },
+    { "word": "Venus", "startMs": 900, "endMs": 1400 },
+    { "word": "spins", "startMs": 1400, "endMs": 1850 },
+    { "word": "incredibly", "startMs": 1850, "endMs": 2400 },
+    { "word": "slowly", "startMs": 2400, "endMs": 2800 },
+    { "word": "today", "startMs": 2800, "endMs": 3000 }
+  ]
+}

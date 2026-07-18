@@ -1,0 +1,30 @@
+{
+  "hook": "Did you know a day on Venus is longer than its entire year?",
+  "segments": [
+    {
+      "text": "Venus rotates so slowly that a single spin takes 243 Earth days.",
+      "visualDirection": "slow pan across a glowing, cloud-wrapped Venus"
+    },
+    {
+      "text": "But it orbits the Sun in just 225 days, so its day is longer than its year.",
+      "visualDirection": "diagram of Venus tracing its orbit around the Sun"
+    }
+  ],
+  "platformMeta": {
+    "youtube": {
+      "title": "Venus: A Day Longer Than Its Year",
+      "description": "The strange, ultra-slow rotation of Venus, explained in 30 seconds.",
+      "hashtags": ["#space", "#venus", "#astronomy"]
+    },
+    "tiktok": {
+      "title": "Venus is WILD",
+      "description": "A day longer than a year?!",
+      "hashtags": ["#space", "#venus", "#facts"]
+    },
+    "instagram": {
+      "title": "Venus: Day vs Year",
+      "description": "Mind-bending planetary facts.",
+      "hashtags": ["#space", "#venus", "#reels"]
+    }
+  }
+}
