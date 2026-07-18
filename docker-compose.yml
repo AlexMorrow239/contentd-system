@@ -1,0 +1,12 @@
+services:
+  whisperx:
+    build: ./sidecar/whisperx
+    ports:
+      - "8585:8585"
+    environment:
+      WHISPERX_DEVICE: cpu
+    volumes:
+      - whisperx-cache:/root/.cache   # persist downloaded alignment models
+
+volumes:
+  whisperx-cache:
