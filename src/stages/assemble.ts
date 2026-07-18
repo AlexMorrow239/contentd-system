@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, readFileSync, readdirSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { bundle } from '@remotion/bundler'
 import { renderMedia, selectComposition } from '@remotion/renderer'
@@ -42,40 +42,47 @@ export const assembleStage: StageDef = {
     // staticFile(). Namespace by jobId so a reused bundle never collides.
     const publicJobDir = path.join(serveUrl, 'public', ctx.jobId)
     mkdirSync(publicJobDir, { recursive: true })
-    copyFileSync(
-      ctx.artifactPath('visuals', 'background.mp4'),
-      path.join(publicJobDir, 'background.mp4'),
-    )
-    copyFileSync(
-      ctx.artifactPath('voice', 'narration.wav'),
-      path.join(publicJobDir, 'narration.wav'),
-    )
-    if (bgmFile) {
-      copyFileSync(path.join(ctx.channel.bgmDir, bgmFile), path.join(publicJobDir, 'bgm.mp3'))
-    }
-
-    const props: ShortVideoProps = {
-      audioSrc: `${ctx.jobId}/narration.wav`,
-      backgroundSrc: `${ctx.jobId}/background.mp4`,
-      bgmSrc: bgmFile ? `${ctx.jobId}/bgm.mp3` : undefined,
-      words: captions.words,
-      style: ctx.channel.captionStyle,
-      durationMs: voice.durationMs,
-    }
-
-    const composition = await selectComposition({
-      serveUrl,
-      id: 'ShortVideo',
-      inputProps: props,
-    })
     const outPath = ctx.artifactPath('assemble', 'final.mp4')
-    await renderMedia({
-      composition,
-      serveUrl,
-      codec: 'h264',
-      outputLocation: outPath,
-      inputProps: props,
-    })
+    try {
+      copyFileSync(
+        ctx.artifactPath('visuals', 'background.mp4'),
+        path.join(publicJobDir, 'background.mp4'),
+      )
+      copyFileSync(
+        ctx.artifactPath('voice', 'narration.wav'),
+        path.join(publicJobDir, 'narration.wav'),
+      )
+      if (bgmFile) {
+        copyFileSync(path.join(ctx.channel.bgmDir, bgmFile), path.join(publicJobDir, 'bgm.mp3'))
+      }
+
+      const props: ShortVideoProps = {
+        audioSrc: `${ctx.jobId}/narration.wav`,
+        backgroundSrc: `${ctx.jobId}/background.mp4`,
+        bgmSrc: bgmFile ? `${ctx.jobId}/bgm.mp3` : undefined,
+        words: captions.words,
+        style: ctx.channel.captionStyle,
+        durationMs: voice.durationMs,
+      }
+
+      const composition = await selectComposition({
+        serveUrl,
+        id: 'ShortVideo',
+        inputProps: props,
+      })
+      await renderMedia({
+        composition,
+        serveUrl,
+        codec: 'h264',
+        outputLocation: outPath,
+        inputProps: props,
+      })
+    } finally {
+      // The bundle is memoized for the whole process, so per-job assets would
+      // otherwise accumulate under public/ for the process lifetime. Distinct
+      // jobId subdirs keep concurrent jobs isolated; removing only ours is safe.
+      rmSync(publicJobDir, { recursive: true, force: true })
+    }
     ctx.log.info({ outPath }, 'assemble: rendered final.mp4')
   },
 }

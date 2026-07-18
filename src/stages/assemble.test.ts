@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execa } from 'execa'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import pino from 'pino'
@@ -91,6 +91,13 @@ describe('assembleStage', () => {
       }),
     )
 
+    // Snapshot pre-existing Remotion bundle dirs so the cleanup assertion below
+    // only inspects the bundle created by THIS process (stale dirs from earlier
+    // runs may linger in the OS tmpdir until reaped).
+    const bundleDirsBefore = new Set(
+      readdirSync(tmpdir()).filter((d) => d.startsWith('remotion-webpack-bundle-')),
+    )
+
     await assembleStage.run(ctx)
 
     const out = ctx.artifactPath('assemble', 'final.mp4')
@@ -106,5 +113,16 @@ describe('assembleStage', () => {
     const c = await codecs(out)
     expect(c.video).toBe('h264')
     expect(c.audio).toBe('aac')
+
+    // Per-job public assets are cleaned up after render: this process's bundle
+    // dir (remotion-webpack-bundle-* in the OS tmpdir, new since the snapshot)
+    // must no longer contain public/<jobId>/.
+    const newBundleDirs = readdirSync(tmpdir()).filter(
+      (d) => d.startsWith('remotion-webpack-bundle-') && !bundleDirsBefore.has(d),
+    )
+    expect(newBundleDirs.length).toBeGreaterThanOrEqual(1)
+    for (const d of newBundleDirs) {
+      expect(existsSync(path.join(tmpdir(), d, 'public', ctx.jobId))).toBe(false)
+    }
   }, 180000)
 })
