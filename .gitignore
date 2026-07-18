@@ -4,6 +4,10 @@ runs/
 data/
 .env
 .remotion/
+# python sidecar (local test venv + caches; real deps live in the Docker image)
+.venv/
+__pycache__/
+.pytest_cache/
 assets/bg/*
 assets/bgm/*
 !assets/bg/.gitkeep
