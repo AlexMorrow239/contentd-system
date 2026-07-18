@@ -3,6 +3,7 @@ import { KokoroTTS, type GenerateOptions } from 'kokoro-js';
 import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts';
 import type { StageDef, JobContext } from '../jobs/types.js';
 import type { ScriptOutput } from './script.js';
+import { narrationText } from './narration-text.js';
 
 export interface VoiceMeta {
   provider: 'kokoro' | 'edge-tts';
@@ -46,10 +47,6 @@ export function parseWavDurationMs(buf: Buffer): number {
   return Math.floor((dataSize / byteRate) * 1000);
 }
 
-function narrationFromScript(script: ScriptOutput): string {
-  return [script.hook, ...script.segments.map((s) => s.text)].join('\n\n');
-}
-
 async function synthKokoro(text: string, voiceId: string, wavPath: string): Promise<void> {
   const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype: 'q8' });
   // ctx.channel.voice.volume is a runtime-configured string; kokoro-js types the
@@ -74,7 +71,7 @@ export const voiceStage: StageDef = {
   name: 'voice',
   async run(ctx: JobContext): Promise<void> {
     const script = JSON.parse(await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8')) as ScriptOutput;
-    const narration = narrationFromScript(script);
+    const narration = narrationText(script);
     const wavPath = ctx.artifactPath('voice', 'narration.wav');
 
     let provider: VoiceMeta['provider'];
