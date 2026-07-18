@@ -198,6 +198,10 @@ CREATE TABLE IF NOT EXISTS bg_usage (
 name = "example"
 niche = ["space facts", "astronomy"]
 script_model = "claude-sonnet-5"
+bg_dir = "assets/bg"
+bgm_dir = "assets/bgm"
+# NOTE: top-level keys MUST precede the first [table] header — TOML binds
+# any key after a header into that table.
 
 [tier_mix]
 volume = 2
@@ -216,9 +220,6 @@ stroke_px = 8
 [budget]
 per_video_usd = 8.0    # loader converts to usdMicros
 per_day_usd = 20.0
-
-bg_dir = "assets/bg"
-bgm_dir = "assets/bgm"
 ```
 
 (Loader maps snake_case TOML → camelCase config and converts USD floats to integer micros at the boundary.)
@@ -407,6 +408,10 @@ BRAINROT_DB=data/brainrot.db
 name = "example"
 niche = ["space facts", "astronomy"]
 script_model = "claude-sonnet-5"
+bg_dir = "assets/bg"
+bgm_dir = "assets/bgm"
+# NOTE: top-level keys MUST precede the first [table] header — TOML binds
+# any key after a header into that table.
 
 [tier_mix]
 volume = 2
@@ -425,9 +430,6 @@ stroke_px = 8
 [budget]
 per_video_usd = 8.0    # loader converts to usdMicros
 per_day_usd = 20.0
-
-bg_dir = "assets/bg"
-bgm_dir = "assets/bgm"
 ```
 
 - [ ] **Step 2: Write the failing test `src/config/channel.test.ts`.** Covers example parse (snake→camel, USD→micros), the `scriptModel` default, a missing required field, and a nonexistent file:
@@ -470,6 +472,8 @@ describe('loadChannelConfig', () => {
       [
         'name = "nomodel"',
         'niche = ["x"]',
+        'bg_dir = "assets/bg"',
+        'bgm_dir = "assets/bgm"',
         '',
         '[tier_mix]',
         'volume = 1',
@@ -489,9 +493,6 @@ describe('loadChannelConfig', () => {
         'per_video_usd = 8.0',
         'per_day_usd = 20.0',
         '',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
-        '',
       ].join('\n'),
     )
     const cfg = loadChannelConfig(file)
@@ -507,6 +508,8 @@ describe('loadChannelConfig', () => {
       [
         'name = "bad"',
         'niche = ["x"]',
+        'bg_dir = "assets/bg"',
+        'bgm_dir = "assets/bgm"',
         '',
         '[tier_mix]',
         'volume = 1',
@@ -521,9 +524,6 @@ describe('loadChannelConfig', () => {
         'active_color = "#FFD700"',
         'inactive_color = "#FFFFFF"',
         'stroke_px = 8',
-        '',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
         '',
       ].join('\n'),
     )
