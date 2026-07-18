@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { cropToVertical, loopToDuration, probe } from '../media/ffmpeg.js'
@@ -37,17 +37,22 @@ export const visualsVolumeStage: StageDef = {
     const chosenPath = path.join(bgDir, chosen)
 
     const p = await probe(chosenPath)
-    const tmp = mkdtempSync(path.join(tmpdir(), 'brainrot-visuals-'))
-    let source = chosenPath
-    if (!(p.width === 1080 && p.height === 1920)) {
-      const cropped = path.join(tmp, 'cropped.mp4')
-      await cropToVertical(chosenPath, cropped)
-      source = cropped
-    }
-
     const targetMs = voice.durationMs + PAD_MS
     const out = ctx.artifactPath('visuals', 'background.mp4')
-    await loopToDuration(source, out, targetMs)
+    if (p.width === 1080 && p.height === 1920) {
+      await loopToDuration(chosenPath, out, targetMs)
+    } else {
+      // Temp dir exists only for the cropped intermediate; always removed once
+      // loopToDuration has consumed it (or the crop/loop failed).
+      const tmp = mkdtempSync(path.join(tmpdir(), 'brainrot-visuals-'))
+      try {
+        const cropped = path.join(tmp, 'cropped.mp4')
+        await cropToVertical(chosenPath, cropped)
+        await loopToDuration(cropped, out, targetMs)
+      } finally {
+        rmSync(tmp, { recursive: true, force: true })
+      }
+    }
 
     ctx.db
       .prepare('INSERT INTO bg_usage (channel, file, used_at) VALUES (?, ?, ?)')
