@@ -66,6 +66,10 @@ export function createScriptStage(client?: Anthropic): StageDef {
         system: buildSystem(ctx.channel.niche),
         prompt: buildPrompt(ctx.topic, ctx.channel.niche),
         schema: ScriptOutputSchema,
+        // Raise the ceiling above the 2048 default: a full script + platformMeta for
+        // three platforms can exceed it, and a truncated forced tool_use surfaces as
+        // an opaque ZodError rather than a clear length failure.
+        maxTokens: 4096,
         client,
       });
       recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros);

@@ -44,6 +44,9 @@ describe('scriptStage', () => {
     // by z.toJSONSchema — an object requiring hook, segments, and platformMeta.
     const sentArgs = create.mock.calls[0][0];
     expect(sentArgs.tool_choice).toEqual({ type: 'tool', name: 'emit' });
+    // The script stage raises max_tokens above the provider's 2048 default so a full
+    // script + three-platform metadata cannot be truncated into a ZodError.
+    expect(sentArgs.max_tokens).toBe(4096);
     const sentTool = sentArgs.tools[0];
     expect(sentTool.name).toBe('emit');
     expect(sentTool.input_schema.type).toBe('object');

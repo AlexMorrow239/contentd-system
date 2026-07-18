@@ -53,4 +53,22 @@ describe('alignTranscript', () => {
     responder = () => ({ status: 500, body: JSON.stringify({ detail: 'boom' }) });
     await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(/500/);
   });
+
+  it('times out against a sidecar that never responds', async () => {
+    const wavPath = await tmpWav();
+    // A server that accepts the request but never sends a response.
+    const hung = http.createServer(() => {
+      /* intentionally never ends the response */
+    });
+    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve));
+    const hungUrl = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`;
+    try {
+      await expect(
+        alignTranscript({ baseUrl: hungUrl, wavPath, transcript: 'x', timeoutMs: 200 }),
+      ).rejects.toThrow(/whisperx align timed out after 200ms/);
+    } finally {
+      hung.closeAllConnections?.();
+      await new Promise<void>((resolve) => hung.close(() => resolve()));
+    }
+  });
 });

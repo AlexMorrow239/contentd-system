@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import type { ChannelConfig } from '../config/channel.js'
@@ -279,6 +279,17 @@ describe('runJob', () => {
     expect(
       row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library WHERE job_id = ?', jobId).n,
     ).toBe(0)
+  })
+
+  it('rejects a path-traversal job id without creating anything outside runsRoot', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const root = dirname(runsRoot)
+    await expect(
+      runJob(db, channel, '../outside', buildStages([]), { runsRoot }),
+    ).rejects.toThrow(/invalid job id/)
+    // The traversal target join(runsRoot, '../outside') === join(root, 'outside').
+    expect(existsSync(join(root, 'outside'))).toBe(false)
   })
 
   it('is idempotent: a second runJob on a completed job returns cleanly with one library row', async () => {

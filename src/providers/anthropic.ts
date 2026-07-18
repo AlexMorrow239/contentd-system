@@ -14,9 +14,9 @@ export const PRICE_TABLE: Record<string, { inputUsdMicrosPerMTok: number; output
   'claude-haiku-4-5': { inputUsdMicrosPerMTok: 1_000_000, outputUsdMicrosPerMTok: 5_000_000 },
 };
 
-function costMicros(model: string, inputTokens: number, outputTokens: number): number {
-  const price = PRICE_TABLE[model];
-  if (!price) throw new Error(`structuredCompletion: no price table entry for model "${model}"`);
+type Price = { inputUsdMicrosPerMTok: number; outputUsdMicrosPerMTok: number };
+
+function costMicros(price: Price, inputTokens: number, outputTokens: number): number {
   return (
     Math.round((inputTokens * price.inputUsdMicrosPerMTok) / 1_000_000) +
     Math.round((outputTokens * price.outputUsdMicrosPerMTok) / 1_000_000)
@@ -32,6 +32,13 @@ export async function structuredCompletion<T>(opts: {
   client?: Anthropic; // injected in tests; defaults to a real client
 }): Promise<{ data: T; cost: LlmUsageCost }> {
   const client = opts.client ?? new Anthropic();
+
+  // Resolve the price BEFORE the paid API call: a model absent from PRICE_TABLE
+  // must fail at zero spend, not after a real call whose cost can never reach the
+  // ledger. (Previously this threw only after messages.create had already billed.)
+  const price = PRICE_TABLE[opts.model];
+  if (!price) throw new Error(`structuredCompletion: no price table entry for model "${opts.model}"`);
+
   // Zod v4 native JSON Schema. `reused: 'inline'` inlines any reused sub-schema so
   // the tool input_schema has no $ref (the Anthropic tool API does not resolve $ref).
   const inputSchema = z.toJSONSchema(opts.schema, { reused: 'inline' }) as Anthropic.Tool.InputSchema;
@@ -61,6 +68,6 @@ export async function structuredCompletion<T>(opts: {
   if (!toolUse) throw new Error('structuredCompletion: no emit tool_use block in response');
 
   const data = opts.schema.parse(toolUse.input); // throws ZodError on malformed input
-  const cost: LlmUsageCost = { usdMicros: costMicros(opts.model, response.usage.input_tokens, response.usage.output_tokens) };
+  const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
   return { data, cost };
 }

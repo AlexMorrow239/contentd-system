@@ -26,6 +26,14 @@ program
   .option('--db <path>', 'sqlite db path')
   .option('--runs-root <path>', 'runs root directory', 'runs')
   .action(async (opts: { channel: string; topic: string; tier: string; db?: string; runsRoot: string }) => {
+    // Only the 'volume' tier ships in Plan 1. Reject anything else up front — before
+    // any db or job row is created — so an unsupported tier fails clean, not deep in
+    // a run. The thrown message is surfaced by the parseAsync .catch below (exit 1).
+    if (opts.tier !== 'volume') {
+      throw new Error(
+        `unsupported --tier "${opts.tier}": only "volume" is available; the premium tier arrives in Plan 2`,
+      )
+    }
     const channel = loadChannelConfig(opts.channel)
     const db = openDb(resolveDbPath(opts.db))
     const jobId = createJob(db, channel, { topic: opts.topic, tier: opts.tier as Tier })
@@ -38,10 +46,14 @@ program
       qcStage(),
     ]
     const result = await runJob(db, channel, jobId, stages, { runsRoot: opts.runsRoot })
+    // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
+    // event loop alive, letting the process drain stdout and exit on its own.
+    db.close()
     process.stdout.write(JSON.stringify(result) + '\n')
-    // exit 0 for ready/needs-review; exit 1 for failed AND blocked (the JSON line
-    // above carries the ready/needs-review/failed/blocked distinction for tooling).
-    process.exit(result.status === 'failed' || result.status === 'blocked' ? 1 : 0)
+    // Set exitCode (not process.exit) so a piped stdout flushes fully before exit —
+    // process.exit can truncate the JSON line mid-write. exit 0 for ready/needs-review;
+    // exit 1 for failed AND blocked (the JSON line carries the finer distinction).
+    process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
   })
 
 program
@@ -72,4 +84,9 @@ program
     console.table(rows.map((r) => ({ day: r.day, usd: `$${(r.micros / 1e6).toFixed(2)}` })))
   })
 
-program.parseAsync(process.argv)
+// A rejected action (bad --channel path, unsupported --tier, etc.) would otherwise
+// print a raw unhandled-rejection stack. Surface just the message and exit 1.
+program.parseAsync(process.argv).catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err))
+  process.exitCode = 1
+})

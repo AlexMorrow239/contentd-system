@@ -43,4 +43,54 @@ describe('brainrot CLI', () => {
     expect(result.stdout).toContain('--topic')
     expect(result.stdout).toContain('--tier')
   }, 60000)
+
+  function countJobs(dbPath: string): number {
+    const db = openDb(dbPath)
+    const { n } = db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }
+    db.close()
+    return n
+  }
+
+  it('`produce --tier premium` exits 1 with a Plan-2 message and creates no job', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'produce',
+        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'premium', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('premium')
+    expect(result.stderr).toContain('Plan 2')
+    // Tier is validated before any job row is created.
+    expect(countJobs(dbPath)).toBe(0)
+  }, 60000)
+
+  it('`produce --tier garbage` exits 1 and creates no job', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'produce',
+        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'garbage', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('Plan 2')
+    expect(countJobs(dbPath)).toBe(0)
+  }, 60000)
+
+  it('`produce` with a nonexistent --channel exits 1 with a clean one-line error (no stack)', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'produce',
+        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'volume', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toMatch(/ENOENT|no such file/)
+    // Just the message — no raw unhandled-rejection stack frames ("    at ...").
+    expect(result.stderr).not.toMatch(/\n\s+at /)
+    expect(countJobs(dbPath)).toBe(0)
+  }, 60000)
 })

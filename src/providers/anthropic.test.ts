@@ -39,4 +39,16 @@ describe('structuredCompletion', () => {
     const { client } = fakeClient({ content: [{ type: 'text', text: 'nope' }], usage: { input_tokens: 1, output_tokens: 1 } });
     await expect(structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client })).rejects.toThrow(/no emit tool_use/);
   });
+
+  it('rejects an unpriced model at zero spend, before the API is called', async () => {
+    const { client, create } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
+      usage: { input_tokens: 100, output_tokens: 200 },
+    });
+    await expect(
+      structuredCompletion({ model: 'claude-nonexistent-9', system: 's', prompt: 'p', schema, client }),
+    ).rejects.toThrow(/no price table entry for model/);
+    // The paid call must never fire for a model we cannot price.
+    expect(create).not.toHaveBeenCalled();
+  });
 });

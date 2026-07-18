@@ -45,6 +45,13 @@ export async function runJob(
   stages: StageDef[],
   options: { runsRoot?: string } = {},
 ): Promise<JobResult> {
+  // Guard against path traversal: jobId is interpolated straight into runDir, so a
+  // non-canonical id (e.g. '../outside') would escape runsRoot. nanoid ids only ever
+  // use [A-Za-z0-9_-]; reject anything else before it touches the filesystem.
+  if (!/^[A-Za-z0-9_-]+$/.test(jobId)) {
+    throw new Error(`invalid job id: ${jobId}`)
+  }
+
   const runsRoot = options.runsRoot ?? 'runs'
   const runDir = join(runsRoot, jobId)
 
