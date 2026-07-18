@@ -1,0 +1,23 @@
+name = "example"
+niche = ["space facts", "astronomy"]
+script_model = "claude-sonnet-5"
+bg_dir = "assets/bg"
+bgm_dir = "assets/bgm"
+
+[tier_mix]
+volume = 2
+premium = 1
+
+[voice]
+volume = "af_heart"
+
+[caption_style]
+font = "Inter"
+font_size_px = 72
+active_color = "#FFD700"
+inactive_color = "#FFFFFF"
+stroke_px = 8
+
+[budget]
+per_video_usd = 8.0    # loader converts to usdMicros
+per_day_usd = 20.0
