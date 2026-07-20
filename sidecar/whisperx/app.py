@@ -2,7 +2,8 @@ import os
 import tempfile
 
 import whisperx
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -16,6 +17,38 @@ SAMPLE_RATE = 16000  # whisperx.load_audio always resamples to 16 kHz
 # are module-level globals so tests can monkeypatch them.
 CHUNK_SIZE = 1024 * 1024  # 1 MiB
 MAX_UPLOAD_BYTES = int(os.environ.get("WHISPERX_MAX_UPLOAD_MB", "64")) * 1024 * 1024
+
+# Starlette fully receives and parses the multipart body before the handler
+# runs, so the in-handler streaming cap above never prevents the receive
+# itself. The middleware below rejects an honest oversized request from its
+# declared Content-Length before body parsing. FORM_OVERHEAD_BYTES is the slack
+# added to MAX_UPLOAD_BYTES for multipart framing plus the transcript form
+# field, so a genuine max-size audio upload is not falsely rejected. Referenced
+# by bare name at request time so tests can monkeypatch it.
+FORM_OVERHEAD_BYTES = 1024 * 1024  # 1 MiB
+
+
+@app.middleware("http")
+async def reject_oversized_content_length(request: Request, call_next):
+    if request.method == "POST" and request.url.path == "/align":
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                declared = None  # unparseable -> defer to the in-handler cap
+            if declared is not None and declared > MAX_UPLOAD_BYTES + FORM_OVERHEAD_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={
+                        "detail": (
+                            f"audio upload exceeds {MAX_UPLOAD_BYTES} byte limit "
+                            f"(rejected from declared Content-Length)"
+                        )
+                    },
+                )
+    return await call_next(request)
+
 
 # Alignment model is loaded once and cached at module level. Lazy so importing
 # this module (e.g. in tests) does not trigger a model download.
