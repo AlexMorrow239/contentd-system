@@ -2,8 +2,10 @@ import { existsSync, promises as fs } from 'node:fs';
 import { z } from 'zod';
 import { assertBudget, recordCost, BudgetExceededError } from '../jobs/costs.js';
 import type { JobContext, StageDef } from '../jobs/types.js';
+import { probe } from '../media/ffmpeg.js';
 import { visionJudgment } from '../providers/anthropic.js';
 import { animateImage, estimateImageCostMicros, estimateVideoCostMicros, generateImage } from '../providers/fal.js';
+import { errorCostUsdMicros } from '../providers/errors.js';
 import type { WordTiming } from '../providers/whisperx.js';
 import { computeSceneWindows } from './scene-windows.js';
 import { isScenesOutput, type ScenesOutput, type ScriptArtifact } from './script.js';
@@ -18,6 +20,17 @@ export const ESTIMATED_VISION_COST_MICROS = 15_000;
 // on provider error.
 const MAX_IMAGE_ATTEMPTS = 3;
 const MAX_VIDEO_ATTEMPTS = 2;
+
+// Reused-clip sanity bounds — the SAME range premium QC enforces (qc.ts
+// MIN_CLIP_MS/MAX_CLIP_MS). A resume trusts an on-disk clip only if it probes
+// inside these; a truncated file from a killed run must not be reused.
+const REUSE_MIN_CLIP_MS = 3000;
+const REUSE_MAX_CLIP_MS = 15000;
+
+// A scene window shorter than this has essentially no spoken time — almost
+// always an empty/near-empty narration. Refuse to spend on it: fail before any
+// paid keyframe or clip call.
+const MIN_SCENE_WINDOW_MS = 250;
 
 export interface SceneManifestEntry {
   index: number; // 1-based, matching the scene-NN file names
@@ -113,6 +126,19 @@ export const visualsPremiumStage: StageDef = {
     ) as { durationMs: number };
 
     const { windows, method } = computeSceneWindows(script, words, voice.durationMs);
+
+    // Zero-length window spend guard: a collapsed window (a scene with no spoken
+    // time, e.g. an empty narration that slipped past the schema) would burn a
+    // keyframe + clip on an unusable scene. Fail here, before any paid call.
+    windows.forEach((w, i) => {
+      const spanMs = w.endMs - w.startMs;
+      if (spanMs < MIN_SCENE_WINDOW_MS) {
+        throw new Error(
+          `visuals: scene ${i + 1} window is ${spanMs}ms, under the ${MIN_SCENE_WINDOW_MS}ms minimum (empty or too-short narration?)`,
+        );
+      }
+    });
+
     const { imageModel, videoModel, sceneConcurrency } = ctx.channel.premium;
 
     // In-process budget reservation. assertBudget alone races under scene
@@ -146,19 +172,35 @@ export const visualsPremiumStage: StageDef = {
 
       // Per-scene resume checkpoint, one level below stage idempotency: a clip
       // on disk is a finished scene, so a re-run only pays for what is missing.
+      // But a run killed mid-download can leave a truncated/corrupt file, so
+      // don't trust the clip blindly: probe it and reuse only if it decodes and
+      // lands inside the same sane duration bounds premium QC enforces.
+      // Otherwise delete just the clip (the keyframe, a png, is left in place)
+      // and fall through to the normal generation path.
       if (existsSync(clipPath)) {
-        ctx.log.info({ scene: nn }, 'visuals: clip exists, reusing');
-        return {
-          index: i + 1,
-          startMs,
-          endMs,
-          keyframe: keyframeName,
-          clip: clipName,
-          clipDurationSec,
-          imageAttempts: 0,
-          videoAttempts: 0,
-          costUsdMicros: 0,
-        };
+        let reusable = false;
+        try {
+          const { durationMs } = await probe(clipPath);
+          reusable = durationMs >= REUSE_MIN_CLIP_MS && durationMs <= REUSE_MAX_CLIP_MS;
+        } catch {
+          reusable = false;
+        }
+        if (reusable) {
+          ctx.log.info({ scene: nn }, 'visuals: clip exists, reusing');
+          return {
+            index: i + 1,
+            startMs,
+            endMs,
+            keyframe: keyframeName,
+            clip: clipName,
+            clipDurationSec,
+            imageAttempts: 0,
+            videoAttempts: 0,
+            costUsdMicros: 0,
+          };
+        }
+        ctx.log.warn({ scene: nn }, 'visuals: existing clip failed probe/bounds, regenerating');
+        await fs.rm(clipPath, { force: true });
       }
 
       let costUsdMicros = 0;
@@ -172,24 +214,42 @@ export const visualsPremiumStage: StageDef = {
             ? ''
             : `\n\nA previous attempt at this image was rejected for this reason; fix it: ${critique}`);
         // Gate + reserve, then generate + ledger inside the reservation window.
+        // If the fal call was billed but its download failed, the error carries
+        // the table cost — ledger that paid attempt before rethrowing so the
+        // spend is never lost (the scene then fails per the existing semantics,
+        // images are not retried on a hard throw).
         const image = await withBudget(estimateImageCostMicros(imageModel), async () => {
-          const result = await generateImage({ model: imageModel, prompt, outPath: keyframePath });
-          recordCost(ctx.db, ctx.jobId, 'fal', 'image', result.costUsdMicros);
-          return result;
+          try {
+            const result = await generateImage({ model: imageModel, prompt, outPath: keyframePath });
+            recordCost(ctx.db, ctx.jobId, 'fal', 'image', result.costUsdMicros);
+            return result;
+          } catch (err) {
+            const paid = errorCostUsdMicros(err);
+            if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'fal', 'image', paid);
+            throw err;
+          }
         });
         imageAttempts += 1;
         costUsdMicros += image.costUsdMicros;
 
         const judgment = await withBudget(ESTIMATED_VISION_COST_MICROS, async () => {
-          const result = await visionJudgment({
-            model: ctx.channel.scriptModel,
-            system: KEYFRAME_JUDGE_SYSTEM,
-            prompt: buildJudgePrompt(script.styleBlock, scene.visualPrompt),
-            imagePaths: [keyframePath],
-            schema: KeyframeJudgmentSchema,
-          });
-          recordCost(ctx.db, ctx.jobId, 'anthropic', 'keyframe-check', result.cost.usdMicros);
-          return result;
+          try {
+            const result = await visionJudgment({
+              model: ctx.channel.scriptModel,
+              system: KEYFRAME_JUDGE_SYSTEM,
+              prompt: buildJudgePrompt(script.styleBlock, scene.visualPrompt),
+              imagePaths: [keyframePath],
+              schema: KeyframeJudgmentSchema,
+            });
+            recordCost(ctx.db, ctx.jobId, 'anthropic', 'keyframe-check', result.cost.usdMicros);
+            return result;
+          } catch (err) {
+            // A schema-invalid but paid vision response still cost money — ledger
+            // it before rethrowing so the failing scene still records the spend.
+            const paid = errorCostUsdMicros(err);
+            if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'keyframe-check', paid);
+            throw err;
+          }
         });
         costUsdMicros += judgment.cost.usdMicros;
 
@@ -209,15 +269,24 @@ export const visualsPremiumStage: StageDef = {
       while (!animated) {
         try {
           const video = await withBudget(estimateVideoCostMicros(videoModel, clipDurationSec), async () => {
-            const result = await animateImage({
-              model: videoModel,
-              imagePath: keyframePath,
-              motionPrompt: scene.motionPrompt,
-              durationSec: clipDurationSec,
-              outPath: clipPath,
-            });
-            recordCost(ctx.db, ctx.jobId, 'fal', 'video', result.costUsdMicros);
-            return result;
+            try {
+              const result = await animateImage({
+                model: videoModel,
+                imagePath: keyframePath,
+                motionPrompt: scene.motionPrompt,
+                durationSec: clipDurationSec,
+                outPath: clipPath,
+              });
+              recordCost(ctx.db, ctx.jobId, 'fal', 'video', result.costUsdMicros);
+              return result;
+            } catch (err) {
+              // subscribe may have been billed before the download failed; ledger
+              // that paid attempt before the retry logic below decides whether to
+              // try again, so a download-failed attempt is never lost.
+              const paid = errorCostUsdMicros(err);
+              if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'fal', 'video', paid);
+              throw err;
+            }
           });
           videoAttempts += 1;
           costUsdMicros += video.costUsdMicros;
@@ -227,6 +296,11 @@ export const visualsPremiumStage: StageDef = {
           // error: withBudget's gate throws it before the provider is dialed,
           // and the retry loop must not swallow it.
           if (err instanceof BudgetExceededError) throw err;
+          // A download-failed attempt was paid and ledgered above; fold its cost
+          // into the per-scene total too so a scene that recovers on retry still
+          // reports its full spend in the manifest.
+          const paid = errorCostUsdMicros(err);
+          if (paid !== undefined) costUsdMicros += paid;
           videoAttempts += 1;
           if (videoAttempts >= MAX_VIDEO_ATTEMPTS) {
             throw new Error(

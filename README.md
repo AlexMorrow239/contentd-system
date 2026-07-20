@@ -62,11 +62,13 @@ pnpm brainrot produce --channel channels/example.toml \
 
 Requires `ANTHROPIC_API_KEY`, `FAL_KEY`, and `ELEVENLABS_API_KEY` in `.env`.
 
-Cost envelope: a typical ~35s premium video lands at **$2.30–4.50** (keyframes
-+ clips + TTS + vision checks). The hard cap is `premium_per_video_usd` in the
-channel TOML (default **$7.00**); a breach parks the job `blocked` before the
-overspending call fires. Per-channel (`per_day_usd`) and global
-(`BRAINROT_GLOBAL_DAILY_USD`, default $25/day) daily caps stack on top.
+Cost envelope: a typical ~35s premium video runs **typically $3.00–6.00** (5s
+scenes ~$0.42/clip, 10s scenes ~$0.84/clip; ElevenLabs + keyframes + vision
+checks add ~$0.15–0.40); the **$7.00** default per-video cap
+(`premium_per_video_usd` in the channel TOML) absorbs retries — long narrations
+(>~14 words) force 10s clips, so shorter scenes are cheaper. A breach parks the
+job `blocked` before the overspending call fires. Per-channel (`per_day_usd`)
+and global (`BRAINROT_GLOBAL_DAILY_USD`, default $25/day) daily caps stack on top.
 
 ## Where outputs land
 

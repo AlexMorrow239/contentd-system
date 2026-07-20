@@ -2,6 +2,7 @@ import React from 'react'
 import { AbsoluteFill, Audio, OffthreadVideo, Series, staticFile } from 'remotion'
 import type { ShortVideoProps } from '../src/remotion-types'
 import { Captions } from './Captions'
+import { cumulativeSceneFrames } from './frames'
 
 // Single source of truth is src/remotion-types.ts; re-exported here so Root.tsx and
 // the composition test can keep importing ShortVideoProps from './ShortVideo'.
@@ -34,15 +35,16 @@ export const ShortVideo: React.FC<ShortVideoProps> = ({
   if ((background === undefined) === (scenes === undefined)) {
     throw new Error('ShortVideo: exactly one of backgroundSrc or sceneClips must be set')
   }
+  // Cumulative rounding so the per-scene frame counts sum to the full timeline
+  // length (see frames.ts) instead of drifting a few frames short over many
+  // scenes and leaving a black flash at the tail.
+  const sceneFrames = scenes ? cumulativeSceneFrames(scenes.map((c) => c.durationMs), FPS) : []
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
       {scenes ? (
         <Series>
-          {scenes.map((clip) => (
-            <Series.Sequence
-              key={clip.src}
-              durationInFrames={Math.round((clip.durationMs / 1000) * FPS)}
-            >
+          {scenes.map((clip, i) => (
+            <Series.Sequence key={clip.src} durationInFrames={sceneFrames[i]}>
               <OffthreadVideo
                 src={staticFile(clip.src)}
                 playbackRate={clip.playbackRate}

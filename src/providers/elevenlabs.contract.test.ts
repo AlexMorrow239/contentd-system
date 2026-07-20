@@ -7,7 +7,7 @@ import { estimateTtsCostMicros, synthWithTimestamps } from './elevenlabs.js';
 // Makes ONE real ElevenLabs synthesis (39 chars ≈ $0.012 at the Creator overage
 // rate); needs ELEVENLABS_API_KEY (shell env or .env — loaded here because
 // vitest does not read .env on its own).
-describe('synthWithTimestamps (contract)', () => {
+describe.skipIf(!process.env.ELEVENLABS_API_KEY)('synthWithTimestamps (contract)', () => {
   it('synthesizes a short phrase into parseable 24kHz WAV with monotonic word timings', async () => {
     const text = 'The quick brown fox jumps over the dog.'; // 39 chars, 8 words
     expect(estimateTtsCostMicros(text)).toBeLessThan(20_000); // hard guard: < $0.02

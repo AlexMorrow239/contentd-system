@@ -64,6 +64,19 @@ describe('scriptStage', () => {
     await expect(createScriptStage(client).run(ctx)).rejects.toThrow();
   });
 
+  it('ledgers the paid cost on a schema-invalid response, then rejects', async () => {
+    // A billed call whose tool output fails validation must not lose the spend:
+    // the stage catches the cost-carrying error and records it before rethrowing.
+    const ctx = makeCtx(testChannel());
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { hook: 'x' } }], // invalid ScriptOutput
+      usage: { input_tokens: 100, output_tokens: 200 },
+    });
+    await expect(createScriptStage(client).run(ctx)).rejects.toThrow();
+    const rows = ctx.db.prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?').all(ctx.jobId);
+    expect(rows).toEqual([{ provider: 'anthropic', operation: 'script', usd_micros: 100 * 3 + 200 * 15 }]);
+  });
+
   it('throws BudgetExceededError before calling the API when over budget', async () => {
     const ctx = makeCtx(testChannel({ budget: { perVideoUsdMicros: 1, premiumPerVideoUsdMicros: 1, perDayUsdMicros: 1 } }));
     const { client, create } = fakeClient({});
@@ -138,7 +151,8 @@ describe('scriptStage (premium scenes)', () => {
     expect(sentTool.input_schema.required).not.toContain('format');
     expect(Object.keys(sentTool.input_schema.properties)).not.toContain('format');
     // The prompt carries the constraints that keep spoken scenes coverable by 10s clips.
-    expect(sentArgs.messages[0].content).toContain('at most 18 words');
+    expect(sentArgs.messages[0].content).toContain('aim for 10 to 14 words');
+    expect(sentArgs.messages[0].content).toContain('never exceed 18 words');
     expect(sentArgs.messages[0].content).toContain('5 to 8 scenes');
   });
 

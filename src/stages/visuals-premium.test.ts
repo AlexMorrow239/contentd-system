@@ -15,9 +15,20 @@ vi.mock('../providers/anthropic.js', () => ({
   visionJudgment: vi.fn(),
   structuredCompletion: vi.fn(),
 }));
+// probe() gates the resume checkpoint (FIX 3): mocked here so these fast,
+// hermetic tests control whether an on-disk clip looks reusable without shelling
+// out to ffprobe. cropToVertical/loopToDuration are stubbed only to keep the
+// mocked module export-complete for the import graph.
+vi.mock('../media/ffmpeg.js', () => ({
+  probe: vi.fn(),
+  cropToVertical: vi.fn(),
+  loopToDuration: vi.fn(),
+}));
 
 import { animateImage, estimateImageCostMicros, estimateVideoCostMicros, generateImage } from '../providers/fal.js';
 import { visionJudgment } from '../providers/anthropic.js';
+import { probe } from '../media/ffmpeg.js';
+import { ProviderCostError } from '../providers/errors.js';
 import { BudgetExceededError } from '../jobs/costs.js';
 import {
   ESTIMATED_VISION_COST_MICROS,
@@ -104,6 +115,9 @@ beforeEach(() => {
     data: { pass: true, critique: '' },
     cost: { usdMicros: VISION_COST },
   });
+  // Default: any on-disk clip probes as a sane 5s file, so resume reuse works.
+  // Tests that seed a corrupt clip override this to reject.
+  vi.mocked(probe).mockResolvedValue({ durationMs: 5000, width: 1080, height: 1920, hasAudio: false, fps: 30 });
 });
 
 describe('visualsPremiumStage', () => {
@@ -344,6 +358,91 @@ describe('visualsPremiumStage', () => {
 
     await expect(visualsPremiumStage.run(ctx)).rejects.toThrow(/scenes-format script/);
     expect(vi.mocked(generateImage)).not.toHaveBeenCalled();
+  });
+
+  it('regenerates a corrupt on-disk clip instead of trusting it (resume validation)', async () => {
+    const ctx = premiumCtx();
+    await seedArtifacts(ctx, scenesScript(2), 16_000);
+    // A prior run left a truncated/garbage scene-01.mp4 that fails to probe.
+    await fs.writeFile(ctx.artifactPath('visuals', 'scene-01.mp4'), Buffer.from('not a real mp4'));
+    vi.mocked(probe).mockRejectedValue(new Error('moov atom not found'));
+
+    await visualsPremiumStage.run(ctx);
+
+    // Scene 1 was regenerated: image + vision + animate all ran for it, rather
+    // than trusting the corrupt clip on disk.
+    const imageOutPaths = vi.mocked(generateImage).mock.calls.map((c) => c[0].outPath);
+    expect(imageOutPaths.some((p) => p.endsWith('scene-01.png'))).toBe(true);
+    const animateOutPaths = vi.mocked(animateImage).mock.calls.map((c) => c[0].outPath);
+    expect(animateOutPaths.some((p) => p.endsWith('scene-01.mp4'))).toBe(true);
+
+    // The manifest entry for scene 1 is fresh, not a reused (zero-cost) entry.
+    const manifest = await readManifest(ctx);
+    expect(manifest.scenes[0]).toMatchObject({
+      clip: 'scene-01.mp4',
+      imageAttempts: 1,
+      videoAttempts: 1,
+      costUsdMicros: IMAGE_COST + VISION_COST + VIDEO_COST,
+    });
+  });
+
+  it('throws before any spend when a scene window collapses to near-zero', async () => {
+    const ctx = premiumCtx();
+    const script = scenesScript(2);
+    script.scenes[1].narration = ''; // scene 2 has no spoken words -> zero-length window
+    await seedArtifacts(ctx, script, 16_000);
+
+    await expect(visualsPremiumStage.run(ctx)).rejects.toThrow(/scene 2/);
+    expect(vi.mocked(generateImage)).not.toHaveBeenCalled();
+    expect(vi.mocked(animateImage)).not.toHaveBeenCalled();
+    expect(vi.mocked(visionJudgment)).not.toHaveBeenCalled();
+    const { n } = ctx.db.prepare('SELECT COUNT(*) AS n FROM costs WHERE job_id = ?').get(ctx.jobId) as { n: number };
+    expect(n).toBe(0);
+  });
+
+  it('ledgers the fal/image row when a paid image download fails, then fails the scene', async () => {
+    const ctx = premiumCtx();
+    await seedArtifacts(ctx, scenesScript(1), 4_000);
+    // subscribe was billed, the download failed: generateImage throws a cost-carrying error.
+    vi.mocked(generateImage).mockRejectedValueOnce(
+      new ProviderCostError('fal: asset download failed with 500 for url', IMAGE_COST),
+    );
+
+    await expect(visualsPremiumStage.run(ctx)).rejects.toThrow(/scene 01/);
+
+    // The paid-but-failed download is still ledgered under fal/image.
+    const rows = ctx.db
+      .prepare("SELECT usd_micros FROM costs WHERE job_id = ? AND provider = 'fal' AND operation = 'image'")
+      .all(ctx.jobId) as { usd_micros: number }[];
+    expect(rows).toEqual([{ usd_micros: IMAGE_COST }]);
+    // No clip produced, and no manifest on a failed run (a resume re-runs the scene).
+    expect(existsSync(ctx.artifactPath('visuals', 'scene-01.mp4'))).toBe(false);
+    expect(existsSync(ctx.artifactPath('visuals', 'scenes.json'))).toBe(false);
+  });
+
+  it('ledgers each paid video attempt on download failure and recovers on retry', async () => {
+    const ctx = premiumCtx();
+    await seedArtifacts(ctx, scenesScript(1), 4_000); // 4s window -> 5s clip
+    // First animate: paid subscribe then download fails; the retry succeeds.
+    vi.mocked(animateImage)
+      .mockRejectedValueOnce(new ProviderCostError('fal: asset download failed with 500 for url', VIDEO_COST))
+      .mockImplementationOnce(async ({ outPath }) => {
+        await fs.writeFile(outPath, MP4_BYTES);
+        return { costUsdMicros: VIDEO_COST };
+      });
+
+    await visualsPremiumStage.run(ctx);
+
+    // Two fal/video rows: the failed-but-paid attempt and the successful one.
+    const videoRows = ctx.db
+      .prepare("SELECT usd_micros FROM costs WHERE job_id = ? AND provider = 'fal' AND operation = 'video'")
+      .all(ctx.jobId) as { usd_micros: number }[];
+    expect(videoRows).toEqual([{ usd_micros: VIDEO_COST }, { usd_micros: VIDEO_COST }]);
+
+    const manifest = await readManifest(ctx);
+    // videoAttempts counts both tries; the per-scene cost folds in the paid failed attempt.
+    expect(manifest.scenes[0].videoAttempts).toBe(2);
+    expect(manifest.scenes[0].costUsdMicros).toBe(IMAGE_COST + VISION_COST + 2 * VIDEO_COST);
   });
 });
 

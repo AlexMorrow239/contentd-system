@@ -10,6 +10,7 @@ import {
   animateImage,
   type FalClientLike,
 } from './fal.js';
+import { ProviderCostError } from './errors.js';
 
 const FLUX = 'fal-ai/flux/dev';
 const KLING = 'fal-ai/kling-video/v3/standard/image-to-video';
@@ -113,6 +114,17 @@ describe('generateImage', () => {
     await expect(
       generateImage({ model: FLUX, prompt: 'p', outPath: path.join(tmpDir(), 'x.png'), client }),
     ).rejects.toThrow(/403/);
+  });
+
+  it('carries the table cost when the download fails after a paid subscribe', async () => {
+    // subscribe succeeded (billed) but the download 500s; the thrown error must
+    // carry the deterministic table cost so the stage can ledger the paid attempt.
+    const { client } = fakeFal({ images: [{ url: 'https://fal.cdn/img.png' }] });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
+    const err = await generateImage({ model: FLUX, prompt: 'p', outPath: path.join(tmpDir(), 'x.png'), client }).catch((e) => e);
+    expect(err).toBeInstanceOf(ProviderCostError);
+    expect((err as ProviderCostError).costUsdMicros).toBe(50_000);
+    expect((err as Error).message).toMatch(/500/);
   });
 
   it('fails fast when FAL_KEY is missing and no client is injected', async () => {

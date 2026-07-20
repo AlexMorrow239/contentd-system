@@ -38,6 +38,19 @@ describe('structuredCompletion', () => {
     await expect(structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client })).rejects.toThrow(z.ZodError);
   });
 
+  it('attaches the already-billed cost to a schema-validation failure so callers can ledger it', async () => {
+    // The messages.create call is billed whether or not the tool output validates;
+    // a schema failure must still carry the spend. `n` is missing -> invalid.
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi' } }],
+      usage: { input_tokens: 100, output_tokens: 200 },
+    });
+    const err = await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client }).catch((e) => e);
+    // Identity is preserved (still a ZodError), and the cost rides along on it.
+    expect(err).toBeInstanceOf(z.ZodError);
+    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15); // 3300
+  });
+
   it('coerces a JSON-stringified nested value before validating (observed real-model behavior)', async () => {
     const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) });
     const { client } = fakeClient({

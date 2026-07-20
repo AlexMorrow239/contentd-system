@@ -97,6 +97,12 @@ async function forcedToolCompletion<T>(opts: {
   );
   if (!toolUse) throw new Error(`${opts.label}: no emit tool_use block in response`);
 
+  // Cost is fixed by the usage the paid call already reported. Compute it BEFORE
+  // validation so a schema failure can still carry the spend to the caller's
+  // ledger instead of vanishing — the messages.create call is billed whether or
+  // not the tool output validates.
+  const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
+
   // Anthropic's tool_choice does not guarantee schema-conformant output (no
   // `strict` mode in this SDK version): models occasionally stringify a
   // nested array/object instead of emitting it structurally. Validate first;
@@ -108,12 +114,18 @@ async function forcedToolCompletion<T>(opts: {
     data = firstAttempt.data;
   } else {
     const retry = opts.schema.safeParse(coerceJsonStrings(toolUse.input));
-    // Report the original error: it describes what the model actually sent,
-    // not the rewritten value the coercion produced.
-    if (!retry.success) throw firstAttempt.error;
+    if (!retry.success) {
+      // Report the original error: it describes what the model actually sent,
+      // not the rewritten value the coercion produced. Attach the already-billed
+      // cost so the caller can ledger this paid-but-invalid response before
+      // rethrowing, without changing the error's `instanceof z.ZodError`
+      // identity (callers and tests still match on ZodError).
+      const failure = firstAttempt.error as z.ZodError & { costUsdMicros?: number };
+      failure.costUsdMicros = cost.usdMicros;
+      throw failure;
+    }
     data = retry.data;
   }
-  const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
   return { data, cost };
 }
 

@@ -1,10 +1,10 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { execa } from 'execa'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
-import { parseTier, stagesForTier } from './cli.js'
+import { assertPremiumPreflight, parseTier, stagesForTier } from './cli.js'
 import { visualsPremiumStage } from './stages/visuals-premium.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 
@@ -60,13 +60,32 @@ describe('brainrot CLI', () => {
       'pnpm',
       ['exec', 'tsx', 'src/cli.ts', 'produce',
         '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'premium', '--db', dbPath],
-      { reject: false },
+      // FAL_KEY set so the premium pre-flight passes and the run reaches the
+      // channel load; this test isolates tier validation, not the key check
+      // (which is covered in-process below).
+      { reject: false, env: { FAL_KEY: 'test-fal-key' } },
     )
     expect(result.exitCode).toBe(1)
     // Tier accepted: the failure is the nonexistent channel file, NOT the tier.
     expect(result.stderr).toMatch(/ENOENT|no such file/)
     expect(result.stderr).not.toContain('unsupported --tier')
     // The channel load throws before openDb/createJob, so no job row exists.
+    expect(countJobs(dbPath)).toBe(0)
+  }, 60000)
+
+  it('`produce --tier premium` aborts before any spend when FAL_KEY is unset', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'produce',
+        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'premium', '--db', dbPath],
+      // Explicitly clear FAL_KEY (and keep dotenv from supplying one) so the
+      // pre-flight fires before loadChannelConfig ever runs.
+      { reject: false, env: { FAL_KEY: '' } },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('premium tier requires FAL_KEY')
+    // The pre-flight throws before openDb/createJob, so no job row exists.
     expect(countJobs(dbPath)).toBe(0)
   }, 60000)
 
@@ -122,5 +141,26 @@ describe('tier helpers (in-process)', () => {
     // (they branch internally on ctx.tier). qcStage() mints a fresh StageDef
     // per call, so it is covered by the name assertion above, not identity.
     for (const i of [0, 1, 2, 4]) expect(premium[i]).toBe(volume[i])
+  })
+})
+
+describe('assertPremiumPreflight (in-process)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  it('throws for premium when FAL_KEY is unset, before any config/db/job work', () => {
+    vi.stubEnv('FAL_KEY', undefined)
+    expect(() => assertPremiumPreflight('premium')).toThrow(
+      'premium tier requires FAL_KEY in the environment (see .env.example); aborting before any spend',
+    )
+  })
+
+  it('passes for premium when FAL_KEY is set, and never blocks volume', () => {
+    vi.stubEnv('FAL_KEY', 'fal-test-key')
+    expect(() => assertPremiumPreflight('premium')).not.toThrow()
+    // Volume never needs a fal key, even when it is absent.
+    vi.stubEnv('FAL_KEY', undefined)
+    expect(() => assertPremiumPreflight('volume')).not.toThrow()
   })
 })

@@ -14,7 +14,7 @@ import { probe } from '../media/ffmpeg.js';
 const dir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-fal-contract-'));
 const keyframePath = path.join(dir, 'keyframe.png');
 
-describe('fal adapter (contract)', () => {
+describe.skipIf(!process.env.FAL_KEY)('fal adapter (contract)', () => {
   it('generates a real FLUX 9:16 keyframe', async () => {
     const { costUsdMicros } = await generateImage({
       model: 'fal-ai/flux/dev',
@@ -43,7 +43,7 @@ describe('fal adapter (contract)', () => {
 });
 
 // A real Kling v3 standard clip costs ~$0.42 — opt in separately.
-describe.skipIf(process.env.CONTRACT_PREMIUM !== '1')('fal adapter (contract, premium)', () => {
+describe.skipIf(process.env.CONTRACT_PREMIUM !== '1' || !process.env.FAL_KEY)('fal adapter (contract, premium)', () => {
   it('animates the keyframe via Kling v3 standard', async () => {
     const outPath = path.join(dir, 'clip-kling.mp4');
     const { costUsdMicros } = await animateImage({

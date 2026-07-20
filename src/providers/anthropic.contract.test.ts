@@ -6,7 +6,7 @@ import { structuredCompletion } from './anthropic.js';
 // Runs only via `pnpm test:contract` (excluded from default `pnpm test`).
 // Makes ONE real, cheap Anthropic call; needs ANTHROPIC_API_KEY (shell env
 // or .env — loaded here because vitest does not read .env on its own).
-describe('structuredCompletion (contract)', () => {
+describe.skipIf(!process.env.ANTHROPIC_API_KEY)('structuredCompletion (contract)', () => {
   it('extracts structured data from a real haiku-class call', async () => {
     const schema = z.object({ capital: z.string() });
     const { data, cost } = await structuredCompletion({

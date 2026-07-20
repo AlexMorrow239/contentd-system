@@ -1,5 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { fal } from '@fal-ai/client';
+import { ProviderCostError } from './errors.js';
 
 export type FalPrice =
   | { kind: 'per-image'; usdMicros: number }
@@ -77,7 +78,14 @@ export async function generateImage(opts: {
   const images = data.images as Array<{ url?: string }> | undefined;
   const url = images?.[0]?.url;
   if (!url) throw new Error(`fal: no image url in response from ${opts.model}`);
-  await download(url, opts.outPath);
+  // subscribe already succeeded (billed); a download failure past this point is
+  // still a paid attempt, so carry the deterministic table cost on the error and
+  // let the stage ledger it before deciding whether to retry or fail the scene.
+  try {
+    await download(url, opts.outPath);
+  } catch (err) {
+    throw new ProviderCostError(err instanceof Error ? err.message : String(err), costUsdMicros);
+  }
   return { costUsdMicros };
 }
 
@@ -100,7 +108,14 @@ export async function animateImage(opts: {
   });
   const video = data.video as { url?: string } | undefined;
   if (!video?.url) throw new Error(`fal: no video url in response from ${opts.model}`);
-  await download(video.url, opts.outPath);
+  // subscribe already succeeded (billed); a download failure past this point is
+  // still a paid attempt, so carry the deterministic table cost on the error and
+  // let the stage ledger it before deciding whether to retry or fail the scene.
+  try {
+    await download(video.url, opts.outPath);
+  } catch (err) {
+    throw new ProviderCostError(err instanceof Error ? err.message : String(err), costUsdMicros);
+  }
   return { costUsdMicros };
 }
 

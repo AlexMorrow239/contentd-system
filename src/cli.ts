@@ -32,6 +32,21 @@ export function parseTier(raw: string): Tier {
 }
 
 /**
+ * Premium pre-flight: premium visuals require a fal key, so refuse the run
+ * before any config load, db handle, or job row exists when FAL_KEY is absent —
+ * a job that could only ever fail for a missing key should never be created.
+ * ELEVENLABS_API_KEY is deliberately NOT required: premium voice falls back to
+ * kokoro when it is unset. Exported so cli.test.ts can assert it in-process.
+ */
+export function assertPremiumPreflight(tier: Tier): void {
+  if (tier === 'premium' && !process.env.FAL_KEY) {
+    throw new Error(
+      'premium tier requires FAL_KEY in the environment (see .env.example); aborting before any spend',
+    )
+  }
+}
+
+/**
  * The stage list for one produce run. Only the visuals slot branches by tier;
  * script/voice/captions/qc branch internally on ctx.tier. Exported so tests
  * can assert the premium wiring without spawning a subprocess.
@@ -63,6 +78,7 @@ program
   .option('--runs-root <path>', 'runs root directory', 'runs')
   .action(async (opts: { channel: string; topic: string; tier: string; db?: string; runsRoot: string }) => {
     const tier = parseTier(opts.tier)
+    assertPremiumPreflight(tier)
     const channel = loadChannelConfig(opts.channel)
     const db = openDb(resolveDbPath(opts.db))
     const jobId = createJob(db, channel, { topic: opts.topic, tier })

@@ -4,9 +4,17 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { StageDef, JobContext } from '../jobs/types.js';
 import { assertBudget, recordCost } from '../jobs/costs.js';
 import { structuredCompletion } from '../providers/anthropic.js';
+import { errorCostUsdMicros } from '../providers/errors.js';
 
 // Pre-flight budget reservation for the script LLM call (~$0.02). assertBudget
 // blocks the stage if the job or day is already too close to its cap.
+//
+// This is a TYPICAL-cost reservation, not a worst-case one: at maxTokens 4096 a
+// fully-saturated response costs ~65k micros (4096 output tokens x $15/MTok plus
+// input), well above this estimate. The overshoot is bounded to a single call,
+// fully ledgered from response.usage after it returns, and caught at the next
+// stage's budget gate — so a rare oversized script cannot silently escape the
+// caps, it just parks the job 'blocked' one stage later.
 export const ESTIMATED_SCRIPT_COST_MICROS = 20_000;
 
 const platformEntrySchema = z.object({
@@ -39,10 +47,19 @@ export type ScriptOutput = z.infer<typeof ScriptOutputSchema>;
 // downstream stages can discriminate the two artifact shapes; volume
 // script.json stays exactly as in Plan 1 (no format field).
 export const ScenesOutputSchema = z.object({
-  hook: z.string(),
-  styleBlock: z.string(),
+  // .min(1) on every free-text field: an empty narration (or style/prompt) is
+  // never a valid scenes script and, left unchecked, an empty narration collapses
+  // that scene's timing window to zero and drives wasted premium spend
+  // downstream. Reject it at the schema so it fails at the script stage, at zero
+  // visual spend.
+  hook: z.string().min(1),
+  styleBlock: z.string().min(1),
   scenes: z.array(
-    z.object({ narration: z.string(), visualPrompt: z.string(), motionPrompt: z.string() }),
+    z.object({
+      narration: z.string().min(1),
+      visualPrompt: z.string().min(1),
+      motionPrompt: z.string().min(1),
+    }),
   ),
   platformMeta: platformMetaSchema,
 });
@@ -102,7 +119,7 @@ Scenes-format requirements:
 - hook: one line, at most 10 words, that stops the scroll. No emojis.
 - styleBlock: one paragraph defining the video's consistent visual identity — palette, medium, mood, and lighting. Every scene's keyframe image is generated with this exact paragraph prepended, so it must read as a reusable style description, not scene content. ${styleSeed}
 - scenes: 5 to 8 scenes forming one narrative arc. Each scene has:
-  - narration: 1 to 2 sentences of spoken narration, at most 18 words total, so the spoken scene fits inside a 10-second clip. Plain and conversational, no stage directions.
+  - narration: 1 to 2 sentences of spoken narration; aim for 10 to 14 words, and never exceed 18 words total, so the spoken scene fits inside a 10-second clip. Plain and conversational, no stage directions.
   - visualPrompt: a concrete single-shot image description — subject, setting, composition. Describe one still frame only; no camera moves, no motion words.
   - motionPrompt: a short phrase describing how the shot moves — camera motion or subject motion (for example "slow push-in" or "waves rolling toward the shore").
 - platformMeta: provide entries for youtube, tiktok, and instagram. For each entry:
@@ -120,33 +137,42 @@ export function createScriptStage(client?: Anthropic): StageDef {
       assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS, ctx.tier);
       let artifact: ScriptArtifact;
       let costUsdMicros: number;
-      if (ctx.tier === 'premium') {
-        const { data, cost } = await structuredCompletion({
-          model: ctx.channel.scriptModel,
-          system: buildScenesSystem(ctx.channel.niche),
-          prompt: buildScenesPrompt(ctx.topic, ctx.channel.niche, ctx.channel.premium.stylePrefix),
-          schema: ScenesOutputSchema,
-          // Raise the ceiling above the 2048 default: a full script + platformMeta for
-          // three platforms can exceed it, and a truncated forced tool_use surfaces as
-          // an opaque ZodError rather than a clear length failure.
-          maxTokens: 4096,
-          client,
-        });
-        // The LLM never emits `format`; stamp it here so every consumer of
-        // script.json can discriminate scenes vs story artifacts.
-        artifact = { ...data, format: 'scenes' };
-        costUsdMicros = cost.usdMicros;
-      } else {
-        const { data, cost } = await structuredCompletion({
-          model: ctx.channel.scriptModel,
-          system: buildSystem(ctx.channel.niche),
-          prompt: buildPrompt(ctx.topic, ctx.channel.niche),
-          schema: ScriptOutputSchema,
-          maxTokens: 4096,
-          client,
-        });
-        artifact = data;
-        costUsdMicros = cost.usdMicros;
+      try {
+        if (ctx.tier === 'premium') {
+          const { data, cost } = await structuredCompletion({
+            model: ctx.channel.scriptModel,
+            system: buildScenesSystem(ctx.channel.niche),
+            prompt: buildScenesPrompt(ctx.topic, ctx.channel.niche, ctx.channel.premium.stylePrefix),
+            schema: ScenesOutputSchema,
+            // Raise the ceiling above the 2048 default: a full script + platformMeta for
+            // three platforms can exceed it, and a truncated forced tool_use surfaces as
+            // an opaque ZodError rather than a clear length failure.
+            maxTokens: 4096,
+            client,
+          });
+          // The LLM never emits `format`; stamp it here so every consumer of
+          // script.json can discriminate scenes vs story artifacts.
+          artifact = { ...data, format: 'scenes' };
+          costUsdMicros = cost.usdMicros;
+        } else {
+          const { data, cost } = await structuredCompletion({
+            model: ctx.channel.scriptModel,
+            system: buildSystem(ctx.channel.niche),
+            prompt: buildPrompt(ctx.topic, ctx.channel.niche),
+            schema: ScriptOutputSchema,
+            maxTokens: 4096,
+            client,
+          });
+          artifact = data;
+          costUsdMicros = cost.usdMicros;
+        }
+      } catch (err) {
+        // A schema-invalid response is still a paid call: the adapter attaches the
+        // billed cost to the thrown error, so ledger it here before rethrowing so
+        // the spend is never lost, then let the stage fail as before.
+        const paid = errorCostUsdMicros(err);
+        if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid);
+        throw err;
       }
       recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', costUsdMicros);
       await fs.writeFile(ctx.artifactPath('script', 'script.json'), JSON.stringify(artifact, null, 2));

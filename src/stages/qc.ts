@@ -7,6 +7,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { probe } from '../media/ffmpeg.js'
 import { assertBudget, recordCost } from '../jobs/costs.js'
 import { visionJudgment } from '../providers/anthropic.js'
+import { errorCostUsdMicros } from '../providers/errors.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import { isScenesOutput, type ScriptArtifact } from './script.js'
 import type { ScenesManifest } from './visuals-premium.js'
@@ -202,6 +203,14 @@ async function visionSpotCheck(
       rmSync(frameDir, { recursive: true, force: true })
     }
   } catch (err) {
+    // Any thrown error degrades this spot check to a failed check rather than
+    // crashing the stage. A BudgetExceededError here deliberately degrades to a
+    // failed check (job parks needs-review), NOT blocked: the video is already
+    // rendered, so a parked library row is more useful than killing the run over
+    // a spot check we could not afford. A schema-invalid but paid vision response
+    // still cost money — ledger it before degrading so the spend is not lost.
+    const paid = errorCostUsdMicros(err)
+    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'qc-vision', paid)
     return { name, passed: false, detail: err instanceof Error ? err.message : String(err) }
   }
 }
