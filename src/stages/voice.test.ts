@@ -115,6 +115,31 @@ describe('voiceStage', () => {
     expect(meta.durationMs).toBe(expectedMs);
   });
 
+  it('caps per-chunk trailing silence so concatenation has no internal gaps or dead tail', async () => {
+    const ctx = await ctxWithScript(LONG_SCRIPT);
+    // Each chunk: audible speech at 2 words/sec followed by 3s of pure silence —
+    // the shape real kokoro output has (multi-second silent pad per generation).
+    const generate = vi.fn(async (t: string) => {
+      const speech = countWords(t) * (KOKORO_RATE / 2);
+      const audio = new Float32Array(speech + KOKORO_RATE * 3);
+      audio.fill(0.5, 0, speech);
+      return { audio, sampling_rate: KOKORO_RATE };
+    });
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    const texts = generate.mock.calls.map((c) => c[0] as string);
+    expect(texts.length).toBeGreaterThan(1);
+    // Each chunk keeps its speech plus at most 250ms of tail: the 3s pads are
+    // gone both between chunks (internal gaps) and after the last one (tail).
+    const expectedMs = texts.reduce((ms, t) => ms + countWords(t) * 500 + 250, 0);
+    const wav = await fs.readFile(ctx.artifactPath('voice', 'narration.wav'));
+    expect(parseWavDurationMs(wav)).toBe(expectedMs);
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta.durationMs).toBe(expectedMs);
+  });
+
   it('throws when synthesized audio is implausibly short for the script (truncation guard)', async () => {
     const ctx = await ctxWithScript(LONG_SCRIPT);
     // Simulate silent truncation: every chunk comes back as 100ms of audio.

@@ -4,7 +4,7 @@ import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts';
 import type { StageDef, JobContext } from '../jobs/types.js';
 import type { ScriptOutput } from './script.js';
 import { narrationText, countWords, minPlausibleNarrationMs, MAX_PLAUSIBLE_WORDS_PER_SEC } from './narration-text.js';
-import { encodePcmWav, pcmFromFloat32, parseWav, parseWavDurationMs } from '../media/wav.js';
+import { encodePcmWav, pcmFromFloat32, parseWav, parseWavDurationMs, trimTrailingSilence } from '../media/wav.js';
 
 export interface VoiceMeta {
   provider: 'kokoro' | 'edge-tts';
@@ -90,6 +90,12 @@ interface PcmChunk {
  * PCM as a single WAV. Chunks are synthesized sequentially on purpose: kokoro is
  * local ONNX inference against one model instance and edge-tts reuses one socket,
  * so concurrency would only contend.
+ *
+ * Each chunk's trailing silence is capped before concatenation: kokoro pads
+ * every generation with multi-second silence, which would otherwise embed dead
+ * air between chunks and a long silent tail after the last word (Plan 1 real
+ * tail run: 15375ms narration whose aligned words end ~10490ms — captions stop
+ * while the video keeps running).
  */
 async function synthChunked(
   text: string,
@@ -102,7 +108,7 @@ async function synthChunked(
   let channels = 0;
   for (const chunk of splitForTts(text)) {
     const pcm = await synth(chunk);
-    parts.push(pcm.data);
+    parts.push(trimTrailingSilence(pcm.data, pcm.sampleRate, Math.max(1, pcm.channels)));
     sampleRate = pcm.sampleRate;
     channels = pcm.channels;
   }
