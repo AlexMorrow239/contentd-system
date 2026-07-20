@@ -9,6 +9,14 @@ app = FastAPI()
 DEVICE = os.environ.get("WHISPERX_DEVICE", "cpu")
 SAMPLE_RATE = 16000  # whisperx.load_audio always resamples to 16 kHz
 
+# Uploads are streamed to the temp file in CHUNK_SIZE reads and rejected with
+# 413 the moment the running total exceeds MAX_UPLOAD_BYTES — the request body
+# is never held in a single bytes object. The cap is env-configurable
+# (WHISPERX_MAX_UPLOAD_MB, default 64, read once at import like DEVICE). Both
+# are module-level globals so tests can monkeypatch them.
+CHUNK_SIZE = 1024 * 1024  # 1 MiB
+MAX_UPLOAD_BYTES = int(os.environ.get("WHISPERX_MAX_UPLOAD_MB", "64")) * 1024 * 1024
+
 # Alignment model is loaded once and cached at module level. Lazy so importing
 # this module (e.g. in tests) does not trigger a model download.
 _align = {"model": None, "metadata": None}
@@ -24,9 +32,19 @@ def get_align_model():
 
 @app.post("/align")
 async def align(audio: UploadFile = File(...), transcript: str = Form(...)):
-    data = await audio.read()
     with tempfile.NamedTemporaryFile(suffix=".wav") as tmp:
-        tmp.write(data)
+        received = 0
+        while True:
+            chunk = await audio.read(CHUNK_SIZE)
+            if not chunk:
+                break
+            received += len(chunk)
+            if received > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"audio upload exceeds {MAX_UPLOAD_BYTES} byte limit",
+                )
+            tmp.write(chunk)
         tmp.flush()
         audio_array = whisperx.load_audio(tmp.name)
 
