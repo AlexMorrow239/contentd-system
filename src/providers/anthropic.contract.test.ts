@@ -1,9 +1,11 @@
+import 'dotenv/config';
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { structuredCompletion } from './anthropic.js';
 
 // Runs only via `pnpm test:contract` (excluded from default `pnpm test`).
-// Makes ONE real, cheap Anthropic call; requires ANTHROPIC_API_KEY in env.
+// Makes ONE real, cheap Anthropic call; needs ANTHROPIC_API_KEY (shell env
+// or .env — loaded here because vitest does not read .env on its own).
 describe('structuredCompletion (contract)', () => {
   it('extracts structured data from a real haiku-class call', async () => {
     const schema = z.object({ capital: z.string() });
