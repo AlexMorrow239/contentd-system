@@ -79,3 +79,46 @@ export function parseWavDurationMs(buf: Buffer): number {
   const { byteRate, data } = parseWav(buf);
   return Math.floor((data.length / byteRate) * 1000);
 }
+
+// Kokoro pads every generated chunk with multi-second trailing silence, so
+// naive chunk concatenation embeds internal dead air and a long silent tail
+// that desynchronizes captions from video (Plan 1 real tail run: 15375ms
+// narration whose aligned words end at ~10490ms). 330/32767 ≈ -40 dBFS — quiet
+// enough that no speech tail is clipped, loud enough to see past codec dither.
+const DEFAULT_TRIM_THRESHOLD_AMP = 330;
+const DEFAULT_TRIM_KEEP_MS = 250;
+
+/**
+ * Cut trailing silence from a 16-bit LE PCM payload: find the last sample in
+ * any channel whose |amplitude| exceeds `thresholdAmp`, keep `keepMs` of tail
+ * beyond it, and cut on a frame boundary. An all-silent payload is returned
+ * intact — trimming a chunk to zero would silently drop it from the narration.
+ */
+export function trimTrailingSilence(
+  pcm: Buffer,
+  sampleRate: number,
+  channels: number,
+  opts: { thresholdAmp?: number; keepMs?: number } = {},
+): Buffer {
+  const thresholdAmp = opts.thresholdAmp ?? DEFAULT_TRIM_THRESHOLD_AMP;
+  const keepMs = opts.keepMs ?? DEFAULT_TRIM_KEEP_MS;
+  const bytesPerFrame = channels * BYTES_PER_SAMPLE;
+  const frameCount = Math.floor(pcm.length / bytesPerFrame);
+
+  // Last frame in which any channel exceeds the threshold; -1 when all-silent.
+  let lastLoudFrame = -1;
+  outer: for (let frame = frameCount - 1; frame >= 0; frame--) {
+    const base = frame * bytesPerFrame;
+    for (let ch = 0; ch < channels; ch++) {
+      if (Math.abs(pcm.readInt16LE(base + ch * BYTES_PER_SAMPLE)) > thresholdAmp) {
+        lastLoudFrame = frame;
+        break outer;
+      }
+    }
+  }
+  if (lastLoudFrame === -1) return pcm;
+
+  const keepFrames = Math.round((keepMs / 1000) * sampleRate);
+  const endFrame = Math.min(frameCount, lastLoudFrame + 1 + keepFrames);
+  return pcm.subarray(0, endFrame * bytesPerFrame);
+}
