@@ -1,11 +1,19 @@
-import type { ScriptOutput } from './script.js';
+import { isScenesOutput, type ScriptArtifact } from './script.js';
 
 /**
- * Narration text fed to TTS and to caption alignment: the hook followed by each
- * segment's spoken text, joined with blank lines. Shared by the voice and
- * captions stages so both produce byte-identical transcripts.
+ * Narration text fed to TTS and to caption alignment: the hook followed by the
+ * spoken text of each segment (story) or scene (scenes). Shared by the voice
+ * and captions stages so both produce byte-identical transcripts.
+ *
+ * Scenes composition is EXACTLY hook + scenes[].narration joined with single
+ * spaces: src/stages/scene-windows.ts (Task 12) re-derives per-scene token
+ * boundaries from this composition, so changing the joiner or the order breaks
+ * premium visuals. Story composition is unchanged from Plan 1.
  */
-export function narrationText(script: ScriptOutput): string {
+export function narrationText(script: ScriptArtifact): string {
+  if (isScenesOutput(script)) {
+    return [script.hook, ...script.scenes.map((s) => s.narration)].join(' ');
+  }
   return [script.hook, ...script.segments.map((s) => s.text)].join('\n\n');
 }
 
@@ -13,7 +21,7 @@ export function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(Boolean).length;
 }
 
-export function narrationWordCount(script: ScriptOutput): number {
+export function narrationWordCount(script: ScriptArtifact): number {
   return countWords(narrationText(script));
 }
 
