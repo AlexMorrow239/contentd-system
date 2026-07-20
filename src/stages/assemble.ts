@@ -3,9 +3,11 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bundle } from '@remotion/bundler'
 import { renderMedia, selectComposition } from '@remotion/renderer'
+import { probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import type { WordTiming } from '../providers/whisperx.js'
-import type { ShortVideoProps } from '../remotion-types.js'
+import type { SceneClip, ShortVideoProps } from '../remotion-types.js'
+import type { ScenesManifest } from './visuals-premium.js'
 
 // Resolved relative to THIS module, not process.cwd(): the CLI may be invoked
 // from any directory (pnpm -C, cron, a wrapper script), and a cwd-relative
@@ -78,10 +80,6 @@ export const assembleStage: StageDef = {
     const outPath = ctx.artifactPath('assemble', 'final.mp4')
     try {
       copyFileSync(
-        ctx.artifactPath('visuals', 'background.mp4'),
-        path.join(publicJobDir, 'background.mp4'),
-      )
-      copyFileSync(
         ctx.artifactPath('voice', 'narration.wav'),
         path.join(publicJobDir, 'narration.wav'),
       )
@@ -89,13 +87,42 @@ export const assembleStage: StageDef = {
         copyFileSync(path.join(ctx.channel.bgmDir, bgmFile), path.join(publicJobDir, 'bgm.mp3'))
       }
 
-      const props: ShortVideoProps = {
+      const base = {
         audioSrc: `${ctx.jobId}/narration.wav`,
-        backgroundSrc: `${ctx.jobId}/background.mp4`,
         bgmSrc: bgmFile ? `${ctx.jobId}/bgm.mp3` : undefined,
         words: captions.words,
         style: ctx.channel.captionStyle,
         durationMs: voice.durationMs,
+      }
+
+      let props: ShortVideoProps
+      if (ctx.tier === 'premium') {
+        // Premium: sequence the per-scene clips from the visuals manifest.
+        // Each clip is probed for its REAL duration (fal can deliver 5.04s for
+        // a "5s" clip; never trust clipDurationSec for timeline math) and
+        // fitted to its scene window via fitClipToWindow.
+        const manifest = JSON.parse(
+          readFileSync(ctx.artifactPath('visuals', 'scenes.json'), 'utf8'),
+        ) as ScenesManifest
+        const sceneClips: SceneClip[] = []
+        for (const entry of manifest.scenes) {
+          const clipPath = ctx.artifactPath('visuals', entry.clip)
+          const probed = await probe(clipPath)
+          const fit = fitClipToWindow(probed.durationMs, entry.endMs - entry.startMs)
+          copyFileSync(clipPath, path.join(publicJobDir, entry.clip))
+          sceneClips.push({
+            src: `${ctx.jobId}/${entry.clip}`,
+            durationMs: fit.durationMs,
+            playbackRate: fit.playbackRate,
+          })
+        }
+        props = { ...base, sceneClips }
+      } else {
+        copyFileSync(
+          ctx.artifactPath('visuals', 'background.mp4'),
+          path.join(publicJobDir, 'background.mp4'),
+        )
+        props = { ...base, backgroundSrc: `${ctx.jobId}/background.mp4` }
       }
 
       const composition = await selectComposition({

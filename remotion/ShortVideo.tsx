@@ -1,5 +1,5 @@
 import React from 'react'
-import { AbsoluteFill, Audio, OffthreadVideo, staticFile } from 'remotion'
+import { AbsoluteFill, Audio, OffthreadVideo, Series, staticFile } from 'remotion'
 import type { ShortVideoProps } from '../src/remotion-types'
 import { Captions } from './Captions'
 
@@ -7,19 +7,53 @@ import { Captions } from './Captions'
 // the composition test can keep importing ShortVideoProps from './ShortVideo'.
 export type { ShortVideoProps }
 
-// audioSrc/backgroundSrc/bgmSrc are public-relative paths (files copied into the
-// bundle's public/ folder by the assemble stage) resolved here via staticFile().
+const FPS = 30
+
+// audioSrc/backgroundSrc/bgmSrc/sceneClips[].src are public-relative paths (files
+// copied into the bundle's public/ folder by the assemble stage) resolved here via
+// staticFile().
+//
+// Exactly one visual variant must be provided: backgroundSrc (volume tier: one
+// looped background) or sceneClips (premium tier: Series-sequenced clips, each
+// durationInFrames = round(durationMs / 1000 * 30), muted — narration owns the
+// audio track). The guard is truthiness-based (non-empty string / non-empty
+// array) because Remotion shallow-merges defaultProps into inputProps: Root.tsx's
+// defaultProps carry backgroundSrc '', which must not count as "set" when a
+// premium render passes only sceneClips.
 export const ShortVideo: React.FC<ShortVideoProps> = ({
   audioSrc,
   backgroundSrc,
+  sceneClips,
   bgmSrc,
   bgmVolume,
   words,
   style,
 }) => {
+  const background = backgroundSrc || undefined
+  const scenes = sceneClips && sceneClips.length > 0 ? sceneClips : undefined
+  if ((background === undefined) === (scenes === undefined)) {
+    throw new Error('ShortVideo: exactly one of backgroundSrc or sceneClips must be set')
+  }
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
-      <OffthreadVideo src={staticFile(backgroundSrc)} muted />
+      {scenes ? (
+        <Series>
+          {scenes.map((clip) => (
+            <Series.Sequence
+              key={clip.src}
+              durationInFrames={Math.round((clip.durationMs / 1000) * FPS)}
+            >
+              <OffthreadVideo
+                src={staticFile(clip.src)}
+                playbackRate={clip.playbackRate}
+                muted
+              />
+            </Series.Sequence>
+          ))}
+        </Series>
+      ) : background ? (
+        <OffthreadVideo src={staticFile(background)} muted />
+      ) : null}
       <Audio src={staticFile(audioSrc)} />
       {bgmSrc ? <Audio src={staticFile(bgmSrc)} volume={bgmVolume ?? 0.12} /> : null}
       <Captions words={words} style={style} />
