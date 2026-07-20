@@ -2,12 +2,15 @@ import { promises as fs } from 'node:fs';
 import { KokoroTTS, type GenerateOptions } from 'kokoro-js';
 import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts';
 import type { StageDef, JobContext } from '../jobs/types.js';
-import type { ScriptOutput } from './script.js';
+import type { ScriptArtifact } from './script.js';
+import { assertBudget, BudgetExceededError, recordCost } from '../jobs/costs.js';
+import { estimateTtsCostMicros, synthWithTimestamps } from '../providers/elevenlabs.js';
+import type { WordTiming } from '../providers/whisperx.js';
 import { narrationText, countWords, minPlausibleNarrationMs, MAX_PLAUSIBLE_WORDS_PER_SEC } from './narration-text.js';
 import { encodePcmWav, pcmFromFloat32, parseWav, parseWavDurationMs, trimTrailingSilence } from '../media/wav.js';
 
 export interface VoiceMeta {
-  provider: 'kokoro' | 'edge-tts';
+  provider: 'kokoro' | 'edge-tts' | 'elevenlabs';
   voiceId: string;
   durationMs: number;
 }
@@ -159,31 +162,78 @@ async function synthEdge(text: string, wavPath: string): Promise<void> {
 export const voiceStage: StageDef = {
   name: 'voice',
   async run(ctx: JobContext): Promise<void> {
-    const script = JSON.parse(await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8')) as ScriptOutput;
+    const script = JSON.parse(await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8')) as ScriptArtifact;
     const narration = narrationText(script);
     const wavPath = ctx.artifactPath('voice', 'narration.wav');
+    const timingsPath = ctx.artifactPath('voice', 'timings.json');
 
-    let provider: VoiceMeta['provider'];
-    let voiceId: string;
-    try {
-      await synthKokoro(narration, ctx.channel.voice.volume, wavPath);
-      provider = 'kokoro';
-      voiceId = ctx.channel.voice.volume;
-    } catch (kokoroErr) {
-      ctx.log.warn({ err: kokoroErr }, 'kokoro TTS failed; falling back to edge-tts');
+    // Captions trusts voice/timings.json over WhisperX, so a stale file from a
+    // previous failed attempt would caption audio it was never measured against.
+    // Remove it before any synthesis; only a VALIDATED ElevenLabs success
+    // recreates it (below, after the duration guard).
+    await fs.rm(timingsPath, { force: true });
+
+    let provider: VoiceMeta['provider'] | undefined;
+    let voiceId = '';
+    let premiumWords: WordTiming[] | undefined;
+
+    const premiumVoice = ctx.channel.voice.premium;
+    if (ctx.tier === 'premium') {
+      if (!premiumVoice) {
+        ctx.log.warn('premium tier requested but channel has no [voice.premium] config; using volume voice chain');
+      } else {
+        try {
+          // Paid call: reserve the character-based estimate against the premium
+          // per-video cap before dialing out; record the actual cost after.
+          assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(narration), ctx.tier);
+          const synth = await synthWithTimestamps({
+            voiceId: premiumVoice.voiceId,
+            modelId: premiumVoice.modelId,
+            text: narration,
+          });
+          await fs.writeFile(wavPath, synth.wavBytes);
+          recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros);
+          provider = 'elevenlabs';
+          voiceId = premiumVoice.voiceId;
+          // timings.json is NOT written here: it becomes visible to captions
+          // only after the shared duration guard below has accepted the audio.
+          premiumWords = synth.words;
+        } catch (err) {
+          // A budget breach is enforcement, not a provider fault: rethrow so the
+          // runner parks the job 'blocked' instead of silently downgrading the
+          // voice and continuing to spend on visuals.
+          if (err instanceof BudgetExceededError) throw err;
+          // The timings write is deferred past the duration guard, so this
+          // attempt cannot have created timings.json — the rm is defense in
+          // depth against the write ever drifting back into the try.
+          await fs.rm(timingsPath, { force: true });
+          ctx.log.warn({ err }, 'elevenlabs TTS failed; falling back to volume voice chain');
+        }
+      }
+    }
+
+    if (provider === undefined) {
       try {
-        await synthEdge(narration, wavPath);
-        provider = 'edge-tts';
-        voiceId = EDGE_VOICE;
-      } catch (edgeErr) {
-        throw new Error(`voice synthesis failed: kokoro=${String(kokoroErr)}; edge=${String(edgeErr)}`);
+        await synthKokoro(narration, ctx.channel.voice.volume, wavPath);
+        provider = 'kokoro';
+        voiceId = ctx.channel.voice.volume;
+      } catch (kokoroErr) {
+        ctx.log.warn({ err: kokoroErr }, 'kokoro TTS failed; falling back to edge-tts');
+        try {
+          await synthEdge(narration, wavPath);
+          provider = 'edge-tts';
+          voiceId = EDGE_VOICE;
+        } catch (edgeErr) {
+          throw new Error(`voice synthesis failed: kokoro=${String(kokoroErr)}; edge=${String(edgeErr)}`);
+        }
       }
     }
 
     const durationMs = parseWavDurationMs(await fs.readFile(wavPath));
 
     // Defense in depth: a TTS backend that silently drops text still returns a
-    // well-formed WAV, so the only signal is that it is too short for the script.
+    // well-formed WAV, so the only signal is that it is too short for the
+    // script. This guard covers every provider, ElevenLabs included.
     const words = countWords(narration);
     const minPlausibleMs = minPlausibleNarrationMs(words);
     if (durationMs < minPlausibleMs) {
@@ -192,6 +242,13 @@ export const voiceStage: StageDef = {
           `(minimum ${minPlausibleMs}ms at ${MAX_PLAUSIBLE_WORDS_PER_SEC} words/sec); ` +
           `narration was likely truncated by provider "${provider}"`,
       );
+    }
+
+    // Only now — with the audio validated — may the provider timings land on
+    // disk. Writing timings.json any earlier would break the ABSENT guarantee:
+    // a truncation throw above must leave nothing for captions to trust.
+    if (premiumWords !== undefined) {
+      await fs.writeFile(timingsPath, JSON.stringify({ words: premiumWords }, null, 2));
     }
 
     const meta: VoiceMeta = { provider, voiceId, durationMs };

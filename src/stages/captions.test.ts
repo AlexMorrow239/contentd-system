@@ -60,4 +60,33 @@ describe('captionsStage', () => {
     vi.mocked(alignTranscript).mockResolvedValue([]);
     await expect(captionsStage.run(ctx)).rejects.toThrow(/no word timings/);
   });
+
+  it('copies provider timings from voice/timings.json and never calls whisperx', async () => {
+    const ctx = await ctxWithScript();
+    const words = [
+      { word: 'Hook', startMs: 0, endMs: 180 },
+      { word: 'here', startMs: 190, endMs: 350 },
+    ];
+    await fs.writeFile(ctx.artifactPath('voice', 'timings.json'), JSON.stringify({ words }));
+    // Armed to prove it is NOT used.
+    vi.mocked(alignTranscript).mockResolvedValue([{ word: 'whisper', startMs: 0, endMs: 100 }]);
+
+    await captionsStage.run(ctx);
+
+    const artifact = JSON.parse(await fs.readFile(ctx.artifactPath('captions', 'words.json'), 'utf8'));
+    expect(artifact).toEqual({ words });
+    expect(vi.mocked(alignTranscript)).not.toHaveBeenCalled();
+  });
+
+  it('falls through to whisperx when timings.json exists but has no words', async () => {
+    const ctx = await ctxWithScript();
+    await fs.writeFile(ctx.artifactPath('voice', 'timings.json'), JSON.stringify({ words: [] }));
+    vi.mocked(alignTranscript).mockResolvedValue([{ word: 'whisper', startMs: 0, endMs: 100 }]);
+
+    await captionsStage.run(ctx);
+
+    const artifact = JSON.parse(await fs.readFile(ctx.artifactPath('captions', 'words.json'), 'utf8'));
+    expect(artifact).toEqual({ words: [{ word: 'whisper', startMs: 0, endMs: 100 }] });
+    expect(vi.mocked(alignTranscript)).toHaveBeenCalledTimes(1);
+  });
 });

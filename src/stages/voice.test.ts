@@ -4,14 +4,20 @@ import { Readable } from 'node:stream';
 
 vi.mock('kokoro-js', () => ({ KokoroTTS: { from_pretrained: vi.fn() } }));
 vi.mock('msedge-tts', () => ({ MsEdgeTTS: vi.fn(), OUTPUT_FORMAT: {} }));
+vi.mock('../providers/elevenlabs.js', () => ({
+  estimateTtsCostMicros: vi.fn(() => 40_000),
+  synthWithTimestamps: vi.fn(),
+}));
 
 import { KokoroTTS } from 'kokoro-js';
 import { MsEdgeTTS } from 'msedge-tts';
 import { voiceStage, MAX_CHUNK_WORDS } from './voice.js';
 import { countWords } from './narration-text.js';
 import { parseWavDurationMs } from '../media/wav.js';
-import { makeCtx, testScript } from './_testkit.js';
+import { makeCtx, testChannel, testScript } from './_testkit.js';
 import type { JobContext } from '../jobs/types.js';
+import { estimateTtsCostMicros, synthWithTimestamps } from '../providers/elevenlabs.js';
+import { BudgetExceededError } from '../jobs/costs.js';
 
 // Canonical mono 16-bit PCM WAV. byteRate = rate*channels*2.
 function buildWav(numSamples: number, sampleRate = 16000): Buffer {
@@ -58,6 +64,53 @@ function chunkAudio(text: string): { audio: Float32Array; sampling_rate: number 
     audio: new Float32Array(countWords(text) * (KOKORO_RATE / 2)),
     sampling_rate: KOKORO_RATE,
   };
+}
+
+// ---- premium (elevenlabs) fixtures ----
+
+const PREMIUM_VOICE = {
+  provider: 'elevenlabs',
+  voiceId: 'EXAVITQu4vr4xnSDxMaL',
+  modelId: 'eleven_multilingual_v2',
+} as const;
+
+function premiumChannel() {
+  return testChannel({ voice: { volume: 'af_heart', premium: { ...PREMIUM_VOICE } } });
+}
+
+// Premium script artifact (Task 10 scenes format). narrationText composes
+// scenes narration as hook + scenes[].narration joined with single spaces —
+// that composition is a binding contract, asserted below.
+const SCENES_SCRIPT = {
+  format: 'scenes',
+  hook: 'Hook here',
+  styleBlock: 'Muted watercolor palette, soft dawn light, gentle grain.',
+  scenes: [
+    { narration: 'One.', visualPrompt: 'a red planet', motionPrompt: 'slow push-in' },
+    { narration: 'Two.', visualPrompt: 'a blue comet', motionPrompt: 'drift left' },
+  ],
+  platformMeta: testScript().platformMeta,
+};
+const SCENES_NARRATION = 'Hook here One. Two.';
+
+const ELEVEN_WAV = buildWav(16000); // 1000 ms — plausible for the 4-word narration
+const ELEVEN_WORDS = [
+  { word: 'Hook', startMs: 0, endMs: 180 },
+  { word: 'here', startMs: 190, endMs: 350 },
+  { word: 'One.', startMs: 400, endMs: 620 },
+  { word: 'Two.', startMs: 700, endMs: 950 },
+];
+function elevenSynthResult() {
+  return { wavBytes: ELEVEN_WAV, durationMs: 1000, words: ELEVEN_WORDS, costUsdMicros: 42_000 };
+}
+
+// makeCtx creates volume jobs; premium stage behavior keys off ctx.tier, so a
+// spread-override is all a stage unit test needs (the DB job row's tier is not
+// read by the voice stage; budget queries join on channel, not tier).
+async function premiumCtx(script: unknown = SCENES_SCRIPT, channel = premiumChannel()): Promise<JobContext> {
+  const ctx: JobContext = { ...makeCtx(channel), tier: 'premium' };
+  await fs.writeFile(ctx.artifactPath('script', 'script.json'), JSON.stringify(script));
+  return ctx;
 }
 
 async function ctxWithScript(script: unknown = SCRIPT): Promise<JobContext> {
@@ -197,5 +250,139 @@ describe('voiceStage', () => {
     } as never);
 
     await expect(voiceStage.run(ctx)).rejects.toThrow(/voice synthesis failed/);
+  });
+});
+
+describe('voiceStage premium (elevenlabs)', () => {
+  it('synthesizes via elevenlabs: wav + timings + meta written, cost recorded, volume chain untouched', async () => {
+    const ctx = await premiumCtx();
+    vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult());
+    // Kokoro is armed so that, if the implementation wrongly falls through to
+    // the volume chain, this test fails on assertions instead of crashing.
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledWith({
+      voiceId: 'EXAVITQu4vr4xnSDxMaL',
+      modelId: 'eleven_multilingual_v2',
+      text: SCENES_NARRATION,
+    });
+    expect(vi.mocked(KokoroTTS.from_pretrained)).not.toHaveBeenCalled();
+
+    const wav = await fs.readFile(ctx.artifactPath('voice', 'narration.wav'));
+    expect(wav.equals(ELEVEN_WAV)).toBe(true);
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta).toEqual({ provider: 'elevenlabs', voiceId: 'EXAVITQu4vr4xnSDxMaL', durationMs: 1000 });
+    const timings = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'timings.json'), 'utf8'));
+    expect(timings).toEqual({ words: ELEVEN_WORDS });
+
+    // Ledger: the estimate is reserved pre-call, the ACTUAL cost is recorded.
+    expect(vi.mocked(estimateTtsCostMicros)).toHaveBeenCalledWith(SCENES_NARRATION);
+    const costs = ctx.db
+      .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
+      .all(ctx.jobId);
+    expect(costs).toEqual([{ provider: 'elevenlabs', operation: 'tts', usd_micros: 42_000 }]);
+  });
+
+  it('falls back to kokoro when elevenlabs fails, leaving no timings.json and no cost row', async () => {
+    const ctx = await premiumCtx();
+    vi.mocked(synthWithTimestamps).mockRejectedValue(new Error('eleven down'));
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta.provider).toBe('kokoro');
+    expect(meta.voiceId).toBe('af_heart');
+    // No timings artifact: captions must take the WhisperX path for this job.
+    await expect(fs.access(ctx.artifactPath('voice', 'timings.json'))).rejects.toThrow();
+    // Only elevenlabs SUCCESSES may reach the ledger.
+    const { n } = ctx.db
+      .prepare('SELECT COUNT(*) AS n FROM costs WHERE job_id = ?')
+      .get(ctx.jobId) as { n: number };
+    expect(n).toBe(0);
+  });
+
+  it('removes a stale timings.json from a prior attempt when falling back', async () => {
+    const ctx = await premiumCtx();
+    await fs.writeFile(ctx.artifactPath('voice', 'timings.json'), JSON.stringify({ words: ELEVEN_WORDS }));
+    vi.mocked(synthWithTimestamps).mockRejectedValue(new Error('eleven down'));
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    await expect(fs.access(ctx.artifactPath('voice', 'timings.json'))).rejects.toThrow();
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta.provider).toBe('kokoro');
+  });
+
+  it('premium tier without [voice.premium] config warns once and uses the volume chain', async () => {
+    // testChannel() includes voice.premium by default (Task 5); override the
+    // voice table wholesale to strip it and exercise the missing-config path.
+    const ctx = await premiumCtx(SCENES_SCRIPT, testChannel({ voice: { volume: 'af_heart' } }));
+    const warn = vi.spyOn(ctx.log, 'warn');
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta.provider).toBe('kokoro');
+  });
+
+  it('rethrows BudgetExceededError instead of downgrading to the free chain', async () => {
+    const channel = premiumChannel();
+    // estimateTtsCostMicros mock returns 40_000; cap it below that.
+    channel.budget = { ...channel.budget, premiumPerVideoUsdMicros: 10_000 };
+    const ctx = await premiumCtx(SCENES_SCRIPT, channel);
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await expect(voiceStage.run(ctx)).rejects.toBeInstanceOf(BudgetExceededError);
+
+    // Aborted before any synthesis: no provider dialed, no artifacts written.
+    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled();
+    expect(generate).not.toHaveBeenCalled();
+    await expect(fs.access(ctx.artifactPath('voice', 'voice.json'))).rejects.toThrow();
+  });
+
+  it('volume tier ignores [voice.premium] entirely', async () => {
+    // Channel HAS premium voice configured, but the job is volume tier.
+    const ctx = makeCtx(premiumChannel());
+    await fs.writeFile(ctx.artifactPath('script', 'script.json'), JSON.stringify(SCRIPT));
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled();
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta).toEqual({ provider: 'kokoro', voiceId: 'af_heart', durationMs: 2000 });
+    await expect(fs.access(ctx.artifactPath('voice', 'timings.json'))).rejects.toThrow();
+  });
+
+  it('applies the implausibly-short truncation guard to elevenlabs audio too', async () => {
+    // 15 scenes x 19-word sentence + 2-word hook = 287 words -> >= 57400ms
+    // plausibility floor, but the mock returns 1000ms of audio.
+    const longScenes = {
+      ...SCENES_SCRIPT,
+      scenes: Array.from({ length: 15 }, () => ({ narration: SENTENCE, visualPrompt: 'v', motionPrompt: 'm' })),
+    };
+    const ctx = await premiumCtx(longScenes);
+    vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult());
+
+    await expect(voiceStage.run(ctx)).rejects.toThrow(/truncated by provider "elevenlabs"/);
+    // The ABSENT guarantee holds on this failure path too: the timings write is
+    // deferred until after the duration guard, so the rejected synthesis leaves
+    // no timings.json for captions to trust (and no voice.json either).
+    await expect(fs.access(ctx.artifactPath('voice', 'timings.json'))).rejects.toThrow();
+    await expect(fs.access(ctx.artifactPath('voice', 'voice.json'))).rejects.toThrow();
   });
 });
