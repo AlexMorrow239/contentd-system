@@ -1,8 +1,9 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { execa } from 'execa'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import pino from 'pino'
 import { openDb } from '../db/index.js'
 import { probe } from '../media/ffmpeg.js'
@@ -125,4 +126,93 @@ describe('assembleStage', () => {
       expect(existsSync(path.join(tmpdir(), d, 'public', ctx.jobId))).toBe(false)
     }
   }, 180000)
+})
+
+// ── Bundle robustness (mocked @remotion/bundler + @remotion/renderer) ────────
+// The bundle memo is module-level state, so each test dynamically imports a
+// FRESH assemble.ts with its remotion deps mocked: vi.doMock (not hoisted) +
+// vi.resetModules(). The static `assembleStage` import at the top of this file
+// already bound the REAL modules, so the render test above is unaffected.
+
+function seedRenderInputs(ctx: JobContext): void {
+  // bundle/render are mocked below: file CONTENTS are never decoded, so junk
+  // bytes stand in for real media. Only the stage's fs reads/copies must work.
+  writeFileSync(
+    ctx.artifactPath('voice', 'voice.json'),
+    JSON.stringify({ provider: 'kokoro', voiceId: 'af_heart', durationMs: 1000 }),
+  )
+  writeFileSync(
+    ctx.artifactPath('captions', 'words.json'),
+    JSON.stringify({ words: [{ word: 'hello', startMs: 0, endMs: 400 }] }),
+  )
+  writeFileSync(ctx.artifactPath('visuals', 'background.mp4'), 'junk-video-bytes')
+  writeFileSync(ctx.artifactPath('voice', 'narration.wav'), 'junk-wav-bytes')
+}
+
+function mockRenderer(): void {
+  vi.doMock('@remotion/renderer', () => ({
+    selectComposition: vi.fn().mockResolvedValue({
+      id: 'ShortVideo',
+      width: 1080,
+      height: 1920,
+      fps: 30,
+      durationInFrames: 30,
+    }),
+    renderMedia: vi.fn().mockResolvedValue(undefined),
+  }))
+}
+
+describe('assembleStage bundle robustness', () => {
+  afterEach(() => {
+    vi.doUnmock('@remotion/bundler')
+    vi.doUnmock('@remotion/renderer')
+    vi.resetModules()
+  })
+
+  it('retries bundle() after a rejection instead of memoizing the failure', async () => {
+    const serveUrl = tmp('brainrot-serveurl-')
+    const bundleMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('esbuild exploded'))
+      .mockResolvedValue(serveUrl)
+    vi.doMock('@remotion/bundler', () => ({ bundle: bundleMock }))
+    mockRenderer()
+    vi.resetModules()
+    const { assembleStage: freshStage } = await import('./assemble.js')
+
+    const ctx = makeCtx(tmp('brainrot-run-'), makeChannel(tmp('brainrot-bgm-')))
+    seedRenderInputs(ctx)
+
+    await expect(freshStage.run(ctx)).rejects.toThrow('esbuild exploded')
+    // A poisoned memo replays the same rejection here without ever calling
+    // bundle() again; the fix must clear the memo so this run re-bundles.
+    await expect(freshStage.run(ctx)).resolves.toBeUndefined()
+    expect(bundleMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('passes a cwd-independent entry point to bundle()', async () => {
+    const bundleMock = vi.fn().mockResolvedValue(tmp('brainrot-serveurl-'))
+    vi.doMock('@remotion/bundler', () => ({ bundle: bundleMock }))
+    mockRenderer()
+    vi.resetModules()
+    const { assembleStage: freshStage } = await import('./assemble.js')
+
+    const ctx = makeCtx(tmp('brainrot-run-'), makeChannel(tmp('brainrot-bgm-')))
+    seedRenderInputs(ctx)
+
+    // Simulate the CLI being launched from anywhere but the repo root.
+    const repoCwd = process.cwd()
+    process.chdir(tmp('brainrot-elsewhere-'))
+    try {
+      await freshStage.run(ctx)
+    } finally {
+      process.chdir(repoCwd)
+    }
+
+    // This test file sits next to assemble.ts, so the same relative hop yields
+    // the exact path the module must resolve regardless of process.cwd().
+    const expectedEntry = fileURLToPath(new URL('../../remotion/index.ts', import.meta.url))
+    expect(existsSync(expectedEntry)).toBe(true) // guards the ../.. depth itself
+    expect(bundleMock).toHaveBeenCalledWith({ entryPoint: expectedEntry })
+  })
 })

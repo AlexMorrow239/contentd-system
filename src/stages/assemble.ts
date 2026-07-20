@@ -1,15 +1,30 @@
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { bundle } from '@remotion/bundler'
 import { renderMedia, selectComposition } from '@remotion/renderer'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import type { WordTiming } from '../providers/whisperx.js'
 import type { ShortVideoProps } from '../remotion-types.js'
 
+// Resolved relative to THIS module, not process.cwd(): the CLI may be invoked
+// from any directory (pnpm -C, cron, a wrapper script), and a cwd-relative
+// path.resolve('remotion/index.ts') would point bundling at a nonexistent tree.
+const REMOTION_ENTRY = fileURLToPath(new URL('../../remotion/index.ts', import.meta.url))
+
 let bundlePromise: Promise<string> | undefined
 function getBundle(): Promise<string> {
   if (!bundlePromise) {
-    bundlePromise = bundle({ entryPoint: path.resolve('remotion/index.ts') })
+    const inFlight = bundle({ entryPoint: REMOTION_ENTRY })
+    // A rejected bundle() must not poison the memo for the process lifetime:
+    // clear it so the next caller retries. Callers still observe the original
+    // rejection through the returned promise — this .catch only manages the
+    // memo (and marks the rejection handled on this side branch). The identity
+    // guard keeps a newer in-flight bundle from being wiped by an older failure.
+    inFlight.catch(() => {
+      if (bundlePromise === inFlight) bundlePromise = undefined
+    })
+    bundlePromise = inFlight
   }
   return bundlePromise
 }
