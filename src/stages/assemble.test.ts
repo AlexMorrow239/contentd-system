@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import pino from 'pino'
 import { openDb } from '../db/index.js'
 import { probe } from '../media/ffmpeg.js'
-import { assembleStage } from './assemble.js'
+import { assembleStage, fitClipToWindow } from './assemble.js'
 import type { ChannelConfig } from '../config/channel.js'
 import type { JobContext } from '../jobs/types.js'
 
@@ -215,5 +215,27 @@ describe('assembleStage bundle robustness', () => {
     const expectedEntry = fileURLToPath(new URL('../../remotion/index.ts', import.meta.url))
     expect(existsSync(expectedEntry)).toBe(true) // guards the ../.. depth itself
     expect(bundleMock).toHaveBeenCalledWith({ entryPoint: expectedEntry })
+  })
+})
+
+// ── fitClipToWindow (pure duration-fitting rule) ─────────────────────────────
+
+describe('fitClipToWindow', () => {
+  it('trims at 1x when the window is shorter than the clip', () => {
+    expect(fitClipToWindow(5000, 3000)).toEqual({ playbackRate: 1, durationMs: 3000 })
+  })
+
+  it('plays at 1x when the window exactly equals the clip', () => {
+    expect(fitClipToWindow(5000, 5000)).toEqual({ playbackRate: 1, durationMs: 5000 })
+  })
+
+  it('slows playback proportionally when the window slightly exceeds the clip', () => {
+    const fit = fitClipToWindow(5000, 5500)
+    expect(fit.durationMs).toBe(5500)
+    expect(fit.playbackRate).toBeCloseTo(5000 / 5500, 10)
+  })
+
+  it('clamps the slowdown at 0.75x (clip freezes on its last frame beyond that)', () => {
+    expect(fitClipToWindow(5000, 10000)).toEqual({ playbackRate: 0.75, durationMs: 10000 })
   })
 })

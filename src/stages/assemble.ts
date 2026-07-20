@@ -29,6 +29,24 @@ function getBundle(): Promise<string> {
   return bundlePromise
 }
 
+/**
+ * Fit a probed clip into its scene window (both integer ms).
+ * - Window shorter than (or equal to) the clip: play at 1x and trim — the
+ *   Series.Sequence simply ends at windowMs.
+ * - Window longer than the clip: slow playback to cover it, but never below
+ *   0.75x. A clip exhausted at 0.75x freezes on its last frame for the
+ *   remainder of the window; QC's freeze check bounds how bad that can get.
+ *   Windows needing < 0.75x violate script-stage pacing constraints and are
+ *   caught by QC's duration/coverage checks, not silently stretched further.
+ */
+export function fitClipToWindow(
+  clipMs: number,
+  windowMs: number,
+): { playbackRate: number; durationMs: number } {
+  if (windowMs <= clipMs) return { playbackRate: 1, durationMs: windowMs }
+  return { playbackRate: Math.max(0.75, clipMs / windowMs), durationMs: windowMs }
+}
+
 export const assembleStage: StageDef = {
   name: 'assemble',
   async run(ctx: JobContext): Promise<void> {
