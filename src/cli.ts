@@ -1,4 +1,6 @@
 import 'dotenv/config'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import { createJob, runJob } from './jobs/runner.js'
 import { loadChannelConfig } from './config/channel.js'
@@ -7,9 +9,43 @@ import { scriptStage } from './stages/script.js'
 import { voiceStage } from './stages/voice.js'
 import { captionsStage } from './stages/captions.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
+import { visualsPremiumStage } from './stages/visuals-premium.js'
 import { assembleStage } from './stages/assemble.js'
 import { qcStage } from './stages/qc.js'
-import type { Tier } from './jobs/types.js'
+import type { StageDef, Tier } from './jobs/types.js'
+
+const TIERS: readonly Tier[] = ['volume', 'premium']
+
+/**
+ * Validate a --tier flag value. Throws (naming every valid tier) on anything
+ * else, BEFORE any db handle or job row is created, so an unsupported tier
+ * fails clean rather than deep in a run. The thrown message is surfaced by
+ * the parseAsync .catch below (exit 1).
+ */
+export function parseTier(raw: string): Tier {
+  if (!(TIERS as readonly string[]).includes(raw)) {
+    throw new Error(
+      `unsupported --tier "${raw}": valid tiers are ${TIERS.map((t) => `"${t}"`).join(', ')}`,
+    )
+  }
+  return raw as Tier
+}
+
+/**
+ * The stage list for one produce run. Only the visuals slot branches by tier;
+ * script/voice/captions/qc branch internally on ctx.tier. Exported so tests
+ * can assert the premium wiring without spawning a subprocess.
+ */
+export function stagesForTier(tier: Tier): StageDef[] {
+  return [
+    scriptStage,
+    voiceStage,
+    captionsStage,
+    tier === 'premium' ? visualsPremiumStage : visualsVolumeStage,
+    assembleStage,
+    qcStage(),
+  ]
+}
 
 function resolveDbPath(flagDb?: string): string {
   return flagDb ?? process.env.BRAINROT_DB ?? 'data/brainrot.db'
@@ -22,30 +58,15 @@ program
   .command('produce')
   .requiredOption('--channel <path>', 'path to channel TOML')
   .requiredOption('--topic <text>', 'topic text')
-  .option('--tier <tier>', 'quality tier', 'volume')
+  .option('--tier <tier>', 'quality tier: volume | premium', 'volume')
   .option('--db <path>', 'sqlite db path')
   .option('--runs-root <path>', 'runs root directory', 'runs')
   .action(async (opts: { channel: string; topic: string; tier: string; db?: string; runsRoot: string }) => {
-    // Only the 'volume' tier ships in Plan 1. Reject anything else up front — before
-    // any db or job row is created — so an unsupported tier fails clean, not deep in
-    // a run. The thrown message is surfaced by the parseAsync .catch below (exit 1).
-    if (opts.tier !== 'volume') {
-      throw new Error(
-        `unsupported --tier "${opts.tier}": only "volume" is available; the premium tier arrives in Plan 2`,
-      )
-    }
+    const tier = parseTier(opts.tier)
     const channel = loadChannelConfig(opts.channel)
     const db = openDb(resolveDbPath(opts.db))
-    const jobId = createJob(db, channel, { topic: opts.topic, tier: opts.tier as Tier })
-    const stages = [
-      scriptStage,
-      voiceStage,
-      captionsStage,
-      visualsVolumeStage,
-      assembleStage,
-      qcStage(),
-    ]
-    const result = await runJob(db, channel, jobId, stages, { runsRoot: opts.runsRoot })
+    const jobId = createJob(db, channel, { topic: opts.topic, tier })
+    const result = await runJob(db, channel, jobId, stagesForTier(tier), { runsRoot: opts.runsRoot })
     // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
     // event loop alive, letting the process drain stdout and exit on its own.
     db.close()
@@ -84,9 +105,17 @@ program
     console.table(rows.map((r) => ({ day: r.day, usd: `$${(r.micros / 1e6).toFixed(2)}` })))
   })
 
-// A rejected action (bad --channel path, unsupported --tier, etc.) would otherwise
-// print a raw unhandled-rejection stack. Surface just the message and exit 1.
-program.parseAsync(process.argv).catch((err) => {
-  console.error(err instanceof Error ? err.message : String(err))
-  process.exitCode = 1
-})
+// cli.test.ts imports parseTier/stagesForTier in-process, which must not fire
+// the argv parser. Node (and tsx) set argv[1] to the executed script's resolved
+// path, so this comparison is true exactly when cli.ts IS the entry script.
+const isMain =
+  process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (isMain) {
+  // A rejected action (bad --channel path, unsupported --tier, etc.) would otherwise
+  // print a raw unhandled-rejection stack. Surface just the message and exit 1.
+  program.parseAsync(process.argv).catch((err) => {
+    console.error(err instanceof Error ? err.message : String(err))
+    process.exitCode = 1
+  })
+}
