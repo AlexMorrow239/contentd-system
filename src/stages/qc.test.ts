@@ -6,6 +6,7 @@ import path from 'node:path'
 import pino from 'pino'
 import { openDb } from '../db/index.js'
 import { qcStage } from './qc.js'
+import { testScript } from './_testkit.js'
 import type { ChannelConfig } from '../config/channel.js'
 import type { JobContext } from '../jobs/types.js'
 import type { QcResult } from './qc.js'
@@ -65,21 +66,11 @@ function seedWords(ctx: JobContext): void {
 }
 const SENTENCE =
   'Venus spins backwards compared to every other planet orbiting our star and nobody really knows why.'
+// `sentences` counts the hook plus the segments, matching how narrationText joins them.
 function seedScript(ctx: JobContext, sentences: number, text = SENTENCE): void {
   writeFileSync(
     ctx.artifactPath('script', 'script.json'),
-    JSON.stringify({
-      hook: text,
-      segments: Array.from({ length: sentences - 1 }, (_, i) => ({
-        text,
-        visualDirection: `v${i}`,
-      })),
-      platformMeta: {
-        youtube: { title: 't', description: 'd', hashtags: [] },
-        tiktok: { title: 't', description: 'd', hashtags: [] },
-        instagram: { title: 't', description: 'd', hashtags: [] },
-      },
-    }),
+    JSON.stringify(testScript({ hook: text, segments: Array.from({ length: sentences - 1 }, () => text) })),
   )
 }
 

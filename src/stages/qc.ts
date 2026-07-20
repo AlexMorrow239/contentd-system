@@ -3,8 +3,7 @@ import { execa } from 'execa'
 import { probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import type { ScriptOutput } from './script.js'
-import { narrationText } from './narration-text.js'
-import { MAX_PLAUSIBLE_WORDS_PER_SEC } from './voice.js'
+import { narrationWordCount, minPlausibleNarrationMs } from './narration-text.js'
 
 export interface QcResult {
   passed: boolean
@@ -13,6 +12,15 @@ export interface QcResult {
 
 const MB = 1024 * 1024
 const MAX_SIZE_BYTES = 256 * MB
+
+// Optional artifacts: a missing or unreadable one is a failed check, not a crash.
+function readJson<T>(path: string): T | undefined {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as T
+  } catch {
+    return undefined
+  }
+}
 
 function longestBlackRunSeconds(stderr: string): number {
   // blackdetect logs: [blackdetect @ 0x..] black_start:1.0 black_end:2.5 black_duration:1.5
@@ -99,15 +107,8 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
         detail: `fps ${p.fps}`,
       })
 
-      let wordCount = 0
-      try {
-        const captions = JSON.parse(
-          readFileSync(ctx.artifactPath('captions', 'words.json'), 'utf8'),
-        ) as { words: unknown[] }
-        wordCount = Array.isArray(captions.words) ? captions.words.length : 0
-      } catch {
-        wordCount = 0
-      }
+      const captions = readJson<{ words: unknown[] }>(ctx.artifactPath('captions', 'words.json'))
+      const wordCount = Array.isArray(captions?.words) ? captions.words.length : 0
       checks.push({
         name: 'captions-present',
         passed: wordCount > 0,
@@ -118,16 +119,9 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
       // re-checks the voice track against the script it was meant to narrate. Same
       // rule as the voice-stage guard, applied here so an old or partially
       // regenerated artifact set cannot slip through.
-      let narrationWords = 0
-      try {
-        const script = JSON.parse(
-          readFileSync(ctx.artifactPath('script', 'script.json'), 'utf8'),
-        ) as ScriptOutput
-        narrationWords = narrationText(script).trim().split(/\s+/).filter(Boolean).length
-      } catch {
-        narrationWords = 0
-      }
-      const minNarrationMs = Math.round(narrationWords * (1000 / MAX_PLAUSIBLE_WORDS_PER_SEC))
+      const script = readJson<ScriptOutput>(ctx.artifactPath('script', 'script.json'))
+      const narrationWords = script ? narrationWordCount(script) : 0
+      const minNarrationMs = minPlausibleNarrationMs(narrationWords)
       checks.push({
         name: 'narration-complete',
         passed: voice.durationMs >= minNarrationMs,

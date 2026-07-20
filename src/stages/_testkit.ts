@@ -6,6 +6,25 @@ import { openDb } from '../db/index.js';
 import { createJob } from '../jobs/runner.js';
 import type { JobContext } from '../jobs/types.js';
 import type { ChannelConfig } from '../config/channel.js';
+import type { ScriptOutput } from './script.js';
+
+const PLATFORM_META = {
+  youtube: { title: 't', description: 'd', hashtags: [] },
+  tiktok: { title: 't', description: 'd', hashtags: [] },
+  instagram: { title: 't', description: 'd', hashtags: [] },
+};
+
+/**
+ * A schema-valid ScriptOutput. Centralized so a new required field on
+ * ScriptOutputSchema means updating one fixture rather than every stage test.
+ */
+export function testScript(opts: { hook?: string; segments?: string[] } = {}): ScriptOutput {
+  return {
+    hook: opts.hook ?? 'Hook here',
+    segments: (opts.segments ?? ['One.', 'Two.']).map((text, i) => ({ text, visualDirection: `v${i}` })),
+    platformMeta: PLATFORM_META,
+  };
+}
 
 export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConfig {
   return {

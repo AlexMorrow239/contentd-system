@@ -29,14 +29,13 @@ function costMicros(price: Price, inputTokens: number, outputTokens: number): nu
 function coerceJsonStrings(value: unknown): unknown {
   if (typeof value === 'string') {
     const trimmed = value.trim();
-    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
-      try {
-        return coerceJsonStrings(JSON.parse(trimmed));
-      } catch {
-        return value;
-      }
+    // The prefix check is only a cheap filter; JSON.parse rejects the rest.
+    if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return value;
+    try {
+      return coerceJsonStrings(JSON.parse(trimmed));
+    } catch {
+      return value;
     }
-    return value;
   }
   if (Array.isArray(value)) return value.map(coerceJsonStrings);
   if (value && typeof value === 'object') {
@@ -93,10 +92,18 @@ export async function structuredCompletion<T>(opts: {
   // `strict` mode in this SDK version): models occasionally stringify a
   // nested array/object instead of emitting it structurally. Validate first;
   // only on failure, walk the raw input and JSON.parse any string that looks
-  // like a JSON array/object, then re-validate. Genuinely malformed input
-  // (not a JSON-string quirk) still throws the original ZodError.
+  // like a JSON array/object, then re-validate.
   const firstAttempt = opts.schema.safeParse(toolUse.input);
-  const data = firstAttempt.success ? firstAttempt.data : opts.schema.parse(coerceJsonStrings(toolUse.input));
+  let data: T;
+  if (firstAttempt.success) {
+    data = firstAttempt.data;
+  } else {
+    const retry = opts.schema.safeParse(coerceJsonStrings(toolUse.input));
+    // Report the original error: it describes what the model actually sent,
+    // not the rewritten value the coercion produced.
+    if (!retry.success) throw firstAttempt.error;
+    data = retry.data;
+  }
   const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
   return { data, cost };
 }

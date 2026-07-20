@@ -7,8 +7,10 @@ vi.mock('msedge-tts', () => ({ MsEdgeTTS: vi.fn(), OUTPUT_FORMAT: {} }));
 
 import { KokoroTTS } from 'kokoro-js';
 import { MsEdgeTTS } from 'msedge-tts';
-import { voiceStage, parseWavDurationMs, MAX_CHUNK_WORDS } from './voice.js';
-import { makeCtx } from './_testkit.js';
+import { voiceStage, MAX_CHUNK_WORDS } from './voice.js';
+import { countWords } from './narration-text.js';
+import { parseWavDurationMs } from '../media/wav.js';
+import { makeCtx, testScript } from './_testkit.js';
 import type { JobContext } from '../jobs/types.js';
 
 // Canonical mono 16-bit PCM WAV. byteRate = rate*channels*2.
@@ -36,20 +38,7 @@ function buildWav(numSamples: number, sampleRate = 16000): Buffer {
 
 const ONE_SECOND_WAV = buildWav(16000); // 32000 data bytes / 32000 byteRate -> 1000 ms
 
-const PLATFORM_META = {
-  youtube: { title: 't', description: 'd', hashtags: [] },
-  tiktok: { title: 't', description: 'd', hashtags: [] },
-  instagram: { title: 't', description: 'd', hashtags: [] },
-};
-
-const SCRIPT = {
-  hook: 'Hook here',
-  segments: [
-    { text: 'One.', visualDirection: 'a' },
-    { text: 'Two.', visualDirection: 'b' },
-  ],
-  platformMeta: PLATFORM_META,
-};
+const SCRIPT = testScript();
 
 // A 19-word sentence; repeat it to build narration of a known length.
 const SENTENCE =
@@ -57,24 +46,16 @@ const SENTENCE =
 const SENTENCE_WORDS = 19;
 
 // 15 sentences -> 285 narration words, far past kokoro's ~80-word context window.
-const LONG_SCRIPT = {
-  hook: SENTENCE,
-  segments: Array.from({ length: 14 }, (_, i) => ({ text: SENTENCE, visualDirection: `v${i}` })),
-  platformMeta: PLATFORM_META,
-};
+const LONG_SCRIPT = testScript({ hook: SENTENCE, segments: Array.from({ length: 14 }, () => SENTENCE) });
 const LONG_SCRIPT_WORDS = 15 * SENTENCE_WORDS;
 
 const KOKORO_RATE = 24000;
-
-function wordCount(s: string): number {
-  return s.trim().split(/\s+/).filter(Boolean).length;
-}
 
 // Mock kokoro output: RawAudio-shaped { audio, sampling_rate }, 2 words/sec of
 // samples so synthesized length is plausible for the text it was given.
 function chunkAudio(text: string): { audio: Float32Array; sampling_rate: number } {
   return {
-    audio: new Float32Array(wordCount(text) * (KOKORO_RATE / 2)),
+    audio: new Float32Array(countWords(text) * (KOKORO_RATE / 2)),
     sampling_rate: KOKORO_RATE,
   };
 }
@@ -122,12 +103,12 @@ describe('voiceStage', () => {
 
     const texts = generate.mock.calls.map((c) => c[0] as string);
     expect(texts.length).toBeGreaterThan(1);
-    for (const t of texts) expect(wordCount(t)).toBeLessThanOrEqual(MAX_CHUNK_WORDS);
+    for (const t of texts) expect(countWords(t)).toBeLessThanOrEqual(MAX_CHUNK_WORDS);
     // Nothing may be dropped: every narration word must appear in some chunk.
-    expect(texts.reduce((n, t) => n + wordCount(t), 0)).toBe(LONG_SCRIPT_WORDS);
+    expect(texts.reduce((n, t) => n + countWords(t), 0)).toBe(LONG_SCRIPT_WORDS);
 
     // Concatenated wav duration == sum of the per-chunk durations.
-    const expectedMs = texts.reduce((ms, t) => ms + wordCount(t) * 500, 0);
+    const expectedMs = texts.reduce((ms, t) => ms + countWords(t) * 500, 0);
     const wav = await fs.readFile(ctx.artifactPath('voice', 'narration.wav'));
     expect(parseWavDurationMs(wav)).toBe(expectedMs);
     const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
@@ -174,7 +155,7 @@ describe('voiceStage', () => {
 
     const texts = toStream.mock.calls.map((c) => c[0]);
     expect(texts.length).toBeGreaterThan(1);
-    for (const t of texts) expect(wordCount(t)).toBeLessThanOrEqual(MAX_CHUNK_WORDS);
+    for (const t of texts) expect(countWords(t)).toBeLessThanOrEqual(MAX_CHUNK_WORDS);
     // PCM payloads concatenate into one valid wav of the summed duration.
     const wav = await fs.readFile(ctx.artifactPath('voice', 'narration.wav'));
     expect(parseWavDurationMs(wav)).toBe(texts.length * 12000);
