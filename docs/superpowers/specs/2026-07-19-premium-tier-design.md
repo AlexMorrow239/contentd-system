@@ -52,7 +52,7 @@ Premium resolves to the ElevenLabs adapter: synthesize with timestamps, write `v
 
 Fallback chain: ElevenLabs → Kokoro → edge-tts. The provider actually used is recorded in `voice.json`, so a downgraded premium video is visible.
 
-This retires the known backlog gap: `ChannelConfig.voice` becomes per-tier (`[voice.volume]` / `[voice.premium]` TOML tables). The current flat shape keeps parsing (backward compatible; `channels/example.toml` stays valid).
+This retires the known backlog gap: `ChannelConfig.voice` becomes per-tier — the existing `[voice]` table keeps its `volume` string (a Kokoro voice id, unchanged from Plan 1) and gains an optional `[voice.premium]` sub-table. The current flat shape keeps parsing (backward compatible; `channels/example.toml` stays valid).
 
 ### 4.3 Captions — dual-mode
 
@@ -75,13 +75,13 @@ The volume visuals path (BG library) is untouched.
 
 ### 4.5 Assembly — multi-clip timeline
 
-`ShortVideoProps` grows a `scenes` variant: a sequenced track of `{src, trimStartMs, durationMs, playbackRate}` rendered with `OffthreadVideo`. Clips are copied into the bundle's `public/<jobId>/` with the same cleanup semantics as Plan 1. Clip audio is always muted — narration owns the audio track. Captions, narration, and auto-ducked BGM are unchanged. Volume jobs keep the single-background variant.
+`ShortVideoProps` grows a `scenes` variant: a sequenced track of `{src, durationMs, playbackRate}` rendered with `OffthreadVideo` (clips always play from t=0; the window end trims them, so no trim-start field is needed). Clips are copied into the bundle's `public/<jobId>/` with the same cleanup semantics as Plan 1. Clip audio is always muted — narration owns the audio track. Captions, narration, and auto-ducked BGM are unchanged. Volume jobs keep the single-background variant.
 
 Fitting rule: clip trimmed to the scene window. If a window slightly exceeds its clip, playback slows to no less than 0.75× to cover; windows beyond that violate script-stage constraints and are caught by QC's duration/coverage checks.
 
 ### 4.6 QC — premium additions
 
-The existing 9 checks run for both tiers. Premium adds:
+The existing checks (10 as of Plan 1's final hardening) run for both tiers. Premium adds:
 
 - **Scene coverage** (free, deterministic): `scenes.json` windows tile the narration span without gaps or overlaps; every referenced clip exists with sane duration.
 - **Vision spot check** (one Claude call): 3 sampled frames from `final.mp4` judged against scene intents — catches assembly-level faults the keyframe check cannot (wrong ordering, corrupted encode, captions obscuring the subject).
@@ -93,8 +93,9 @@ Any failure → `needs-review`, never auto-published (enforced when publishing l
 Channel TOML additions (all with backward-compatible parsing):
 
 ```toml
-[voice.volume]   # provider = "kokoro", voice_id = "af_heart"
-[voice.premium]  # provider = "elevenlabs", voice_id = "...", model = "..."
+[voice]
+volume = "af_heart"  # kokoro voice id (unchanged from Plan 1)
+[voice.premium]      # provider = "elevenlabs", voice_id = "...", model_id = "..."
 
 [premium]
 image_model = "flux"          # fal model id, default
@@ -128,7 +129,7 @@ Budget semantics is core design (§5). onnxruntime mutex-teardown noise at proce
 ## 7. Testing
 
 - **Unit** (fixtures, no network): fal + ElevenLabs adapters against recorded responses; scene-window computation; duration-fitting rules; dual-mode caption selection; per-channel + global budget math.
-- **Contract** (flag-gated, real calls): `CONTRACT=1` runs FLUX image + ElevenLabs short synth + one MiniMax video (< $0.10 total — validates all fal plumbing). A real Kling clip sits behind `CONTRACT_PREMIUM=1` (~$0.40).
+- **Contract** (flag-gated, real calls): `CONTRACT=1` runs FLUX image + ElevenLabs short synth + one MiniMax video (~$0.20 total at 2026-07 verified pricing — validates all fal plumbing). A real Kling clip sits behind `CONTRACT_PREMIUM=1` (~$0.40).
 - **Golden-path integration**: seeded `script.json` + `words.json` + tiny fixture clips → real multi-clip Remotion render → structural assertions via ffprobe (duration, scene sequencing, captions present). No network.
 - **Branch-end proof**: one fully real premium produce, gated on `FAL_KEY`/`ELEVENLABS_API_KEY`/`ANTHROPIC_API_KEY` being present — same pattern as Plan 1's real tail run.
 
