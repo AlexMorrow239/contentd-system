@@ -87,8 +87,10 @@ export async function runJob(
   const markStageRunning = db.prepare(
     'UPDATE job_stages SET status = ?, started_at = ? WHERE job_id = ? AND stage = ?',
   )
+  // error = NULL: a stage succeeding on resume must not keep the error text
+  // recorded by a previous failed attempt.
   const markStageDone = db.prepare(
-    'UPDATE job_stages SET status = ?, finished_at = ? WHERE job_id = ? AND stage = ?',
+    'UPDATE job_stages SET status = ?, finished_at = ?, error = NULL WHERE job_id = ? AND stage = ?',
   )
   const markStageFailed = db.prepare(
     'UPDATE job_stages SET status = ?, error = ?, finished_at = ? WHERE job_id = ? AND stage = ?',
@@ -118,36 +120,50 @@ export async function runJob(
     }
   }
 
-  const qc = JSON.parse(readFileSync(join(runDir, 'qc', 'qc.json'), 'utf8')) as {
-    passed: boolean
-  }
-  const state: 'ready' | 'needs-review' = qc.passed ? 'ready' : 'needs-review'
+  // Final gate: everything below reads artifacts and finalizes DB state. Any
+  // error here (corrupt/missing qc.json or script.json, a failed transaction)
+  // must not leave the job stuck 'running': mark it failed and report that.
+  try {
+    const qc = JSON.parse(readFileSync(join(runDir, 'qc', 'qc.json'), 'utf8')) as {
+      passed: boolean
+    }
+    const state: 'ready' | 'needs-review' = qc.passed ? 'ready' : 'needs-review'
 
-  const videoPath = join(runDir, 'assemble', 'final.mp4')
-  const scriptPath = join(runDir, 'script', 'script.json')
-  let metadataJson = '{}'
-  if (existsSync(scriptPath)) {
-    const script = JSON.parse(readFileSync(scriptPath, 'utf8')) as { platformMeta?: unknown }
-    metadataJson = JSON.stringify(script.platformMeta ?? {})
-  }
+    const videoPath = join(runDir, 'assemble', 'final.mp4')
+    const scriptPath = join(runDir, 'script', 'script.json')
+    let metadataJson = '{}'
+    if (existsSync(scriptPath)) {
+      const script = JSON.parse(readFileSync(scriptPath, 'utf8')) as { platformMeta?: unknown }
+      metadataJson = JSON.stringify(script.platformMeta ?? {})
+    }
 
-  // Idempotent: a resume that reaches this final window again (all stages already
-  // 'done') upserts the same library row and re-marks the job done without a
-  // PRIMARY KEY conflict. The upsert + job-done update run in one transaction so
-  // the two writes commit together.
-  const libraryUpsert = db.prepare(
-    'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?) ' +
-      'ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path, metadata_json=excluded.metadata_json, state=excluded.state',
-  )
-  const markJobDone = db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?')
-  db.transaction(() => {
-    libraryUpsert.run(jobId, videoPath, metadataJson, state)
-    markJobDone.run('done', nowIso(), jobId)
-  })()
+    // Idempotent: a resume that reaches this final window again (all stages already
+    // 'done') upserts the same library row and re-marks the job done without a
+    // PRIMARY KEY conflict. The upsert + job-done update run in one transaction so
+    // the two writes commit together.
+    const libraryUpsert = db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?) ' +
+        'ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path, metadata_json=excluded.metadata_json, state=excluded.state',
+    )
+    const markJobDone = db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?')
+    db.transaction(() => {
+      libraryUpsert.run(jobId, videoPath, metadataJson, state)
+      markJobDone.run('done', nowIso(), jobId)
+    })()
 
-  return {
-    jobId,
-    status: state,
-    videoPath: existsSync(videoPath) ? videoPath : undefined,
+    return {
+      jobId,
+      status: state,
+      videoPath: existsSync(videoPath) ? videoPath : undefined,
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    log.error({ err: message }, 'final gate failed')
+    db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?').run(
+      'failed',
+      nowIso(),
+      jobId,
+    )
+    return { jobId, status: 'failed' }
   }
 }

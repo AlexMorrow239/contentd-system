@@ -341,4 +341,127 @@ describe('runJob', () => {
       'done',
     )
   })
+
+  it('final gate: corrupt qc.json → job failed in DB (not stuck running), no library row', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const stages: StageDef[] = STAGE_ORDER.map((name) => ({
+      name,
+      async run(ctx: JobContext) {
+        if (name === 'qc') {
+          // The stage itself "succeeds" but leaves a corrupt artifact behind.
+          writeFileSync(ctx.artifactPath('qc', 'qc.json'), 'not json {{{')
+        } else {
+          writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
+        }
+      },
+    }))
+
+    const result = await runJob(db, channel, jobId, stages, { runsRoot })
+
+    expect(result).toEqual({ jobId, status: 'failed' })
+    const job = row<{ status: string; finished_at: string | null }>(
+      db,
+      'SELECT status, finished_at FROM jobs WHERE id = ?',
+      jobId,
+    )
+    expect(job.status).toBe('failed')
+    expect(job.finished_at).not.toBeNull()
+    expect(
+      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library WHERE job_id = ?', jobId).n,
+    ).toBe(0)
+  })
+
+  it('final gate: missing qc.json → job failed in DB, no library row', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const stages: StageDef[] = STAGE_ORDER.map((name) => ({
+      name,
+      async run(ctx: JobContext) {
+        if (name === 'qc') return // stage completes but never writes qc.json
+        writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
+      },
+    }))
+
+    const result = await runJob(db, channel, jobId, stages, { runsRoot })
+
+    expect(result).toEqual({ jobId, status: 'failed' })
+    expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId).status).toBe(
+      'failed',
+    )
+    expect(
+      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library WHERE job_id = ?', jobId).n,
+    ).toBe(0)
+  })
+
+  it('final gate: corrupt script.json → job failed, not an unhandled throw', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const stages: StageDef[] = STAGE_ORDER.map((name) => ({
+      name,
+      async run(ctx: JobContext) {
+        if (name === 'script') {
+          writeFileSync(ctx.artifactPath('script', 'script.json'), '{ truncated')
+        } else if (name === 'qc') {
+          writeFileSync(
+            ctx.artifactPath('qc', 'qc.json'),
+            JSON.stringify({ passed: true, checks: [] }),
+          )
+        } else {
+          writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
+        }
+      },
+    }))
+
+    const result = await runJob(db, channel, jobId, stages, { runsRoot })
+
+    expect(result).toEqual({ jobId, status: 'failed' })
+    expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId).status).toBe(
+      'failed',
+    )
+    expect(
+      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library WHERE job_id = ?', jobId).n,
+    ).toBe(0)
+  })
+
+  it('resume after a failed stage clears the stale job_stages.error on success', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+
+    // First run: captions blows up and records an error on its stage row.
+    const failing: StageDef[] = STAGE_ORDER.map((name) => ({
+      name,
+      async run(ctx: JobContext) {
+        if (name === 'captions') throw new Error('boom captions')
+        writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
+      },
+    }))
+    const first = await runJob(db, channel, jobId, failing, { runsRoot })
+    expect(first.status).toBe('failed')
+    expect(
+      row<{ error: string | null }>(
+        db,
+        'SELECT error FROM job_stages WHERE job_id = ? AND stage = ?',
+        jobId,
+        'captions',
+      ).error,
+    ).toBe('boom captions')
+
+    // Resume with healthy stages: captions succeeds this time. Its stage row
+    // must come out status='done' with the stale error cleared to NULL.
+    const second = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
+    expect(second.status).toBe('ready')
+    const captions = row<{ status: string; error: string | null }>(
+      db,
+      'SELECT status, error FROM job_stages WHERE job_id = ? AND stage = ?',
+      jobId,
+      'captions',
+    )
+    expect(captions.status).toBe('done')
+    expect(captions.error).toBeNull()
+  })
 })
