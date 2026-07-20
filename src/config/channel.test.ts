@@ -4,6 +4,44 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { loadChannelConfig } from './channel.js'
 
+function writeToml(lines: string[]): string {
+  const dir = mkdtempSync(join(tmpdir(), 'chan-'))
+  const file = join(dir, 'channel.toml')
+  writeFileSync(file, lines.join('\n'))
+  return file
+}
+
+// Exactly the Plan-1-era channels/example.toml shape: no [voice.premium], no
+// [premium], no premium_per_video_usd. Parsing this unchanged is the backward-
+// compatibility contract. NOTE: [budget] is the last table, so a bare key
+// appended to this array lands inside [budget].
+const PLAN1_LINES = [
+  'name = "legacy"',
+  'niche = ["space facts", "astronomy"]',
+  'script_model = "claude-sonnet-5"',
+  'bg_dir = "assets/bg"',
+  'bgm_dir = "assets/bgm"',
+  '',
+  '[tier_mix]',
+  'volume = 2',
+  'premium = 1',
+  '',
+  '[voice]',
+  'volume = "af_heart"',
+  '',
+  '[caption_style]',
+  'font = "Inter"',
+  'font_size_px = 72',
+  'active_color = "#FFD700"',
+  'inactive_color = "#FFFFFF"',
+  'stroke_px = 8',
+  '',
+  '[budget]',
+  'per_video_usd = 8.0',
+  'per_day_usd = 20.0',
+  '',
+]
+
 describe('loadChannelConfig', () => {
   it('parses channels/example.toml into a ChannelConfig', () => {
     const cfg = loadChannelConfig('channels/example.toml')
@@ -11,7 +49,20 @@ describe('loadChannelConfig', () => {
     expect(cfg.niche).toEqual(['space facts', 'astronomy'])
     expect(cfg.scriptModel).toBe('claude-sonnet-5')
     expect(cfg.tierMix).toEqual({ volume: 2, premium: 1 })
-    expect(cfg.voice).toEqual({ volume: 'af_heart' })
+    expect(cfg.voice).toEqual({
+      volume: 'af_heart',
+      premium: {
+        provider: 'elevenlabs',
+        voiceId: 'EXAVITQu4vr4xnSDxMaL',
+        modelId: 'eleven_multilingual_v2',
+      },
+    })
+    expect(cfg.premium).toEqual({
+      imageModel: 'fal-ai/flux/dev',
+      videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
+      stylePrefix: 'vivid digital illustration, cinematic lighting',
+      sceneConcurrency: 3,
+    })
     expect(cfg.captionStyle).toEqual({
       font: 'Inter',
       fontSizePx: 72,
@@ -23,74 +74,72 @@ describe('loadChannelConfig', () => {
     expect(cfg.bgmDir).toBe('assets/bgm')
     expect(cfg.budget).toEqual({
       perVideoUsdMicros: 8_000_000,
+      premiumPerVideoUsdMicros: 7_000_000,
       perDayUsdMicros: 20_000_000,
     })
   })
 
-  it('defaults scriptModel to claude-sonnet-5 when script_model is absent', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chan-'))
-    const file = join(dir, 'no-model.toml')
-    writeFileSync(
-      file,
-      [
-        'name = "nomodel"',
-        'niche = ["x"]',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
-        '',
-        '[tier_mix]',
-        'volume = 1',
-        'premium = 0',
-        '',
-        '[voice]',
-        'volume = "af_heart"',
-        '',
-        '[caption_style]',
-        'font = "Inter"',
-        'font_size_px = 72',
-        'active_color = "#FFD700"',
-        'inactive_color = "#FFFFFF"',
-        'stroke_px = 8',
-        '',
-        '[budget]',
-        'per_video_usd = 8.0',
-        'per_day_usd = 20.0',
-        '',
-      ].join('\n'),
+  it('parses a Plan-1-era TOML: voice.premium undefined, premium defaults applied', () => {
+    const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
+    expect(cfg.voice.premium).toBeUndefined()
+    expect(cfg.premium).toEqual({
+      imageModel: 'fal-ai/flux/dev',
+      videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
+      sceneConcurrency: 3,
+    })
+    expect(cfg.premium.stylePrefix).toBeUndefined()
+    expect(cfg.budget).toEqual({
+      perVideoUsdMicros: 8_000_000,
+      premiumPerVideoUsdMicros: 7_000_000, // default 7.0 USD
+      perDayUsdMicros: 20_000_000,
+    })
+  })
+
+  it('defaults [voice.premium] model to eleven_multilingual_v2 when omitted', () => {
+    const cfg = loadChannelConfig(
+      writeToml([
+        ...PLAN1_LINES,
+        '[voice.premium]',
+        'provider = "elevenlabs"',
+        'voice_id = "EXAVITQu4vr4xnSDxMaL"',
+      ]),
     )
-    const cfg = loadChannelConfig(file)
+    expect(cfg.voice.premium).toEqual({
+      provider: 'elevenlabs',
+      voiceId: 'EXAVITQu4vr4xnSDxMaL',
+      modelId: 'eleven_multilingual_v2',
+    })
+  })
+
+  it('applies per-field defaults inside a partial [premium] table', () => {
+    const cfg = loadChannelConfig(
+      writeToml([...PLAN1_LINES, '[premium]', 'scene_concurrency = 5', 'style_prefix = "watercolor"']),
+    )
+    expect(cfg.premium).toEqual({
+      imageModel: 'fal-ai/flux/dev',
+      videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
+      stylePrefix: 'watercolor',
+      sceneConcurrency: 5,
+    })
+  })
+
+  it('converts an explicit premium_per_video_usd to micros', () => {
+    // appended bare key lands in [budget] (last table in PLAN1_LINES)
+    const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, 'premium_per_video_usd = 3.5']))
+    expect(cfg.budget.premiumPerVideoUsdMicros).toBe(3_500_000)
+  })
+
+  it('defaults scriptModel to claude-sonnet-5 when script_model is absent', () => {
+    const cfg = loadChannelConfig(
+      writeToml(PLAN1_LINES.filter((l) => l !== 'script_model = "claude-sonnet-5"')),
+    )
     expect(cfg.scriptModel).toBe('claude-sonnet-5')
   })
 
   it('throws when a required field is missing', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'chan-'))
-    const file = join(dir, 'bad.toml')
-    // [budget] table omitted entirely
-    writeFileSync(
-      file,
-      [
-        'name = "bad"',
-        'niche = ["x"]',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
-        '',
-        '[tier_mix]',
-        'volume = 1',
-        'premium = 0',
-        '',
-        '[voice]',
-        'volume = "af_heart"',
-        '',
-        '[caption_style]',
-        'font = "Inter"',
-        'font_size_px = 72',
-        'active_color = "#FFD700"',
-        'inactive_color = "#FFFFFF"',
-        'stroke_px = 8',
-        '',
-      ].join('\n'),
-    )
-    expect(() => loadChannelConfig(file)).toThrow()
+    // strip the entire [budget] table
+    const idx = PLAN1_LINES.indexOf('[budget]')
+    expect(() => loadChannelConfig(writeToml(PLAN1_LINES.slice(0, idx)))).toThrow()
   })
 
   it('throws when the file does not exist', () => {

@@ -17,6 +17,7 @@ function channel(perVideoUsdMicros: number, perDayUsdMicros: number): ChannelCon
     niche: ['x'],
     tierMix: { volume: 1, premium: 0 },
     voice: { volume: 'af_heart' },
+    premium: { imageModel: 'fal-ai/flux/dev', videoModel: 'fal-ai/kling-video/v3/standard/image-to-video', sceneConcurrency: 3 },
     captionStyle: {
       font: 'Inter',
       fontSizePx: 72,
@@ -26,7 +27,7 @@ function channel(perVideoUsdMicros: number, perDayUsdMicros: number): ChannelCon
     },
     bgDir: 'assets/bg',
     bgmDir: 'assets/bgm',
-    budget: { perVideoUsdMicros, perDayUsdMicros },
+    budget: { perVideoUsdMicros, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros },
     scriptModel: 'claude-sonnet-5',
   }
 }

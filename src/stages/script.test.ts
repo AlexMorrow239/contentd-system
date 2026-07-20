@@ -65,7 +65,7 @@ describe('scriptStage', () => {
   });
 
   it('throws BudgetExceededError before calling the API when over budget', async () => {
-    const ctx = makeCtx(testChannel({ budget: { perVideoUsdMicros: 1, perDayUsdMicros: 1 } }));
+    const ctx = makeCtx(testChannel({ budget: { perVideoUsdMicros: 1, premiumPerVideoUsdMicros: 1, perDayUsdMicros: 1 } }));
     const { client, create } = fakeClient({});
     await expect(createScriptStage(client).run(ctx)).rejects.toBeInstanceOf(BudgetExceededError);
     expect(create).not.toHaveBeenCalled();

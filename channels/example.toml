@@ -11,6 +11,17 @@ premium = 1
 [voice]
 volume = "af_heart"
 
+[voice.premium]
+provider = "elevenlabs"
+voice_id = "EXAVITQu4vr4xnSDxMaL"  # "Sarah" — public ElevenLabs premade voice
+model = "eleven_multilingual_v2"
+
+[premium]
+image_model = "fal-ai/flux/dev"
+video_model = "fal-ai/kling-video/v3/standard/image-to-video"
+style_prefix = "vivid digital illustration, cinematic lighting"
+scene_concurrency = 3
+
 [caption_style]
 font = "Inter"
 font_size_px = 72
@@ -19,5 +30,6 @@ inactive_color = "#FFFFFF"
 stroke_px = 8
 
 [budget]
-per_video_usd = 8.0    # loader converts to usdMicros
+per_video_usd = 8.0    # volume per-video cap; loader converts to usdMicros
+premium_per_video_usd = 7.0
 per_day_usd = 20.0

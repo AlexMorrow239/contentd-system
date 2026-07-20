@@ -24,10 +24,11 @@ function makeChannel(bgmDir: string): ChannelConfig {
     niche: ['space'],
     tierMix: { volume: 2, premium: 1 },
     voice: { volume: 'af_heart' },
+    premium: { imageModel: 'fal-ai/flux/dev', videoModel: 'fal-ai/kling-video/v3/standard/image-to-video', sceneConcurrency: 3 },
     captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
     bgDir: tmp('brainrot-bg-'),
     bgmDir,
-    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
+    budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
   }
 }
