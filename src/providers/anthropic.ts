@@ -23,6 +23,28 @@ function costMicros(price: Price, inputTokens: number, outputTokens: number): nu
   );
 }
 
+// Recursively JSON.parse any string value that looks like a JSON array or
+// object, so a model's occasional "nested value serialized as a string"
+// quirk doesn't fail validation. Leaves ordinary strings untouched.
+function coerceJsonStrings(value: unknown): unknown {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if ((trimmed.startsWith('[') && trimmed.endsWith(']')) || (trimmed.startsWith('{') && trimmed.endsWith('}'))) {
+      try {
+        return coerceJsonStrings(JSON.parse(trimmed));
+      } catch {
+        return value;
+      }
+    }
+    return value;
+  }
+  if (Array.isArray(value)) return value.map(coerceJsonStrings);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, coerceJsonStrings(v)]));
+  }
+  return value;
+}
+
 export async function structuredCompletion<T>(opts: {
   model: string;
   system: string;
@@ -67,7 +89,14 @@ export async function structuredCompletion<T>(opts: {
   );
   if (!toolUse) throw new Error('structuredCompletion: no emit tool_use block in response');
 
-  const data = opts.schema.parse(toolUse.input); // throws ZodError on malformed input
+  // Anthropic's tool_choice does not guarantee schema-conformant output (no
+  // `strict` mode in this SDK version): models occasionally stringify a
+  // nested array/object instead of emitting it structurally. Validate first;
+  // only on failure, walk the raw input and JSON.parse any string that looks
+  // like a JSON array/object, then re-validate. Genuinely malformed input
+  // (not a JSON-string quirk) still throws the original ZodError.
+  const firstAttempt = opts.schema.safeParse(toolUse.input);
+  const data = firstAttempt.success ? firstAttempt.data : opts.schema.parse(coerceJsonStrings(toolUse.input));
   const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
   return { data, cost };
 }

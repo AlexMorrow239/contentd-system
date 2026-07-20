@@ -35,6 +35,38 @@ describe('structuredCompletion', () => {
     await expect(structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client })).rejects.toThrow(z.ZodError);
   });
 
+  it('coerces a JSON-stringified nested value before validating (observed real-model behavior)', async () => {
+    const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) });
+    const { client } = fakeClient({
+      content: [
+        {
+          type: 'tool_use',
+          name: 'emit',
+          id: 't1',
+          // Anthropic tool_choice does not guarantee schema-conformant output;
+          // models occasionally stringify a nested array/object instead of
+          // emitting it structurally. Reproduces a failure seen against the
+          // real API where `segments` came back as a JSON string.
+          input: { segments: JSON.stringify([{ text: 'a' }, { text: 'b' }]) },
+        },
+      ],
+      usage: { input_tokens: 10, output_tokens: 10 },
+    });
+    const { data } = await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema: arraySchema, client });
+    expect(data).toEqual({ segments: [{ text: 'a' }, { text: 'b' }] });
+  });
+
+  it('still throws on genuinely malformed input (not a JSON string, just wrong)', async () => {
+    const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) });
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { segments: 'not json at all' } }],
+      usage: { input_tokens: 10, output_tokens: 10 },
+    });
+    await expect(
+      structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema: arraySchema, client }),
+    ).rejects.toThrow(z.ZodError);
+  });
+
   it('throws when there is no emit tool_use block', async () => {
     const { client } = fakeClient({ content: [{ type: 'text', text: 'nope' }], usage: { input_tokens: 1, output_tokens: 1 } });
     await expect(structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client })).rejects.toThrow(/no emit tool_use/);
