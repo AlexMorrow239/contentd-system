@@ -2,6 +2,9 @@ import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { execa } from 'execa'
 import { probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
+import type { ScriptOutput } from './script.js'
+import { narrationText } from './narration-text.js'
+import { MAX_PLAUSIBLE_WORDS_PER_SEC } from './voice.js'
 
 export interface QcResult {
   passed: boolean
@@ -109,6 +112,26 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
         name: 'captions-present',
         passed: wordCount > 0,
         detail: `${wordCount} words`,
+      })
+
+      // A TTS backend that silently truncates still emits a valid WAV, so the gate
+      // re-checks the voice track against the script it was meant to narrate. Same
+      // rule as the voice-stage guard, applied here so an old or partially
+      // regenerated artifact set cannot slip through.
+      let narrationWords = 0
+      try {
+        const script = JSON.parse(
+          readFileSync(ctx.artifactPath('script', 'script.json'), 'utf8'),
+        ) as ScriptOutput
+        narrationWords = narrationText(script).trim().split(/\s+/).filter(Boolean).length
+      } catch {
+        narrationWords = 0
+      }
+      const minNarrationMs = Math.round(narrationWords * (1000 / MAX_PLAUSIBLE_WORDS_PER_SEC))
+      checks.push({
+        name: 'narration-complete',
+        passed: voice.durationMs >= minNarrationMs,
+        detail: `${narrationWords} words; voice ${voice.durationMs}ms; minimum ${minNarrationMs}ms`,
       })
 
       const { stderr } = await execa(

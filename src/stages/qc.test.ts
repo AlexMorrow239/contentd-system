@@ -63,6 +63,26 @@ function seedWords(ctx: JobContext): void {
     }),
   )
 }
+const SENTENCE =
+  'Venus spins backwards compared to every other planet orbiting our star and nobody really knows why.'
+function seedScript(ctx: JobContext, sentences: number, text = SENTENCE): void {
+  writeFileSync(
+    ctx.artifactPath('script', 'script.json'),
+    JSON.stringify({
+      hook: text,
+      segments: Array.from({ length: sentences - 1 }, (_, i) => ({
+        text,
+        visualDirection: `v${i}`,
+      })),
+      platformMeta: {
+        youtube: { title: 't', description: 'd', hashtags: [] },
+        tiktok: { title: 't', description: 'd', hashtags: [] },
+        instagram: { title: 't', description: 'd', hashtags: [] },
+      },
+    }),
+  )
+}
+
 async function goodClip(file: string): Promise<void> {
   await execa('ffmpeg', [
     '-f', 'lavfi', '-i', 'testsrc2=duration=2:size=1080x1920:rate=30',
@@ -132,6 +152,38 @@ describe('qcStage', () => {
     const result = JSON.parse(readFileSync(ctx.artifactPath('qc', 'qc.json'), 'utf8')) as QcResult
     expect(result.passed).toBe(false)
     expect(result.checks.find((c) => c.name === 'captions-present')?.passed).toBe(false)
+  }, 120000)
+
+  it('fails narration-complete when the voice track is too short for the script', async () => {
+    const ctx = makeCtx(tmp('brainrot-run-'))
+    await goodClip(ctx.artifactPath('assemble', 'final.mp4'))
+    seedVoice(ctx) // 1000ms
+    seedWords(ctx)
+    seedScript(ctx, 10) // 160 narration words -> needs >= 32000ms
+
+    await qcStage({ minMs: 1000 }).run(ctx)
+
+    const result = JSON.parse(readFileSync(ctx.artifactPath('qc', 'qc.json'), 'utf8')) as QcResult
+    const check = result.checks.find((c) => c.name === 'narration-complete')
+    expect(check?.passed).toBe(false)
+    expect(check?.detail).toMatch(/160 words/)
+    expect(check?.detail).toMatch(/1000/)
+    expect(check?.detail).toMatch(/32000/)
+    expect(result.passed).toBe(false)
+  }, 120000)
+
+  it('passes narration-complete when the voice track is long enough', async () => {
+    const ctx = makeCtx(tmp('brainrot-run-'))
+    await goodClip(ctx.artifactPath('assemble', 'final.mp4'))
+    seedVoice(ctx) // 1000ms
+    seedWords(ctx)
+    seedScript(ctx, 1, 'Venus spins backwards.') // 3 words -> needs >= 600ms
+
+    await qcStage({ minMs: 1000 }).run(ctx)
+
+    const result = JSON.parse(readFileSync(ctx.artifactPath('qc', 'qc.json'), 'utf8')) as QcResult
+    expect(result.checks.find((c) => c.name === 'narration-complete')?.passed).toBe(true)
+    expect(result.passed).toBe(true)
   }, 120000)
 
   it('fails audio-level and frozen-frames on a silent, static clip', async () => {

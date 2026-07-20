@@ -1,12 +1,12 @@
 {
-  "hook": "Did you know a day on Venus is longer than its entire year?",
+  "hook": "A day on Venus outlasts its year.",
   "segments": [
     {
-      "text": "Venus rotates so slowly that a single spin takes 243 Earth days.",
+      "text": "It spins painfully slowly.",
       "visualDirection": "slow pan across a glowing, cloud-wrapped Venus"
     },
     {
-      "text": "But it orbits the Sun in just 225 days, so its day is longer than its year.",
+      "text": "Barely 225 days.",
       "visualDirection": "diagram of Venus tracing its orbit around the Sun"
     }
   ],
