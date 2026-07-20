@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
@@ -44,21 +46,28 @@ function coerceJsonStrings(value: unknown): unknown {
   return value;
 }
 
-export async function structuredCompletion<T>(opts: {
+// Shared forced-tool core for structuredCompletion and visionJudgment. The two
+// public functions differ only in how the user message content is built (plain
+// prompt string vs image blocks + prompt); everything else — price lookup
+// BEFORE the paid call, the forced 'emit' tool, zod validation with the
+// coerceJsonStrings retry, cost math — is identical and lives here. `label`
+// keeps error messages caller-specific so a failure names its entry point.
+async function forcedToolCompletion<T>(opts: {
+  label: 'structuredCompletion' | 'visionJudgment';
   model: string;
   system: string;
-  prompt: string;
+  content: string | Anthropic.ContentBlockParam[];
   schema: z.ZodType<T>;
   maxTokens?: number;
-  client?: Anthropic; // injected in tests; defaults to a real client
+  client?: Anthropic;
 }): Promise<{ data: T; cost: LlmUsageCost }> {
   const client = opts.client ?? new Anthropic();
 
   // Resolve the price BEFORE the paid API call: a model absent from PRICE_TABLE
   // must fail at zero spend, not after a real call whose cost can never reach the
-  // ledger. (Previously this threw only after messages.create had already billed.)
+  // ledger.
   const price = PRICE_TABLE[opts.model];
-  if (!price) throw new Error(`structuredCompletion: no price table entry for model "${opts.model}"`);
+  if (!price) throw new Error(`${opts.label}: no price table entry for model "${opts.model}"`);
 
   // Zod v4 native JSON Schema. `reused: 'inline'` inlines any reused sub-schema so
   // the tool input_schema has no $ref (the Anthropic tool API does not resolve $ref).
@@ -72,7 +81,7 @@ export async function structuredCompletion<T>(opts: {
     // incompatibility and needless thinking-token spend on Sonnet 5.
     thinking: { type: 'disabled' },
     system: opts.system,
-    messages: [{ role: 'user', content: opts.prompt }],
+    messages: [{ role: 'user', content: opts.content }],
     tools: [
       {
         name: 'emit',
@@ -86,7 +95,7 @@ export async function structuredCompletion<T>(opts: {
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit',
   );
-  if (!toolUse) throw new Error('structuredCompletion: no emit tool_use block in response');
+  if (!toolUse) throw new Error(`${opts.label}: no emit tool_use block in response`);
 
   // Anthropic's tool_choice does not guarantee schema-conformant output (no
   // `strict` mode in this SDK version): models occasionally stringify a
@@ -106,4 +115,72 @@ export async function structuredCompletion<T>(opts: {
   }
   const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
   return { data, cost };
+}
+
+export async function structuredCompletion<T>(opts: {
+  model: string;
+  system: string;
+  prompt: string;
+  schema: z.ZodType<T>;
+  maxTokens?: number;
+  client?: Anthropic; // injected in tests; defaults to a real client
+}): Promise<{ data: T; cost: LlmUsageCost }> {
+  return forcedToolCompletion({
+    label: 'structuredCompletion',
+    model: opts.model,
+    system: opts.system,
+    content: opts.prompt,
+    schema: opts.schema,
+    maxTokens: opts.maxTokens,
+    client: opts.client,
+  });
+}
+
+// media_type by extension. Verified against the Anthropic vision docs
+// 2026-07-19: base64 image sources accept image/png, image/jpeg, image/gif,
+// image/webp. This pipeline only ever produces PNG keyframes (Task 13) and PNG
+// ffmpeg frame grabs (Task 15); jpg/jpeg is tolerated for future inputs, and
+// anything else is a programmer error that must fail before any spend.
+const IMAGE_MEDIA_TYPES: Record<string, 'image/png' | 'image/jpeg'> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+};
+
+export async function visionJudgment<T>(opts: {
+  model: string;
+  system: string;
+  prompt: string;
+  imagePaths: string[];
+  schema: z.ZodType<T>;
+  maxTokens?: number;
+  client?: Anthropic; // injected in tests; defaults to a real client
+}): Promise<{ data: T; cost: LlmUsageCost }> {
+  // Content layout: every image block first (base64, media_type by extension),
+  // then the text prompt referencing them. Built before delegating so a missing
+  // file or unsupported extension fails at zero spend, before any client work.
+  const content: Anthropic.ContentBlockParam[] = opts.imagePaths.map((imagePath) => {
+    const ext = path.extname(imagePath).toLowerCase();
+    const mediaType = IMAGE_MEDIA_TYPES[ext];
+    if (!mediaType) {
+      throw new Error(
+        `visionJudgment: unsupported image extension "${ext}" for "${imagePath}" (expected .png, .jpg, or .jpeg)`,
+      );
+    }
+    return {
+      type: 'image',
+      source: { type: 'base64', media_type: mediaType, data: readFileSync(imagePath).toString('base64') },
+    };
+  });
+  content.push({ type: 'text', text: opts.prompt });
+
+  return forcedToolCompletion({
+    label: 'visionJudgment',
+    model: opts.model,
+    system: opts.system,
+    content,
+    schema: opts.schema,
+    maxTokens: opts.maxTokens,
+    client: opts.client,
+  });
 }
