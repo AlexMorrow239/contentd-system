@@ -209,3 +209,39 @@ describe('animateImage', () => {
     ).rejects.toThrow(/no video url/);
   });
 });
+
+describe('fal error surfacing', () => {
+  // @fal-ai/client rejects with ApiError objects whose message is often EMPTY —
+  // the actionable reason (auth, exhausted balance, 404) lives in status + body.detail.
+  // Observed live 2026-07-20: 403 {"detail":"User is locked. Reason: Exhausted balance. ..."}.
+  function apiError(status: number, detail: string): Error {
+    return Object.assign(new Error(''), { name: 'ApiError', status, body: { detail } });
+  }
+
+  it('surfaces status and body detail when subscribe rejects with an ApiError', async () => {
+    const { client, subscribe } = fakeFal({});
+    subscribe.mockRejectedValue(apiError(403, 'User is locked. Reason: Exhausted balance.'));
+    await expect(
+      generateImage({ model: FLUX, prompt: 'p', outPath: path.join(tmpDir(), 'k.png'), client }),
+    ).rejects.toThrow(/fal subscribe failed for fal-ai\/flux\/dev \(HTTP 403\): User is locked\. Reason: Exhausted balance\./);
+  });
+
+  it('surfaces status and body detail when storage upload rejects with an ApiError', async () => {
+    const { client, upload } = fakeFal({});
+    upload.mockRejectedValue(apiError(401, 'Invalid key.'));
+    const dir = tmpDir();
+    const keyframe = path.join(dir, 'k.png');
+    await writeFile(keyframe, FILE_BYTES);
+    await expect(
+      animateImage({ model: KLING, imagePath: keyframe, motionPrompt: 'm', durationSec: 5, outPath: path.join(dir, 'c.mp4'), client }),
+    ).rejects.toThrow(/fal storage\.upload failed for fal-ai\/kling-video.* \(HTTP 401\): Invalid key\./);
+  });
+
+  it('passes non-ApiError rejections through unchanged', async () => {
+    const { client, subscribe } = fakeFal({});
+    subscribe.mockRejectedValue(new Error('socket hang up'));
+    await expect(
+      generateImage({ model: FLUX, prompt: 'p', outPath: path.join(tmpDir(), 'k.png'), client }),
+    ).rejects.toThrow(/^socket hang up$/);
+  });
+});

@@ -55,6 +55,25 @@ function defaultClient(): FalClientLike {
   return fal as unknown as FalClientLike;
 }
 
+// @fal-ai/client rejections are ApiError objects whose `message` is often EMPTY —
+// the actionable reason (auth failure, exhausted balance, unknown endpoint) lives
+// in `status` + `body.detail`. Observed live 2026-07-20: a 403 with
+// {"detail":"User is locked. Reason: Exhausted balance. ..."} surfaced as seven
+// blank per-scene errors. Rewrap so stage-level aggregation stays readable;
+// non-ApiError rejections (network errors, injected fakes) pass through unchanged.
+function describeFalFailure(op: string, model: string, err: unknown): Error {
+  if (err && typeof err === 'object' && ('status' in err || 'body' in err)) {
+    const status = (err as { status?: unknown }).status;
+    const body = (err as { body?: unknown }).body;
+    const detail =
+      body && typeof body === 'object' && 'detail' in body ? String((body as { detail: unknown }).detail) : '';
+    const fallback = err instanceof Error && err.message ? err.message : JSON.stringify(body ?? String(err));
+    const statusPart = status === undefined ? '' : ` (HTTP ${String(status)})`;
+    return new Error(`fal ${op} failed for ${model}${statusPart}: ${detail || fallback}`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 async function download(url: string, outPath: string): Promise<void> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`fal: asset download failed with ${res.status} for ${url}`);
@@ -72,9 +91,13 @@ export async function generateImage(opts: {
   const client = opts.client ?? defaultClient();
   // FLUX-family input shape. 9:16 is hard-coded here: portrait_16_9 (768x1344).
   // png output matches the visuals/scene-NN.png artifact convention.
-  const { data } = await client.subscribe(opts.model, {
-    input: { prompt: opts.prompt, image_size: 'portrait_16_9', num_images: 1, output_format: 'png' },
-  });
+  const { data } = await client
+    .subscribe(opts.model, {
+      input: { prompt: opts.prompt, image_size: 'portrait_16_9', num_images: 1, output_format: 'png' },
+    })
+    .catch((err: unknown) => {
+      throw describeFalFailure('subscribe', opts.model, err);
+    });
   const images = data.images as Array<{ url?: string }> | undefined;
   const url = images?.[0]?.url;
   if (!url) throw new Error(`fal: no image url in response from ${opts.model}`);
@@ -102,10 +125,16 @@ export async function animateImage(opts: {
   const client = opts.client ?? defaultClient();
   const bytes = await readFile(opts.imagePath);
   // Keyframes are always png (visuals/scene-NN.png artifact convention).
-  const imageUrl = await client.storage.upload(new Blob([bytes], { type: 'image/png' }));
-  const { data } = await client.subscribe(opts.model, {
-    input: videoInput(opts.model, imageUrl, opts.motionPrompt, opts.durationSec),
+  const imageUrl = await client.storage.upload(new Blob([bytes], { type: 'image/png' })).catch((err: unknown) => {
+    throw describeFalFailure('storage.upload', opts.model, err);
   });
+  const { data } = await client
+    .subscribe(opts.model, {
+      input: videoInput(opts.model, imageUrl, opts.motionPrompt, opts.durationSec),
+    })
+    .catch((err: unknown) => {
+      throw describeFalFailure('subscribe', opts.model, err);
+    });
   const video = data.video as { url?: string } | undefined;
   if (!video?.url) throw new Error(`fal: no video url in response from ${opts.model}`);
   // subscribe already succeeded (billed); a download failure past this point is
