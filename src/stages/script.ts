@@ -60,7 +60,7 @@ export function createScriptStage(client?: Anthropic): StageDef {
   return {
     name: 'script',
     async run(ctx: JobContext): Promise<void> {
-      assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS);
+      assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS, ctx.tier);
       const { data, cost } = await structuredCompletion({
         model: ctx.channel.scriptModel,
         system: buildSystem(ctx.channel.niche),
