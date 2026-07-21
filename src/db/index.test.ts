@@ -43,4 +43,13 @@ describe('openDb', () => {
     expect(mode).toBe('wal')
     db.close()
   })
+
+  it('sets a 5s busy_timeout so co-firing cron writers wait out lock windows', () => {
+    // scout and produce-next fire as separate processes on one SQLite file
+    // (crontab co-fires them 3x/day); without this an overlapping write window
+    // throws SQLITE_BUSY and crashes a run mid-flight.
+    const db = openDb(tempDbPath())
+    expect(db.pragma('busy_timeout', { simple: true })).toBe(5000)
+    db.close()
+  })
 })
