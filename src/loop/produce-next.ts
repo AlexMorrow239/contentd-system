@@ -42,6 +42,14 @@ export async function produceNextTick(
   }
   try {
     const channels = loadChannelsDir(opts.channelsDir)
+    // Repair sweep (heals the crash window between runJob committing the library
+    // row and markTopicUsedByJob running): a topic left 'claimed' but bound to a
+    // job that already landed in the library would stay claimed forever — resume
+    // refuses a 'done' job, so nothing else can recover it. Idempotent and cheap;
+    // run it inside the lease before planning this tick.
+    db.prepare(
+      "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
+    ).run()
     const plan = planTick(db, channels, { falKeyPresent: !!process.env.FAL_KEY })
 
     if (plan.kind === 'noop') {

@@ -239,6 +239,34 @@ describe('produceNextTick — failed produce', () => {
   })
 })
 
+describe('produceNextTick — repair sweep', () => {
+  it('flips a claimed topic bound to a library-landed job to used, then no-ops', async () => {
+    const { db, runsRoot } = setup()
+    // A job that committed its library row but crashed before markTopicUsedByJob:
+    // its topic is stranded 'claimed' and bound to a now-'done' job (resume
+    // refuses 'done', so nothing else can ever recover it).
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('landed-job', 'loop-chan', 'volume', 't', 'done')",
+    ).run()
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('landed-job', '/tmp/out.mp4', '{}', 'ready')",
+    ).run()
+    db.prepare(
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) ' +
+        "VALUES ('loop-chan', 'T', 'R', 's', 'u', 'h-repair', 80, 'r', 'claimed', 'landed-job')",
+    ).run()
+    // queue is otherwise empty (the claimed topic is not eligible) → noop, and
+    // neverStages guards that no production runs on this path
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
+    expect(result).toEqual({ action: 'noop', reason: 'no-eligible-work' })
+    const topic = db
+      .prepare("SELECT status FROM topics WHERE dedupe_hash = 'h-repair'")
+      .get() as { status: string }
+    expect(topic.status).toBe('used')
+    db.close()
+  })
+})
+
 describe('produce-next CLI', () => {
   it('`produce-next --help` prints usage with --db/--channels-dir/--runs-root', async () => {
     const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'produce-next', '--help'], {
