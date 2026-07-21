@@ -93,3 +93,26 @@ export function recentTopicTitles(
     .all(channel, limit) as { title: string }[]
   return rows.map((r) => r.title)
 }
+
+// Operator gate transitions. The status guard in the WHERE clause makes both
+// idempotent and blind to ids in the wrong state — the returned count is what
+// actually changed, which the CLI reports against ids.length.
+export function approveTopics(db: Database, ids: number[]): number {
+  if (ids.length === 0) return 0
+  const placeholders = ids.map(() => '?').join(', ')
+  return db
+    .prepare(
+      `UPDATE topics SET status = 'approved' WHERE id IN (${placeholders}) AND status = 'candidate'`,
+    )
+    .run(...ids).changes
+}
+
+export function rejectTopics(db: Database, ids: number[]): number {
+  if (ids.length === 0) return 0
+  const placeholders = ids.map(() => '?').join(', ')
+  return db
+    .prepare(
+      `UPDATE topics SET status = 'rejected' WHERE id IN (${placeholders}) AND status IN ('candidate','approved')`,
+    )
+    .run(...ids).changes
+}
