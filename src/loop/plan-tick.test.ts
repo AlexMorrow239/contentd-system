@@ -193,3 +193,19 @@ describe('resume pass skip conditions', () => {
     db.close()
   })
 })
+
+describe('claim pass', () => {
+  it('claims the best eligible volume topic', () => {
+    const db = openDb(':memory:')
+    const best = seedTopic(db, { title: 'Why the Moon is drifting away', score: 90 })
+    seedTopic(db, { title: 'runner-up', score: 70 })
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+      kind: 'produce',
+      channel: 'test',
+      topicId: best,
+      topic: 'Why the Moon is drifting away',
+      tier: 'volume',
+    })
+    db.close()
+  })
+})

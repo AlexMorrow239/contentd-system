@@ -6,6 +6,7 @@ import {
   globalDaySpentMicros,
 } from '../jobs/costs.js'
 import type { Tier } from '../jobs/types.js'
+import { eligibleTopic } from '../scout/topics.js'
 
 // Resuming under this headroom would only re-park the job 'blocked' at the
 // next budget checkpoint — the tick is better spent on new work (spec §6).
@@ -45,6 +46,22 @@ export function planTick(
     if (channelRemainingMicros < RESUME_MIN_HEADROOM_USD_MICROS) continue
     if (globalRemainingMicros < RESUME_MIN_HEADROOM_USD_MICROS) continue
     return { kind: 'resume', jobId: job.id, channel: job.channel, tier: job.tier }
+  }
+
+  // CLAIM PASS: new work from the topic queue.
+  for (const channel of channels) {
+    const topic = eligibleTopic(db, channel.name, 'volume', {
+      autoPremium: channel.scout.autoPremium,
+    })
+    if (topic !== null) {
+      return {
+        kind: 'produce',
+        channel: channel.name,
+        topicId: topic.id,
+        topic: topic.title,
+        tier: 'volume',
+      }
+    }
   }
 
   return { kind: 'noop', reason: 'no-eligible-work' }
