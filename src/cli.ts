@@ -3,7 +3,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import { createJob, runJob } from './jobs/runner.js'
-import { loadChannelConfig } from './config/channel.js'
+import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
+import { AllSourcesFailedError, scoutAll } from './scout/scout.js'
 import { openDb } from './db/index.js'
 import { scriptStage } from './stages/script.js'
 import { voiceStage } from './stages/voice.js'
@@ -91,6 +92,31 @@ program
     // process.exit can truncate the JSON line mid-write. exit 0 for ready/needs-review;
     // exit 1 for failed AND blocked (the JSON line carries the finer distinction).
     process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
+  })
+
+program
+  .command('scout')
+  .option('--db <path>', 'sqlite db path')
+  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .action(async (opts: { db?: string; channelsDir: string }) => {
+    // Config load precedes the db handle so a bad channels dir fails clean.
+    const channels = loadChannelsDir(opts.channelsDir)
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      const results = await scoutAll(db, channels)
+      // One cron-greppable JSON line; diagnostics went to stderr.
+      process.stdout.write(JSON.stringify({ channels: results }) + '\n')
+    } catch (err) {
+      if (!(err instanceof AllSourcesFailedError)) throw err
+      // Total source failure is systemic (network down, Reddit blocking):
+      // still one JSON line — the contract holds on failure outcomes — then
+      // exit 1 so cron flags the run.
+      process.stdout.write(JSON.stringify({ channels: err.results }) + '\n')
+      console.error(err.message)
+      process.exitCode = 1
+    } finally {
+      db.close()
+    }
   })
 
 program

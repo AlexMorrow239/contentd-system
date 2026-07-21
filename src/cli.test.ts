@@ -1,6 +1,6 @@
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { execa } from 'execa'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
@@ -116,6 +116,57 @@ describe('brainrot CLI', () => {
     // Just the message — no raw unhandled-rejection stack frames ("    at ...").
     expect(result.stderr).not.toMatch(/\n\s+at /)
     expect(countJobs(dbPath)).toBe(0)
+  }, 60000)
+
+  // Plan-1-shape channel TOML with no [scout] table: loadChannelsDir parses it,
+  // scoutAll skips it (DEFAULT_SCOUT has no sources) — the cheapest full E2E.
+  const SCOUTLESS_TOML = [
+    'name = "cli-scout-test"',
+    'niche = ["space facts"]',
+    'bg_dir = "assets/bg"',
+    'bgm_dir = "assets/bgm"',
+    '',
+    '[tier_mix]',
+    'volume = 2',
+    'premium = 1',
+    '',
+    '[voice]',
+    'volume = "af_heart"',
+    '',
+    '[caption_style]',
+    'font = "Inter"',
+    'font_size_px = 72',
+    'active_color = "#FFD700"',
+    'inactive_color = "#FFFFFF"',
+    'stroke_px = 8',
+    '',
+    '[budget]',
+    'per_video_usd = 8.0',
+    'per_day_usd = 20.0',
+  ].join('\n')
+
+  it('`scout --help` prints usage with --db/--channels-dir', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'scout', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('--db')
+    expect(result.stdout).toContain('--channels-dir')
+  }, 60000)
+
+  it('`scout` over a sourceless channels dir prints one JSON line and exits 0', async () => {
+    const dbPath = tmpDbPath()
+    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-channels-'))
+    cleanup.push(channelsDir)
+    writeFileSync(path.join(channelsDir, 'test.toml'), SCOUTLESS_TOML)
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'scout', '--db', dbPath, '--channels-dir', channelsDir],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    // exactly one cron-greppable JSON line on stdout
+    expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
   }, 60000)
 })
 
