@@ -134,4 +134,23 @@ describe('scoutChannel', () => {
     expect(listTopics(db, { channel: 'chan-a', status: 'rejected' })).toHaveLength(1)
     db.close()
   })
+
+  it('isolates a failing source: one sourceErrors entry, other sources still scout', async () => {
+    const db = openDb(':memory:')
+    const channel = scoutedChannel({ subreddits: ['space', 'askscience'] })
+    const fetchImpl = fetchStub({
+      '/r/space/hot.json': new Error('connect timeout'),
+      '/r/askscience/hot.json': redditJson([{ name: 't3_ccc', title: 'Why is the sky blue' }]),
+    })
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' }]),
+    )
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+    expect(result.fetched).toBe(1)
+    expect(result.queued).toBe(1)
+    expect(result.sourceErrors).toHaveLength(1)
+    // entries are prefixed with the failing source's id
+    expect(result.sourceErrors[0]).toMatch(/^reddit:r\/space: /)
+    db.close()
+  })
 })

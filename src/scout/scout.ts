@@ -34,13 +34,23 @@ export async function scoutChannel(
 
   const sourceErrors: string[] = []
   const candidates: TrendCandidate[] = []
+  // Per-source isolation: a failed or timed-out source contributes zero
+  // candidates and one sourceErrors entry; the run continues (design spec §4).
   for (const source of sources) {
-    candidates.push(
-      ...(await source.fetch({
-        limit: channel.scout.perSourceLimit,
-        timeoutMs: SOURCE_FETCH_TIMEOUT_MS,
-      })),
-    )
+    try {
+      candidates.push(
+        ...(await source.fetch({
+          limit: channel.scout.perSourceLimit,
+          timeoutMs: SOURCE_FETCH_TIMEOUT_MS,
+        })),
+      )
+    } catch (err) {
+      const entry = `${source.id}: ${err instanceof Error ? err.message : String(err)}`
+      // Spec §4: a failing source "logs a warning" — stderr, since stdout is
+      // reserved for the CLI's single JSON line.
+      console.error(`scout: source ${entry}`)
+      sourceErrors.push(entry)
+    }
   }
 
   const result: ScoutChannelResult = {
