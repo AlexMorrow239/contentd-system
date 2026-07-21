@@ -7,7 +7,13 @@ import { openDb } from '../db/index.js'
 import type { ChannelConfig } from '../config/channel.js'
 import { createJob } from './runner.js'
 import { testChannel } from '../stages/_testkit.js'
-import { assertBudget, BudgetExceededError, recordCost } from './costs.js'
+import {
+  assertBudget,
+  BudgetExceededError,
+  channelDaySpentMicros,
+  globalDaySpentMicros,
+  recordCost,
+} from './costs.js'
 
 function tempDb() {
   const dir = mkdtempSync(join(tmpdir(), 'brainrot-costs-'))
@@ -248,6 +254,68 @@ describe('recordCost + assertBudget', () => {
     recordCost(db, jobId, 'anthropic', 'script', 7_000_000)
     // per-video: 7M + 1M == 8M cap; channel-day 8M < 20M; global 8M < 25M default
     expect(() => assertBudget(db, ch, jobId, 1_000_000, 'volume')).not.toThrow()
+    db.close()
+  })
+})
+
+// Same seeded-now caveat as above: a sub-second UTC-midnight rollover between
+// recordCost and the assertion is the only race — accepted.
+describe('day-spend helpers', () => {
+  it('channelDaySpentMicros sums today through the jobs JOIN, per channel', () => {
+    const db = tempDb()
+    const chA = channel('chan-a', {
+      perVideoUsdMicros: GENEROUS,
+      premiumPerVideoUsdMicros: GENEROUS,
+      perDayUsdMicros: GENEROUS,
+    })
+    const chB = channel('chan-b', {
+      perVideoUsdMicros: GENEROUS,
+      premiumPerVideoUsdMicros: GENEROUS,
+      perDayUsdMicros: GENEROUS,
+    })
+    const jobA = seedJob(db, chA)
+    const jobB = seedJob(db, chB)
+    recordCost(db, jobA, 'anthropic', 'script', 2_000_000)
+    recordCost(db, jobA, 'fal', 'image', 500_000)
+    recordCost(db, jobB, 'anthropic', 'script', 1_000_000)
+    expect(channelDaySpentMicros(db, 'chan-a')).toBe(2_500_000)
+    expect(channelDaySpentMicros(db, 'chan-b')).toBe(1_000_000)
+    expect(channelDaySpentMicros(db, 'chan-c')).toBe(0)
+    db.close()
+  })
+
+  it('channelDaySpentMicros ignores previous UTC days and non-job sentinel rows', () => {
+    const db = tempDb()
+    const ch = channel('chan-a', {
+      perVideoUsdMicros: GENEROUS,
+      premiumPerVideoUsdMicros: GENEROUS,
+      perDayUsdMicros: GENEROUS,
+    })
+    const jobId = seedJob(db, ch)
+    db.prepare(
+      "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, 'fal', 'video', ?, '2020-01-01T00:00:00.000Z')",
+    ).run(jobId, 4_000_000)
+    // FKs are off by design: sentinel rows attach to no jobs row, so the
+    // channel attribution JOIN drops them.
+    recordCost(db, 'scout:chan-a', 'anthropic', 'scout-score', 15_000)
+    expect(channelDaySpentMicros(db, 'chan-a')).toBe(0)
+    db.close()
+  })
+
+  it('globalDaySpentMicros sums ALL of today, sentinel rows included', () => {
+    const db = tempDb()
+    const ch = channel('chan-a', {
+      perVideoUsdMicros: GENEROUS,
+      premiumPerVideoUsdMicros: GENEROUS,
+      perDayUsdMicros: GENEROUS,
+    })
+    const jobId = seedJob(db, ch)
+    recordCost(db, jobId, 'anthropic', 'script', 2_000_000)
+    recordCost(db, 'scout:chan-a', 'anthropic', 'scout-score', 15_000)
+    db.prepare(
+      "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, 'fal', 'video', ?, '2020-01-01T00:00:00.000Z')",
+    ).run(jobId, 4_000_000)
+    expect(globalDaySpentMicros(db)).toBe(2_015_000)
     db.close()
   })
 })

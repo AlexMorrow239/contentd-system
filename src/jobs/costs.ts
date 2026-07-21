@@ -43,6 +43,30 @@ function globalDailyCapMicros(): number {
   return Math.round(usd * 1_000_000)
 }
 
+// Today's UTC spend attributed to one channel. costs has no channel column:
+// attribution JOINs through the jobs table, so non-job sentinel rows
+// ('scout:<channel>') are invisible here — accepted at ~$0.01/day scale.
+export function channelDaySpentMicros(db: Database, channel: string): number {
+  const row = db
+    .prepare(
+      'SELECT COALESCE(SUM(c.usd_micros), 0) AS total FROM costs c JOIN jobs j ON c.job_id = j.id ' +
+        "WHERE j.channel = ? AND substr(c.created_at, 1, 10) = strftime('%Y-%m-%d','now')",
+    )
+    .get(channel) as { total: number }
+  return row.total
+}
+
+// Today's UTC spend across ALL costs rows — deliberately no jobs JOIN, so
+// sentinel scout rows count toward the global cap.
+export function globalDaySpentMicros(db: Database): number {
+  const row = db
+    .prepare(
+      "SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE substr(created_at, 1, 10) = strftime('%Y-%m-%d','now')",
+    )
+    .get() as { total: number }
+  return row.total
+}
+
 /**
  * Pre-call budget checkpoint. Enforces, in order:
  *  1. per-video cap — tier picks the cap (premium → premiumPerVideoUsdMicros),
