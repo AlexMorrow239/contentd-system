@@ -153,4 +153,42 @@ describe('scoutChannel', () => {
     expect(result.sourceErrors[0]).toMatch(/^reddit:r\/space: /)
     db.close()
   })
+
+  it('gates on the global day budget BEFORE spending', async () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    const db = openDb(':memory:')
+    const channel = scoutedChannel()
+    const fetchImpl = fetchStub({
+      '/r/space/hot.json': redditJson([{ name: 't3_aaa', title: 'Moon drifting' }]),
+    })
+    const { client, create } = fakeClient(emitScores([]))
+    await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow(
+      BudgetExceededError,
+    )
+    // gate fired pre-call: no API hit, no cost row, no topics
+    expect(create).not.toHaveBeenCalled()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM costs').get()).toEqual({ n: 0 })
+    expect(listTopics(db)).toHaveLength(0)
+    db.close()
+  })
+
+  it('ledgers spend from a paid-but-invalid scoring response, then rethrows', async () => {
+    const db = openDb(':memory:')
+    const channel = scoutedChannel()
+    const fetchImpl = fetchStub({
+      '/r/space/hot.json': redditJson([{ name: 't3_aaa', title: 'Moon drifting' }]),
+    })
+    // schema-invalid emit input: structuredCompletion throws a ZodError with
+    // costUsdMicros attached (the call was billed regardless)
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'not-an-array' } }],
+      usage: { input_tokens: 100, output_tokens: 50 },
+    })
+    await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow()
+    const costs = db.prepare('SELECT job_id, operation, usd_micros FROM costs').all()
+    // 100×1 + 50×5 = 350 usd-micros at the haiku list price
+    expect(costs).toEqual([{ job_id: 'scout:chan-a', operation: 'scout-score', usd_micros: 350 }])
+    expect(listTopics(db)).toHaveLength(0)
+    db.close()
+  })
 })
