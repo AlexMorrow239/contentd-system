@@ -24,6 +24,9 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
         headers: { 'User-Agent': REDDIT_USER_AGENT },
         signal: AbortSignal.timeout(timeoutMs),
       })
+      if (!res.ok) {
+        throw new Error(`redditSource: r/${subreddit} responded ${res.status}`)
+      }
       const body = (await res.json()) as RedditListing
       const candidates: TrendCandidate[] = []
       for (const child of body.data.children) {

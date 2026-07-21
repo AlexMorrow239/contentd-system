@@ -112,4 +112,12 @@ describe('redditSource', () => {
       },
     ])
   })
+
+  it('throws with the HTTP status on a non-2xx response', async () => {
+    const { impl } = fakeFetch(429, { message: 'Too Many Requests' })
+    const source = redditSource('space', impl)
+    await expect(source.fetch({ limit: 25, timeoutMs: 10_000 })).rejects.toThrow(
+      /r\/space responded 429/,
+    )
+  })
 })
