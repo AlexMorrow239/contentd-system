@@ -106,4 +106,32 @@ describe('scoutChannel', () => {
     expect(create).toHaveBeenCalledTimes(1)
     db.close()
   })
+
+  it('re-runs are free: known hashes are filtered before the Haiku call', async () => {
+    const db = openDb(':memory:')
+    const channel = scoutedChannel()
+    const fetchImpl = fetchStub({
+      '/r/space/hot.json': redditJson([{ name: 't3_aaa', title: 'Moon drifting' }]),
+    })
+    const { client, create } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 20, topic: 'Moon', reason: 'dull' }]),
+    )
+    await scoutChannel(db, channel, { client, fetchImpl })
+    const second = await scoutChannel(db, channel, { client, fetchImpl })
+    expect(second).toEqual({
+      channel: 'chan-a',
+      fetched: 1,
+      alreadyKnown: 1,
+      scored: 0,
+      queued: 0,
+      rejected: 0,
+      sourceErrors: [],
+      costUsdMicros: 0,
+    })
+    // the second run never reached Haiku
+    expect(create).toHaveBeenCalledTimes(1)
+    // the below-threshold row stayed a remembered rejection — never re-scored
+    expect(listTopics(db, { channel: 'chan-a', status: 'rejected' })).toHaveLength(1)
+    db.close()
+  })
 })

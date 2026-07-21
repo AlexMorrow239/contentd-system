@@ -7,7 +7,7 @@ import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
 import { redditSource } from './sources/reddit.js'
 import { rssSource } from './sources/rss.js'
 import { scoreCandidates } from './score.js'
-import { insertTopics, recentTopicTitles } from './topics.js'
+import { insertTopics, knownHashes, recentTopicTitles } from './topics.js'
 import type { NewTopic } from './topics.js'
 
 export interface ScoutChannelResult {
@@ -54,10 +54,14 @@ export async function scoutChannel(
     costUsdMicros: 0,
   }
 
-  const fresh = candidates.map((candidate) => ({
-    candidate,
-    hash: dedupeHash(candidate.sourceId, candidate.externalId),
-  }))
+  // Hash-filter BEFORE scoring: known items never reach Haiku again, so scout
+  // re-runs are free and rejected topics stay rejected without re-spend.
+  const hashes = candidates.map((c) => dedupeHash(c.sourceId, c.externalId))
+  const known = knownHashes(db, channel.name, hashes)
+  const fresh = candidates
+    .map((candidate, i) => ({ candidate, hash: hashes[i] }))
+    .filter((f) => !known.has(f.hash))
+  result.alreadyKnown = candidates.length - fresh.length
   if (fresh.length === 0) return result
 
   result.scored = fresh.length
