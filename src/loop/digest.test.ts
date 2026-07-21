@@ -93,3 +93,31 @@ describe('buildDigest — topics section', () => {
     db.close()
   })
 })
+
+describe('buildDigest — jobs section', () => {
+  it('counts last-24h jobs per channel and tier with library-resolved outcomes', () => {
+    const db = openDb(':memory:')
+    // chan-a volume: one ready (done + library row), one failed
+    seedJob(db, { id: 'j-ready', status: 'done' })
+    seedLibrary(db, 'j-ready', 'ready')
+    seedJob(db, { id: 'j-failed', status: 'failed' })
+    // chan-a premium: one needs-review, one blocked
+    seedJob(db, { id: 'j-review', tier: 'premium', status: 'done' })
+    seedLibrary(db, 'j-review', 'needs-review')
+    seedJob(db, { id: 'j-blocked', tier: 'premium', status: 'blocked' })
+    // 3 days old — outside the window, not counted here (it will surface in
+    // the action-items section, which is current-state, not last-24h)
+    seedJob(db, { id: 'j-old', status: 'failed', createdAt: isoAgo(3 * DAY_MS) })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain('Jobs (last 24h)')
+    expect(digest).toContain('  chan-a volume: 2 — 1 ready, 0 needs-review, 1 failed, 0 blocked')
+    expect(digest).toContain('  chan-a premium: 2 — 0 ready, 1 needs-review, 0 failed, 1 blocked')
+    db.close()
+  })
+
+  it('prints none when no jobs were created in the last 24h', () => {
+    const db = openDb(':memory:')
+    expect(buildDigest(db, [])).toContain('Jobs (last 24h)\n  none')
+    db.close()
+  })
+})

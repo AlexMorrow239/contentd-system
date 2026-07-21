@@ -43,5 +43,36 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     )
   }
 
+  lines.push('', 'Jobs (last 24h)')
+  // 'done' jobs resolve to ready/needs-review through their library row;
+  // failed/blocked read straight off jobs.status. queued/running jobs count
+  // toward the total but have no outcome yet.
+  const jobRows = db
+    .prepare(
+      `SELECT j.channel, j.tier, COUNT(*) AS total,
+              SUM(CASE WHEN l.state = 'ready' THEN 1 ELSE 0 END) AS ready,
+              SUM(CASE WHEN l.state = 'needs-review' THEN 1 ELSE 0 END) AS needsReview,
+              SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+              SUM(CASE WHEN j.status = 'blocked' THEN 1 ELSE 0 END) AS blocked
+       FROM jobs j LEFT JOIN library l ON l.job_id = j.id
+       WHERE datetime(j.created_at) >= datetime('now', '-1 day')
+       GROUP BY j.channel, j.tier ORDER BY j.channel, j.tier`,
+    )
+    .all() as {
+    channel: string
+    tier: string
+    total: number
+    ready: number
+    needsReview: number
+    failed: number
+    blocked: number
+  }[]
+  if (jobRows.length === 0) lines.push('  none')
+  for (const r of jobRows) {
+    lines.push(
+      `  ${r.channel} ${r.tier}: ${r.total} — ${r.ready} ready, ${r.needsReview} needs-review, ${r.failed} failed, ${r.blocked} blocked`,
+    )
+  }
+
   return lines.join('\n')
 }
