@@ -1,0 +1,50 @@
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import type { Database } from 'better-sqlite3'
+import { loadChannelConfig } from '../config/channel.js'
+import { stagesForTier } from './pipeline.js'
+import { runJob } from './runner.js'
+import type { JobResult } from './runner.js'
+import type { StageDef, Tier } from './types.js'
+
+// A refusal to resume (missing job, non-resumable status, missing channel
+// TOML) — distinct from a crash so the CLI prints just the reason and exits 1.
+export class ResumeError extends Error {}
+
+export async function resumeJob(
+  db: Database,
+  jobId: string,
+  opts: {
+    runsRoot: string
+    channelsDir: string
+    force?: boolean
+    stagesFor?: (tier: Tier) => StageDef[]
+  },
+): Promise<JobResult> {
+  const job = db
+    .prepare('SELECT channel, tier, status FROM jobs WHERE id = ?')
+    .get(jobId) as { channel: string; tier: Tier; status: string } | undefined
+  if (!job) {
+    throw new ResumeError(`job not found: ${jobId}`)
+  }
+  if (job.status === 'done') {
+    throw new ResumeError(`job ${jobId} is already done; nothing to resume`)
+  }
+  if (job.status === 'queued') {
+    throw new ResumeError(`job ${jobId} never started; queued jobs are not resumable`)
+  }
+  // 'running' usually means a live process holds the job; --force is the
+  // operator asserting that process crashed (the digest flags such zombies).
+  if (job.status === 'running' && !opts.force) {
+    throw new ResumeError(`job ${jobId} is running; pass --force if no live process holds it`)
+  }
+  const channelPath = join(opts.channelsDir, `${job.channel}.toml`)
+  if (!existsSync(channelPath)) {
+    throw new ResumeError(`channel config not found: ${channelPath}`)
+  }
+  const channel = loadChannelConfig(channelPath)
+  // The runner's skip-done-stages resume recovers the sunk cost; the stage
+  // list is the exact produce wiring unless a test injects its own.
+  const stages = opts.stagesFor?.(job.tier) ?? stagesForTier(job.tier)
+  return runJob(db, channel, jobId, stages, { runsRoot: opts.runsRoot })
+}
