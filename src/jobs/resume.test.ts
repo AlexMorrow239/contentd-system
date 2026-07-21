@@ -229,4 +229,30 @@ describe('resumeJob', () => {
     // still bound to its job: the resume path owns recovery, never re-claiming
     expect(topic.status).toBe('claimed')
   })
+
+  it('premium resume without FAL_KEY refuses before any stage or status change', async () => {
+    vi.stubEnv('FAL_KEY', undefined)
+    const jobId = seedJob('failed', { tier: 'premium' })
+    const calls: string[] = []
+    await expect(
+      resumeJob(db, jobId, { runsRoot, channelsDir, stagesFor: () => fakeStages(calls) }),
+    ).rejects.toThrow('premium tier requires FAL_KEY')
+    expect(calls).toEqual([])
+    // refused before runJob: the job row was never flipped to 'running'
+    const row = db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId) as {
+      status: string
+    }
+    expect(row.status).toBe('failed')
+  })
+
+  it('premium resume proceeds when FAL_KEY is set', async () => {
+    vi.stubEnv('FAL_KEY', 'fal-test-key')
+    const jobId = seedJob('failed', { tier: 'premium' })
+    const result = await resumeJob(db, jobId, {
+      runsRoot,
+      channelsDir,
+      stagesFor: () => fakeStages(),
+    })
+    expect(result.status).toBe('ready')
+  })
 })

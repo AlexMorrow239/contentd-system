@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../config/channel.js'
 import { markTopicUsedByJob } from '../scout/topics.js'
-import { stagesForTier } from './pipeline.js'
+import { assertPremiumPreflight, stagesForTier } from './pipeline.js'
 import { runJob } from './runner.js'
 import type { JobResult } from './runner.js'
 import type { StageDef, Tier } from './types.js'
@@ -43,6 +43,9 @@ export async function resumeJob(
   if (!existsSync(channelPath)) {
     throw new ResumeError(`channel config not found: ${channelPath}`)
   }
+  // Same pre-flight as produce: resuming a premium job without FAL_KEY could
+  // only convert a parked job into a failed one.
+  assertPremiumPreflight(job.tier)
   const channel = loadChannelConfig(channelPath)
   // The runner's skip-done-stages resume recovers the sunk cost; the stage
   // list is the exact produce wiring unless a test injects its own.
