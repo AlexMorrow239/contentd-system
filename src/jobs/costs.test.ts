@@ -9,8 +9,10 @@ import { createJob } from './runner.js'
 import { testChannel } from '../stages/_testkit.js'
 import {
   assertBudget,
+  assertGlobalDayBudget,
   BudgetExceededError,
   channelDaySpentMicros,
+  globalDailyCapMicros,
   globalDaySpentMicros,
   recordCost,
 } from './costs.js'
@@ -316,6 +318,45 @@ describe('day-spend helpers', () => {
       "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, 'fal', 'video', ?, '2020-01-01T00:00:00.000Z')",
     ).run(jobId, 4_000_000)
     expect(globalDaySpentMicros(db)).toBe(2_015_000)
+    db.close()
+  })
+})
+
+describe('globalDailyCapMicros + assertGlobalDayBudget', () => {
+  it('globalDailyCapMicros reads BRAINROT_GLOBAL_DAILY_USD, defaulting to $25', () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', undefined) // deterministic even if the shell exports it
+    expect(globalDailyCapMicros()).toBe(25_000_000)
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '5')
+    expect(globalDailyCapMicros()).toBe(5_000_000)
+  })
+
+  it('assertGlobalDayBudget throws only when projected spend exceeds the cap', () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '5')
+    const db = tempDb()
+    // Jobless sentinel spend is exactly what the scout gate must see.
+    recordCost(db, 'scout:chan-a', 'anthropic', 'scout-score', 4_500_000)
+    // 4.5M + 0.5M == 5M cap exactly: boundary passes (strict >)
+    expect(() => assertGlobalDayBudget(db, 500_000)).not.toThrow()
+    // 4.5M + 0.500001M > 5M cap
+    expect(() => assertGlobalDayBudget(db, 500_001)).toThrow(BudgetExceededError)
+    expect(() => assertGlobalDayBudget(db, 500_001)).toThrow(/^global-day budget exceeded/)
+    db.close()
+  })
+
+  it('assertGlobalDayBudget propagates the malformed-env crash unchanged', () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', 'twenty')
+    const db = tempDb()
+    let caught: unknown
+    try {
+      assertGlobalDayBudget(db, 1_000)
+    } catch (err) {
+      caught = err
+    }
+    // Misconfiguration stays a crash, not a budget outcome — same contract
+    // as assertBudget: plain Error, NOT BudgetExceededError.
+    expect(caught).toBeInstanceOf(Error)
+    expect(caught).not.toBeInstanceOf(BudgetExceededError)
+    expect((caught as Error).message).toMatch(/BRAINROT_GLOBAL_DAILY_USD/)
     db.close()
   })
 })

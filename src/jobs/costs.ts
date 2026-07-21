@@ -26,7 +26,7 @@ export function recordCost(
 
 // Parsed at call time (not module load) so tests and long-lived processes see
 // env changes without a re-import. dotenv is loaded once in src/cli.ts.
-function globalDailyCapMicros(): number {
+export function globalDailyCapMicros(): number {
   const raw = process.env.BRAINROT_GLOBAL_DAILY_USD
   if (raw === undefined || raw.trim() === '') {
     return DEFAULT_GLOBAL_DAILY_USD * 1_000_000
@@ -65,6 +65,20 @@ export function globalDaySpentMicros(db: Database): number {
     )
     .get() as { total: number }
   return row.total
+}
+
+// The global-day check extracted from assertBudget so the scout — which has
+// no job and therefore cannot use assertBudget — gates its Haiku spend
+// against the same ceiling. Cap is resolved BEFORE the db read so a
+// malformed env crashes without touching the ledger, exactly as before.
+export function assertGlobalDayBudget(db: Database, upcomingUsdMicros: number): void {
+  const globalCapMicros = globalDailyCapMicros()
+  const globalDayProjected = globalDaySpentMicros(db) + upcomingUsdMicros
+  if (globalDayProjected > globalCapMicros) {
+    throw new BudgetExceededError(
+      `global-day budget exceeded: ${globalDayProjected} > ${globalCapMicros} usdMicros (BRAINROT_GLOBAL_DAILY_USD, default ${DEFAULT_GLOBAL_DAILY_USD})`,
+    )
+  }
 }
 
 /**
