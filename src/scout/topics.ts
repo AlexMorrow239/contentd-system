@@ -73,3 +73,23 @@ export function knownHashes(db: Database, channel: string, hashes: string[]): Se
     .all(channel, ...hashes) as { dedupe_hash: string }[]
   return new Set(rows.map((r) => r.dedupe_hash))
 }
+
+// Scorer prompt context: how many recent titles feed the "recently covered —
+// score near-duplicates 0" instruction (design spec §5).
+export const RECENT_TITLES_LIMIT = 30
+
+// Rejected topics are noise (near-duplicates, off-niche); the scorer only
+// needs what the channel actually covered or queued.
+export function recentTopicTitles(
+  db: Database,
+  channel: string,
+  limit = RECENT_TITLES_LIMIT,
+): string[] {
+  const rows = db
+    .prepare(
+      "SELECT title FROM topics WHERE channel = ? AND status != 'rejected' " +
+        'ORDER BY created_at DESC, id DESC LIMIT ?',
+    )
+    .all(channel, limit) as { title: string }[]
+  return rows.map((r) => r.title)
+}

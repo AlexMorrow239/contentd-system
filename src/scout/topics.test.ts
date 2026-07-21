@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
-import { insertTopics, knownHashes } from './topics.js'
+import { insertTopics, knownHashes, RECENT_TITLES_LIMIT, recentTopicTitles } from './topics.js'
 
 // Raw-insert seed: the DAO only ever writes status/job_id transitions, so
 // tests control every column (created_at included) directly.
@@ -144,6 +144,30 @@ describe('knownHashes', () => {
     seedTopic(db, { channel: 'chan-b', dedupeHash: 'h3' })
     expect(knownHashes(db, 'chan-a', ['h1', 'h2', 'h3', 'h9'])).toEqual(new Set(['h1', 'h2']))
     expect(knownHashes(db, 'chan-a', [])).toEqual(new Set())
+    db.close()
+  })
+})
+
+describe('recentTopicTitles', () => {
+  it('returns non-rejected titles newest first, capped at the limit', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { title: 'oldest', createdAt: '2026-07-18T00:00:00.000Z' })
+    seedTopic(db, { title: 'skipped', createdAt: '2026-07-19T00:00:00.000Z', status: 'rejected' })
+    seedTopic(db, { title: 'middle', createdAt: '2026-07-19T12:00:00.000Z', status: 'used' })
+    seedTopic(db, { title: 'newest', createdAt: '2026-07-20T00:00:00.000Z', status: 'approved' })
+    seedTopic(db, { title: 'other channel', channel: 'chan-b', createdAt: '2026-07-20T06:00:00.000Z' })
+    expect(recentTopicTitles(db, 'chan-a')).toEqual(['newest', 'middle', 'oldest'])
+    expect(recentTopicTitles(db, 'chan-a', 2)).toEqual(['newest', 'middle'])
+    db.close()
+  })
+
+  it('defaults the limit to RECENT_TITLES_LIMIT (30)', () => {
+    const db = openDb(':memory:')
+    expect(RECENT_TITLES_LIMIT).toBe(30)
+    for (let i = 0; i < 35; i++) {
+      seedTopic(db, { createdAt: `2026-07-19T00:00:${String(i).padStart(2, '0')}.000Z` })
+    }
+    expect(recentTopicTitles(db, 'chan-a')).toHaveLength(30)
     db.close()
   })
 })
