@@ -57,11 +57,31 @@ export function planTick(
   )
   const jobsToday = (name: string, tier: Tier): number =>
     (quotaStmt.get(name, tier) as { n: number }).n
-  for (const channel of channels) {
+  const candidates = channels
+    .map((channel) => {
+      const volumeToday = jobsToday(channel.name, 'volume')
+      const premiumToday = jobsToday(channel.name, 'premium')
+      return {
+        channel,
+        volumeOpen: volumeToday < channel.tierMix.volume,
+        premiumOpen: premiumToday < channel.tierMix.premium,
+        filledFraction:
+          (volumeToday + premiumToday) / (channel.tierMix.volume + channel.tierMix.premium),
+      }
+    })
+    // A zero tier mix closes both slots, so its NaN fraction never reaches
+    // the sort.
+    .filter((c) => c.volumeOpen || c.premiumOpen)
+    .sort(
+      (a, b) =>
+        a.filledFraction - b.filledFraction || (a.channel.name < b.channel.name ? -1 : 1),
+    )
+
+  for (const { channel, volumeOpen, premiumOpen } of candidates) {
     const autoPremium = channel.scout.autoPremium
     // Premium first: scarce quality slots get the day's best material early.
     // Without the FAL key premium is skipped outright — volume still flows.
-    if (jobsToday(channel.name, 'premium') < channel.tierMix.premium && opts.falKeyPresent) {
+    if (premiumOpen && opts.falKeyPresent) {
       const topic = eligibleTopic(db, channel.name, 'premium', { autoPremium })
       if (topic !== null) {
         return {
@@ -73,7 +93,7 @@ export function planTick(
         }
       }
     }
-    if (jobsToday(channel.name, 'volume') < channel.tierMix.volume) {
+    if (volumeOpen) {
       const topic = eligibleTopic(db, channel.name, 'volume', { autoPremium })
       if (topic !== null) {
         return {

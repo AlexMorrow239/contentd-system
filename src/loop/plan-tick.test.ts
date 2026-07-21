@@ -318,3 +318,48 @@ describe('claim pass tier selection', () => {
     db.close()
   })
 })
+
+describe('claim pass channel fairness', () => {
+  it('prefers the channel with the lowest filled fraction of its mix', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { channel: 'chan-a' }) // 1 of 2 slots → 0.5
+    seedJob(db, { channel: 'chan-b' }) // 1 of 4 slots → 0.25
+    seedTopic(db, { channel: 'chan-a', title: 'a topic' })
+    const bTopic = seedTopic(db, { channel: 'chan-b', title: 'b topic' })
+    const chA = testChannel({ name: 'chan-a', tierMix: { volume: 2, premium: 0 } })
+    const chB = testChannel({ name: 'chan-b', tierMix: { volume: 4, premium: 0 } })
+    expect(planTick(db, [chA, chB], { falKeyPresent: true })).toMatchObject({
+      kind: 'produce',
+      channel: 'chan-b',
+      topicId: bTopic,
+    })
+    db.close()
+  })
+
+  it('breaks filled-fraction ties by channel name ascending', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { channel: 'chan-a', title: 'a topic' })
+    seedTopic(db, { channel: 'chan-b', title: 'b topic' })
+    const chA = testChannel({ name: 'chan-a', tierMix: { volume: 2, premium: 0 } })
+    const chB = testChannel({ name: 'chan-b', tierMix: { volume: 2, premium: 0 } })
+    // Reversed input order: the sort, not the argument order, must decide.
+    expect(planTick(db, [chB, chA], { falKeyPresent: true })).toMatchObject({
+      kind: 'produce',
+      channel: 'chan-a',
+    })
+    db.close()
+  })
+
+  it('falls through to the next channel when the fairest one has no topics', () => {
+    const db = openDb(':memory:')
+    const bTopic = seedTopic(db, { channel: 'chan-b', title: 'b topic' })
+    const chA = testChannel({ name: 'chan-a', tierMix: { volume: 2, premium: 0 } })
+    const chB = testChannel({ name: 'chan-b', tierMix: { volume: 2, premium: 0 } })
+    expect(planTick(db, [chA, chB], { falKeyPresent: true })).toMatchObject({
+      kind: 'produce',
+      channel: 'chan-b',
+      topicId: bTopic,
+    })
+    db.close()
+  })
+})
