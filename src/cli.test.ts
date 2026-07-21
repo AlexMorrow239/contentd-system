@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
-import { assertPremiumPreflight, parseTier, stagesForTier } from './cli.js'
+import { assertPremiumPreflight, parseTier, parseTopicIds, stagesForTier } from './cli.js'
 import { visualsPremiumStage } from './stages/visuals-premium.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 
@@ -213,5 +213,24 @@ describe('assertPremiumPreflight (in-process)', () => {
     // Volume never needs a fal key, even when it is absent.
     vi.stubEnv('FAL_KEY', undefined)
     expect(() => assertPremiumPreflight('volume')).not.toThrow()
+  })
+})
+
+describe('parseTopicIds (in-process)', () => {
+  it('parses positive integer tokens in order', () => {
+    expect(parseTopicIds(['12', '3', '400'])).toEqual([12, 3, 400])
+    // commander's <ids...> guarantees at least one token, but the helper
+    // itself is total: an empty list is an empty result, not an error.
+    expect(parseTopicIds([])).toEqual([])
+  })
+
+  it('throws naming the first bad token; "12abc", "0", "-3" all reject', () => {
+    expect(() => parseTopicIds(['12abc'])).toThrow(
+      'invalid topic id "12abc": ids must be positive integers',
+    )
+    expect(() => parseTopicIds(['0'])).toThrow('invalid topic id "0"')
+    expect(() => parseTopicIds(['-3'])).toThrow('invalid topic id "-3"')
+    // the FIRST offender is the one named, even when later tokens are also bad
+    expect(() => parseTopicIds(['5', '0', '-3'])).toThrow('invalid topic id "0"')
   })
 })

@@ -28,6 +28,21 @@ export function parseTier(raw: string): Tier {
   return raw as Tier
 }
 
+/**
+ * Validate `topics approve/reject` id arguments. Throws naming the FIRST bad
+ * token, BEFORE any db handle exists, so one typo means exit 1 with no writes.
+ * Canonical positive decimal integers only — "0", "-3", "12abc" all reject.
+ * Exported so cli.test.ts can assert it in-process.
+ */
+export function parseTopicIds(raw: string[]): number[] {
+  return raw.map((token) => {
+    if (!/^[1-9]\d*$/.test(token)) {
+      throw new Error(`invalid topic id "${token}": ids must be positive integers`)
+    }
+    return Number(token)
+  })
+}
+
 // Moved to src/jobs/pipeline.ts so the loop code (resume, produce-next) shares
 // the exact produce wiring; re-exported so in-process importers (cli.test.ts)
 // keep their import path.
