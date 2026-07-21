@@ -85,17 +85,26 @@ export async function mapWithConcurrency<T, R>(
 
 const KeyframeJudgmentSchema = z.object({ pass: z.boolean(), critique: z.string() });
 
+// Calibration matters here: a "strict" judge demanding exact compositional
+// fidelity rejected 21/21 objectively usable keyframes in the first real run
+// (2026-07-20) — image models approximate composition by nature. The keyframe
+// is a background visual behind narration and captions; the gate exists to
+// catch unusable images, not to art-direct pixel placement.
 const KEYFRAME_JUDGE_SYSTEM =
-  'You are a strict art director reviewing AI-generated keyframes for a short-form vertical video. ' +
-  'Judge only what is actually visible in the image.';
+  'You are a pragmatic art director reviewing AI-generated keyframes for a short-form vertical video. ' +
+  'The keyframe is a background visual behind narration and captions, not a technical illustration. ' +
+  'Judge only what is actually visible in the image, and approve anything usable.';
 
 function buildJudgePrompt(styleBlock: string, visualPrompt: string): string {
   return [
     'Review the attached keyframe candidate against its brief.',
     `Intended style: ${styleBlock}`,
     `Intended content: ${visualPrompt}`,
-    'Pass it only if the image clearly depicts the intended content, roughly matches the intended style, ' +
-      'and shows no mangled anatomy, garbled text, or incoherent composition.',
+    'Image models approximate: minor compositional deviations from the intended content are expected ' +
+      'and are NOT a reason to fail. Pass the image if it shows the right subject, roughly matches the ' +
+      'intended style, and is coherent.',
+    'Fail it ONLY for: the wrong subject entirely, mangled anatomy, garbled text, or an incoherent or ' +
+      'otherwise unusable composition.',
     'If it fails, set pass=false with one concrete, actionable critique for the next generation attempt; ' +
       'otherwise set pass=true with an empty critique.',
   ].join('\n\n');

@@ -484,3 +484,21 @@ describe('mapWithConcurrency', () => {
     expect(started.sort((a, b) => a - b)).toEqual([0, 1, 2, 3]);
   });
 });
+
+it('instructs the keyframe judge to tolerate compositional approximation (calibration)', async () => {
+  // Observed live 2026-07-20: a "strict art director" judge with "only if the
+  // image clearly depicts the intended content" rejected 21/21 objectively
+  // usable keyframes for pixel-level compositional deviations ($1.24 sunk,
+  // zero clips). The judge must gate on usability, not exact composition.
+  const channel = testChannel({
+    premium: { imageModel: 'test-image-model', videoModel: 'test-video-model', sceneConcurrency: 1 },
+  });
+  const ctx = premiumCtx(channel);
+  await seedArtifacts(ctx, scenesScript(1), 4_000);
+  await visualsPremiumStage.run(ctx);
+  const judgePrompt = vi.mocked(visionJudgment).mock.calls[0][0].prompt;
+  expect(judgePrompt).toContain('NOT a reason to fail');
+  expect(judgePrompt).toContain('Fail it ONLY for');
+  const judgeSystem = vi.mocked(visionJudgment).mock.calls[0][0].system;
+  expect(judgeSystem).not.toContain('strict art director');
+});
