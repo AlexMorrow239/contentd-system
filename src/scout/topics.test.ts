@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
-import { insertTopics } from './topics.js'
+import { insertTopics, knownHashes } from './topics.js'
 
 // Raw-insert seed: the DAO only ever writes status/job_id transitions, so
 // tests control every column (created_at included) directly.
@@ -131,6 +131,19 @@ describe('insertTopics', () => {
   it('returns 0 for an empty batch', () => {
     const db = openDb(':memory:')
     expect(insertTopics(db, [])).toBe(0)
+    db.close()
+  })
+})
+
+describe('knownHashes', () => {
+  it('returns only hashes already stored for that channel', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { channel: 'chan-a', dedupeHash: 'h1' })
+    // rejected rows are still "known" — they must never reach the scorer again
+    seedTopic(db, { channel: 'chan-a', dedupeHash: 'h2', status: 'rejected' })
+    seedTopic(db, { channel: 'chan-b', dedupeHash: 'h3' })
+    expect(knownHashes(db, 'chan-a', ['h1', 'h2', 'h3', 'h9'])).toEqual(new Set(['h1', 'h2']))
+    expect(knownHashes(db, 'chan-a', [])).toEqual(new Set())
     db.close()
   })
 })

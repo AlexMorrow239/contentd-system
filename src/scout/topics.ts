@@ -59,3 +59,17 @@ export function insertTopics(db: Database, rows: NewTopic[]): number {
   })
   return insertAll(rows)
 }
+
+// Pre-Haiku hash filter: any status counts as known (a rejected item must
+// never be re-scored). IN-list size is bounded by the scout's per-source
+// candidate caps, far under SQLite's bound-variable limit.
+export function knownHashes(db: Database, channel: string, hashes: string[]): Set<string> {
+  if (hashes.length === 0) return new Set()
+  const placeholders = hashes.map(() => '?').join(', ')
+  const rows = db
+    .prepare(
+      `SELECT dedupe_hash FROM topics WHERE channel = ? AND dedupe_hash IN (${placeholders})`,
+    )
+    .all(channel, ...hashes) as { dedupe_hash: string }[]
+  return new Set(rows.map((r) => r.dedupe_hash))
+}
