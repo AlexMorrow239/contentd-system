@@ -37,4 +37,7 @@ CREATE TABLE IF NOT EXISTS topics (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE (channel, dedupe_hash)
 );
+CREATE TABLE IF NOT EXISTS leases (
+  name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at TEXT NOT NULL
+);
 -- publishes table arrives in Plan 4.
