@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import { createJob, runJob } from './jobs/runner.js'
+import { resumeJob } from './jobs/resume.js'
 import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
 import { AllSourcesFailedError, scoutAll } from './scout/scout.js'
 import { openDb } from './db/index.js'
@@ -86,6 +87,35 @@ program
       db.close()
     }
   })
+
+program
+  .command('resume')
+  .argument('<jobId>', 'job id to resume (failed or blocked; running needs --force)')
+  .option('--db <path>', 'sqlite db path')
+  .option('--runs-root <path>', 'runs root directory', 'runs')
+  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .option('--force', 'resume a job stuck in running (asserts no live process holds it)')
+  .action(
+    async (
+      jobId: string,
+      opts: { db?: string; runsRoot: string; channelsDir: string; force?: boolean },
+    ) => {
+      const db = openDb(resolveDbPath(opts.db))
+      try {
+        const result = await resumeJob(db, jobId, {
+          runsRoot: opts.runsRoot,
+          channelsDir: opts.channelsDir,
+          force: opts.force,
+        })
+        process.stdout.write(JSON.stringify(result) + '\n')
+        // Mirror produce: 0 for ready/needs-review, 1 for failed AND blocked.
+        // A ResumeError skips the write and reaches the parseAsync catch (exit 1).
+        process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
+      } finally {
+        db.close()
+      }
+    },
+  )
 
 program
   .command('jobs')
