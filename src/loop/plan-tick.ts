@@ -15,7 +15,7 @@ export const RESUME_MIN_HEADROOM_USD_MICROS = 2_000_000
 export type TickPlan =
   | { kind: 'resume'; jobId: string; channel: string; tier: Tier }
   | { kind: 'produce'; channel: string; topicId: number; topic: string; tier: Tier }
-  | { kind: 'noop'; reason: 'no-eligible-work' }
+  | { kind: 'noop'; reason: 'no-eligible-work' | 'no-fal-key' }
 
 // Pure decision function: SELECTs only. produce-next executes the plan and
 // owns every write, so a crashed tick never leaves half a decision behind.
@@ -25,6 +25,7 @@ export function planTick(
   opts: { falKeyPresent: boolean },
 ): TickPlan {
   const byName = new Map(channels.map((c) => [c.name, c]))
+  let skippedForKey = false
 
   // RESUME PASS: blocked jobs were healthy when parked — recovering their
   // sunk cost beats spending on new work. Oldest first; an ineligible job is
@@ -40,7 +41,10 @@ export function planTick(
     if (channel === undefined) continue // channel TOML no longer in the dir
     // Resuming premium without the key would only convert a healthy parked
     // job into a failed one.
-    if (job.tier === 'premium' && !opts.falKeyPresent) continue
+    if (job.tier === 'premium' && !opts.falKeyPresent) {
+      skippedForKey = true
+      continue
+    }
     const channelRemainingMicros =
       channel.budget.perDayUsdMicros - channelDaySpentMicros(db, job.channel)
     if (channelRemainingMicros < RESUME_MIN_HEADROOM_USD_MICROS) continue
@@ -80,16 +84,22 @@ export function planTick(
   for (const { channel, volumeOpen, premiumOpen } of candidates) {
     const autoPremium = channel.scout.autoPremium
     // Premium first: scarce quality slots get the day's best material early.
-    // Without the FAL key premium is skipped outright — volume still flows.
-    if (premiumOpen && opts.falKeyPresent) {
+    // Without the FAL key an eligible premium topic is skipped — volume still
+    // flows — and the skip is remembered so an empty tick reports
+    // 'no-fal-key' instead of masquerading as a starved queue.
+    if (premiumOpen) {
       const topic = eligibleTopic(db, channel.name, 'premium', { autoPremium })
       if (topic !== null) {
-        return {
-          kind: 'produce',
-          channel: channel.name,
-          topicId: topic.id,
-          topic: topic.title,
-          tier: 'premium',
+        if (!opts.falKeyPresent) {
+          skippedForKey = true
+        } else {
+          return {
+            kind: 'produce',
+            channel: channel.name,
+            topicId: topic.id,
+            topic: topic.title,
+            tier: 'premium',
+          }
         }
       }
     }
@@ -107,5 +117,5 @@ export function planTick(
     }
   }
 
-  return { kind: 'noop', reason: 'no-eligible-work' }
+  return { kind: 'noop', reason: skippedForKey ? 'no-fal-key' : 'no-eligible-work' }
 }

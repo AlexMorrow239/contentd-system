@@ -157,10 +157,16 @@ describe('resume pass', () => {
 })
 
 describe('resume pass skip conditions', () => {
-  const cases: { reason: string; falKeyPresent: boolean; seed: (db: Database) => void }[] = [
+  const cases: {
+    reason: string
+    falKeyPresent: boolean
+    expected: 'no-eligible-work' | 'no-fal-key'
+    seed: (db: Database) => void
+  }[] = [
     {
       reason: 'the job is premium and the FAL key is absent',
       falKeyPresent: false,
+      expected: 'no-fal-key',
       seed: (db) => {
         seedJob(db, { id: 'job-parked', tier: 'premium', status: 'blocked' })
       },
@@ -168,6 +174,7 @@ describe('resume pass skip conditions', () => {
     {
       reason: 'channel-day headroom is under the resume minimum',
       falKeyPresent: true,
+      expected: 'no-eligible-work',
       seed: (db) => {
         seedJob(db, { id: 'job-parked', status: 'blocked' })
         // $20 channel-day cap − $18.50 spent today = $1.50 < $2 headroom
@@ -178,6 +185,7 @@ describe('resume pass skip conditions', () => {
     {
       reason: 'global-day headroom is under the resume minimum',
       falKeyPresent: true,
+      expected: 'no-eligible-work',
       seed: (db) => {
         seedJob(db, { id: 'job-parked', status: 'blocked' })
         // Jobless sentinel spend: invisible to the channel-day JOIN, counted
@@ -187,10 +195,13 @@ describe('resume pass skip conditions', () => {
     },
   ]
 
-  it.each(cases)('skips the blocked job when $reason', ({ falKeyPresent, seed }) => {
+  it.each(cases)('skips the blocked job when $reason', ({ falKeyPresent, expected, seed }) => {
     const db = openDb(':memory:')
     seed(db)
-    expect(planTick(db, [testChannel()], { falKeyPresent })).toEqual(NOOP)
+    expect(planTick(db, [testChannel()], { falKeyPresent })).toEqual({
+      kind: 'noop',
+      reason: expected,
+    })
     db.close()
   })
 })
@@ -360,6 +371,27 @@ describe('claim pass channel fairness', () => {
       channel: 'chan-b',
       topicId: bTopic,
     })
+    db.close()
+  })
+})
+
+describe('no-fal-key noop reason', () => {
+  it('surfaces the missing key when an approved topic waits on a premium-only channel', () => {
+    const db = openDb(':memory:')
+    // approved → volume-eligible too, but this channel has no volume slots,
+    // so the ONLY skipped work was premium work behind the missing key
+    seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
+    const ch = testChannel({ tierMix: { volume: 0, premium: 1 } })
+    expect(planTick(db, [ch], { falKeyPresent: false })).toEqual({
+      kind: 'noop',
+      reason: 'no-fal-key',
+    })
+    db.close()
+  })
+
+  it('stays no-eligible-work when nothing premium was skipped for the key', () => {
+    const db = openDb(':memory:')
+    expect(planTick(db, [testChannel()], { falKeyPresent: false })).toEqual(NOOP)
     db.close()
   })
 })
