@@ -158,7 +158,8 @@ describe('brainrot CLI', () => {
     const dbPath = tmpDbPath()
     const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-channels-'))
     cleanup.push(channelsDir)
-    writeFileSync(path.join(channelsDir, 'test.toml'), SCOUTLESS_TOML)
+    // filename must equal the channel name (loadChannelsDir invariant)
+    writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
     const result = await execa(
       'pnpm',
       ['exec', 'tsx', 'src/cli.ts', 'scout', '--db', dbPath, '--channels-dir', channelsDir],

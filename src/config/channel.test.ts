@@ -236,9 +236,11 @@ describe('loadChannelsDir', () => {
   }
 
   it('loads every *.toml sorted by channel name, ignoring other files', () => {
+    // filename basename must equal the channel name (load-bearing invariant),
+    // so name order is filename order — the sort still normalizes readdir order.
     const dir = writeDir({
-      'zzz.toml': named('alpha'), // filename order deliberately ≠ channel-name order
-      'aaa.toml': named('zeta'),
+      'alpha.toml': named('alpha'),
+      'zeta.toml': named('zeta'),
       'notes.txt': ['not a channel'],
     })
     const configs = loadChannelsDir(dir)
@@ -256,6 +258,24 @@ describe('loadChannelsDir', () => {
       'bad.toml': ['name = "broken"', 'niche = "not-an-array"'],
     })
     expect(() => loadChannelsDir(dir)).toThrow(/bad\.toml/)
+  })
+
+  it('throws when a file basename does not match its channel name, naming both', () => {
+    // The invariant is load-bearing: resumeJob resolves the TOML as
+    // <channelsDir>/<job.channel>.toml by filename, and planTick keys on name.
+    const dir = writeDir({ 'wrong-name.toml': named('actual') })
+    expect(() => loadChannelsDir(dir)).toThrow(/wrong-name/)
+    expect(() => loadChannelsDir(dir)).toThrow(/actual/)
+  })
+
+  it('throws when two files declare the same channel name, naming both files', () => {
+    const dir = writeDir({
+      'dup-a.toml': named('shared'),
+      'dup-b.toml': named('shared'),
+    })
+    expect(() => loadChannelsDir(dir)).toThrow(/duplicate channel name/)
+    expect(() => loadChannelsDir(dir)).toThrow(/dup-a\.toml/)
+    expect(() => loadChannelsDir(dir)).toThrow(/dup-b\.toml/)
   })
 
   it('throws when the directory does not exist', () => {

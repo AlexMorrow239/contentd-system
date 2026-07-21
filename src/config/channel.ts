@@ -1,5 +1,5 @@
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
 
@@ -192,18 +192,49 @@ export function loadChannelConfig(path: string): ChannelConfig {
  * Sorted by channel name (code-unit order, locale-independent) so tick
  * planning is deterministic. An unparseable file throws, naming the file:
  * a broken channel config is a config error, not a channel to skip.
+ *
+ * Enforces the load-bearing filename==name invariant: planTick/produce-next
+ * key on cfg.name, and resumeJob resolves the channel TOML as
+ * <channelsDir>/<job.channel>.toml BY FILENAME. A basename/name mismatch (or a
+ * name declared by two files) would wedge the loop — the resume pass would
+ * throw every tick before ever reaching the claim pass — so both are rejected
+ * loudly here at load time rather than silently at 3am in cron.
  */
 export function loadChannelsDir(dir: string): ChannelConfig[] {
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.toml'))
     .sort()
-  const configs = files.map((file) => {
+  const parsed = files.map((file) => {
     const path = join(dir, file)
     try {
-      return loadChannelConfig(path)
+      return { file, path, cfg: loadChannelConfig(path) }
     } catch (err) {
       throw new Error(`failed to load channel config ${path}: ${(err as Error).message}`)
     }
   })
-  return configs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  // Duplicate names first: two files claiming one name would make resume's
+  // by-filename lookup ambiguous and let one channel's config silently shadow
+  // the other. Checked before the basename guard so the operator sees the real
+  // problem (both offending files) rather than one file's basename mismatch.
+  const declaredBy = new Map<string, string>()
+  for (const { file, cfg } of parsed) {
+    const prior = declaredBy.get(cfg.name)
+    if (prior !== undefined) {
+      throw new Error(
+        `duplicate channel name "${cfg.name}" declared by both ${prior} and ${file}`,
+      )
+    }
+    declaredBy.set(cfg.name, file)
+  }
+  for (const { file, path, cfg } of parsed) {
+    const base = basename(file, '.toml')
+    if (base !== cfg.name) {
+      throw new Error(
+        `channel config ${path}: filename basename "${base}" must equal channel name "${cfg.name}" (rename to ${cfg.name}.toml)`,
+      )
+    }
+  }
+  return parsed
+    .map((p) => p.cfg)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 }
