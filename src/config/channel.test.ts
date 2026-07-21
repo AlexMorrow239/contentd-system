@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadChannelConfig } from './channel.js'
+import { DEFAULT_SCOUT, loadChannelConfig } from './channel.js'
 
 function writeToml(lines: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'chan-'))
@@ -144,5 +144,72 @@ describe('loadChannelConfig', () => {
 
   it('throws when the file does not exist', () => {
     expect(() => loadChannelConfig('channels/does-not-exist.toml')).toThrow()
+  })
+})
+
+describe('[scout] config', () => {
+  it('applies DEFAULT_SCOUT whole when the [scout] table is absent', () => {
+    const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
+    expect(cfg.scout).toEqual({
+      subreddits: [],
+      rss: [],
+      minScore: 60,
+      perSourceLimit: 25,
+      autoPremium: false,
+    })
+    expect(DEFAULT_SCOUT).toEqual({
+      subreddits: [],
+      rss: [],
+      minScore: 60,
+      perSourceLimit: 25,
+      autoPremium: false,
+    })
+  })
+
+  it('parses a full [scout] table into camelCase', () => {
+    const cfg = loadChannelConfig(
+      writeToml([
+        ...PLAN1_LINES,
+        '[scout]',
+        'subreddits = ["space", "askscience"]',
+        'rss = ["https://www.sciencedaily.com/rss/space_time.xml"]',
+        'min_score = 75',
+        'per_source_limit = 10',
+        'auto_premium = true',
+      ]),
+    )
+    expect(cfg.scout).toEqual({
+      subreddits: ['space', 'askscience'],
+      rss: ['https://www.sciencedaily.com/rss/space_time.xml'],
+      minScore: 75,
+      perSourceLimit: 10,
+      autoPremium: true,
+    })
+  })
+
+  it('applies per-field defaults inside a partial [scout] table', () => {
+    const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'subreddits = ["space"]']))
+    expect(cfg.scout).toEqual({
+      subreddits: ['space'],
+      rss: [],
+      minScore: 60,
+      perSourceLimit: 25,
+      autoPremium: false,
+    })
+  })
+
+  it('rejects out-of-range scout numbers', () => {
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'min_score = 101'])),
+    ).toThrow()
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'min_score = -1'])),
+    ).toThrow()
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'per_source_limit = 0'])),
+    ).toThrow()
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'per_source_limit = 101'])),
+    ).toThrow()
   })
 })

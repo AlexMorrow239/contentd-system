@@ -11,6 +11,7 @@ import { assembleStage, fitClipToWindow } from './assemble.js'
 import { testChannel } from './_testkit.js'
 import type { ScenesManifest } from './visuals-premium.js'
 import type { ShortVideoProps } from '../remotion-types.js'
+import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
 import type { JobContext } from '../jobs/types.js'
 
@@ -33,6 +34,7 @@ function makeChannel(bgmDir: string): ChannelConfig {
     bgmDir,
     budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
+    scout: { ...DEFAULT_SCOUT },
   }
 }
 

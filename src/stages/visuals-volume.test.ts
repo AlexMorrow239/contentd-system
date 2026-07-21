@@ -7,6 +7,7 @@ import pino from 'pino'
 import { openDb } from '../db/index.js'
 import { probe } from '../media/ffmpeg.js'
 import { visualsVolumeStage } from './visuals-volume.js'
+import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
 import type { JobContext } from '../jobs/types.js'
 
@@ -40,6 +41,7 @@ function makeChannel(bgDir: string): ChannelConfig {
     bgmDir: tmp('brainrot-bgm-'),
     budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
+    scout: { ...DEFAULT_SCOUT },
   }
 }
 

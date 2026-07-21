@@ -5,7 +5,7 @@ import pino from 'pino';
 import { openDb } from '../db/index.js';
 import { createJob } from '../jobs/runner.js';
 import type { JobContext } from '../jobs/types.js';
-import { DEFAULT_PREMIUM } from '../config/channel.js';
+import { DEFAULT_PREMIUM, DEFAULT_SCOUT } from '../config/channel.js';
 import type { ChannelConfig } from '../config/channel.js';
 import type { ScriptOutput } from './script.js';
 
@@ -42,6 +42,7 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
     bgmDir: 'assets/bgm',
     budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
+    scout: { ...DEFAULT_SCOUT },
     ...overrides,
   };
 }

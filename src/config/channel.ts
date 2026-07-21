@@ -23,6 +23,14 @@ export interface PremiumConfig {
   sceneConcurrency: number
 }
 
+export interface ScoutConfig {
+  subreddits: string[]
+  rss: string[]
+  minScore: number
+  perSourceLimit: number
+  autoPremium: boolean
+}
+
 export interface ChannelConfig {
   name: string
   niche: string[]
@@ -34,6 +42,7 @@ export interface ChannelConfig {
   bgmDir: string
   budget: { perVideoUsdMicros: number; premiumPerVideoUsdMicros: number; perDayUsdMicros: number }
   scriptModel: string
+  scout: ScoutConfig
 }
 
 /**
@@ -47,6 +56,19 @@ export const DEFAULT_PREMIUM: PremiumConfig = {
   imageModel: 'fal-ai/flux/dev',
   videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
   sceneConcurrency: 3,
+}
+
+/**
+ * Defaults for the [scout] TOML table: applied whole when the table is
+ * absent, per-field (via the zod defaults below) when it is partial. Empty
+ * source lists mean the scout skips this channel; manual produce still works.
+ */
+export const DEFAULT_SCOUT: ScoutConfig = {
+  subreddits: [],
+  rss: [],
+  minScore: 60,
+  perSourceLimit: 25,
+  autoPremium: false,
 }
 
 const DEFAULT_PREMIUM_PER_VIDEO_USD = 7.0
@@ -76,6 +98,15 @@ const rawSchema = z.object({
       video_model: z.string().default(DEFAULT_PREMIUM.videoModel),
       style_prefix: z.string().optional(),
       scene_concurrency: z.number().default(DEFAULT_PREMIUM.sceneConcurrency),
+    })
+    .optional(),
+  scout: z
+    .object({
+      subreddits: z.array(z.string()).default([]),
+      rss: z.array(z.string()).default([]),
+      min_score: z.number().int().min(0).max(100).default(DEFAULT_SCOUT.minScore),
+      per_source_limit: z.number().int().min(1).max(100).default(DEFAULT_SCOUT.perSourceLimit),
+      auto_premium: z.boolean().default(DEFAULT_SCOUT.autoPremium),
     })
     .optional(),
   caption_style: z.object({
@@ -138,5 +169,14 @@ export function loadChannelConfig(path: string): ChannelConfig {
       perDayUsdMicros: usdToMicros(raw.budget.per_day_usd),
     },
     scriptModel: raw.script_model,
+    scout: raw.scout
+      ? {
+          subreddits: raw.scout.subreddits,
+          rss: raw.scout.rss,
+          minScore: raw.scout.min_score,
+          perSourceLimit: raw.scout.per_source_limit,
+          autoPremium: raw.scout.auto_premium,
+        }
+      : { ...DEFAULT_SCOUT },
   }
 }

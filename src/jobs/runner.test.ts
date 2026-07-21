@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
+import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
 import { BudgetExceededError } from './costs.js'
 import { STAGE_ORDER } from './types.js'
@@ -34,6 +35,7 @@ function testChannel(): ChannelConfig {
     bgmDir: 'assets/bgm',
     budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
+    scout: { ...DEFAULT_SCOUT },
   }
 }
 
