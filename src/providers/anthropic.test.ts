@@ -184,3 +184,18 @@ describe('visionJudgment', () => {
     expect(data).toEqual({ issues: ['caption obscures subject'] });
   });
 });
+
+describe('strict tool schema enforcement', () => {
+  it('sends the emit tool with strict: true so the API constrains input to the schema', async () => {
+    // Observed live 2026-07-20: without strict mode, Sonnet stringifies large
+    // nested arrays (the scenes format) in ~half of forced tool calls, and the
+    // hand-written stringified JSON can carry typos the coercion cannot repair.
+    // strict: true makes non-conformant tool input structurally impossible.
+    const { client, create } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
+      usage: { input_tokens: 100, output_tokens: 200 },
+    });
+    await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client });
+    expect(create.mock.calls[0][0].tools[0].strict).toBe(true);
+  });
+});

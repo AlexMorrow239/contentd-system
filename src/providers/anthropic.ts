@@ -87,6 +87,13 @@ async function forcedToolCompletion<T>(opts: {
         name: 'emit',
         description: 'Return the structured result. You MUST call this tool exactly once.',
         input_schema: inputSchema,
+        // Constrained decoding: the API guarantees the tool input conforms to
+        // input_schema. Without it, Sonnet stringifies large nested arrays (the
+        // scenes format) in roughly half of forced tool calls, and hand-written
+        // stringified JSON can carry typos coerceJsonStrings cannot repair
+        // (observed live 2026-07-20: `"motionPrompt">` for `"motionPrompt":`).
+        // The coercion retry below stays as defense in depth.
+        strict: true,
       },
     ],
     tool_choice: { type: 'tool', name: 'emit' },
