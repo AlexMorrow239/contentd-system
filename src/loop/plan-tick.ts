@@ -48,8 +48,17 @@ export function planTick(
     return { kind: 'resume', jobId: job.id, channel: job.channel, tier: job.tier }
   }
 
-  // CLAIM PASS: new work from the topic queue.
+  // CLAIM PASS: a tier slot is consumed at job creation regardless of
+  // outcome — a deterministic failure must not burn the whole day's budget
+  // on retries.
+  const quotaStmt = db.prepare(
+    'SELECT COUNT(*) AS n FROM jobs WHERE channel = ? AND tier = ? ' +
+      "AND substr(created_at, 1, 10) = strftime('%Y-%m-%d','now')",
+  )
+  const jobsToday = (name: string, tier: Tier): number =>
+    (quotaStmt.get(name, tier) as { n: number }).n
   for (const channel of channels) {
+    if (jobsToday(channel.name, 'volume') >= channel.tierMix.volume) continue
     const topic = eligibleTopic(db, channel.name, 'volume', {
       autoPremium: channel.scout.autoPremium,
     })

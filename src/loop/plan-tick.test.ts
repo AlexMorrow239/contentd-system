@@ -209,3 +209,41 @@ describe('claim pass', () => {
     db.close()
   })
 })
+
+describe('claim pass quota', () => {
+  it.each(['queued', 'running', 'failed', 'done'])(
+    'a %s job created today consumes its tier slot',
+    (status) => {
+      const db = openDb(':memory:')
+      seedJob(db, { status })
+      seedTopic(db)
+      const ch = testChannel({ tierMix: { volume: 1, premium: 0 } })
+      expect(planTick(db, [ch], { falKeyPresent: true })).toEqual(NOOP)
+      db.close()
+    },
+  )
+
+  it('counts blocked jobs toward the claim quota too', () => {
+    const db = openDb(':memory:')
+    // Sentinel spend empties GLOBAL headroom so the resume pass skips the
+    // blocked job; the claim pass must then see its slot as taken.
+    seedJob(db, { status: 'blocked' })
+    recordCost(db, 'scout:test', 'anthropic', 'scout-score', 23_500_000)
+    seedTopic(db)
+    const ch = testChannel({ tierMix: { volume: 1, premium: 0 } })
+    expect(planTick(db, [ch], { falKeyPresent: true })).toEqual(NOOP)
+    db.close()
+  })
+
+  it('ignores jobs from previous UTC days', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { status: 'failed', createdAt: '2020-01-01T00:00:00.000Z' })
+    const topicId = seedTopic(db)
+    const ch = testChannel({ tierMix: { volume: 1, premium: 0 } })
+    expect(planTick(db, [ch], { falKeyPresent: true })).toMatchObject({
+      kind: 'produce',
+      topicId,
+    })
+    db.close()
+  })
+})
