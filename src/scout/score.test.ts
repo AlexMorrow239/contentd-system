@@ -91,3 +91,40 @@ describe('scoreCandidates', () => {
     expect(result.costUsdMicros).toBe(1000 * 1 + 500 * 5)
   })
 })
+
+describe('scoreCandidates normalization', () => {
+  it('drops out-of-range indexes, keeps the first duplicate, fills absentees with score 0', async () => {
+    const { client } = fakeClient(
+      emit([
+        { candidateIndex: 7, score: 99, topic: 'Ghost entry', reason: 'out of range' },
+        { candidateIndex: 1, score: 80, topic: 'Kept entry', reason: 'first wins' },
+        { candidateIndex: 1, score: 10, topic: 'Dropped dupe', reason: 'second loses' },
+      ]),
+    )
+    const result = await scoreCandidates({
+      candidates: [candidate(0), candidate(1), candidate(2)],
+      niche: ['space facts'],
+      recentTitles: [],
+      client,
+    })
+    expect(result.scored).toEqual([
+      { candidateIndex: 0, score: 0, topic: 'Headline 0', reason: 'not scored' },
+      { candidateIndex: 1, score: 80, topic: 'Kept entry', reason: 'first wins' },
+      { candidateIndex: 2, score: 0, topic: 'Headline 2', reason: 'not scored' },
+    ])
+  })
+
+  it('an empty scores list falls back to all zero-score entries', async () => {
+    const { client } = fakeClient(emit([]))
+    const result = await scoreCandidates({
+      candidates: [candidate(0), candidate(1)],
+      niche: ['space facts'],
+      recentTitles: [],
+      client,
+    })
+    expect(result.scored).toEqual([
+      { candidateIndex: 0, score: 0, topic: 'Headline 0', reason: 'not scored' },
+      { candidateIndex: 1, score: 0, topic: 'Headline 1', reason: 'not scored' },
+    ])
+  })
+})

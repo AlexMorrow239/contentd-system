@@ -80,5 +80,17 @@ export async function scoreCandidates(opts: {
     maxTokens: SCOUT_MAX_TOKENS,
     client: opts.client,
   })
-  return { scored: data.scores, costUsdMicros: cost.usdMicros }
+  // The model's list is untrusted: out-of-range indexes are dropped, a
+  // duplicated index keeps its first entry, and any candidate the model
+  // skipped scores 0 — it lands 'rejected' in the queue instead of vanishing.
+  const byIndex = new Map<number, ScoredCandidate>()
+  for (const entry of data.scores) {
+    if (entry.candidateIndex >= opts.candidates.length) continue
+    if (byIndex.has(entry.candidateIndex)) continue
+    byIndex.set(entry.candidateIndex, entry)
+  }
+  const scored = opts.candidates.map(
+    (c, i) => byIndex.get(i) ?? { candidateIndex: i, score: 0, topic: c.title, reason: 'not scored' },
+  )
+  return { scored, costUsdMicros: cost.usdMicros }
 }
