@@ -19,13 +19,15 @@ export interface ScoredCandidate {
   reason: string
 }
 
-// Constraint-light on purpose (int + range only): quality rules live in the
-// prompt, keeping the forced-tool input_schema simple.
+// No numeric bounds here: the strict tool-schema mode rejects minimum/maximum
+// on integer properties (live 400: "For 'integer' type, properties maximum,
+// minimum are not supported"). Range rules live in the prompt and are enforced
+// by normalization below — negative indexes are dropped, scores clamped 0-100.
 const ScoresSchema = z.object({
   scores: z.array(
     z.object({
-      candidateIndex: z.number().int().min(0),
-      score: z.number().int().min(0).max(100),
+      candidateIndex: z.number().int(),
+      score: z.number().int(),
       topic: z.string().min(1),
       reason: z.string().min(1),
     }),
@@ -80,14 +82,18 @@ export async function scoreCandidates(opts: {
     maxTokens: SCOUT_MAX_TOKENS,
     client: opts.client,
   })
-  // The model's list is untrusted: out-of-range indexes are dropped, a
-  // duplicated index keeps its first entry, and any candidate the model
+  // The model's list is untrusted: out-of-range indexes (either side) are
+  // dropped, scores are clamped to 0-100 (the wire schema cannot carry bounds),
+  // a duplicated index keeps its first entry, and any candidate the model
   // skipped scores 0 — it lands 'rejected' in the queue instead of vanishing.
   const byIndex = new Map<number, ScoredCandidate>()
   for (const entry of data.scores) {
-    if (entry.candidateIndex >= opts.candidates.length) continue
+    if (entry.candidateIndex < 0 || entry.candidateIndex >= opts.candidates.length) continue
     if (byIndex.has(entry.candidateIndex)) continue
-    byIndex.set(entry.candidateIndex, entry)
+    byIndex.set(entry.candidateIndex, {
+      ...entry,
+      score: Math.min(100, Math.max(0, entry.score)),
+    })
   }
   const scored = opts.candidates.map(
     (c, i) => byIndex.get(i) ?? { candidateIndex: i, score: 0, topic: c.title, reason: 'not scored' },

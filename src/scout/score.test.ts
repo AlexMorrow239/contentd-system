@@ -64,6 +64,11 @@ describe('scoreCandidates', () => {
     expect(sent.max_tokens).toBe(SCOUT_MAX_TOKENS)
     expect(sent.tool_choice).toEqual({ type: 'tool', name: 'emit' })
     expect(sent.tools[0].input_schema.required).toContain('scores')
+    // strict tool schemas reject minimum/maximum on integer properties
+    // (observed live: 400 invalid_request_error "For 'integer' type, properties
+    // maximum, minimum are not supported"). Bounds live in normalization instead.
+    expect(JSON.stringify(sent.tools[0].input_schema)).not.toContain('"minimum"')
+    expect(JSON.stringify(sent.tools[0].input_schema)).not.toContain('"maximum"')
     expect(sent.system).toContain('space facts, astronomy')
     const prompt = sent.messages[0].content as string
     // numbered list: index, sourceId, raw title — one line per candidate
@@ -111,6 +116,26 @@ describe('scoreCandidates normalization', () => {
       { candidateIndex: 0, score: 0, topic: 'Headline 0', reason: 'not scored' },
       { candidateIndex: 1, score: 80, topic: 'Kept entry', reason: 'first wins' },
       { candidateIndex: 2, score: 0, topic: 'Headline 2', reason: 'not scored' },
+    ])
+  })
+
+  it('clamps out-of-bounds scores and drops negative indexes (bounds left out of the wire schema)', async () => {
+    const { client } = fakeClient(
+      emit([
+        { candidateIndex: -1, score: 50, topic: 'Negative ghost', reason: 'dropped' },
+        { candidateIndex: 0, score: 150, topic: 'Too hot', reason: 'clamped down' },
+        { candidateIndex: 1, score: -20, topic: 'Too cold', reason: 'clamped up' },
+      ]),
+    )
+    const result = await scoreCandidates({
+      candidates: [candidate(0), candidate(1)],
+      niche: ['space facts'],
+      recentTitles: [],
+      client,
+    })
+    expect(result.scored).toEqual([
+      { candidateIndex: 0, score: 100, topic: 'Too hot', reason: 'clamped down' },
+      { candidateIndex: 1, score: 0, topic: 'Too cold', reason: 'clamped up' },
     ])
   })
 
