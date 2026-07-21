@@ -75,6 +75,9 @@ export function rssSource(feedUrl: string, fetchImpl: FetchLike = fetch): TrendS
     id,
     async fetch(opts: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
       const res = await fetchImpl(feedUrl, { signal: AbortSignal.timeout(opts.timeoutMs) })
+      if (!res.ok) {
+        throw new Error(`rssSource: ${feedUrl} responded ${res.status}`)
+      }
       const doc = parser.parse(await res.text()) as ParsedFeed
       let candidates: TrendCandidate[]
       if (doc.rss?.channel !== undefined) {

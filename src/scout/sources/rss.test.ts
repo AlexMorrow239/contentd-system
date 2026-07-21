@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { rssSource } from './rss.js'
+import type { FetchLike } from './types.js'
 
 // Injectable fetch: captures every call, answers with one canned XML response.
 function fakeFetch(status: number, body: string) {
@@ -81,6 +82,13 @@ describe('rssSource', () => {
       'ex-a-2026',
       'https://feeds.example.com/releases/b.htm',
     ])
+  })
+
+  it('rejects when the fetch times out, so the orchestrator can isolate it', async () => {
+    const impl: FetchLike = () =>
+      Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+    const source = rssSource('https://feeds.example.com/space.xml', impl)
+    await expect(source.fetch({ limit: 25, timeoutMs: 10 })).rejects.toThrow(/timeout/i)
   })
 })
 
@@ -194,5 +202,21 @@ describe('rssSource single-item normalization', () => {
       fakeFetch(200, RSS_EMPTY).impl,
     ).fetch(OPTS)
     expect(empty).toEqual([])
+  })
+})
+
+describe('rssSource error paths', () => {
+  it('throws with the HTTP status on a non-2xx response', async () => {
+    const { impl } = fakeFetch(404, 'Not Found')
+    await expect(
+      rssSource('https://feeds.example.com/gone.xml', impl).fetch(OPTS),
+    ).rejects.toThrow(/responded 404/)
+  })
+
+  it('throws on a document that is neither RSS nor Atom', async () => {
+    const { impl } = fakeFetch(200, '<html><body>maintenance page</body></html>')
+    await expect(
+      rssSource('https://feeds.example.com/space.xml', impl).fetch(OPTS),
+    ).rejects.toThrow(/not a recognized RSS 2.0 or Atom feed/)
   })
 })
