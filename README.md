@@ -86,6 +86,50 @@ pnpm brainrot jobs    # last 20 jobs
 pnpm brainrot costs   # per-day USD totals, last 7 days
 ```
 
+## Automation (cron)
+
+The production loop is three cron-invoked commands: `scout` fills the topic
+queue, `produce-next` performs one unit of work per tick (resume one blocked
+job or produce one video), and `digest` prints a daily report. Paste into
+`crontab -e`, adjusting the paths:
+
+```cron
+# cron runs with a bare PATH (/usr/bin:/bin): pnpm, node, and ffmpeg do not
+# resolve without this line. Find your dirs with `which pnpm` / `which ffmpeg`.
+PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
+
+# Digest delivery is operator wiring: cron mails each job's output to MAILTO
+# (needs working local mail), or replace the digest line with a pipe into
+# your notifier of choice.
+MAILTO=you@example.com
+
+# Scout trends into the topic queue, 3x/day at 07:00 / 12:00 / 17:00.
+0 7,12,17 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot scout >> logs/scout.log 2>&1
+
+# One unit of production per tick (*/25 fires at :00, :25 and :50 each hour).
+*/25 * * * * cd /Users/alex/code/project-brainrot && pnpm brainrot produce-next >> logs/produce-next.log 2>&1
+
+# Daily digest at 08:00 — stdout goes to MAILTO; nothing else delivers it.
+0 8 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot digest
+```
+
+- **`cd` into the repo, absolute paths only.** Every entry `cd`s to the repo
+  root first so `.env` (dotenv), `channels/`, `data/brainrot.db`, `runs/`,
+  and `logs/` all resolve. Replace `/Users/alex/code/project-brainrot` with
+  your absolute repo path and run `mkdir -p logs` in the repo once before
+  the first firing. If you would rather not set `PATH`, use the absolute
+  binary path from `which pnpm` in each entry instead.
+- **The quota/cap day is UTC.** Daily tier quotas and the spend caps share
+  the cost ledger's UTC day boundary, so "today" flips at midnight UTC —
+  7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern — not at
+  local midnight. Expect fresh quota slots and budget headroom in the early
+  evening.
+- **Premium stays gated.** `produce-next` only claims premium topics you
+  have approved (`pnpm brainrot topics approve <id>`) unless the channel
+  TOML sets `auto_premium = true` under `[scout]`; volume flows unattended.
+  A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
+  render from the previous firing is still running.
+
 ## Tests
 
 ```bash
