@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { assertPremiumPreflight as cliPreflight, stagesForTier as cliStages } from '../cli.js'
 import { STAGE_ORDER } from './types.js'
-import type { Tier } from './types.js'
+import type { JobContext, StageDef, Tier } from './types.js'
 import { assertPremiumPreflight, stagesForTier } from './pipeline.js'
 import { ResumeError, resumeJob } from './resume.js'
 
@@ -96,6 +96,27 @@ describe('resumeJob', () => {
     return id
   }
 
+  // Fake happy-path stages, mirroring runner.test.ts: assemble writes
+  // final.mp4, qc writes a passing qc.json, everything else drops a marker.
+  function fakeStages(calls: string[] = []): StageDef[] {
+    return STAGE_ORDER.map((name) => ({
+      name,
+      async run(ctx: JobContext) {
+        calls.push(name)
+        if (name === 'assemble') {
+          writeFileSync(ctx.artifactPath('assemble', 'final.mp4'), 'FAKEMP4')
+        } else if (name === 'qc') {
+          writeFileSync(
+            ctx.artifactPath('qc', 'qc.json'),
+            JSON.stringify({ passed: true, checks: [] }),
+          )
+        } else {
+          writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
+        }
+      },
+    }))
+  }
+
   it('refuses a missing job', async () => {
     await expect(resumeJob(db, 'no-such-job', { runsRoot, channelsDir })).rejects.toThrow(
       ResumeError,
@@ -134,5 +155,78 @@ describe('resumeJob', () => {
     await expect(resumeJob(db, 'job-failed', { runsRoot, channelsDir })).rejects.toThrow(
       /ghost-channel\.toml/,
     )
+  })
+
+  it('resumes a failed job via the stagesFor seam and flips its claimed topic to used', async () => {
+    const jobId = seedJob('failed')
+    // A claimed topic bound to this job — the row claimTopic leaves behind.
+    db.prepare(
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) ' +
+        "VALUES ('resume-test', 'T', 'R', 's', 'u', 'h1', 80, 'r', 'claimed', ?)",
+    ).run(jobId)
+    const calls: string[] = []
+    const stagesFor = vi.fn((_tier: Tier) => fakeStages(calls))
+    const result = await resumeJob(db, jobId, { runsRoot, channelsDir, stagesFor })
+    expect(result.status).toBe('ready')
+    expect(result.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
+    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
+    // the seam receives the job row's tier, not a caller guess
+    expect(stagesFor).toHaveBeenCalledWith('volume')
+    const topic = db.prepare('SELECT status FROM topics WHERE job_id = ?').get(jobId) as {
+      status: string
+    }
+    expect(topic.status).toBe('used')
+  })
+
+  it('resumes a blocked job, skipping stages already done', async () => {
+    const jobId = seedJob('blocked')
+    db.prepare(
+      "UPDATE job_stages SET status = 'done' WHERE job_id = ? AND stage IN ('script','voice')",
+    ).run(jobId)
+    const calls: string[] = []
+    const result = await resumeJob(db, jobId, {
+      runsRoot,
+      channelsDir,
+      stagesFor: () => fakeStages(calls),
+    })
+    expect(result.status).toBe('ready')
+    // the runner's skip-done resume: sunk stages are not re-run
+    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc'])
+  })
+
+  it('running + force proceeds (no claimed topic → silent no-op on the flip)', async () => {
+    const jobId = seedJob('running')
+    const result = await resumeJob(db, jobId, {
+      runsRoot,
+      channelsDir,
+      force: true,
+      stagesFor: () => fakeStages(),
+    })
+    expect(result.status).toBe('ready')
+  })
+
+  it('leaves the claimed topic bound when the resume fails again', async () => {
+    const jobId = seedJob('failed')
+    db.prepare(
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) ' +
+        "VALUES ('resume-test', 'T', 'R', 's', 'u', 'h2', 80, 'r', 'claimed', ?)",
+    ).run(jobId)
+    const failing: StageDef[] = STAGE_ORDER.map((name) => ({
+      name,
+      async run() {
+        throw new Error('still broken')
+      },
+    }))
+    const result = await resumeJob(db, jobId, {
+      runsRoot,
+      channelsDir,
+      stagesFor: () => failing,
+    })
+    expect(result.status).toBe('failed')
+    const topic = db.prepare('SELECT status FROM topics WHERE job_id = ?').get(jobId) as {
+      status: string
+    }
+    // still bound to its job: the resume path owns recovery, never re-claiming
+    expect(topic.status).toBe('claimed')
   })
 })

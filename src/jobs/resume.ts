@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../config/channel.js'
+import { markTopicUsedByJob } from '../scout/topics.js'
 import { stagesForTier } from './pipeline.js'
 import { runJob } from './runner.js'
 import type { JobResult } from './runner.js'
@@ -46,5 +47,11 @@ export async function resumeJob(
   // The runner's skip-done-stages resume recovers the sunk cost; the stage
   // list is the exact produce wiring unless a test injects its own.
   const stages = opts.stagesFor?.(job.tier) ?? stagesForTier(job.tier)
-  return runJob(db, channel, jobId, stages, { runsRoot: opts.runsRoot })
+  const result = await runJob(db, channel, jobId, stages, { runsRoot: opts.runsRoot })
+  // Library-landed (ready | needs-review) consumes the claimed topic; a
+  // manual produce job has no claimed topic and this is a silent no-op.
+  if (result.status === 'ready' || result.status === 'needs-review') {
+    markTopicUsedByJob(db, jobId)
+  }
+  return result
 }
