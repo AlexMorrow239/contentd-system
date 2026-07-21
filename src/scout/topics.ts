@@ -190,3 +190,23 @@ export function listTopics(
     .all(...params) as DbTopicRow[]
   return rows.map(toTopicRow)
 }
+
+// Volume consumes the whole queue; premium takes operator-approved topics
+// only, unless the channel lifts the gate with auto_premium (design spec §5).
+export function eligibleTopic(
+  db: Database,
+  channel: string,
+  tier: Tier,
+  opts: { autoPremium: boolean },
+): TopicRow | null {
+  const statuses =
+    tier === 'premium' && !opts.autoPremium ? ['approved'] : ['candidate', 'approved']
+  const placeholders = statuses.map(() => '?').join(', ')
+  const row = db
+    .prepare(
+      `SELECT ${TOPIC_COLUMNS} FROM topics WHERE channel = ? AND status IN (${placeholders}) ` +
+        'ORDER BY score DESC, created_at ASC, id ASC LIMIT 1',
+    )
+    .get(channel, ...statuses) as DbTopicRow | undefined
+  return row === undefined ? null : toTopicRow(row)
+}

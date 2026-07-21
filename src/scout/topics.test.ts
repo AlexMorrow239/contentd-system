@@ -4,6 +4,7 @@ import { openDb } from '../db/index.js'
 import {
   approveTopics,
   claimTopic,
+  eligibleTopic,
   insertTopics,
   knownHashes,
   listTopics,
@@ -314,6 +315,38 @@ describe('listTopics', () => {
     expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(2)
     expect(listTopics(db, { status: 'approved' })).toHaveLength(2)
     expect(listTopics(db, { channel: 'chan-a', status: 'approved' })).toHaveLength(1)
+    db.close()
+  })
+})
+
+describe('eligibleTopic', () => {
+  it('volume takes candidate or approved, highest score first', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { score: 70, status: 'candidate', title: 'runner-up' })
+    seedTopic(db, { score: 90, status: 'approved', title: 'winner' })
+    seedTopic(db, { score: 95, status: 'rejected', title: 'rejected' })
+    seedTopic(db, { score: 99, status: 'used', title: 'used' })
+    seedTopic(db, { score: 99, status: 'claimed', title: 'claimed', jobId: 'job-1' })
+    const pick = eligibleTopic(db, 'chan-a', 'volume', { autoPremium: false })
+    expect(pick?.title).toBe('winner')
+    db.close()
+  })
+
+  it('premium requires approved unless autoPremium lifts the gate', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { score: 95, status: 'candidate', title: 'unapproved' })
+    seedTopic(db, { score: 60, status: 'approved', title: 'approved' })
+    expect(eligibleTopic(db, 'chan-a', 'premium', { autoPremium: false })?.title).toBe('approved')
+    expect(eligibleTopic(db, 'chan-a', 'premium', { autoPremium: true })?.title).toBe('unapproved')
+    db.close()
+  })
+
+  it('breaks score ties oldest first and returns null on an empty queue', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { score: 80, createdAt: '2026-07-20T02:00:00.000Z', title: 'later' })
+    seedTopic(db, { score: 80, createdAt: '2026-07-20T01:00:00.000Z', title: 'earlier' })
+    expect(eligibleTopic(db, 'chan-a', 'volume', { autoPremium: false })?.title).toBe('earlier')
+    expect(eligibleTopic(db, 'chan-b', 'volume', { autoPremium: false })).toBeNull()
     db.close()
   })
 })
