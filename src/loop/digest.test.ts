@@ -156,3 +156,59 @@ describe('buildDigest — spend section', () => {
     db.close()
   })
 })
+
+describe('buildDigest — action items', () => {
+  it('lists failed jobs and flags running jobs older than the zombie threshold', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-dead', tier: 'premium', status: 'failed' })
+    // 3h-old running job: past ZOMBIE_RUNNING_MS (2h) — flagged
+    seedJob(db, { id: 'j-zombie', status: 'running', createdAt: isoAgo(3 * HOUR_MS) })
+    // 1h-old running job: healthy — must NOT be flagged
+    seedJob(db, { id: 'j-live', status: 'running', createdAt: isoAgo(HOUR_MS) })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain('Action items')
+    expect(digest).toContain('  failed job j-dead (chan-a, premium) — resume manually')
+    expect(digest).toContain(
+      '  running job j-zombie (chan-a, volume) running > 2h — probably crashed — resume with --force',
+    )
+    expect(digest).not.toContain('j-live')
+    db.close()
+  })
+
+  it('reports approved and candidate queue depths per channel', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { dedupeHash: 'h1', status: 'approved' })
+    seedTopic(db, { dedupeHash: 'h2', status: 'approved' })
+    seedTopic(db, { dedupeHash: 'h3', status: 'candidate' })
+    seedTopic(db, { channel: 'chan-b', dedupeHash: 'h4', status: 'candidate' })
+    // claimed/used topics are neither queued nor awaiting approval
+    seedTopic(db, { dedupeHash: 'h5', status: 'used' })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain('  chan-a: 2 approved premium topics queued')
+    expect(digest).toContain('  chan-a: 1 candidate topics awaiting approval')
+    expect(digest).toContain('  chan-b: 1 candidate topics awaiting approval')
+    db.close()
+  })
+
+  it('prints none when there are no action items', () => {
+    const db = openDb(':memory:')
+    expect(buildDigest(db, [])).toContain('Action items\n  none')
+    db.close()
+  })
+})
+
+describe('buildDigest — section order', () => {
+  it('emits the four sections in the pinned order', () => {
+    const db = openDb(':memory:')
+    const digest = buildDigest(db, [])
+    const positions = [
+      digest.indexOf('Topics (last 24h)'),
+      digest.indexOf('Jobs (last 24h)'),
+      digest.indexOf('Spend today (UTC)'),
+      digest.indexOf('Action items'),
+    ]
+    expect(positions.every((p) => p >= 0)).toBe(true)
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions)
+    db.close()
+  })
+})

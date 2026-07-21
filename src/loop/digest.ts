@@ -92,5 +92,46 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
   }
   lines.push(`  global: ${usd(globalDaySpentMicros(db))} of ${usd(globalDailyCapMicros())}`)
 
+  lines.push('', 'Action items')
+  const sectionStart = lines.length
+  // Current state, not last-24h: a failed job awaits manual resume until the
+  // operator acts, however old it is.
+  const failedJobs = db
+    .prepare("SELECT id, channel, tier FROM jobs WHERE status = 'failed' ORDER BY created_at ASC")
+    .all() as { id: string; channel: string; tier: string }[]
+  for (const j of failedJobs) {
+    lines.push(`  failed job ${j.id} (${j.channel}, ${j.tier}) — resume manually`)
+  }
+  // Both sides are ISO-8601 UTC with millisecond 'Z' (schema default shape),
+  // so a lexicographic compare is a time compare.
+  const zombieCutoff = new Date(Date.now() - ZOMBIE_RUNNING_MS).toISOString()
+  const zombies = db
+    .prepare(
+      "SELECT id, channel, tier FROM jobs WHERE status = 'running' AND created_at <= ? ORDER BY created_at ASC",
+    )
+    .all(zombieCutoff) as { id: string; channel: string; tier: string }[]
+  for (const j of zombies) {
+    lines.push(
+      `  running job ${j.id} (${j.channel}, ${j.tier}) running > ${ZOMBIE_RUNNING_MS / 3_600_000}h — probably crashed — resume with --force`,
+    )
+  }
+  const approvedDepth = db
+    .prepare(
+      "SELECT channel, COUNT(*) AS n FROM topics WHERE status = 'approved' GROUP BY channel ORDER BY channel",
+    )
+    .all() as { channel: string; n: number }[]
+  for (const r of approvedDepth) {
+    lines.push(`  ${r.channel}: ${r.n} approved premium topics queued`)
+  }
+  const candidateDepth = db
+    .prepare(
+      "SELECT channel, COUNT(*) AS n FROM topics WHERE status = 'candidate' GROUP BY channel ORDER BY channel",
+    )
+    .all() as { channel: string; n: number }[]
+  for (const r of candidateDepth) {
+    lines.push(`  ${r.channel}: ${r.n} candidate topics awaiting approval`)
+  }
+  if (lines.length === sectionStart) lines.push('  none')
+
   return lines.join('\n')
 }
