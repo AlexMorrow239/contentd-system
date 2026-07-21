@@ -31,12 +31,15 @@ export async function resumeJob(
   if (job.status === 'done') {
     throw new ResumeError(`job ${jobId} is already done; nothing to resume`)
   }
-  if (job.status === 'queued') {
-    throw new ResumeError(`job ${jobId} never started; queued jobs are not resumable`)
-  }
-  // 'running' usually means a live process holds the job; --force is the
-  // operator asserting that process crashed (the digest flags such zombies).
+  // 'queued' IS resumable: a crash (or SQLITE_BUSY) between produce-next's
+  // claim transaction committing and runJob's first status write strands the
+  // job 'queued' with every stage still pending — resuming it is simply a full
+  // run. planTick ignores such jobs (it only surfaces 'blocked'), so without
+  // this the strand would burn a quota slot invisibly forever; the digest
+  // flags it (STRANDED_QUEUED_MS) so an operator knows to run `resume`.
   if (job.status === 'running' && !opts.force) {
+    // 'running' usually means a live process holds the job; --force is the
+    // operator asserting that process crashed (the digest flags such zombies).
     throw new ResumeError(`job ${jobId} is running; pass --force if no live process holds it`)
   }
   const channelPath = join(opts.channelsDir, `${job.channel}.toml`)

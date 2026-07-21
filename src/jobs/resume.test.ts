@@ -127,15 +127,31 @@ describe('resumeJob', () => {
     )
   })
 
-  it('refuses done and queued jobs', async () => {
+  it('refuses a done job', async () => {
     seedJob('done')
-    seedJob('queued')
     await expect(resumeJob(db, 'job-done', { runsRoot, channelsDir })).rejects.toThrow(
       ResumeError,
     )
-    await expect(resumeJob(db, 'job-queued', { runsRoot, channelsDir })).rejects.toThrow(
-      ResumeError,
-    )
+  })
+
+  it('resumes a queued job (crash before first status write): runs all stages and lands the library row', async () => {
+    // A crash (or SQLITE_BUSY) between produce-next's claim transaction
+    // committing (job 'queued', topic 'claimed') and runJob's first status
+    // write strands the job 'queued'. resumeJob now accepts it: every stage is
+    // still pending, so it is simply a full run.
+    const jobId = seedJob('queued')
+    const calls: string[] = []
+    const result = await resumeJob(db, jobId, {
+      runsRoot,
+      channelsDir,
+      stagesFor: () => fakeStages(calls),
+    })
+    expect(result.status).toBe('ready')
+    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as
+      | { state: string }
+      | undefined
+    expect(lib?.state).toBe('ready')
   })
 
   it('refuses a running job without force, naming --force in the message', async () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { testChannel } from '../stages/_testkit.js'
-import { buildDigest, ZOMBIE_RUNNING_MS } from './digest.js'
+import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from './digest.js'
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
@@ -70,6 +70,10 @@ afterEach(() => {
 describe('buildDigest — topics section', () => {
   it('exports the 2h zombie constant', () => {
     expect(ZOMBIE_RUNNING_MS).toBe(7_200_000)
+  })
+
+  it('exports the 1h stranded-queued constant', () => {
+    expect(STRANDED_QUEUED_MS).toBe(3_600_000)
   })
 
   it('counts last-24h topics per channel by status, excluding older rows', () => {
@@ -172,6 +176,21 @@ describe('buildDigest — action items', () => {
       '  running job j-zombie (chan-a, volume) running > 2h — probably crashed — resume with --force',
     )
     expect(digest).not.toContain('j-live')
+    db.close()
+  })
+
+  it('flags a queued job stranded before start and not a freshly claimed one', () => {
+    const db = openDb(':memory:')
+    // 2h-old queued: past STRANDED_QUEUED_MS (1h) — crashed before runJob's
+    // first status write, invisible to resume/planTick, flagged here.
+    seedJob(db, { id: 'j-stranded', status: 'queued', createdAt: isoAgo(2 * HOUR_MS) })
+    // just-claimed queued (runJob about to flip it 'running') — must NOT flag.
+    seedJob(db, { id: 'j-fresh', status: 'queued', createdAt: isoAgo(0) })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain(
+      '  queued job j-stranded (chan-a, volume) — stranded before start — resume with brainrot resume j-stranded',
+    )
+    expect(digest).not.toContain('j-fresh')
     db.close()
   })
 

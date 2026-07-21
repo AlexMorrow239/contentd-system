@@ -11,6 +11,13 @@ import {
 // touches running jobs; the operator resumes with --force.
 export const ZOMBIE_RUNNING_MS = 7_200_000 // 2 h
 
+// A job still 'queued' this long after creation was almost certainly stranded
+// by a crash (or SQLITE_BUSY) between produce-next's claim transaction commit
+// and runJob's first status write. resumeJob now accepts such jobs, but nothing
+// auto-surfaces them (planTick only acts on 'blocked'), so the digest is the
+// only place the strand becomes visible. Real runs flip off 'queued' in ms.
+export const STRANDED_QUEUED_MS = 3_600_000 // 1 h
+
 // Display-only conversion — everything upstream stays integer micro-USD.
 function usd(micros: number): string {
   return `$${(micros / 1e6).toFixed(2)}`
@@ -113,6 +120,21 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
   for (const j of zombies) {
     lines.push(
       `  running job ${j.id} (${j.channel}, ${j.tier}) running > ${ZOMBIE_RUNNING_MS / 3_600_000}h — probably crashed — resume with --force`,
+    )
+  }
+  // Same created_at age mechanism as the zombie check (ISO-8601 UTC, so a
+  // lexicographic compare is a time compare): a job stuck 'queued' past the
+  // threshold was stranded before its first status write and only resume can
+  // recover it.
+  const strandedCutoff = new Date(Date.now() - STRANDED_QUEUED_MS).toISOString()
+  const strandedQueued = db
+    .prepare(
+      "SELECT id, channel, tier FROM jobs WHERE status = 'queued' AND created_at <= ? ORDER BY created_at ASC",
+    )
+    .all(strandedCutoff) as { id: string; channel: string; tier: string }[]
+  for (const j of strandedQueued) {
+    lines.push(
+      `  queued job ${j.id} (${j.channel}, ${j.tier}) — stranded before start — resume with brainrot resume ${j.id}`,
     )
   }
   const approvedDepth = db
