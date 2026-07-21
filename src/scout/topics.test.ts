@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
+import { insertTopics } from './topics.js'
 
 // Raw-insert seed: the DAO only ever writes status/job_id transitions, so
 // tests control every column (created_at included) directly.
@@ -90,6 +91,46 @@ describe('topics table schema', () => {
   it('rejects a status outside the lifecycle CHECK', () => {
     const db = openDb(':memory:')
     expect(() => seedTopic(db, { status: 'simmering' })).toThrow(/CHECK/)
+    db.close()
+  })
+})
+
+describe('insertTopics', () => {
+  it('inserts a batch and reports only rows actually written', () => {
+    const db = openDb(':memory:')
+    const base = {
+      title: 'Why the Moon is drifting away',
+      rawTitle: 'Moon drifting 3.8cm/yr',
+      source: 'reddit:r/space',
+      url: 'https://www.reddit.com/r/space/1',
+      score: 82,
+      reason: 'high novelty',
+    }
+    const first = insertTopics(db, [
+      { ...base, channel: 'chan-a', dedupeHash: 'h1', status: 'candidate' },
+      { ...base, channel: 'chan-a', dedupeHash: 'h2', status: 'rejected' },
+    ])
+    expect(first).toBe(2)
+    // re-run overlap: h1 already known, h3 is new
+    const second = insertTopics(db, [
+      { ...base, channel: 'chan-a', dedupeHash: 'h1', status: 'candidate' },
+      { ...base, channel: 'chan-a', dedupeHash: 'h3', status: 'candidate' },
+    ])
+    expect(second).toBe(1)
+    const rows = db
+      .prepare('SELECT dedupe_hash, status FROM topics ORDER BY id')
+      .all() as { dedupe_hash: string; status: string }[]
+    expect(rows).toEqual([
+      { dedupe_hash: 'h1', status: 'candidate' },
+      { dedupe_hash: 'h2', status: 'rejected' },
+      { dedupe_hash: 'h3', status: 'candidate' },
+    ])
+    db.close()
+  })
+
+  it('returns 0 for an empty batch', () => {
+    const db = openDb(':memory:')
+    expect(insertTopics(db, [])).toBe(0)
     db.close()
   })
 })
