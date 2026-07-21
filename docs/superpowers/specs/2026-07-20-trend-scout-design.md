@@ -24,7 +24,7 @@ exactly as `produce` does.
 | Execution model | Cron-invoked CLI commands, one short-lived process per invocation | In-process budget reservations stay sound; sidesteps onnxruntime teardown noise; fresh state per run. Daemon rejected. |
 | Loop granularity | `produce-next` does ONE unit of work (one resume or one produce) per invocation | Short processes, minimal lease window, output spreads across the day; cron cadence controls throughput. Batch-per-invocation and combined scout+produce tick rejected. |
 | Trend sources v1 | Reddit public JSON + RSS/Atom, behind a `TrendSource` interface | Zero keys, zero flaky dependencies. Google Trends deferred (no official API; scraping libs unmaintained). |
-| Scoring | One batched Haiku call per channel per scout run (`claude-haiku-4-5-20251001`, constant — not configurable) | Ranking/filtering task, not creative writing; cost rounds to zero. Sonnet and per-channel model knob rejected as YAGNI. |
+| Scoring | One batched Haiku call per channel per scout run (`claude-haiku-4-5`, constant — not configurable; the alias, matching the provider `PRICE_TABLE` key) | Ranking/filtering task, not creative writing; cost rounds to zero. Sonnet and per-channel model knob rejected as YAGNI. |
 | Autonomy | Volume auto-produces; premium requires operator-approved topics, per-channel `auto_premium = true` lifts the gate | Caps bound damage in dollars, not in wasted doomed videos; premium is only a few real runs old. |
 | Auto-resume | Loop auto-resumes `blocked` (budget-parked) jobs when headroom returns; `failed` jobs are manual-only via `brainrot resume` | Blocked jobs were healthy by definition; failures deserve eyes before more spend. |
 | Digest | `brainrot digest` prints to stdout only; operator wires delivery (cron MAILTO etc.) | Alex's choice — no notification integrations in v1. |
@@ -110,7 +110,8 @@ default `[scout]` (empty sources, `min_score` 60, `per_source_limit` 25,
 ## 5. Scoring, topics table, dedupe
 
 **Scoring call** — one `structuredCompletion` per channel per scout run, model
-`claude-haiku-4-5-20251001` (module constant). Prompt inputs: the deduped candidate
+`claude-haiku-4-5` (module constant; the alias — it is the `PRICE_TABLE` key in
+`src/providers/anthropic.ts`, so cost computation resolves). Prompt inputs: the deduped candidate
 list (raw title + sourceId), the channel's `niche` keywords, and the titles of the
 channel's last 30 non-rejected topics labeled "recently covered — score near-duplicates 0."
 Strict-schema output per candidate:
@@ -270,7 +271,11 @@ House pattern throughout: real SQLite, fixture HTTP payloads, mocked providers.
 - **Resume CLI:** failed and blocked resume, `--force` for `running`, missing
   channel TOML error, topic flip to `used`.
 - **Golden path extended:** scout-from-fixtures → topics rows → `produce-next`
-  claims → volume pipeline with fake providers → library `ready` + topic `used`.
+  claims → fake stages via the loop's stage-injection seam → library `ready` +
+  topic `used`. Deliberately orchestration-scoped: the loop invokes the same
+  `runJob`/`stagesForTier` the `produce` command does, and the real volume
+  pipeline stays covered by the existing golden-path test — a second full
+  Remotion render per suite run buys little for its cost.
 - **No new contract tests:** the scout reuses `structuredCompletion`, already
   contract-proven against the real API.
 
