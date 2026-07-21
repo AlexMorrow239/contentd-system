@@ -4,15 +4,17 @@ import type { Database } from 'better-sqlite3'
 // expiry instead of wedging the loop forever.
 export const PRODUCE_LEASE_TTL_MS = 5_400_000 // 90 min
 
-// Acquire-if-free in one synchronous transaction. BEGIN IMMEDIATE takes the
-// write lock up front so a concurrent process cannot interleave between the
-// read and the upsert.
+// Acquire-if-free-or-expired in one synchronous transaction. BEGIN IMMEDIATE
+// takes the write lock up front so a concurrent process cannot interleave
+// between the read and the upsert. ISO-8601 UTC strings compare correctly
+// as strings, so no date parsing is needed in the guard.
 export function acquireLease(db: Database, name: string, holder: string, ttlMs: number): boolean {
   const attempt = db.transaction((): boolean => {
+    const now = new Date().toISOString()
     const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get(name) as
       | { expires_at: string }
       | undefined
-    if (row !== undefined) return false
+    if (row !== undefined && row.expires_at > now) return false
     const expiresAt = new Date(Date.now() + ttlMs).toISOString()
     db.prepare(
       'INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?) ' +

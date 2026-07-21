@@ -56,4 +56,18 @@ describe('acquireLease', () => {
     expect(acquireLease(db, 'scout', 'pid:200', PRODUCE_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
+
+  it('takes over an expired lease, replacing the holder', () => {
+    const db = openDb(':memory:')
+    db.prepare(
+      "INSERT INTO leases (name, holder, expires_at) VALUES ('produce', 'pid:dead', '2020-01-01T00:00:00.000Z')",
+    ).run()
+    expect(acquireLease(db, 'produce', 'pid:new', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    const row = db
+      .prepare("SELECT holder, expires_at FROM leases WHERE name = 'produce'")
+      .get() as { holder: string; expires_at: string }
+    expect(row.holder).toBe('pid:new')
+    expect(Date.parse(row.expires_at)).toBeGreaterThan(Date.now())
+    db.close()
+  })
 })
