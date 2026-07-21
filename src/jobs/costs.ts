@@ -113,30 +113,12 @@ export function assertBudget(
     )
   }
 
-  // costs has no channel column: attribute today's spend through the jobs table.
-  const channelDayRow = db
-    .prepare(
-      'SELECT COALESCE(SUM(c.usd_micros), 0) AS total FROM costs c JOIN jobs j ON c.job_id = j.id ' +
-        "WHERE j.channel = ? AND substr(c.created_at, 1, 10) = strftime('%Y-%m-%d','now')",
-    )
-    .get(channel.name) as { total: number }
-  const channelDayProjected = channelDayRow.total + upcomingUsdMicros
+  const channelDayProjected = channelDaySpentMicros(db, channel.name) + upcomingUsdMicros
   if (channelDayProjected > channel.budget.perDayUsdMicros) {
     throw new BudgetExceededError(
       `channel-day budget exceeded for "${channel.name}": ${channelDayProjected} > ${channel.budget.perDayUsdMicros} usdMicros`,
     )
   }
 
-  const globalCapMicros = globalDailyCapMicros()
-  const globalDayRow = db
-    .prepare(
-      "SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE substr(created_at, 1, 10) = strftime('%Y-%m-%d','now')",
-    )
-    .get() as { total: number }
-  const globalDayProjected = globalDayRow.total + upcomingUsdMicros
-  if (globalDayProjected > globalCapMicros) {
-    throw new BudgetExceededError(
-      `global-day budget exceeded: ${globalDayProjected} > ${globalCapMicros} usdMicros (BRAINROT_GLOBAL_DAILY_USD, default ${DEFAULT_GLOBAL_DAILY_USD})`,
-    )
-  }
+  assertGlobalDayBudget(db, upcomingUsdMicros)
 }
