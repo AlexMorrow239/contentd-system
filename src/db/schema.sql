@@ -25,4 +25,16 @@ CREATE TABLE IF NOT EXISTS bg_usage (
   channel TEXT NOT NULL, file TEXT NOT NULL, used_at TEXT NOT NULL,
   PRIMARY KEY (channel, file, used_at)
 );
--- topics & publishes tables arrive in Plans 2 and 3.
+CREATE TABLE IF NOT EXISTS topics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel TEXT NOT NULL, title TEXT NOT NULL,
+  raw_title TEXT NOT NULL, source TEXT NOT NULL,
+  url TEXT NOT NULL, dedupe_hash TEXT NOT NULL,
+  score INTEGER NOT NULL, reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'candidate'
+    CHECK (status IN ('candidate','approved','claimed','used','rejected')),
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (channel, dedupe_hash)
+);
+-- publishes table arrives in Plan 4.
