@@ -6,11 +6,13 @@ export const REDDIT_USER_AGENT =
   'brainrot-machine/0.1 (personal short-form pipeline; single operator)'
 
 // Wire shape of GET /r/<sub>/hot.json (public listing endpoint, no auth).
+// Every field is optional on the wire: a child that cannot yield a complete
+// TrendCandidate is skipped, never crashed on.
 interface RedditChild {
-  data: { name: string; title: string; permalink: string; stickied: boolean }
+  data?: { name?: string; title?: string; permalink?: string; stickied?: boolean }
 }
 interface RedditListing {
-  data: { children: RedditChild[] }
+  data?: { children?: RedditChild[] }
 }
 
 export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): TrendSource {
@@ -29,10 +31,11 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
       }
       const body = (await res.json()) as RedditListing
       const candidates: TrendCandidate[] = []
-      for (const child of body.data.children) {
+      for (const child of body.data?.children ?? []) {
         const post = child.data
         // Stickied posts are mod announcements, not trends.
-        if (post.stickied === true) continue
+        if (!post || post.stickied === true) continue
+        if (!post.name || !post.title || !post.permalink) continue
         candidates.push({
           title: post.title,
           url: `https://www.reddit.com${post.permalink}`,
@@ -40,7 +43,9 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
           externalId: post.name,
         })
       }
-      return candidates
+      // Hard cap regardless of what the listing returned: the Σ per_source_limit
+      // prompt bound (spec §8) must not rest on reddit honoring its query param.
+      return candidates.slice(0, limit)
     },
   }
 }

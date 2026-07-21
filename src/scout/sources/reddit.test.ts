@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash } from './types.js'
+import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
 import { REDDIT_USER_AGENT, redditSource } from './reddit.js'
 
 afterEach(() => {
@@ -119,5 +119,62 @@ describe('redditSource', () => {
     await expect(source.fetch({ limit: 25, timeoutMs: 10_000 })).rejects.toThrow(
       /r\/space responded 429/,
     )
+  })
+
+  it('skips children missing data, name, title, or permalink; empty listing yields []', async () => {
+    const { impl } = fakeFetch(200, {
+      data: {
+        children: [
+          { kind: 't3' }, // no data object at all
+          {
+            kind: 't3',
+            data: { name: 't3_x1', permalink: '/r/space/comments/x1/a/', stickied: false },
+          }, // no title
+          {
+            kind: 't3',
+            data: { title: 'No fullname', permalink: '/r/space/comments/x2/b/', stickied: false },
+          }, // no name
+          { kind: 't3', data: { name: 't3_x3', title: 'No permalink', stickied: false } },
+          {
+            kind: 't3',
+            data: {
+              name: 't3_ok',
+              title: 'Intact post',
+              permalink: '/r/space/comments/ok/c/',
+              stickied: false,
+            },
+          },
+        ],
+      },
+    })
+    const source = redditSource('space', impl)
+    expect(await source.fetch({ limit: 25, timeoutMs: 10_000 })).toEqual([
+      {
+        title: 'Intact post',
+        url: 'https://www.reddit.com/r/space/comments/ok/c/',
+        sourceId: 'reddit:r/space',
+        externalId: 't3_ok',
+      },
+    ])
+
+    const empty = fakeFetch(200, {})
+    expect(await redditSource('space', empty.impl).fetch({ limit: 25, timeoutMs: 10_000 })).toEqual(
+      [],
+    )
+  })
+
+  it('caps candidates at the requested limit even when the listing over-returns', async () => {
+    const { impl } = fakeFetch(200, HOT_FIXTURE)
+    const source = redditSource('space', impl)
+    const candidates = await source.fetch({ limit: 1, timeoutMs: 10_000 })
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0].externalId).toBe('t3_abc')
+  })
+
+  it('rejects when the fetch times out, so the orchestrator can isolate it', async () => {
+    const impl: FetchLike = () =>
+      Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+    const source = redditSource('space', impl)
+    await expect(source.fetch({ limit: 25, timeoutMs: 10 })).rejects.toThrow(/timeout/i)
   })
 })
