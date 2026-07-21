@@ -178,6 +178,43 @@ describe('brainrot CLI', () => {
     expect(result.stdout).toContain('approve')
     expect(result.stdout).toContain('reject')
   }, 60000)
+
+  it('`digest --help` prints usage with --db/--channels-dir', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'digest', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('--db')
+    expect(result.stdout).toContain('--channels-dir')
+  }, 60000)
+
+  it('`digest` over an empty channels dir prints all four sections and exits 0', async () => {
+    const dbPath = tmpDbPath()
+    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-digest-channels-'))
+    cleanup.push(channelsDir)
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'digest', '--db', dbPath, '--channels-dir', channelsDir],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('Topics (last 24h)')
+    expect(result.stdout).toContain('Jobs (last 24h)')
+    expect(result.stdout).toContain('Spend today (UTC)')
+    expect(result.stdout).toContain('Action items')
+  }, 60000)
+
+  it('`digest` with a missing channels dir still exits 0 (report, not check)', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'digest',
+        '--db', dbPath, '--channels-dir', '/no/such/channels-dir'],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toMatch(/ENOENT|no such/)
+  }, 60000)
 })
 
 describe('tier helpers (in-process)', () => {

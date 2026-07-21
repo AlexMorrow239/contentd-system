@@ -7,6 +7,7 @@ import { resumeJob } from './jobs/resume.js'
 import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
 import { AllSourcesFailedError, scoutAll } from './scout/scout.js'
 import { produceNextTick } from './loop/produce-next.js'
+import { buildDigest } from './loop/digest.js'
 import { openDb } from './db/index.js'
 import { approveTopics, listTopics, rejectTopics } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
@@ -237,6 +238,27 @@ topics
     const changed = rejectTopics(db, ids)
     // reject takes candidate AND approved; claimed/used rows are skipped.
     console.log(`rejected ${changed} of ${ids.length}`)
+  })
+
+program
+  .command('digest')
+  .option('--db <path>', 'sqlite db path')
+  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .action((opts: { db?: string; channelsDir: string }) => {
+    // A report, not a check: nothing here may set a non-zero exit — cron
+    // MAILTO should deliver whatever printed, so even a config/db error is
+    // reported on stderr and the process still exits 0.
+    try {
+      const channels = loadChannelsDir(opts.channelsDir)
+      const db = openDb(resolveDbPath(opts.db))
+      try {
+        process.stdout.write(buildDigest(db, channels) + '\n')
+      } finally {
+        db.close()
+      }
+    } catch (err) {
+      console.error(err instanceof Error ? err.message : String(err))
+    }
   })
 
 // cli.test.ts imports parseTier/stagesForTier in-process, which must not fire
