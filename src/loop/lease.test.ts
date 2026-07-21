@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db/index.js'
-import { acquireLease, PRODUCE_LEASE_TTL_MS } from './lease.js'
+import { acquireLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
 
 describe('leases schema', () => {
   it('openDb creates the leases table with name as primary key', () => {
@@ -68,6 +68,35 @@ describe('acquireLease', () => {
       .get() as { holder: string; expires_at: string }
     expect(row.holder).toBe('pid:new')
     expect(Date.parse(row.expires_at)).toBeGreaterThan(Date.now())
+    db.close()
+  })
+})
+
+describe('releaseLease', () => {
+  it('deletes only when the holder matches', () => {
+    const db = openDb(':memory:')
+    acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)
+    // wrong holder: no-op — the lease stays held
+    releaseLease(db, 'produce', 'pid:999')
+    expect(acquireLease(db, 'produce', 'pid:200', PRODUCE_LEASE_TTL_MS)).toBe(false)
+    // right holder: freed for the next tick
+    releaseLease(db, 'produce', 'pid:100')
+    expect(acquireLease(db, 'produce', 'pid:200', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+
+  it('an evicted holder cannot release the takeover lease', () => {
+    const db = openDb(':memory:')
+    db.prepare(
+      "INSERT INTO leases (name, holder, expires_at) VALUES ('produce', 'pid:dead', '2020-01-01T00:00:00.000Z')",
+    ).run()
+    acquireLease(db, 'produce', 'pid:new', PRODUCE_LEASE_TTL_MS)
+    // the crashed process's finally-release fires late: must not free pid:new
+    releaseLease(db, 'produce', 'pid:dead')
+    const row = db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get() as {
+      holder: string
+    }
+    expect(row.holder).toBe('pid:new')
     db.close()
   })
 })

@@ -24,3 +24,9 @@ export function acquireLease(db: Database, name: string, holder: string, ttlMs: 
   })
   return attempt.immediate()
 }
+
+// Deletes only the caller's own lease: after an expiry takeover the evicted
+// holder's finally-release must not free the new holder's lease.
+export function releaseLease(db: Database, name: string, holder: string): void {
+  db.prepare('DELETE FROM leases WHERE name = ? AND holder = ?').run(name, holder)
+}
