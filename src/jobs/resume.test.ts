@@ -9,7 +9,7 @@ import { assertPremiumPreflight as cliPreflight, stagesForTier as cliStages } fr
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, Tier } from './types.js'
 import { assertPremiumPreflight, stagesForTier } from './pipeline.js'
-import { ResumeError, resumeJob } from './resume.js'
+import { claimJobForResume, ResumeError, resumeJob } from './resume.js'
 
 // Real minimal channel TOML (plan-1 shape; [scout] is optional): resumeJob
 // loads the channel from disk, so the fixture must round-trip loadChannelConfig.
@@ -260,6 +260,17 @@ describe('resumeJob', () => {
       status: string
     }
     expect(row.status).toBe('failed')
+  })
+
+  it('claimJobForResume: the first claim wins and flips to running, the second loses', () => {
+    // Two racers (a manual resume and a produce-next tick) both read a
+    // 'blocked'/'failed' job; exactly one may run it or they double-spend.
+    const jobId = seedJob('blocked')
+    expect(claimJobForResume(db, jobId, false)).toBe(true)
+    const row = db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId) as { status: string }
+    expect(row.status).toBe('running')
+    // the loser sees 'running' — not in the non-force resumable set — and backs off
+    expect(claimJobForResume(db, jobId, false)).toBe(false)
   })
 
   it('premium resume proceeds when FAL_KEY is set', async () => {
