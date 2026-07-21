@@ -90,8 +90,16 @@ pnpm brainrot costs   # per-day USD totals, last 7 days
 
 The production loop is three cron-invoked commands: `scout` fills the topic
 queue, `produce-next` performs one unit of work per tick (resume one blocked
-job or produce one video), and `digest` prints a daily report. Paste into
-`crontab -e`, adjusting the paths:
+job or produce one video), and `digest` prints a daily report.
+
+Before scheduling: reddit 403s unauthenticated JSON access from most
+residential IPs, so create a free "script" app at
+<https://www.reddit.com/prefs/apps> and put its id and secret in `.env` as
+`REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` — the scout then uses app-only
+OAuth (100 requests/min allowance; the loop makes three fetches a day). RSS
+sources need no keys.
+
+Paste into `crontab -e`, adjusting the paths:
 
 ```cron
 # cron runs with a bare PATH (/usr/bin:/bin): pnpm, node, and ffmpeg do not

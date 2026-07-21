@@ -1,9 +1,19 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
-import { REDDIT_USER_AGENT, redditSource } from './reddit.js'
+import { REDDIT_USER_AGENT, redditSource, resetRedditTokenCache } from './reddit.js'
+
+beforeEach(() => {
+  // The default contract for every test in this file is the unauthenticated
+  // public endpoint: clear any real creds the runner env carries, and reset
+  // the module-level token cache so OAuth tests never leak into each other.
+  vi.stubEnv('REDDIT_CLIENT_ID', undefined)
+  vi.stubEnv('REDDIT_CLIENT_SECRET', undefined)
+  resetRedditTokenCache()
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
+  vi.unstubAllEnvs()
 })
 
 describe('dedupeHash', () => {
@@ -176,5 +186,77 @@ describe('redditSource', () => {
       Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
     const source = redditSource('space', impl)
     await expect(source.fetch({ limit: 25, timeoutMs: 10 })).rejects.toThrow(/timeout/i)
+  })
+})
+
+describe('redditSource app-only OAuth', () => {
+  // Multi-endpoint stub: routes by URL prefix so one impl serves the token
+  // POST and the oauth listing GET in order.
+  function routedFetch(routes: Record<string, { status: number; body: unknown }>) {
+    const calls: { url: string; init: RequestInit | undefined }[] = []
+    const impl: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init })
+      const route = Object.entries(routes).find(([prefix]) => String(input).startsWith(prefix))
+      if (!route) throw new Error(`unrouted fetch: ${String(input)}`)
+      return new Response(JSON.stringify(route[1].body), {
+        status: route[1].status,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return { impl, calls }
+  }
+
+  it('tokens up once and queries oauth.reddit.com with the bearer', async () => {
+    vi.stubEnv('REDDIT_CLIENT_ID', 'test-id')
+    vi.stubEnv('REDDIT_CLIENT_SECRET', 'test-secret')
+    const { impl, calls } = routedFetch({
+      'https://www.reddit.com/api/v1/access_token': {
+        status: 200,
+        body: { access_token: 'tok-1', expires_in: 3600 },
+      },
+      'https://oauth.reddit.com/': { status: 200, body: HOT_FIXTURE },
+    })
+    const source = redditSource('space', impl)
+    const first = await source.fetch({ limit: 25, timeoutMs: 10_000 })
+    expect(first.map((c) => c.externalId)).toEqual(['t3_abc', 't3_def'])
+
+    const tokenCall = calls[0]
+    expect(tokenCall.url).toBe('https://www.reddit.com/api/v1/access_token')
+    expect(tokenCall.init?.method).toBe('POST')
+    const tokenHeaders = tokenCall.init?.headers as Record<string, string>
+    expect(tokenHeaders.Authorization).toBe(
+      `Basic ${Buffer.from('test-id:test-secret').toString('base64')}`,
+    )
+    expect(tokenHeaders['User-Agent']).toBe(REDDIT_USER_AGENT)
+    expect(tokenCall.init?.body).toBe('grant_type=client_credentials')
+
+    const listingCall = calls[1]
+    expect(listingCall.url).toBe('https://oauth.reddit.com/r/space/hot?limit=25&raw_json=1')
+    const listingHeaders = listingCall.init?.headers as Record<string, string>
+    expect(listingHeaders.Authorization).toBe('Bearer tok-1')
+    expect(listingHeaders['User-Agent']).toBe(REDDIT_USER_AGENT)
+
+    // cached: a second fetch reuses the token — still exactly one token call
+    await source.fetch({ limit: 25, timeoutMs: 10_000 })
+    expect(calls.filter((c) => c.url.includes('access_token'))).toHaveLength(1)
+  })
+
+  it('a failing token endpoint rejects with its status', async () => {
+    vi.stubEnv('REDDIT_CLIENT_ID', 'test-id')
+    vi.stubEnv('REDDIT_CLIENT_SECRET', 'test-secret')
+    const { impl } = routedFetch({
+      'https://www.reddit.com/api/v1/access_token': { status: 401, body: {} },
+    })
+    const source = redditSource('space', impl)
+    await expect(source.fetch({ limit: 25, timeoutMs: 10_000 })).rejects.toThrow(
+      /token endpoint responded 401/,
+    )
+  })
+
+  it('without creds no token call is made and the public endpoint is used', async () => {
+    const { impl, calls } = fakeFetch(200, HOT_FIXTURE)
+    await redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 })
+    expect(calls).toHaveLength(1)
+    expect(calls[0].url).toBe('https://www.reddit.com/r/space/hot.json?limit=25&raw_json=1')
   })
 })

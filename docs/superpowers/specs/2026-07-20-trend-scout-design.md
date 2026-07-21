@@ -76,10 +76,17 @@ interface TrendSource {
 
 `externalId` feeds the dedupe hash and must be stable across fetches of the same item.
 
-**RedditSource** — `GET https://www.reddit.com/r/<sub>/hot.json?limit=<N>` with a
-descriptive User-Agent (Reddit blocks default agents), no auth. Extracts
+**RedditSource** — hot listing per subreddit with a descriptive User-Agent.
+AMENDED 2026-07-21 after live testing: reddit 403s the unauthenticated public
+JSON endpoint from most residential IPs, so the adapter uses app-only OAuth
+(script app, `client_credentials` grant via `REDDIT_CLIENT_ID` /
+`REDDIT_CLIENT_SECRET`, token cached per process) against
+`oauth.reddit.com/r/<sub>/hot?limit=<N>` when the creds are set, falling back
+to `www.reddit.com/r/<sub>/hot.json` when they are absent. Extracts
 `data.children[].data`: `title`, `name` (fullname → `externalId`), `permalink`
-(prefixed with `https://www.reddit.com`). Skips stickied posts.
+(prefixed with `https://www.reddit.com`). Skips stickied posts. (The original
+"zero keys" decision survives as the fallback; the keys are free and the 100
+requests/min app allowance dwarfs our 3 fetches/day.)
 
 **RssSource** — fetches a feed URL and parses both RSS 2.0 and Atom via
 `fast-xml-parser` (the one new dependency: pure, maintained; no heavyweight feed lib).
