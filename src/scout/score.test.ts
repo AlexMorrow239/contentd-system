@@ -1,0 +1,93 @@
+import { describe, expect, it, vi } from 'vitest'
+import type Anthropic from '@anthropic-ai/sdk'
+import { PRICE_TABLE } from '../providers/anthropic.js'
+import type { TrendCandidate } from './sources/types.js'
+import {
+  ESTIMATED_SCOUT_COST_MICROS,
+  SCOUT_MAX_TOKENS,
+  SCOUT_MODEL,
+  scoreCandidates,
+} from './score.js'
+
+// Client injection seam (script.test.ts pattern): a plain object with a
+// vi.fn() create — vitest constructor mocks are never needed here.
+function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
+  const create = vi.fn().mockResolvedValue(response)
+  return { client: { messages: { create } } as unknown as Anthropic, create }
+}
+
+function candidate(i: number, overrides: Partial<TrendCandidate> = {}): TrendCandidate {
+  return {
+    title: `Headline ${i}`,
+    url: `https://example.com/${i}`,
+    sourceId: 'reddit:r/space',
+    externalId: `t3_${i}`,
+    ...overrides,
+  }
+}
+
+function emit(scores: unknown, usage = { input_tokens: 1000, output_tokens: 500 }) {
+  return {
+    content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores } }],
+    usage,
+  }
+}
+
+describe('scout scoring constants', () => {
+  it('pins the haiku alias (a PRICE_TABLE key), token ceiling, and cost estimate', () => {
+    expect(SCOUT_MODEL).toBe('claude-haiku-4-5')
+    // The alias must be a PRICE_TABLE key or structuredCompletion refuses the
+    // call at zero spend — this is why the dated model id would be wrong here.
+    expect(PRICE_TABLE[SCOUT_MODEL]).toBeDefined()
+    expect(SCOUT_MAX_TOKENS).toBe(4096)
+    expect(ESTIMATED_SCOUT_COST_MICROS).toBe(20_000)
+  })
+})
+
+describe('scoreCandidates', () => {
+  it('makes one forced-tool haiku call carrying candidates, niche, and recent titles', async () => {
+    const { client, create } = fakeClient(
+      emit([
+        { candidateIndex: 0, score: 91, topic: 'Watch the moon leave', reason: 'strong hook' },
+        { candidateIndex: 1, score: 55, topic: 'Chase the solar wind', reason: 'niche fit' },
+      ]),
+    )
+    await scoreCandidates({
+      candidates: [candidate(0), candidate(1, { sourceId: 'rss:example.com', title: 'Solar wind news' })],
+      niche: ['space facts', 'astronomy'],
+      recentTitles: ['Old moon topic'],
+      client,
+    })
+    expect(create).toHaveBeenCalledTimes(1)
+    const sent = create.mock.calls[0][0]
+    expect(sent.model).toBe(SCOUT_MODEL)
+    expect(sent.max_tokens).toBe(SCOUT_MAX_TOKENS)
+    expect(sent.tool_choice).toEqual({ type: 'tool', name: 'emit' })
+    expect(sent.tools[0].input_schema.required).toContain('scores')
+    expect(sent.system).toContain('space facts, astronomy')
+    const prompt = sent.messages[0].content as string
+    // numbered list: index, sourceId, raw title — one line per candidate
+    expect(prompt).toContain('0. [reddit:r/space] Headline 0')
+    expect(prompt).toContain('1. [rss:example.com] Solar wind news')
+    // the semantic-dedupe instruction and the recent titles it governs
+    expect(prompt).toContain('covered — score near-duplicates 0')
+    expect(prompt).toContain('- Old moon topic')
+  })
+
+  it('returns entries matched to candidates plus the billed haiku cost', async () => {
+    const scores = [
+      { candidateIndex: 0, score: 91, topic: 'Watch the moon leave', reason: 'strong hook' },
+      { candidateIndex: 1, score: 55, topic: 'Chase the solar wind', reason: 'niche fit' },
+    ]
+    const { client } = fakeClient(emit(scores, { input_tokens: 1000, output_tokens: 500 }))
+    const result = await scoreCandidates({
+      candidates: [candidate(0), candidate(1)],
+      niche: ['space facts'],
+      recentTitles: [],
+      client,
+    })
+    expect(result.scored).toEqual(scores)
+    // haiku list price: 1 usd-micro per input token, 5 per output token
+    expect(result.costUsdMicros).toBe(1000 * 1 + 500 * 5)
+  })
+})
