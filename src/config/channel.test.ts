@@ -212,6 +212,14 @@ describe('[scout] config', () => {
       loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'per_source_limit = 101'])),
     ).toThrow()
   })
+
+  it('gives each config its own scout array instances, and keeps DEFAULT_SCOUT frozen', () => {
+    const config1 = loadChannelConfig(writeToml(PLAN1_LINES))
+    const config2 = loadChannelConfig(writeToml(PLAN1_LINES))
+    expect(config1.scout.subreddits).not.toBe(config2.scout.subreddits)
+    expect(config1.scout.rss).not.toBe(config2.scout.rss)
+    expect(Object.isFrozen(DEFAULT_SCOUT)).toBe(true)
+  })
 })
 
 describe('loadChannelsDir', () => {

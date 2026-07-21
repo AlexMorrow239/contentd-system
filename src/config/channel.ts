@@ -63,14 +63,19 @@ export const DEFAULT_PREMIUM: PremiumConfig = {
  * Defaults for the [scout] TOML table: applied whole when the table is
  * absent, per-field (via the zod defaults below) when it is partial. Empty
  * source lists mean the scout skips this channel; manual produce still works.
+ *
+ * Shared singleton — frozen so accidental mutation fails loudly instead of
+ * leaking across channels/test runs. Callers that need per-config arrays
+ * (loadChannelConfig's absent-[scout] branch) must copy subreddits/rss
+ * fresh rather than spreading this object's array references.
  */
-export const DEFAULT_SCOUT: ScoutConfig = {
-  subreddits: [],
-  rss: [],
+export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
+  subreddits: Object.freeze([] as string[]),
+  rss: Object.freeze([] as string[]),
   minScore: 60,
   perSourceLimit: 25,
   autoPremium: false,
-}
+}) as ScoutConfig
 
 const DEFAULT_PREMIUM_PER_VIDEO_USD = 7.0
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
@@ -178,7 +183,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
           perSourceLimit: raw.scout.per_source_limit,
           autoPremium: raw.scout.auto_premium,
         }
-      : { ...DEFAULT_SCOUT },
+      : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
   }
 }
 
