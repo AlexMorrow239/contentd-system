@@ -103,8 +103,11 @@ PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 # your notifier of choice.
 MAILTO=you@example.com
 
-# Scout trends into the topic queue, 3x/day at 07:00 / 12:00 / 17:00.
-0 7,12,17 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot scout >> logs/scout.log 2>&1
+# Scout trends into the topic queue, 3x/day at 07:05 / 12:05 / 17:05. Staggered
+# 5 minutes off the hour so it never co-fires with the produce-next tick at :00
+# — defense in depth on top of the DB busy_timeout, since scout and produce-next
+# are two processes writing one SQLite file.
+5 7,12,17 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot scout >> logs/scout.log 2>&1
 
 # One unit of production per tick (*/25 fires at :00, :25 and :50 each hour).
 */25 * * * * cd /Users/alex/code/project-brainrot && pnpm brainrot produce-next >> logs/produce-next.log 2>&1
@@ -129,6 +132,11 @@ MAILTO=you@example.com
   TOML sets `auto_premium = true` under `[scout]`; volume flows unattended.
   A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
   render from the previous firing is still running.
+- **Manual runs take no lease.** `produce` and `resume` run outside the
+  produce-next lease, so a hand-run invocation can execute concurrently with a
+  live tick and both may act on the same job/topic. Stop the produce-next cron
+  line (or wait for `lease-held` ticks to clear) before running `produce` or
+  `resume` by hand.
 
 ## Tests
 
