@@ -8,6 +8,7 @@ import { openDb } from '../db/index.js'
 import { createJob } from '../jobs/runner.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import { produceNextTick } from './produce-next.js'
+import { acquireLease, PRODUCE_LEASE_TTL_MS } from './lease.js'
 
 // Plan-1-shape channel TOML (no [scout] table needed — the loop reads topics,
 // not sources). The filename must match `name`: resumeJob resolves the channel
@@ -94,6 +95,11 @@ function readyStages(): StageDef[] {
   ]
 }
 
+// Guard seam for paths that must never reach the pipeline.
+function neverStages(): StageDef[] {
+  throw new Error('stagesFor must not be called on this path')
+}
+
 beforeEach(() => {
   // Deterministic regardless of the developer's shell or .env: no fal key
   // (volume path only) and the default $25 global cap.
@@ -151,6 +157,45 @@ describe('produceNextTick — resume', () => {
     // the topic was not claimed: it waits for the next tick
     const topics = db.prepare('SELECT status FROM topics').all() as { status: string }[]
     expect(topics).toEqual([{ status: 'candidate' }])
+    db.close()
+  })
+})
+
+describe('produceNextTick — lease', () => {
+  it('no-ops with reason lease-held while another process holds the lease', async () => {
+    const { db, runsRoot } = setup()
+    seedTopic(db)
+    acquireLease(db, 'produce', 'pid:other-process', PRODUCE_LEASE_TTL_MS)
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
+    expect(result).toEqual({ action: 'noop', reason: 'lease-held' })
+    // the holder's lease survives untouched and nothing was claimed or created
+    const lease = db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get() as {
+      holder: string
+    }
+    expect(lease.holder).toBe('pid:other-process')
+    expect((db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }).n).toBe(0)
+    db.close()
+  })
+
+  it('releases the lease after a successful tick', async () => {
+    const { db, runsRoot } = setup()
+    seedTopic(db)
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result.status).toBe('ready')
+    // freed for the next cron firing: a fresh holder acquires immediately
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+
+  it('releases the lease when the tick throws mid-flight', async () => {
+    const { db, runsRoot } = setup()
+    // an unparseable channel TOML makes loadChannelsDir throw inside the leased window
+    const brokenDir = tmpDir('brainrot-loop-broken-')
+    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+    await expect(
+      produceNextTick(db, { channelsDir: brokenDir, runsRoot, stagesFor: neverStages }),
+    ).rejects.toThrow()
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
 })

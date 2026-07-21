@@ -6,6 +6,7 @@ import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef, Tier } from '../jobs/types.js'
 import { claimTopic, markTopicUsedByJob } from '../scout/topics.js'
+import { acquireLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
 import { planTick } from './plan-tick.js'
 
 export interface TickResult {
@@ -31,43 +32,55 @@ export async function produceNextTick(
   },
 ): Promise<TickResult> {
   const stagesFor = opts.stagesFor ?? stagesForTier
-  const channels = loadChannelsDir(opts.channelsDir)
-  const plan = planTick(db, channels, { falKeyPresent: !!process.env.FAL_KEY })
-
-  if (plan.kind === 'noop') {
-    return { action: 'noop', reason: plan.reason }
+  // A held lease is the NORMAL case while a long render from the previous
+  // cron firing is still running — benign no-op, exit 0 at the CLI. The
+  // pid-tagged holder means an expiry takeover can never be released by the
+  // evicted process (releaseLease matches on holder).
+  const holder = `pid:${process.pid}`
+  if (!acquireLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)) {
+    return { action: 'noop', reason: 'lease-held' }
   }
+  try {
+    const channels = loadChannelsDir(opts.channelsDir)
+    const plan = planTick(db, channels, { falKeyPresent: !!process.env.FAL_KEY })
 
-  if (plan.kind === 'resume') {
-    // planTick only surfaces blocked jobs, so force stays unset: taking over
-    // a 'running' job is an operator decision, never the loop's.
-    const result = await resumeJob(db, plan.jobId, {
-      runsRoot: opts.runsRoot,
-      channelsDir: opts.channelsDir,
-      stagesFor,
-    })
-    return { action: 'resumed', jobId: plan.jobId, tier: plan.tier, status: result.status }
-  }
-
-  const channel = channels.find((c) => c.name === plan.channel)
-  if (channel === undefined) {
-    throw new Error(`planTick chose a channel missing from the loaded set: ${plan.channel}`)
-  }
-  // createJob + claimTopic commit atomically: a crash between them can
-  // neither orphan a queued job nor leave the topic unbound, and a false
-  // claim (invariant breach — planTick selected this topic under this very
-  // lease) rolls the job row back via the throw. better-sqlite3 nests
-  // createJob's internal transaction as a savepoint, so the wrap is safe.
-  const jobId = db.transaction(() => {
-    const id = createJob(db, channel, { topic: plan.topic, tier: plan.tier })
-    if (!claimTopic(db, plan.topicId, id)) {
-      throw new Error(`topic ${plan.topicId} is no longer claimable (status changed since planning)`)
+    if (plan.kind === 'noop') {
+      return { action: 'noop', reason: plan.reason }
     }
-    return id
-  })()
-  const result = await runJob(db, channel, jobId, stagesFor(plan.tier), {
-    runsRoot: opts.runsRoot,
-  })
-  markTopicUsedByJob(db, jobId)
-  return { action: 'produced', jobId, topicId: plan.topicId, tier: plan.tier, status: result.status }
+
+    if (plan.kind === 'resume') {
+      // planTick only surfaces blocked jobs, so force stays unset: taking
+      // over a 'running' job is an operator decision, never the loop's.
+      const result = await resumeJob(db, plan.jobId, {
+        runsRoot: opts.runsRoot,
+        channelsDir: opts.channelsDir,
+        stagesFor,
+      })
+      return { action: 'resumed', jobId: plan.jobId, tier: plan.tier, status: result.status }
+    }
+
+    const channel = channels.find((c) => c.name === plan.channel)
+    if (channel === undefined) {
+      throw new Error(`planTick chose a channel missing from the loaded set: ${plan.channel}`)
+    }
+    // createJob + claimTopic commit atomically: a crash between them can
+    // neither orphan a queued job nor leave the topic unbound, and a false
+    // claim (invariant breach — planTick selected this topic under this very
+    // lease) rolls the job row back via the throw. better-sqlite3 nests
+    // createJob's internal transaction as a savepoint, so the wrap is safe.
+    const jobId = db.transaction(() => {
+      const id = createJob(db, channel, { topic: plan.topic, tier: plan.tier })
+      if (!claimTopic(db, plan.topicId, id)) {
+        throw new Error(`topic ${plan.topicId} is no longer claimable (status changed since planning)`)
+      }
+      return id
+    })()
+    const result = await runJob(db, channel, jobId, stagesFor(plan.tier), {
+      runsRoot: opts.runsRoot,
+    })
+    markTopicUsedByJob(db, jobId)
+    return { action: 'produced', jobId, topicId: plan.topicId, tier: plan.tier, status: result.status }
+  } finally {
+    releaseLease(db, 'produce', holder)
+  }
 }
