@@ -32,6 +32,41 @@ export interface NewTopic {
   status: 'candidate' | 'rejected'
 }
 
+const TOPIC_COLUMNS =
+  'id, channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id, created_at'
+
+interface DbTopicRow {
+  id: number
+  channel: string
+  title: string
+  raw_title: string
+  source: string
+  url: string
+  dedupe_hash: string
+  score: number
+  reason: string
+  status: TopicStatus
+  job_id: string | null
+  created_at: string
+}
+
+function toTopicRow(row: DbTopicRow): TopicRow {
+  return {
+    id: row.id,
+    channel: row.channel,
+    title: row.title,
+    rawTitle: row.raw_title,
+    source: row.source,
+    url: row.url,
+    dedupeHash: row.dedupe_hash,
+    score: row.score,
+    reason: row.reason,
+    status: row.status,
+    jobId: row.job_id,
+    createdAt: row.created_at,
+  }
+}
+
 // INSERT OR IGNORE on UNIQUE (channel, dedupe_hash): re-inserting a known item
 // is a no-op, so the returned count is rows actually written. One transaction —
 // a mid-run crash loses the whole batch, never half of it.
@@ -133,4 +168,25 @@ export function claimTopic(db: Database, topicId: number, jobId: string): boolea
 // (manual `produce`) is a silent no-op.
 export function markTopicUsedByJob(db: Database, jobId: string): void {
   db.prepare("UPDATE topics SET status = 'used' WHERE job_id = ? AND status = 'claimed'").run(jobId)
+}
+
+export function listTopics(
+  db: Database,
+  filter?: { channel?: string; status?: TopicStatus },
+): TopicRow[] {
+  const where: string[] = []
+  const params: string[] = []
+  if (filter?.channel !== undefined) {
+    where.push('channel = ?')
+    params.push(filter.channel)
+  }
+  if (filter?.status !== undefined) {
+    where.push('status = ?')
+    params.push(filter.status)
+  }
+  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  const rows = db
+    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics${clause} ORDER BY created_at DESC, id DESC`)
+    .all(...params) as DbTopicRow[]
+  return rows.map(toTopicRow)
 }

@@ -6,6 +6,7 @@ import {
   claimTopic,
   insertTopics,
   knownHashes,
+  listTopics,
   markTopicUsedByJob,
   RECENT_TITLES_LIMIT,
   recentTopicTitles,
@@ -266,6 +267,53 @@ describe('claimTopic / markTopicUsedByJob', () => {
     ])
     // manual `produce` jobs have no claimed topic: silent no-op
     expect(() => markTopicUsedByJob(db, 'job-unknown')).not.toThrow()
+    db.close()
+  })
+})
+
+describe('listTopics', () => {
+  it('maps rows to camelCase and returns newest first', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { title: 'old', createdAt: '2026-07-19T00:00:00.000Z' })
+    const newestId = seedTopic(db, {
+      title: 'new',
+      rawTitle: 'raw new',
+      source: 'rss:example.com',
+      url: 'https://example.com/new',
+      dedupeHash: 'h-new',
+      score: 91,
+      reason: 'hooky',
+      status: 'claimed',
+      jobId: 'job-1',
+      createdAt: '2026-07-20T00:00:00.000Z',
+    })
+    const rows = listTopics(db)
+    expect(rows.map((r) => r.title)).toEqual(['new', 'old'])
+    expect(rows[0]).toEqual({
+      id: newestId,
+      channel: 'chan-a',
+      title: 'new',
+      rawTitle: 'raw new',
+      source: 'rss:example.com',
+      url: 'https://example.com/new',
+      dedupeHash: 'h-new',
+      score: 91,
+      reason: 'hooky',
+      status: 'claimed',
+      jobId: 'job-1',
+      createdAt: '2026-07-20T00:00:00.000Z',
+    })
+    db.close()
+  })
+
+  it('filters by channel and status independently', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { channel: 'chan-a', status: 'candidate' })
+    seedTopic(db, { channel: 'chan-a', status: 'approved' })
+    seedTopic(db, { channel: 'chan-b', status: 'approved' })
+    expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(2)
+    expect(listTopics(db, { status: 'approved' })).toHaveLength(2)
+    expect(listTopics(db, { channel: 'chan-a', status: 'approved' })).toHaveLength(1)
     db.close()
   })
 })
