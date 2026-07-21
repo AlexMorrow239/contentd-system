@@ -58,17 +58,31 @@ export function planTick(
   const jobsToday = (name: string, tier: Tier): number =>
     (quotaStmt.get(name, tier) as { n: number }).n
   for (const channel of channels) {
-    if (jobsToday(channel.name, 'volume') >= channel.tierMix.volume) continue
-    const topic = eligibleTopic(db, channel.name, 'volume', {
-      autoPremium: channel.scout.autoPremium,
-    })
-    if (topic !== null) {
-      return {
-        kind: 'produce',
-        channel: channel.name,
-        topicId: topic.id,
-        topic: topic.title,
-        tier: 'volume',
+    const autoPremium = channel.scout.autoPremium
+    // Premium first: scarce quality slots get the day's best material early.
+    // Without the FAL key premium is skipped outright — volume still flows.
+    if (jobsToday(channel.name, 'premium') < channel.tierMix.premium && opts.falKeyPresent) {
+      const topic = eligibleTopic(db, channel.name, 'premium', { autoPremium })
+      if (topic !== null) {
+        return {
+          kind: 'produce',
+          channel: channel.name,
+          topicId: topic.id,
+          topic: topic.title,
+          tier: 'premium',
+        }
+      }
+    }
+    if (jobsToday(channel.name, 'volume') < channel.tierMix.volume) {
+      const topic = eligibleTopic(db, channel.name, 'volume', { autoPremium })
+      if (topic !== null) {
+        return {
+          kind: 'produce',
+          channel: channel.name,
+          topicId: topic.id,
+          topic: topic.title,
+          tier: 'volume',
+        }
       }
     }
   }

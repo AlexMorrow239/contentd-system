@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
+import { DEFAULT_SCOUT } from '../config/channel.js'
 import { openDb } from '../db/index.js'
 import { recordCost } from '../jobs/costs.js'
 import { testChannel } from '../stages/_testkit.js'
@@ -243,6 +244,76 @@ describe('claim pass quota', () => {
     expect(planTick(db, [ch], { falKeyPresent: true })).toMatchObject({
       kind: 'produce',
       topicId,
+    })
+    db.close()
+  })
+})
+
+describe('claim pass tier selection', () => {
+  it('fills the premium slot first when an approved topic exists', () => {
+    const db = openDb(':memory:')
+    const approved = seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
+    seedTopic(db, { title: 'hot candidate', score: 95 })
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+      kind: 'produce',
+      channel: 'test',
+      topicId: approved,
+      topic: 'approved pick',
+      tier: 'premium',
+    })
+    db.close()
+  })
+
+  it('falls back to volume when no topic is premium-eligible', () => {
+    const db = openDb(':memory:')
+    const candidate = seedTopic(db, { title: 'hot candidate', score: 95 })
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+      kind: 'produce',
+      channel: 'test',
+      topicId: candidate,
+      topic: 'hot candidate',
+      tier: 'volume',
+    })
+    db.close()
+  })
+
+  it('auto_premium lifts the approval gate', () => {
+    const db = openDb(':memory:')
+    const candidate = seedTopic(db, { title: 'hot candidate', score: 95 })
+    const ch = testChannel({ scout: { ...DEFAULT_SCOUT, autoPremium: true } })
+    expect(planTick(db, [ch], { falKeyPresent: true })).toEqual({
+      kind: 'produce',
+      channel: 'test',
+      topicId: candidate,
+      topic: 'hot candidate',
+      tier: 'premium',
+    })
+    db.close()
+  })
+
+  it('skips premium claims entirely without the FAL key', () => {
+    const db = openDb(':memory:')
+    const approved = seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
+    expect(planTick(db, [testChannel()], { falKeyPresent: false })).toEqual({
+      kind: 'produce',
+      channel: 'test',
+      topicId: approved,
+      topic: 'approved pick',
+      tier: 'volume',
+    })
+    db.close()
+  })
+
+  it('does not claim premium once its slot is filled today', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { tier: 'premium', status: 'failed' })
+    const approved = seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+      kind: 'produce',
+      channel: 'test',
+      topicId: approved,
+      topic: 'approved pick',
+      tier: 'volume',
     })
     db.close()
   })
