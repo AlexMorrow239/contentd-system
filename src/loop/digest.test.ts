@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
+import { testChannel } from '../stages/_testkit.js'
 import { buildDigest, ZOMBIE_RUNNING_MS } from './digest.js'
 
 const HOUR_MS = 3_600_000
@@ -118,6 +119,40 @@ describe('buildDigest — jobs section', () => {
   it('prints none when no jobs were created in the last 24h', () => {
     const db = openDb(':memory:')
     expect(buildDigest(db, [])).toContain('Jobs (last 24h)\n  none')
+    db.close()
+  })
+})
+
+describe('buildDigest — spend section', () => {
+  it('formats channel and global day spend from integer micros as $X.XX', () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '10')
+    const db = openDb(':memory:')
+    const budget = {
+      perVideoUsdMicros: 8_000_000,
+      premiumPerVideoUsdMicros: 7_000_000,
+      perDayUsdMicros: 20_000_000,
+    }
+    const chA = testChannel({ name: 'chan-a', budget })
+    const chB = testChannel({ name: 'chan-b', budget })
+    seedJob(db, { id: 'j-spend', status: 'done' })
+    // costs.created_at defaults to now — today's UTC spend by construction.
+    // (Only a sub-second UTC-midnight rollover could race this — accepted,
+    // same caveat as the costs tests.)
+    db.prepare(
+      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j-spend', 'anthropic', 'script', ?)",
+    ).run(1_234_567)
+    // Sentinel scout row: no jobs row behind it, so it is invisible to the
+    // channel JOIN but counts toward the global sum.
+    db.prepare(
+      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('scout:chan-a', 'anthropic', 'scout-score', ?)",
+    ).run(20_000)
+    const digest = buildDigest(db, [chA, chB])
+    expect(digest).toContain('Spend today (UTC)')
+    // 1_234_567 micros → $1.23 (toFixed(2)); cap 20_000_000 → $20.00
+    expect(digest).toContain('  chan-a: $1.23 of $20.00')
+    expect(digest).toContain('  chan-b: $0.00 of $20.00')
+    // global: 1_234_567 + 20_000 = 1_254_567 → $1.25 vs the stubbed $10 cap
+    expect(digest).toContain('  global: $1.25 of $10.00')
     db.close()
   })
 })

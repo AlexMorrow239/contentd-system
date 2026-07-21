@@ -1,10 +1,20 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
+import {
+  channelDaySpentMicros,
+  globalDailyCapMicros,
+  globalDaySpentMicros,
+} from '../jobs/costs.js'
 
 // A job 'running' longer than this has almost certainly lost its process —
 // real runs finish in minutes. Digest-only visibility: auto-resume never
 // touches running jobs; the operator resumes with --force.
 export const ZOMBIE_RUNNING_MS = 7_200_000 // 2 h
+
+// Display-only conversion — everything upstream stays integer micro-USD.
+function usd(micros: number): string {
+  return `$${(micros / 1e6).toFixed(2)}`
+}
 
 /**
  * Last-24h operator report, plain multi-line text (NOT JSON), sections in
@@ -73,6 +83,14 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
       `  ${r.channel} ${r.tier}: ${r.total} — ${r.ready} ready, ${r.needsReview} needs-review, ${r.failed} failed, ${r.blocked} blocked`,
     )
   }
+
+  lines.push('', 'Spend today (UTC)')
+  for (const channel of channels) {
+    lines.push(
+      `  ${channel.name}: ${usd(channelDaySpentMicros(db, channel.name))} of ${usd(channel.budget.perDayUsdMicros)}`,
+    )
+  }
+  lines.push(`  global: ${usd(globalDaySpentMicros(db))} of ${usd(globalDailyCapMicros())}`)
 
   return lines.join('\n')
 }
