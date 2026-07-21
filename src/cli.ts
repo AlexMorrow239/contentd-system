@@ -8,6 +8,8 @@ import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
 import { AllSourcesFailedError, scoutAll } from './scout/scout.js'
 import { produceNextTick } from './loop/produce-next.js'
 import { openDb } from './db/index.js'
+import { approveTopics, listTopics, rejectTopics } from './scout/topics.js'
+import type { TopicStatus } from './scout/topics.js'
 import { assertPremiumPreflight, stagesForTier } from './jobs/pipeline.js'
 import type { Tier } from './jobs/types.js'
 
@@ -182,6 +184,59 @@ program
     } finally {
       db.close()
     }
+  })
+
+// Operator gate over the scouted topic queue. Actions are thin: id validation
+// lives in parseTopicIds, state transitions in the topics DAO.
+const topics = program.command('topics')
+
+topics
+  .command('list')
+  .option('--db <path>', 'sqlite db path')
+  .option('--channel <name>', 'filter by channel')
+  .option('--status <status>', 'filter by topic status')
+  .action((opts: { db?: string; channel?: string; status?: string }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    // An unknown --status matches no rows (the DAO filters verbatim), so the
+    // operator sees an empty table rather than an error.
+    const rows = listTopics(db, {
+      channel: opts.channel,
+      status: opts.status as TopicStatus | undefined,
+    })
+    console.table(
+      rows.map((r) => ({
+        id: r.id,
+        channel: r.channel,
+        score: r.score,
+        status: r.status,
+        title: r.title,
+        reason: r.reason,
+      })),
+    )
+  })
+
+topics
+  .command('approve <ids...>')
+  .option('--db <path>', 'sqlite db path')
+  .action((rawIds: string[], opts: { db?: string }) => {
+    // Ids parse BEFORE the db opens: a bad token throws to the parseAsync
+    // .catch (message on stderr, exit 1) with no writes.
+    const ids = parseTopicIds(rawIds)
+    const db = openDb(resolveDbPath(opts.db))
+    const changed = approveTopics(db, ids)
+    // changed < ids.length flags ids that were not in 'candidate' state.
+    console.log(`approved ${changed} of ${ids.length}`)
+  })
+
+topics
+  .command('reject <ids...>')
+  .option('--db <path>', 'sqlite db path')
+  .action((rawIds: string[], opts: { db?: string }) => {
+    const ids = parseTopicIds(rawIds)
+    const db = openDb(resolveDbPath(opts.db))
+    const changed = rejectTopics(db, ids)
+    // reject takes candidate AND approved; claimed/used rows are skipped.
+    console.log(`rejected ${changed} of ${ids.length}`)
   })
 
 // cli.test.ts imports parseTier/stagesForTier in-process, which must not fire

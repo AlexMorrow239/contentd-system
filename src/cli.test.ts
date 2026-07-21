@@ -168,6 +168,16 @@ describe('brainrot CLI', () => {
     // exactly one cron-greppable JSON line on stdout
     expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
   }, 60000)
+
+  it('`topics --help` lists the list/approve/reject subcommands', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'topics', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('list')
+    expect(result.stdout).toContain('approve')
+    expect(result.stdout).toContain('reject')
+  }, 60000)
 })
 
 describe('tier helpers (in-process)', () => {
