@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db/index.js'
+import { acquireLease, PRODUCE_LEASE_TTL_MS } from './lease.js'
 
 describe('leases schema', () => {
   it('openDb creates the leases table with name as primary key', () => {
@@ -19,6 +20,40 @@ describe('leases schema', () => {
         )
         .run(),
     ).toThrow(/UNIQUE constraint failed/)
+    db.close()
+  })
+})
+
+describe('acquireLease', () => {
+  it('acquires a free lease and stamps holder + expiry exactly ttl ahead', () => {
+    const db = openDb(':memory:')
+    expect(PRODUCE_LEASE_TTL_MS).toBe(5_400_000)
+    const before = Date.now()
+    expect(acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    const row = db
+      .prepare("SELECT holder, expires_at FROM leases WHERE name = 'produce'")
+      .get() as { holder: string; expires_at: string }
+    expect(row.holder).toBe('pid:100')
+    // expires_at = acquire-time + ttl, bounded by the wall clocks around the call
+    const expires = Date.parse(row.expires_at)
+    expect(expires).toBeGreaterThanOrEqual(before + PRODUCE_LEASE_TTL_MS)
+    expect(expires).toBeLessThanOrEqual(Date.now() + PRODUCE_LEASE_TTL_MS)
+    db.close()
+  })
+
+  it('refuses while the lease is held — even for the same holder', () => {
+    const db = openDb(':memory:')
+    expect(acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    // a tick landing during a long render: the NORMAL no-op case
+    expect(acquireLease(db, 'produce', 'pid:200', PRODUCE_LEASE_TTL_MS)).toBe(false)
+    // acquire-if-free-or-expired has no same-holder re-entry
+    expect(acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(false)
+    const row = db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get() as {
+      holder: string
+    }
+    expect(row.holder).toBe('pid:100')
+    // a different lease name is independent
+    expect(acquireLease(db, 'scout', 'pid:200', PRODUCE_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
 })
