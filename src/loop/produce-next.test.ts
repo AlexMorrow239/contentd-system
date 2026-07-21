@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { execa } from 'execa'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -236,4 +237,30 @@ describe('produceNextTick — failed produce', () => {
     expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
+})
+
+describe('produce-next CLI', () => {
+  it('`produce-next --help` prints usage with --db/--channels-dir/--runs-root', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'produce-next', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('--db')
+    expect(result.stdout).toContain('--channels-dir')
+    expect(result.stdout).toContain('--runs-root')
+  }, 60000)
+
+  it('`produce-next` with no eligible work prints one noop JSON line and exits 0', async () => {
+    const root = tmpDir('brainrot-loop-cli-')
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'produce-next',
+        '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir, '--runs-root', join(root, 'runs')],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    // exactly one cron-greppable JSON line
+    expect(result.stdout.trim().split('\n')).toHaveLength(1)
+    expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-eligible-work' })
+  }, 60000)
 })

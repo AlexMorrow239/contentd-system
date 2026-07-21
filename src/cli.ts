@@ -6,6 +6,7 @@ import { createJob, runJob } from './jobs/runner.js'
 import { resumeJob } from './jobs/resume.js'
 import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
 import { AllSourcesFailedError, scoutAll } from './scout/scout.js'
+import { produceNextTick } from './loop/produce-next.js'
 import { openDb } from './db/index.js'
 import { assertPremiumPreflight, stagesForTier } from './jobs/pipeline.js'
 import type { Tier } from './jobs/types.js'
@@ -143,6 +144,29 @@ program
       )
       .all() as { day: string; micros: number }[]
     console.table(rows.map((r) => ({ day: r.day, usd: `$${(r.micros / 1e6).toFixed(2)}` })))
+  })
+
+program
+  .command('produce-next')
+  .option('--db <path>', 'sqlite db path')
+  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .option('--runs-root <path>', 'runs root directory', 'runs')
+  .action(async (opts: { db?: string; channelsDir: string; runsRoot: string }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      const result = await produceNextTick(db, {
+        channelsDir: opts.channelsDir,
+        runsRoot: opts.runsRoot,
+      })
+      // One cron-greppable JSON line. Exit mirrors produce: 0 for
+      // ready/needs-review and benign no-ops, 1 for failed AND blocked (the
+      // JSON line carries the finer distinction). status is undefined on
+      // noops, so the ternary lands on 0 for them.
+      process.stdout.write(JSON.stringify(result) + '\n')
+      process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
+    } finally {
+      db.close()
+    }
   })
 
 // cli.test.ts imports parseTier/stagesForTier in-process, which must not fire
