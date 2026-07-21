@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
+import { recordCost } from '../jobs/costs.js'
 import { testChannel } from '../stages/_testkit.js'
 import { planTick, RESUME_MIN_HEADROOM_USD_MICROS } from './plan-tick.js'
 
@@ -150,6 +151,45 @@ describe('resume pass', () => {
       channel: 'test',
       tier: 'premium',
     })
+    db.close()
+  })
+})
+
+describe('resume pass skip conditions', () => {
+  const cases: { reason: string; falKeyPresent: boolean; seed: (db: Database) => void }[] = [
+    {
+      reason: 'the job is premium and the FAL key is absent',
+      falKeyPresent: false,
+      seed: (db) => {
+        seedJob(db, { id: 'job-parked', tier: 'premium', status: 'blocked' })
+      },
+    },
+    {
+      reason: 'channel-day headroom is under the resume minimum',
+      falKeyPresent: true,
+      seed: (db) => {
+        seedJob(db, { id: 'job-parked', status: 'blocked' })
+        // $20 channel-day cap − $18.50 spent today = $1.50 < $2 headroom
+        const spender = seedJob(db)
+        recordCost(db, spender, 'fal', 'video', 18_500_000)
+      },
+    },
+    {
+      reason: 'global-day headroom is under the resume minimum',
+      falKeyPresent: true,
+      seed: (db) => {
+        seedJob(db, { id: 'job-parked', status: 'blocked' })
+        // Jobless sentinel spend: invisible to the channel-day JOIN, counted
+        // by the global sum. $25 default cap − $23.50 = $1.50 < $2 headroom.
+        recordCost(db, 'scout:test', 'anthropic', 'scout-score', 23_500_000)
+      },
+    },
+  ]
+
+  it.each(cases)('skips the blocked job when $reason', ({ falKeyPresent, seed }) => {
+    const db = openDb(':memory:')
+    seed(db)
+    expect(planTick(db, [testChannel()], { falKeyPresent })).toEqual(NOOP)
     db.close()
   })
 })
