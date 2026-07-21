@@ -30,6 +30,10 @@ export interface ScoutChannelResult {
 // (callers match on BudgetExceededError / ZodError).
 const PARTIAL_RESULT = Symbol('scout-partial-result')
 
+// A source before construction: the raw config entry the loop builds a source
+// from inside the per-source try, so a throwing constructor is isolated.
+type SourceDescriptor = { kind: 'reddit'; subreddit: string } | { kind: 'rss'; url: string }
+
 function attachPartial(err: unknown, partial: ScoutChannelResult): void {
   if (err !== null && typeof err === 'object') {
     ;(err as Record<PropertyKey, unknown>)[PARTIAL_RESULT] = partial
@@ -79,17 +83,26 @@ export async function scoutChannel(
   channel: ChannelConfig,
   opts: { client?: Anthropic; fetchImpl?: FetchLike } = {},
 ): Promise<ScoutChannelResult> {
-  const sources: TrendSource[] = [
-    ...channel.scout.subreddits.map((sub) => redditSource(sub, opts.fetchImpl)),
-    ...channel.scout.rss.map((feed) => rssSource(feed, opts.fetchImpl)),
+  // Iterate DESCRIPTORS, not pre-built sources: rssSource runs `new URL(url)`
+  // at construction, so building every source up front let one malformed feed
+  // URL abort the whole channel before per-source isolation began. Constructing
+  // inside the per-source try keeps a throwing constructor to a single entry.
+  const descriptors: SourceDescriptor[] = [
+    ...channel.scout.subreddits.map((subreddit) => ({ kind: 'reddit' as const, subreddit })),
+    ...channel.scout.rss.map((url) => ({ kind: 'rss' as const, url })),
   ]
 
   const sourceErrors: string[] = []
   const candidates: TrendCandidate[] = []
-  // Per-source isolation: a failed or timed-out source contributes zero
-  // candidates and one sourceErrors entry; the run continues (design spec §4).
-  for (const source of sources) {
+  // Per-source isolation: a failed constructor, fetch, or timeout contributes
+  // zero candidates and one sourceErrors entry; the run continues (spec §4).
+  for (const descriptor of descriptors) {
+    let source: TrendSource | undefined
     try {
+      source =
+        descriptor.kind === 'reddit'
+          ? redditSource(descriptor.subreddit, opts.fetchImpl)
+          : rssSource(descriptor.url, opts.fetchImpl)
       candidates.push(
         ...(await source.fetch({
           limit: channel.scout.perSourceLimit,
@@ -97,7 +110,15 @@ export async function scoutChannel(
         })),
       )
     } catch (err) {
-      const entry = `${source.id}: ${err instanceof Error ? err.message : String(err)}`
+      // Prefer the constructed source's id; when the constructor itself threw
+      // (a malformed rss URL — no hostname to derive an id from) fall back to a
+      // raw-url prefix so the entry still names the offending source.
+      const id =
+        source?.id ??
+        (descriptor.kind === 'reddit'
+          ? `reddit:r/${descriptor.subreddit}`
+          : `rss:${descriptor.url}`)
+      const entry = `${id}: ${err instanceof Error ? err.message : String(err)}`
       // Spec §4: a failing source "logs a warning" — stderr, since stdout is
       // reserved for the CLI's single JSON line.
       console.error(`scout: source ${entry}`)

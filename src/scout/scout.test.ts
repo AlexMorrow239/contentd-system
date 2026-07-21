@@ -154,6 +154,27 @@ describe('scoutChannel', () => {
     db.close()
   })
 
+  it('isolates a source whose constructor throws on a malformed rss URL', async () => {
+    const db = openDb(':memory:')
+    // rssSource runs `new URL(url)` at construction; a malformed feed URL must
+    // fault only that source, not abort the whole channel before isolation.
+    const channel = scoutedChannel({ subreddits: ['space'], rss: ['not a url'] })
+    const fetchImpl = fetchStub({
+      '/r/space/hot.json': redditJson([{ name: 't3_ok', title: 'Why is the sky blue' }]),
+    })
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' }]),
+    )
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+    // the good subreddit still scouted and queued despite the bad feed URL
+    expect(result.fetched).toBe(1)
+    expect(result.queued).toBe(1)
+    // exactly one error, prefixed with the RAW url (no hostname to derive an id)
+    expect(result.sourceErrors).toHaveLength(1)
+    expect(result.sourceErrors[0]).toMatch(/^rss:not a url: /)
+    db.close()
+  })
+
   it('gates on the global day budget BEFORE spending', async () => {
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
     const db = openDb(':memory:')
