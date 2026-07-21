@@ -192,3 +192,71 @@ describe('scoutChannel', () => {
     db.close()
   })
 })
+
+describe('scoutAll', () => {
+  it('skips sourceless channels and isolates a scoring failure per channel', async () => {
+    const db = openDb(':memory:')
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const manualOnly = testChannel({ name: 'manual-only' }) // DEFAULT_SCOUT: no sources
+    const bad = scoutedChannel({ subreddits: ['failing'] }, 'bad')
+    const good = scoutedChannel({}, 'good')
+    const fetchImpl = fetchStub({
+      '/r/failing/hot.json': JSON.stringify({
+        data: { children: [{ kind: 't3', data: { name: 't3_f', title: 'F', permalink: '/r/failing/comments/t3_f/', stickied: false } }] },
+      }),
+      '/r/space/hot.json': redditJson([{ name: 't3_g', title: 'G' }]),
+    })
+    // first scoring call (bad) is paid-but-invalid; second (good) is valid
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
+        usage: { input_tokens: 10, output_tokens: 5 },
+      })
+      .mockResolvedValueOnce(
+        emitScores([{ candidateIndex: 0, score: 90, topic: 'Good topic', reason: 'strong' }]),
+      )
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const results = await scoutAll(db, [manualOnly, bad, good], { client, fetchImpl })
+    expect(results.map((r) => r.channel)).toEqual(['bad', 'good']) // manual-only skipped
+    expect(results[0].scoringError).toBeDefined()
+    expect(results[0].queued).toBe(0)
+    expect(results[0].fetched).toBe(1) // fetch counts survive the scoring failure
+    expect(results[1].scoringError).toBeUndefined()
+    expect(results[1].queued).toBe(1)
+    // the failing channel logged to stderr and its paid spend was ledgered
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('bad'))
+    const costs = db.prepare('SELECT job_id FROM costs ORDER BY id').all()
+    expect(costs).toEqual([{ job_id: 'scout:bad' }, { job_id: 'scout:good' }])
+    stderrSpy.mockRestore()
+    db.close()
+  })
+
+  it('throws AllSourcesFailedError only when every source everywhere failed', async () => {
+    const db = openDb(':memory:')
+    const a = scoutedChannel({ subreddits: ['one'] }, 'a')
+    const b = scoutedChannel({ subreddits: ['two'] }, 'b')
+    // fetchStub({}) rejects every URL — total source failure
+    const { client, create } = fakeClient(emitScores([]))
+    const err = await scoutAll(db, [a, b], { client, fetchImpl: fetchStub({}) }).then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(AllSourcesFailedError)
+    // the error carries every channel's result so the CLI still prints its JSON line
+    expect((err as AllSourcesFailedError).results.map((r) => r.channel)).toEqual(['a', 'b'])
+    expect(create).not.toHaveBeenCalled()
+
+    // one healthy source flips it back to a normal (partial) run
+    const mixed = fetchStub({ '/r/two/hot.json': redditJson([{ name: 't3_x', title: 'X' }]) })
+    const { client: client2 } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 70, topic: 'X topic', reason: 'ok' }]),
+    )
+    const results = await scoutAll(db, [a, b], { client: client2, fetchImpl: mixed })
+    expect(results).toHaveLength(2)
+    expect(results[0].sourceErrors).toHaveLength(1)
+    expect(results[1].queued).toBe(1)
+    db.close()
+  })
+})

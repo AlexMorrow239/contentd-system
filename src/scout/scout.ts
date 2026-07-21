@@ -36,6 +36,13 @@ function attachPartial(err: unknown, partial: ScoutChannelResult): void {
   }
 }
 
+function readPartial(err: unknown): ScoutChannelResult | undefined {
+  if (err !== null && typeof err === 'object' && PARTIAL_RESULT in err) {
+    return (err as Record<PropertyKey, unknown>)[PARTIAL_RESULT] as ScoutChannelResult
+  }
+  return undefined
+}
+
 // Scoring with the ledger-complete error path: gate first; if the call spent
 // before failing (paid-but-invalid response), record that spend before the
 // error propagates.
@@ -146,4 +153,59 @@ export async function scoutChannel(
   result.rejected = rows.length - result.queued
   insertTopics(db, rows)
   return result
+}
+
+export class AllSourcesFailedError extends Error {
+  // Carries the per-channel results so the CLI can still print its one JSON
+  // line (Global Constraints: JSON even on failure outcomes) before exit 1.
+  constructor(message: string, public results: ScoutChannelResult[]) {
+    super(message)
+    this.name = 'AllSourcesFailedError'
+  }
+}
+
+export async function scoutAll(
+  db: Database,
+  channels: ChannelConfig[],
+  opts: { client?: Anthropic; fetchImpl?: FetchLike } = {},
+): Promise<ScoutChannelResult[]> {
+  const results: ScoutChannelResult[] = []
+  let totalSources = 0
+  let failedSources = 0
+  for (const channel of channels) {
+    const sourceCount = channel.scout.subreddits.length + channel.scout.rss.length
+    // No [scout] sources → not a scouted channel; manual produce only.
+    if (sourceCount === 0) continue
+    totalSources += sourceCount
+    try {
+      const result = await scoutChannel(db, channel, opts)
+      failedSources += result.sourceErrors.length
+      results.push(result)
+    } catch (err) {
+      // Per-channel isolation: one channel's scoring failure (including the
+      // global-day budget gate) must not starve the others.
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`scout: channel "${channel.name}" scoring failed: ${message}`)
+      const partial = readPartial(err) ?? {
+        channel: channel.name,
+        fetched: 0,
+        alreadyKnown: 0,
+        scored: 0,
+        queued: 0,
+        rejected: 0,
+        sourceErrors: [],
+        costUsdMicros: 0,
+      }
+      failedSources += partial.sourceErrors.length
+      // queued/rejected are 0 on the error path by contract — nothing was inserted.
+      results.push({ ...partial, queued: 0, rejected: 0, scoringError: message })
+    }
+  }
+  if (totalSources > 0 && failedSources === totalSources) {
+    throw new AllSourcesFailedError(
+      `all ${totalSources} trend source(s) across ${results.length} channel(s) failed`,
+      results,
+    )
+  }
+  return results
 }
