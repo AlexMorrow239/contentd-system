@@ -127,3 +127,40 @@ describe('rssSource identity resolution', () => {
     ])
   })
 })
+
+const ATOM_FEED = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Blog</title>
+  <entry>
+    <title type="html">Entry one</title>
+    <id>tag:example.org,2026:entry-1</id>
+    <link rel="edit" href="https://example.org/e1/edit"/>
+    <link rel="alternate" href="https://example.org/e1"/>
+  </entry>
+  <entry>
+    <title>Entry two</title>
+    <id>tag:example.org,2026:entry-2</id>
+    <link href="https://example.org/e2"/>
+  </entry>
+</feed>`
+
+describe('rssSource atom support', () => {
+  it('parses feed.entry with attribute links, preferring rel="alternate"', async () => {
+    const { impl } = fakeFetch(200, ATOM_FEED)
+    const candidates = await rssSource('https://example.org/feed.atom', impl).fetch(OPTS)
+    expect(candidates).toEqual([
+      {
+        title: 'Entry one',
+        url: 'https://example.org/e1',
+        sourceId: 'rss:example.org',
+        externalId: 'tag:example.org,2026:entry-1',
+      },
+      {
+        title: 'Entry two',
+        url: 'https://example.org/e2',
+        sourceId: 'rss:example.org',
+        externalId: 'tag:example.org,2026:entry-2',
+      },
+    ])
+  })
+})

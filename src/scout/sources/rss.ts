@@ -40,6 +40,35 @@ function rssItems(items: Record<string, unknown>[], sourceId: string): TrendCand
   return out
 }
 
+// fast-xml-parser yields an object (not a one-element array) for elements
+// that appear exactly once.
+function asArray<T>(value: T | T[] | undefined): T[] {
+  if (value === undefined) return []
+  return Array.isArray(value) ? value : [value]
+}
+
+// Atom <link> is href-in-attribute and may repeat per rel; the alternate (or
+// rel-less) link is the canonical page URL (RFC 4287 §4.2.7.2).
+function atomLinkHref(value: unknown): string | undefined {
+  const links = asArray(value as Record<string, unknown> | Record<string, unknown>[] | undefined)
+  const preferred =
+    links.find((l) => l['@_rel'] === undefined || l['@_rel'] === 'alternate') ?? links[0]
+  if (preferred === undefined) return undefined
+  return text(preferred['@_href'])
+}
+
+function atomEntries(entries: Record<string, unknown>[], sourceId: string): TrendCandidate[] {
+  const out: TrendCandidate[] = []
+  for (const entry of entries) {
+    const title = text(entry.title)
+    const link = atomLinkHref(entry.link)
+    const externalId = text(entry.id) ?? link
+    if (title === undefined || externalId === undefined) continue
+    out.push({ title, url: link ?? '', sourceId, externalId })
+  }
+  return out
+}
+
 export function rssSource(feedUrl: string, fetchImpl: FetchLike = fetch): TrendSource {
   const id = `rss:${new URL(feedUrl).hostname}`
   return {
@@ -50,6 +79,8 @@ export function rssSource(feedUrl: string, fetchImpl: FetchLike = fetch): TrendS
       let candidates: TrendCandidate[]
       if (doc.rss?.channel !== undefined) {
         candidates = rssItems(doc.rss.channel.item as Record<string, unknown>[], id)
+      } else if (doc.feed !== undefined) {
+        candidates = atomEntries(doc.feed.entry as Record<string, unknown>[], id)
       } else {
         throw new Error(`rssSource: ${feedUrl} is not a recognized RSS 2.0 or Atom feed`)
       }
