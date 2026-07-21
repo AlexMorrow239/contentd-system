@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DEFAULT_SCOUT, loadChannelConfig } from './channel.js'
+import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir } from './channel.js'
 
 function writeToml(lines: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'chan-'))
@@ -211,5 +211,46 @@ describe('[scout] config', () => {
     expect(() =>
       loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'per_source_limit = 101'])),
     ).toThrow()
+  })
+})
+
+describe('loadChannelsDir', () => {
+  function writeDir(files: Record<string, string[]>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'chans-'))
+    for (const [name, lines] of Object.entries(files)) {
+      writeFileSync(join(dir, name), lines.join('\n'))
+    }
+    return dir
+  }
+
+  function named(name: string): string[] {
+    return PLAN1_LINES.map((l) => (l === 'name = "legacy"' ? `name = "${name}"` : l))
+  }
+
+  it('loads every *.toml sorted by channel name, ignoring other files', () => {
+    const dir = writeDir({
+      'zzz.toml': named('alpha'), // filename order deliberately ≠ channel-name order
+      'aaa.toml': named('zeta'),
+      'notes.txt': ['not a channel'],
+    })
+    const configs = loadChannelsDir(dir)
+    expect(configs.map((c) => c.name)).toEqual(['alpha', 'zeta'])
+    expect(configs[0].scout).toEqual(DEFAULT_SCOUT)
+  })
+
+  it('returns [] for an empty directory', () => {
+    expect(loadChannelsDir(mkdtempSync(join(tmpdir(), 'chans-')))).toEqual([])
+  })
+
+  it('throws naming the unparseable file', () => {
+    const dir = writeDir({
+      'good.toml': named('good'),
+      'bad.toml': ['name = "broken"', 'niche = "not-an-array"'],
+    })
+    expect(() => loadChannelsDir(dir)).toThrow(/bad\.toml/)
+  })
+
+  it('throws when the directory does not exist', () => {
+    expect(() => loadChannelsDir('/nope/definitely/missing')).toThrow()
   })
 })

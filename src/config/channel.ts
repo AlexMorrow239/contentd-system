@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
 
@@ -179,4 +180,25 @@ export function loadChannelConfig(path: string): ChannelConfig {
         }
       : { ...DEFAULT_SCOUT },
   }
+}
+
+/**
+ * Loads every channel TOML in a directory — the scout/loop enumeration.
+ * Sorted by channel name (code-unit order, locale-independent) so tick
+ * planning is deterministic. An unparseable file throws, naming the file:
+ * a broken channel config is a config error, not a channel to skip.
+ */
+export function loadChannelsDir(dir: string): ChannelConfig[] {
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('.toml'))
+    .sort()
+  const configs = files.map((file) => {
+    const path = join(dir, file)
+    try {
+      return loadChannelConfig(path)
+    } catch (err) {
+      throw new Error(`failed to load channel config ${path}: ${(err as Error).message}`)
+    }
+  })
+  return configs.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 }
