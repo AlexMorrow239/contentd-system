@@ -98,3 +98,58 @@ describe('planTick basics', () => {
     db.close()
   })
 })
+
+describe('resume pass', () => {
+  it('beats the claim pass when a blocked job is eligible', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'job-parked', status: 'blocked' })
+    seedTopic(db) // a claimable topic must not outrank the parked job
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+      kind: 'resume',
+      jobId: 'job-parked',
+      channel: 'test',
+      tier: 'volume',
+    })
+    db.close()
+  })
+
+  it('takes the oldest blocked job first', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'job-newer', status: 'blocked', createdAt: '2026-07-02T00:00:00.000Z' })
+    seedJob(db, { id: 'job-older', status: 'blocked', createdAt: '2026-07-01T00:00:00.000Z' })
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+      kind: 'resume',
+      jobId: 'job-older',
+    })
+    db.close()
+  })
+
+  it('skips a blocked job whose channel is missing and takes the next oldest', () => {
+    const db = openDb(':memory:')
+    // Oldest blocked job belongs to a channel whose TOML left the dir.
+    seedJob(db, {
+      id: 'job-ghost',
+      channel: 'ghost',
+      status: 'blocked',
+      createdAt: '2026-07-01T00:00:00.000Z',
+    })
+    seedJob(db, { id: 'job-live', status: 'blocked', createdAt: '2026-07-02T00:00:00.000Z' })
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+      kind: 'resume',
+      jobId: 'job-live',
+    })
+    db.close()
+  })
+
+  it('carries the premium tier through the plan', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'job-prem', tier: 'premium', status: 'blocked' })
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+      kind: 'resume',
+      jobId: 'job-prem',
+      channel: 'test',
+      tier: 'premium',
+    })
+    db.close()
+  })
+})
