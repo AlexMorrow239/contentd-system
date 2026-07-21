@@ -164,3 +164,35 @@ describe('rssSource atom support', () => {
     ])
   })
 })
+
+const RSS_SINGLE = `<rss version="2.0"><channel>
+  <item><title>Lone item</title><link>https://feeds.example.com/solo</link><guid>solo-1</guid></item>
+</channel></rss>`
+
+const ATOM_SINGLE = `<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><title>Lone entry</title><id>tag:example.org,2026:solo</id><link href="https://example.org/solo"/></entry>
+</feed>`
+
+const RSS_EMPTY = `<rss version="2.0"><channel><title>Nothing yet</title></channel></rss>`
+
+describe('rssSource single-item normalization', () => {
+  it('yields one candidate when the parser returns an object, and none from an empty channel', async () => {
+    const rss = await rssSource(
+      'https://feeds.example.com/solo.xml',
+      fakeFetch(200, RSS_SINGLE).impl,
+    ).fetch(OPTS)
+    expect(rss.map((c) => c.externalId)).toEqual(['solo-1'])
+
+    const atom = await rssSource(
+      'https://example.org/solo.atom',
+      fakeFetch(200, ATOM_SINGLE).impl,
+    ).fetch(OPTS)
+    expect(atom.map((c) => c.externalId)).toEqual(['tag:example.org,2026:solo'])
+
+    const empty = await rssSource(
+      'https://feeds.example.com/empty.xml',
+      fakeFetch(200, RSS_EMPTY).impl,
+    ).fetch(OPTS)
+    expect(empty).toEqual([])
+  })
+})

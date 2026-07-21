@@ -78,9 +78,9 @@ export function rssSource(feedUrl: string, fetchImpl: FetchLike = fetch): TrendS
       const doc = parser.parse(await res.text()) as ParsedFeed
       let candidates: TrendCandidate[]
       if (doc.rss?.channel !== undefined) {
-        candidates = rssItems(doc.rss.channel.item as Record<string, unknown>[], id)
+        candidates = rssItems(asArray(doc.rss.channel.item), id)
       } else if (doc.feed !== undefined) {
-        candidates = atomEntries(doc.feed.entry as Record<string, unknown>[], id)
+        candidates = atomEntries(asArray(doc.feed.entry), id)
       } else {
         throw new Error(`rssSource: ${feedUrl} is not a recognized RSS 2.0 or Atom feed`)
       }
