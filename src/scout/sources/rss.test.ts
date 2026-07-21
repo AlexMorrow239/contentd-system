@@ -83,3 +83,47 @@ describe('rssSource', () => {
     ])
   })
 })
+
+const RSS_EDGE_FEED = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Attributed guid</title>
+      <link>https://feeds.example.com/1</link>
+      <guid isPermaLink="false">g-1</guid>
+    </item>
+    <item>
+      <title>Guid-less falls back to link</title>
+      <link>https://feeds.example.com/2</link>
+    </item>
+    <item>
+      <link>https://feeds.example.com/3</link>
+      <guid>g-3</guid>
+    </item>
+    <item>
+      <title>No identity at all</title>
+    </item>
+  </channel>
+</rss>`
+
+describe('rssSource identity resolution', () => {
+  it('reads attributed guids, falls back to the link, and skips unusable items', async () => {
+    const { impl } = fakeFetch(200, RSS_EDGE_FEED)
+    const candidates = await rssSource('https://feeds.example.com/edge.xml', impl).fetch(OPTS)
+    // Item 3 has no title, item 4 has neither guid nor link: both skipped.
+    expect(candidates).toEqual([
+      {
+        title: 'Attributed guid',
+        url: 'https://feeds.example.com/1',
+        sourceId: 'rss:feeds.example.com',
+        externalId: 'g-1',
+      },
+      {
+        title: 'Guid-less falls back to link',
+        url: 'https://feeds.example.com/2',
+        sourceId: 'rss:feeds.example.com',
+        externalId: 'https://feeds.example.com/2',
+      },
+    ])
+  })
+})

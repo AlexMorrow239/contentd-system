@@ -32,7 +32,7 @@ function rssItems(items: Record<string, unknown>[], sourceId: string): TrendCand
   for (const item of items) {
     const title = text(item.title)
     const link = text(item.link)
-    const externalId = text(item.guid)
+    const externalId = text(item.guid) ?? link
     // No title or no stable identity → the item can be neither scored nor deduped.
     if (title === undefined || externalId === undefined) continue
     out.push({ title, url: link ?? '', sourceId, externalId })
