@@ -100,6 +100,17 @@ function neverStages(): StageDef[] {
   throw new Error('stagesFor must not be called on this path')
 }
 
+function failingStages(): StageDef[] {
+  return [
+    {
+      name: 'script',
+      async run() {
+        throw new Error('stage exploded')
+      },
+    },
+  ]
+}
+
 beforeEach(() => {
   // Deterministic regardless of the developer's shell or .env: no fal key
   // (volume path only) and the default $25 global cap.
@@ -195,6 +206,33 @@ describe('produceNextTick — lease', () => {
     await expect(
       produceNextTick(db, { channelsDir: brokenDir, runsRoot, stagesFor: neverStages }),
     ).rejects.toThrow()
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+})
+
+describe('produceNextTick — failed produce', () => {
+  it('keeps the topic claimed and job-bound when a stage fails', async () => {
+    const { db, runsRoot } = setup()
+    const topicId = seedTopic(db)
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: failingStages })
+    expect(result).toEqual({
+      action: 'produced',
+      jobId: expect.any(String),
+      topicId,
+      tier: 'volume',
+      status: 'failed',
+    })
+    // claimed + bound to its failed job: the resume path owns recovery, the
+    // topic is never re-claimed or lost
+    const topic = db
+      .prepare('SELECT status, job_id FROM topics WHERE id = ?')
+      .get(topicId) as { status: string; job_id: string }
+    expect(topic).toEqual({ status: 'claimed', job_id: result.jobId })
+    const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(result.jobId) as {
+      status: string
+    }
+    expect(job.status).toBe('failed')
     expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
     db.close()
   })

@@ -78,7 +78,12 @@ export async function produceNextTick(
     const result = await runJob(db, channel, jobId, stagesFor(plan.tier), {
       runsRoot: opts.runsRoot,
     })
-    markTopicUsedByJob(db, jobId)
+    if (result.status === 'ready' || result.status === 'needs-review') {
+      // Library-landed is the only used-flip: a failed/blocked job keeps its
+      // topic 'claimed' and bound to the job — the resume path owns recovery,
+      // so the topic is never re-claimed or lost.
+      markTopicUsedByJob(db, jobId)
+    }
     return { action: 'produced', jobId, topicId: plan.topicId, tier: plan.tier, status: result.status }
   } finally {
     releaseLease(db, 'produce', holder)
