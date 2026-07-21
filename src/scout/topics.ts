@@ -116,3 +116,21 @@ export function rejectTopics(db: Database, ids: number[]): number {
     )
     .run(...ids).changes
 }
+
+// Claim = bind topic to job. Guarded so a rejected/used/claimed topic is
+// never revived even if a caller slips outside the produce lease; the boolean
+// lets produce-next treat a failed claim as the invariant breach it is.
+export function claimTopic(db: Database, topicId: number, jobId: string): boolean {
+  const info = db
+    .prepare(
+      "UPDATE topics SET status = 'claimed', job_id = ? WHERE id = ? AND status IN ('candidate','approved')",
+    )
+    .run(jobId, topicId)
+  return info.changes === 1
+}
+
+// Called when a job lands in the library; a job with no claimed topic
+// (manual `produce`) is a silent no-op.
+export function markTopicUsedByJob(db: Database, jobId: string): void {
+  db.prepare("UPDATE topics SET status = 'used' WHERE job_id = ? AND status = 'claimed'").run(jobId)
+}

@@ -3,8 +3,10 @@ import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import {
   approveTopics,
+  claimTopic,
   insertTopics,
   knownHashes,
+  markTopicUsedByJob,
   RECENT_TITLES_LIMIT,
   recentTopicTitles,
   rejectTopics,
@@ -218,6 +220,52 @@ describe('approveTopics / rejectTopics', () => {
       { id: d, status: 'used' },
     ])
     expect(rejectTopics(db, [])).toBe(0)
+    db.close()
+  })
+})
+
+describe('claimTopic / markTopicUsedByJob', () => {
+  it('claim binds the topic to its job and reports success', () => {
+    const db = openDb(':memory:')
+    const id = seedTopic(db, { status: 'approved' })
+    expect(claimTopic(db, id, 'job-42')).toBe(true)
+    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+      status: string
+      job_id: string | null
+    }
+    expect(row).toEqual({ status: 'claimed', job_id: 'job-42' })
+    db.close()
+  })
+
+  it('claim never revives a rejected, used, or already-claimed topic', () => {
+    const db = openDb(':memory:')
+    for (const status of ['rejected', 'used', 'claimed'] as const) {
+      const id = seedTopic(db, { status, jobId: 'job-old' })
+      expect(claimTopic(db, id, 'job-new')).toBe(false)
+      const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+        status: string
+        job_id: string | null
+      }
+      expect(row).toEqual({ status, job_id: 'job-old' })
+    }
+    db.close()
+  })
+
+  it('markTopicUsedByJob flips only the claimed row with that job id', () => {
+    const db = openDb(':memory:')
+    const claimed = seedTopic(db, { status: 'claimed', jobId: 'job-42' })
+    const other = seedTopic(db, { status: 'claimed', jobId: 'job-7' })
+    markTopicUsedByJob(db, 'job-42')
+    const statuses = db.prepare('SELECT id, status FROM topics ORDER BY id').all() as {
+      id: number
+      status: string
+    }[]
+    expect(statuses).toEqual([
+      { id: claimed, status: 'used' },
+      { id: other, status: 'claimed' },
+    ])
+    // manual `produce` jobs have no claimed topic: silent no-op
+    expect(() => markTopicUsedByJob(db, 'job-unknown')).not.toThrow()
     db.close()
   })
 })
