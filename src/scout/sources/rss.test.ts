@@ -136,6 +136,32 @@ describe('rssSource identity resolution', () => {
   })
 })
 
+const RSS_NUMERIC_GUID_FEED = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Numeric guid</title>
+      <link>https://feeds.example.com/n</link>
+      <guid>007</guid>
+    </item>
+  </channel>
+</rss>`
+
+describe('rssSource numeric-looking identity text', () => {
+  it('preserves an RSS guid that looks like a number, without numeric coercion', async () => {
+    const { impl } = fakeFetch(200, RSS_NUMERIC_GUID_FEED)
+    const candidates = await rssSource('https://feeds.example.com/numeric.xml', impl).fetch(OPTS)
+    expect(candidates).toEqual([
+      {
+        title: 'Numeric guid',
+        url: 'https://feeds.example.com/n',
+        sourceId: 'rss:feeds.example.com',
+        externalId: '007',
+      },
+    ])
+  })
+})
+
 const ATOM_FEED = `<?xml version="1.0" encoding="utf-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <title>Example Blog</title>
@@ -149,6 +175,31 @@ const ATOM_FEED = `<?xml version="1.0" encoding="utf-8"?>
     <title>Entry two</title>
     <id>tag:example.org,2026:entry-2</id>
     <link href="https://example.org/e2"/>
+  </entry>
+</feed>`
+
+const ATOM_NUMERIC_ID_FEED = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <title>Numeric id entry</title>
+    <id>007</id>
+    <link href="https://example.org/n"/>
+  </entry>
+</feed>`
+
+const ATOM_EDGE_FEED = `<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:example.org,2026:no-title</id>
+    <link href="https://example.org/no-title"/>
+  </entry>
+  <entry>
+    <title>No identity at all</title>
+  </entry>
+  <entry>
+    <title>Survives</title>
+    <id>tag:example.org,2026:survives</id>
+    <link href="https://example.org/survives"/>
   </entry>
 </feed>`
 
@@ -168,6 +219,33 @@ describe('rssSource atom support', () => {
         url: 'https://example.org/e2',
         sourceId: 'rss:example.org',
         externalId: 'tag:example.org,2026:entry-2',
+      },
+    ])
+  })
+
+  it('preserves an Atom id that looks like a number, without numeric coercion', async () => {
+    const { impl } = fakeFetch(200, ATOM_NUMERIC_ID_FEED)
+    const candidates = await rssSource('https://example.org/numeric.atom', impl).fetch(OPTS)
+    expect(candidates).toEqual([
+      {
+        title: 'Numeric id entry',
+        url: 'https://example.org/n',
+        sourceId: 'rss:example.org',
+        externalId: '007',
+      },
+    ])
+  })
+
+  it('skips entries missing a title or an id/link identity, keeps the rest', async () => {
+    const { impl } = fakeFetch(200, ATOM_EDGE_FEED)
+    const candidates = await rssSource('https://example.org/edge.atom', impl).fetch(OPTS)
+    // Entry 1 has no title, entry 2 has neither id nor link: both skipped.
+    expect(candidates).toEqual([
+      {
+        title: 'Survives',
+        url: 'https://example.org/survives',
+        sourceId: 'rss:example.org',
+        externalId: 'tag:example.org,2026:survives',
       },
     ])
   })

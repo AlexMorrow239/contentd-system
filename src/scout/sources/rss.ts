@@ -3,7 +3,10 @@ import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } fro
 
 // Attributes stay on: an Atom <link> carries its URL as @_href, and an RSS
 // <guid isPermaLink="..."> parses to { '#text': ..., '@_isPermaLink': ... }.
-const parser = new XMLParser({ ignoreAttributes: false })
+// Tag values stay un-coerced: identity fields (guid/id) must keep their exact
+// text — a numeric-looking guid like "007" must not become the number 7,
+// which would collapse it with a distinct "07" guid and corrupt the dedupe hash.
+const parser = new XMLParser({ ignoreAttributes: false, parseTagValue: false })
 
 // Element shapes of interest in fast-xml-parser output. Leaves stay loose:
 // real-world feeds omit and duplicate elements freely, so every field is
@@ -14,7 +17,9 @@ interface ParsedFeed {
 }
 
 // Text of a parsed node: plain scalar, or the '#text' of an attributed node.
-// Numeric-looking values arrive as numbers (parseTagValue is on by default).
+// Tag values arrive as strings (parseTagValue: false, above); the number
+// branch stays only as a defensive fallback for attribute values, which
+// fast-xml-parser also leaves un-coerced by default but is not guaranteed to.
 function text(value: unknown): string | undefined {
   if (typeof value === 'string') {
     const trimmed = value.trim()
