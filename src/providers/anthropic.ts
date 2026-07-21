@@ -46,6 +46,29 @@ function coerceJsonStrings(value: unknown): unknown {
   return value;
 }
 
+// The strict tool-schema mode rejects minimum/maximum on integer properties
+// (live 400: "tools.0.custom: For 'integer' type, properties maximum, minimum
+// are not supported") — and zod v4's .int() ALONE emits safe-integer
+// minimum/maximum, so every integer field would trip it, explicit bounds or
+// not. Strip them recursively before the schema goes on the wire; range rules
+// belong in prompts and in post-response validation/normalization. Response
+// validation still runs the full zod schema, bounds included.
+function stripIntegerBounds(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const item of node) stripIntegerBounds(item);
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  const record = node as Record<string, unknown>;
+  if (record.type === 'integer') {
+    delete record.minimum;
+    delete record.maximum;
+    delete record.exclusiveMinimum;
+    delete record.exclusiveMaximum;
+  }
+  for (const value of Object.values(record)) stripIntegerBounds(value);
+}
+
 // Shared forced-tool core for structuredCompletion and visionJudgment. The two
 // public functions differ only in how the user message content is built (plain
 // prompt string vs image blocks + prompt); everything else — price lookup
@@ -72,6 +95,7 @@ async function forcedToolCompletion<T>(opts: {
   // Zod v4 native JSON Schema. `reused: 'inline'` inlines any reused sub-schema so
   // the tool input_schema has no $ref (the Anthropic tool API does not resolve $ref).
   const inputSchema = z.toJSONSchema(opts.schema, { reused: 'inline' }) as Anthropic.Tool.InputSchema;
+  stripIntegerBounds(inputSchema);
 
   const response = await client.messages.create({
     model: opts.model,

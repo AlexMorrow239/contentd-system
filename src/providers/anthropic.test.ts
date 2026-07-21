@@ -198,4 +198,32 @@ describe('strict tool schema enforcement', () => {
     await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client });
     expect(create.mock.calls[0][0].tools[0].strict).toBe(true);
   });
+
+  it('strips integer minimum/maximum from the wire schema (strict mode rejects them)', async () => {
+    // Observed live 2026-07-21: 400 invalid_request_error "tools.0.custom: For
+    // 'integer' type, properties maximum, minimum are not supported". zod v4's
+    // .int() alone emits safe-integer minimum/maximum, so any integer field
+    // trips it — explicit .min/.max or not. Response validation keeps the full
+    // zod bounds; only the wire schema is stripped.
+    const intSchema = z.object({
+      n: z.number().int().min(0).max(10),
+      nested: z.array(z.object({ idx: z.number().int() })),
+      ratio: z.number().min(0), // non-integer bounds must survive the strip
+    });
+    const { client, create } = fakeClient({
+      content: [
+        { type: 'tool_use', name: 'emit', id: 't1', input: { n: 3, nested: [{ idx: 1 }], ratio: 0.5 } },
+      ],
+      usage: { input_tokens: 100, output_tokens: 200 },
+    });
+    await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema: intSchema, client });
+    const sent = JSON.stringify(create.mock.calls[0][0].tools[0].input_schema);
+    expect(sent).not.toContain('"maximum"');
+    // the number-typed ratio keeps its minimum; no integer node carries one
+    const wire = create.mock.calls[0][0].tools[0].input_schema as {
+      properties: { n: Record<string, unknown>; ratio: Record<string, unknown> };
+    };
+    expect(wire.properties.n.minimum).toBeUndefined();
+    expect(wire.properties.ratio.minimum).toBe(0);
+  });
 });
