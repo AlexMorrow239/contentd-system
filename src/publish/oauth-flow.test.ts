@@ -1,0 +1,105 @@
+import { describe, expect, it } from 'vitest'
+import { AUTH_FLOW_TIMEOUT_MS, runYoutubeAuthFlow } from './oauth-flow.js'
+import { YT_UPLOAD_SCOPE } from './youtube.js'
+
+describe('AUTH_FLOW_TIMEOUT_MS', () => {
+  it('is 5 minutes', () => {
+    expect(AUTH_FLOW_TIMEOUT_MS).toBe(300_000)
+  })
+})
+
+describe('runYoutubeAuthFlow', () => {
+  it('drives consent -> redirect -> exchange end-to-end and returns the refresh token', async () => {
+    let redirectBody = ''
+    const fetchImpl: typeof fetch = async (url, init) => {
+      expect(url).toBe('https://oauth2.googleapis.com/token')
+      const params = new URLSearchParams(init?.body as string)
+      expect(params.get('code')).toBe('test-auth-code')
+      expect(params.get('client_id')).toBe('test-client-id')
+      expect(params.get('client_secret')).toBe('test-client-secret')
+      expect(params.get('grant_type')).toBe('authorization_code')
+      expect(params.get('redirect_uri')).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+      return new Response(
+        JSON.stringify({ refresh_token: 'rt-test-token', scope: YT_UPLOAD_SCOPE }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
+
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      expect(consentUrl.origin + consentUrl.pathname).toBe(
+        'https://accounts.google.com/o/oauth2/v2/auth',
+      )
+      expect(consentUrl.searchParams.get('client_id')).toBe('test-client-id')
+      expect(consentUrl.searchParams.get('response_type')).toBe('code')
+      expect(consentUrl.searchParams.get('scope')).toBe(YT_UPLOAD_SCOPE)
+      expect(consentUrl.searchParams.get('access_type')).toBe('offline')
+      expect(consentUrl.searchParams.get('prompt')).toBe('consent')
+      const state = consentUrl.searchParams.get('state')
+      expect(state).toMatch(/^[0-9a-f]{32}$/)
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      const res = await fetch(`${redirectUri}/?code=test-auth-code&state=${state}`)
+      redirectBody = await res.text()
+    }
+
+    const result = await runYoutubeAuthFlow({
+      clientId: 'test-client-id',
+      clientSecret: 'test-client-secret',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+    })
+
+    expect(result).toEqual({ refreshToken: 'rt-test-token', scopes: YT_UPLOAD_SCOPE })
+    expect(redirectBody).toContain('close this tab')
+  })
+
+  it('rejects with a message telling the operator to remove the prior grant when the exchange returns no refresh_token', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify({ scope: YT_UPLOAD_SCOPE }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}/?code=test-auth-code&state=${state}`)
+    }
+
+    await expect(
+      runYoutubeAuthFlow({
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        listenPort: 0,
+        openBrowser,
+        fetchImpl,
+      }),
+    ).rejects.toThrow(
+      'runYoutubeAuthFlow: no refresh_token in response; remove prior grant at myaccount.google.com/permissions and retry',
+    )
+  })
+
+  it('rejects when the redirect state does not match the one sent to Google', async () => {
+    const fetchImpl: typeof fetch = async () => {
+      throw new Error('fetchImpl must not be called on a state mismatch')
+    }
+
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}/?code=test-auth-code&state=wrong-state`)
+    }
+
+    await expect(
+      runYoutubeAuthFlow({
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        listenPort: 0,
+        openBrowser,
+        fetchImpl,
+      }),
+    ).rejects.toThrow('runYoutubeAuthFlow: state mismatch on redirect (possible CSRF)')
+  })
+})

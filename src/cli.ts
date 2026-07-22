@@ -13,6 +13,9 @@ import { approveTopics, listTopics, rejectTopics } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { assertPremiumPreflight, stagesForTier } from './jobs/pipeline.js'
 import type { Tier } from './jobs/types.js'
+import { runYoutubeAuthFlow } from './publish/oauth-flow.js'
+import { parseTokenKey } from './publish/crypto.js'
+import { upsertToken } from './publish/tokens.js'
 
 const TIERS: readonly Tier[] = ['volume', 'premium']
 
@@ -238,6 +241,46 @@ topics
     const changed = rejectTopics(db, ids)
     // reject takes candidate AND approved; claimed/used rows are skipped.
     console.log(`rejected ${changed} of ${ids.length}`)
+  })
+
+// Interactive per-channel OAuth grant (design spec §4.2). Thin glue: all flow
+// logic and error taxonomy live in runYoutubeAuthFlow; this action only
+// resolves the channel/env inputs around it and persists the result.
+const auth = program.command('auth')
+
+auth
+  .command('youtube')
+  .requiredOption('--channel <name>', 'channel name to authorize')
+  .option('--db <path>', 'sqlite db path')
+  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .action(async (opts: { channel: string; db?: string; channelsDir: string }) => {
+    // Channel + env checks precede any db handle or browser launch, so a typo
+    // or missing credential fails clean before Alex is asked to click through
+    // a Google consent screen.
+    const channels = loadChannelsDir(opts.channelsDir)
+    const channel = channels.find((c) => c.name === opts.channel)
+    if (!channel) {
+      throw new Error(`auth youtube: unknown channel "${opts.channel}" (checked ${opts.channelsDir})`)
+    }
+    const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
+    const clientId = process.env.YT_CLIENT_ID
+    if (!clientId) {
+      throw new Error('auth youtube: YT_CLIENT_ID is not set (add it to .env)')
+    }
+    const clientSecret = process.env.YT_CLIENT_SECRET
+    if (!clientSecret) {
+      throw new Error('auth youtube: YT_CLIENT_SECRET is not set (add it to .env)')
+    }
+    const granted = await runYoutubeAuthFlow({ clientId, clientSecret })
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      upsertToken(db, 'youtube', channel.name, granted.refreshToken, granted.scopes, key)
+    } finally {
+      db.close()
+    }
+    // Confirmation only — never the refresh token itself (house rule: token
+    // material never touches logs or stdout).
+    console.log(`authorized youtube for channel "${channel.name}" — scopes: ${granted.scopes}`)
   })
 
 program
