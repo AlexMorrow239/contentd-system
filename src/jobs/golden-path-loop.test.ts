@@ -27,41 +27,33 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-// Reddit hot.json fixture: exactly the fields redditSource reads. One post
-// scores above the channel threshold, one below.
-const REDDIT_HOT_JSON = JSON.stringify({
-  data: {
-    children: [
-      {
-        kind: 't3',
-        data: {
-          name: 't3_moon',
-          title: 'Moon drifting away measured precisely',
-          permalink: '/r/space/comments/t3_moon/',
-          stickied: false,
-        },
-      },
-      {
-        kind: 't3',
-        data: {
-          name: 't3_ad',
-          title: 'Buy my telescope (ad)',
-          permalink: '/r/space/comments/t3_ad/',
-          stickied: false,
-        },
-      },
-    ],
-  },
-})
+// Reddit .rss fixture: the public Atom feed redditSource reads keylessly,
+// <entry><id> carrying the t3_ fullname. One post scores above the channel
+// threshold, one below.
+const REDDIT_FEED = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>/r/space/.rss</id>
+  <title>/r/space</title>
+  <entry>
+    <id>t3_moon</id>
+    <link href="https://www.reddit.com/r/space/comments/t3_moon/" />
+    <title>Moon drifting away measured precisely</title>
+  </entry>
+  <entry>
+    <id>t3_ad</id>
+    <link href="https://www.reddit.com/r/space/comments/t3_ad/" />
+    <title>Buy my telescope (ad)</title>
+  </entry>
+</feed>`
 
-// Serves only r/space's hot.json; any other URL is a test bug, never a
+// Serves only r/space's feed; any other URL is a test bug, never a
 // silent live-network hit.
 const fetchImpl: FetchLike = (async (input: RequestInfo | URL) => {
   const url = String(input)
-  if (url.includes('/r/space/hot.json')) {
-    return new Response(REDDIT_HOT_JSON, {
+  if (url.includes('/r/space/.rss')) {
+    return new Response(REDDIT_FEED, {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/atom+xml' },
     })
   }
   throw new Error(`unexpected fetch: ${url}`)

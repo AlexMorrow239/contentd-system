@@ -14,21 +14,24 @@ function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): 
   return testChannel({ name, scout: { ...DEFAULT_SCOUT, subreddits: ['space'], ...overrides } })
 }
 
-// Reddit hot.json fixture: exactly the fields redditSource reads.
-function redditJson(posts: { name: string; title: string; stickied?: boolean }[]): string {
-  return JSON.stringify({
-    data: {
-      children: posts.map((p) => ({
-        kind: 't3',
-        data: {
-          name: p.name,
-          title: p.title,
-          permalink: `/r/space/comments/${p.name}/`,
-          stickied: p.stickied ?? false,
-        },
-      })),
-    },
-  })
+// Reddit .rss fixture: the public Atom feed redditSource reads keylessly.
+// <entry><id> is the t3_ fullname, exactly as reddit serves it.
+function redditFeed(posts: { name: string; title: string }[]): string {
+  const entries = posts
+    .map(
+      (p) => `<entry>
+        <id>${p.name}</id>
+        <link href="https://www.reddit.com/r/space/comments/${p.name}/" />
+        <title>${p.title}</title>
+      </entry>`,
+    )
+    .join('\n')
+  return `<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <id>/r/space/.rss</id>
+      <title>/r/space</title>
+      ${entries}
+    </feed>`
 }
 
 // URL-substring-keyed fetch stub: string body → 200 response, Error → throw.
@@ -69,7 +72,7 @@ describe('scoutChannel', () => {
     const db = openDb(':memory:')
     const channel = scoutedChannel() // minScore 60
     const fetchImpl = fetchStub({
-      '/r/space/hot.json': redditJson([
+      '/r/space/.rss': redditFeed([
         { name: 't3_aaa', title: 'Moon drifting measured' },
         { name: 't3_bbb', title: 'Buy my telescope (ad)' },
       ]),
@@ -111,7 +114,7 @@ describe('scoutChannel', () => {
     const db = openDb(':memory:')
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/hot.json': redditJson([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     const { client, create } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 20, topic: 'Moon', reason: 'dull' }]),
@@ -139,8 +142,8 @@ describe('scoutChannel', () => {
     const db = openDb(':memory:')
     const channel = scoutedChannel({ subreddits: ['space', 'askscience'] })
     const fetchImpl = fetchStub({
-      '/r/space/hot.json': new Error('connect timeout'),
-      '/r/askscience/hot.json': redditJson([{ name: 't3_ccc', title: 'Why is the sky blue' }]),
+      '/r/space/.rss': new Error('connect timeout'),
+      '/r/askscience/.rss': redditFeed([{ name: 't3_ccc', title: 'Why is the sky blue' }]),
     })
     const { client } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' }]),
@@ -160,7 +163,7 @@ describe('scoutChannel', () => {
     // fault only that source, not abort the whole channel before isolation.
     const channel = scoutedChannel({ subreddits: ['space'], rss: ['not a url'] })
     const fetchImpl = fetchStub({
-      '/r/space/hot.json': redditJson([{ name: 't3_ok', title: 'Why is the sky blue' }]),
+      '/r/space/.rss': redditFeed([{ name: 't3_ok', title: 'Why is the sky blue' }]),
     })
     const { client } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' }]),
@@ -180,7 +183,7 @@ describe('scoutChannel', () => {
     const db = openDb(':memory:')
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/hot.json': redditJson([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     const { client, create } = fakeClient(emitScores([]))
     await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow(
@@ -197,7 +200,7 @@ describe('scoutChannel', () => {
     const db = openDb(':memory:')
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/hot.json': redditJson([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     // schema-invalid emit input: structuredCompletion throws a ZodError with
     // costUsdMicros attached (the call was billed regardless)
@@ -222,10 +225,8 @@ describe('scoutAll', () => {
     const bad = scoutedChannel({ subreddits: ['failing'] }, 'bad')
     const good = scoutedChannel({}, 'good')
     const fetchImpl = fetchStub({
-      '/r/failing/hot.json': JSON.stringify({
-        data: { children: [{ kind: 't3', data: { name: 't3_f', title: 'F', permalink: '/r/failing/comments/t3_f/', stickied: false } }] },
-      }),
-      '/r/space/hot.json': redditJson([{ name: 't3_g', title: 'G' }]),
+      '/r/failing/.rss': redditFeed([{ name: 't3_f', title: 'F' }]),
+      '/r/space/.rss': redditFeed([{ name: 't3_g', title: 'G' }]),
     })
     // first scoring call (bad) is paid-but-invalid; second (good) is valid
     const create = vi
@@ -270,7 +271,7 @@ describe('scoutAll', () => {
     expect(create).not.toHaveBeenCalled()
 
     // one healthy source flips it back to a normal (partial) run
-    const mixed = fetchStub({ '/r/two/hot.json': redditJson([{ name: 't3_x', title: 'X' }]) })
+    const mixed = fetchStub({ '/r/two/.rss': redditFeed([{ name: 't3_x', title: 'X' }]) })
     const { client: client2 } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 70, topic: 'X topic', reason: 'ok' }]),
     )

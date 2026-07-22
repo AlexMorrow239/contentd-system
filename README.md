@@ -92,12 +92,13 @@ The production loop is three cron-invoked commands: `scout` fills the topic
 queue, `produce-next` performs one unit of work per tick (resume one blocked
 job or produce one video), and `digest` prints a daily report.
 
-Before scheduling: reddit 403s unauthenticated JSON access from most
-residential IPs, so create a free "script" app at
-<https://www.reddit.com/prefs/apps> and put its id and secret in `.env` as
-`REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` — the scout then uses app-only
-OAuth (100 requests/min allowance; the loop makes three fetches a day). RSS
-sources need no keys.
+No API keys are needed for scouting: reddit subreddits are read through their
+public `.rss` feeds and RSS sources through their own. Reddit's Data API is an
+optional upgrade — if you get a script app approved under its Responsible
+Builder Policy, set `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` in `.env` and
+the scout switches to app-only OAuth (richer JSON, mod stickies filtered out,
+100 requests/min). Without them the feed path applies, where stickied posts
+are indistinguishable from real ones and simply score low.
 
 Paste into `crontab -e`, adjusting the paths:
 

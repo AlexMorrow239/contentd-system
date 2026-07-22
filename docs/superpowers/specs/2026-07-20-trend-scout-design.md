@@ -77,16 +77,29 @@ interface TrendSource {
 `externalId` feeds the dedupe hash and must be stable across fetches of the same item.
 
 **RedditSource** — hot listing per subreddit with a descriptive User-Agent.
-AMENDED 2026-07-21 after live testing: reddit 403s the unauthenticated public
-JSON endpoint from most residential IPs, so the adapter uses app-only OAuth
-(script app, `client_credentials` grant via `REDDIT_CLIENT_ID` /
-`REDDIT_CLIENT_SECRET`, token cached per process) against
-`oauth.reddit.com/r/<sub>/hot?limit=<N>` when the creds are set, falling back
-to `www.reddit.com/r/<sub>/hot.json` when they are absent. Extracts
-`data.children[].data`: `title`, `name` (fullname → `externalId`), `permalink`
-(prefixed with `https://www.reddit.com`). Skips stickied posts. (The original
-"zero keys" decision survives as the fallback; the keys are free and the 100
-requests/min app allowance dwarfs our 3 fetches/day.)
+AMENDED 2026-07-22 after live testing, which invalidated the original
+"public JSON endpoint, no auth" design twice over: reddit 403s unauthenticated
+`hot.json` from most residential IPs, AND its Responsible Builder Policy now
+gates Data API *app creation* behind manual approval, so obtaining keys is no
+longer a self-serve step an operator can rely on. Two paths, same candidate
+shape:
+
+- **Keyless (default):** the public Atom feed `www.reddit.com/r/<sub>/.rss`,
+  parsed by the shared feed parser (`src/scout/sources/feed.ts`). Verified live
+  2026-07-22: 200 + 25 entries. Each `<entry><id>` **is** the `t3_` fullname the
+  JSON API reports as `data.name`, so `externalId` — and therefore the dedupe
+  hash — is identical whichever path fetched the item.
+- **App-only OAuth (upgrade):** when `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET`
+  are set (approved script app), a cached `client_credentials` token reads
+  `oauth.reddit.com/r/<sub>/hot?limit=<N>`, extracting `data.children[].data`:
+  `title`, `name` (→ `externalId`), `permalink`. 100 req/min.
+
+Known trade-off of the keyless path: the feed carries no `stickied` flag, so
+mod stickies reach the scorer instead of being skipped. They dedupe, so each
+costs one scoring slot once, and low scores keep them out of the queue. The
+OAuth path retains real sticky filtering. Reddit rate-limits repeated feed
+hits (429) — per-source isolation turns that into one `sourceErrors` entry and
+the next cron run retries.
 
 **RssSource** — fetches a feed URL and parses both RSS 2.0 and Atom via
 `fast-xml-parser` (the one new dependency: pure, maintained; no heavyweight feed lib).

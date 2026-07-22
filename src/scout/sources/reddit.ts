@@ -1,7 +1,8 @@
+import { parseFeedCandidates } from './feed.js'
 import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
 
 // Reddit blocks default library user agents; a descriptive UA is the
-// documented convention for unauthenticated JSON listing access.
+// documented convention for public feed and API access.
 export const REDDIT_USER_AGENT =
   'brainrot-machine/0.1 (personal short-form pipeline; single operator)'
 
@@ -15,13 +16,23 @@ interface RedditListing {
   data?: { children?: RedditChild[] }
 }
 
-// App-only OAuth (script app, client_credentials grant): reddit 403s
-// unauthenticated JSON listings from most residential IPs since the 2023 API
-// changes (observed live 2026-07-21), so when REDDIT_CLIENT_ID and
-// REDDIT_CLIENT_SECRET are set we token up and read oauth.reddit.com instead.
-// Absent creds falls back to the public endpoint. The cache is module-level so
-// one short-lived scout process tokens up once across all channels/sources;
-// app-only tokens live ~1h, far beyond any run.
+// Two paths, one candidate shape:
+//
+//  - Keyless (default): the public Atom feed at /r/<sub>/.rss. Reddit 403s
+//    hot.json unauthenticated from most residential IPs (observed live
+//    2026-07-21) AND now gates Data API app creation behind manual approval
+//    under its Responsible Builder Policy, so the feed is the only path an
+//    operator can rely on today. Its <entry><id> IS the t3_ fullname the JSON
+//    API reports as data.name, so dedupe hashes match across both paths.
+//    Trade-off: the feed carries no `stickied` flag, so mod stickies reach the
+//    scorer instead of being skipped — they dedupe, so each costs one scoring
+//    slot once, and low scores keep them out of the queue.
+//  - App-only OAuth (script app, client_credentials): used when
+//    REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET are set — richer JSON, real
+//    stickied filtering, 100 req/min. Requires an approved app.
+//
+// The token cache is module-level so one short-lived scout process tokens up
+// once across all channels/sources; app-only tokens live ~1h, beyond any run.
 const TOKEN_URL = 'https://www.reddit.com/api/v1/access_token'
 let cachedToken: { value: string; expiresAt: number } | null = null
 
@@ -69,7 +80,7 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
       // raw_json=1 stops reddit HTML-entity-escaping &, <, > inside titles.
       const url = token
         ? `https://oauth.reddit.com/r/${subreddit}/hot?limit=${limit}&raw_json=1`
-        : `https://www.reddit.com/r/${subreddit}/hot.json?limit=${limit}&raw_json=1`
+        : `https://www.reddit.com/r/${subreddit}/.rss`
       const headers: Record<string, string> = { 'User-Agent': REDDIT_USER_AGENT }
       if (token) headers.Authorization = `Bearer ${token}`
       const res = await fetchImpl(url, {
@@ -78,6 +89,11 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
       })
       if (!res.ok) {
         throw new Error(`redditSource: r/${subreddit} responded ${res.status}`)
+      }
+      if (!token) {
+        // The feed has no server-side limit parameter — cap client-side.
+        const entries = parseFeedCandidates(await res.text(), id, `redditSource: r/${subreddit}`)
+        return entries.slice(0, limit)
       }
       const body = (await res.json()) as RedditListing
       const candidates: TrendCandidate[] = []
