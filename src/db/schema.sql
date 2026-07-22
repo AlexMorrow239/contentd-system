@@ -40,4 +40,26 @@ CREATE TABLE IF NOT EXISTS topics (
 CREATE TABLE IF NOT EXISTS leases (
   name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at TEXT NOT NULL
 );
--- publishes table arrives in Plan 4.
+CREATE TABLE IF NOT EXISTS publishes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  platform TEXT NOT NULL CHECK (platform IN ('youtube')),
+  channel TEXT NOT NULL,
+  day TEXT NOT NULL,      -- local YYYY-MM-DD of the slot filled
+  slot TEXT NOT NULL,     -- 'HH:MM' from the channel's slots list
+  status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
+  post_id TEXT, url TEXT, error TEXT,
+  error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),  -- null unless failed
+  attempt INTEGER NOT NULL,   -- 1-based ordinal per (job_id, platform)
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  finished_at TEXT,
+  UNIQUE (channel, platform, day, slot)
+);
+CREATE TABLE IF NOT EXISTS oauth_tokens (
+  platform TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  token_ciphertext BLOB NOT NULL,   -- iv (12B) || gcm tag (16B) || ciphertext
+  scopes TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (platform, channel)
+);
