@@ -12,3 +12,6 @@ assets/bg/*
 assets/bgm/*
 !assets/bg/.gitkeep
 !assets/bgm/.gitkeep
+
+# Local e2e scratch: sqlite db + throwaway channel fixtures
+sandbox/
