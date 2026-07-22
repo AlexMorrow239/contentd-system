@@ -195,3 +195,47 @@ export function eligibleVideo(
     | undefined
   return row === undefined ? null : row
 }
+
+// Manual resolution path (design spec §7 `publish retry`): interrupted →
+// failed with kind 'transient' so the video re-enters the eligibility
+// pool at the next slot. The suffix appends to whatever error text is
+// already on the row (interrupted rows leave it NULL, so COALESCE keeps
+// the append from producing a literal "null" prefix). Guarded by status,
+// so a job with no interrupted row is a no-op and reports false.
+export function retryInterrupted(db: Database, jobId: string): boolean {
+  const info = db
+    .prepare(
+      "UPDATE publishes SET status = 'failed', error_kind = 'transient', " +
+        "error = COALESCE(error, '') || '; manually cleared' " +
+        "WHERE job_id = ? AND status = 'interrupted'",
+    )
+    .run(jobId)
+  return info.changes === 1
+}
+
+// Manual resolution path (design spec §7 `publish mark-done`): for when
+// Studio confirms the upload actually landed. Same one-transaction shape
+// as markPublishDone, guarded on the interrupted row existing — the
+// library flip only runs when the publishes update actually matched a
+// row, so a job with no interrupted row leaves both tables untouched and
+// reports false.
+export function markInterruptedDone(
+  db: Database,
+  jobId: string,
+  postId: string,
+  url: string,
+  now: Date,
+): boolean {
+  const updatePublish = db.prepare(
+    "UPDATE publishes SET status = 'done', post_id = ?, url = ?, finished_at = ? " +
+      "WHERE job_id = ? AND status = 'interrupted'",
+  )
+  const updateLibrary = db.prepare("UPDATE library SET state = 'published' WHERE job_id = ?")
+  const flip = db.transaction((): boolean => {
+    const info = updatePublish.run(postId, url, now.toISOString(), jobId)
+    if (info.changes !== 1) return false
+    updateLibrary.run(jobId)
+    return true
+  })
+  return flip()
+}

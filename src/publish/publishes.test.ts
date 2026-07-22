@@ -5,9 +5,11 @@ import {
   claimPublish,
   consumedSlots,
   eligibleVideo,
+  markInterruptedDone,
   markPublishDone,
   markPublishFailed,
   MAX_PUBLISH_ATTEMPTS,
+  retryInterrupted,
   sweepInterrupted,
   uploadsUsedToday,
 } from './publishes.js'
@@ -420,6 +422,94 @@ describe('eligibleVideo', () => {
     seedLibrary(db, 'job-d', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
 
     expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe('job-c')
+    db.close()
+  })
+})
+
+describe('retryInterrupted', () => {
+  it('flips an interrupted row to failed, kind transient, with an appended clearance note', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    const id = seedPublish(db, { jobId: 'job-1', status: 'interrupted' })
+
+    expect(retryInterrupted(db, 'job-1')).toBe(true)
+    expect(
+      db.prepare('SELECT status, error, error_kind FROM publishes WHERE id = ?').get(id),
+    ).toEqual({
+      status: 'failed',
+      error: '; manually cleared',
+      error_kind: 'transient',
+    })
+    db.close()
+  })
+
+  it('returns false and touches nothing when the job has no interrupted row', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedPublish(db, { jobId: 'job-1', status: 'done' })
+
+    expect(retryInterrupted(db, 'job-1')).toBe(false)
+    expect(retryInterrupted(db, 'job-unknown')).toBe(false)
+    expect(
+      (db.prepare('SELECT status FROM publishes WHERE job_id = ?').get('job-1') as {
+        status: string
+      }).status,
+    ).toBe('done')
+    db.close()
+  })
+})
+
+describe('markInterruptedDone', () => {
+  it('flips the interrupted publish row to done and the library row to published together', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    const id = seedPublish(db, { jobId: 'job-1', status: 'interrupted' })
+
+    const ok = markInterruptedDone(
+      db,
+      'job-1',
+      'yt-xyz789',
+      'https://youtube.com/shorts/yt-xyz789',
+      new Date('2026-07-20T10:10:00.000Z'),
+    )
+
+    expect(ok).toBe(true)
+    expect(
+      db.prepare('SELECT status, post_id, url, finished_at FROM publishes WHERE id = ?').get(id),
+    ).toEqual({
+      status: 'done',
+      post_id: 'yt-xyz789',
+      url: 'https://youtube.com/shorts/yt-xyz789',
+      finished_at: '2026-07-20T10:10:00.000Z',
+    })
+    expect(
+      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as {
+        state: string
+      }).state,
+    ).toBe('published')
+    db.close()
+  })
+
+  it('returns false and touches neither table when the job has no interrupted row', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedLibrary(db, 'job-1', { state: 'ready' })
+
+    const ok = markInterruptedDone(
+      db,
+      'job-1',
+      'yt-xyz789',
+      'https://youtube.com/shorts/yt-xyz789',
+      new Date('2026-07-20T10:10:00.000Z'),
+    )
+
+    expect(ok).toBe(false)
+    expect(
+      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as {
+        state: string
+      }).state,
+    ).toBe('ready')
     db.close()
   })
 })
