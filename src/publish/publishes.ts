@@ -118,3 +118,35 @@ export function sweepInterrupted(db: Database, olderThanMs: number, now: Date): 
     .run(cutoff)
   return info.changes
 }
+
+// Slot bookkeeping read: every slot string with a row of ANY status for
+// this (channel, platform, day) — an attempt, successful or not, consumes
+// its slot for the rest of the local day (design spec decision 7).
+export function consumedSlots(
+  db: Database,
+  channel: string,
+  platform: Platform,
+  day: string,
+): Set<string> {
+  const rows = db
+    .prepare('SELECT slot FROM publishes WHERE channel = ? AND platform = ? AND day = ?')
+    .all(channel, platform, day) as { slot: string }[]
+  return new Set(rows.map((r) => r.slot))
+}
+
+// Platform quota gate (design spec decision 10, §6 step 4): every row that
+// plausibly reached videos.insert today — claimed/done/interrupted, plus
+// failed rows whose error_kind isn't 'auth' (an auth rejection never
+// reaches the upload call, so it never burns quota; NULL error_kind is a
+// non-auth failure and still counts). `IS NOT` (not `!=`) so a NULL
+// error_kind compares as non-auth instead of making the whole clause
+// unknown.
+export function uploadsUsedToday(db: Database, platform: Platform, day: string): number {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM publishes WHERE platform = ? AND day = ? " +
+        "AND (status != 'failed' OR error_kind IS NOT 'auth')",
+    )
+    .get(platform, day) as { n: number }
+  return row.n
+}

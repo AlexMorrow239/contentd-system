@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
-import { claimPublish, markPublishDone, markPublishFailed, sweepInterrupted } from './publishes.js'
+import {
+  claimPublish,
+  consumedSlots,
+  markPublishDone,
+  markPublishFailed,
+  sweepInterrupted,
+  uploadsUsedToday,
+} from './publishes.js'
 
 // Raw-insert seed: publishes.job_id references jobs(id) (FKs are OFF, but
 // every fixture stays realistic — eligibleVideo's JOIN through jobs needs a
@@ -281,6 +288,42 @@ describe('sweepInterrupted', () => {
     ])
 
     expect(sweepInterrupted(db, 30 * 60_000, now)).toBe(0)
+    db.close()
+  })
+})
+
+describe('consumedSlots', () => {
+  it('returns slot strings with any-status row for the given (channel, platform, day)', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedJob(db, 'job-2')
+    seedJob(db, 'job-3')
+    seedPublish(db, { jobId: 'job-1', slot: '10:00', status: 'done' })
+    seedPublish(db, { jobId: 'job-2', slot: '14:00', status: 'failed', errorKind: 'transient' })
+    seedPublish(db, { jobId: 'job-3', slot: '19:00', channel: 'chan-b' })
+    seedPublish(db, { jobId: 'job-3', slot: '08:00', day: '2026-07-19' })
+
+    expect(consumedSlots(db, 'chan-a', 'youtube', '2026-07-20')).toEqual(
+      new Set(['10:00', '14:00']),
+    )
+    expect(consumedSlots(db, 'chan-a', 'youtube', '2026-07-21')).toEqual(new Set())
+    db.close()
+  })
+})
+
+describe('uploadsUsedToday', () => {
+  it('counts claimed/done/interrupted and non-auth failed rows, including NULL error_kind, excluding auth failures', () => {
+    const db = openDb(':memory:')
+    for (const id of ['job-1', 'job-2', 'job-3', 'job-4', 'job-5', 'job-6']) seedJob(db, id)
+    seedPublish(db, { jobId: 'job-1', slot: '08:00', status: 'claimed' })
+    seedPublish(db, { jobId: 'job-2', slot: '09:00', status: 'done' })
+    seedPublish(db, { jobId: 'job-3', slot: '10:00', status: 'interrupted' })
+    seedPublish(db, { jobId: 'job-4', slot: '11:00', status: 'failed', errorKind: 'quota' })
+    seedPublish(db, { jobId: 'job-5', slot: '12:00', status: 'failed', errorKind: null })
+    seedPublish(db, { jobId: 'job-6', slot: '13:00', status: 'failed', errorKind: 'auth' })
+
+    expect(uploadsUsedToday(db, 'youtube', '2026-07-20')).toBe(5)
+    expect(uploadsUsedToday(db, 'youtube', '2026-07-21')).toBe(0)
     db.close()
   })
 })
