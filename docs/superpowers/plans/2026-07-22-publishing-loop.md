@@ -238,15 +238,15 @@ Exactly the two `CREATE TABLE IF NOT EXISTS` blocks from spec §3.1/§3.2 (publi
 | 3 | Publish types + resolvePlatformMeta | `src/publish/types.ts` + test | — |
 | 4 | Tokens DAO | `src/publish/tokens.ts` + test | 1, 2, 3 |
 | 5 | `[publish]` channel config | `src/config/channel.ts`, `src/stages/_testkit.ts` + tests | 3 |
-| 6 | Slot math (pure) | `src/publish/slots.ts` + test | 3, 5 |
+| 6 | Slot math (pure) | `src/publish/slots.ts` + test | 3 |
 | 7 | Publishes DAO | `src/publish/publishes.ts` + test | 1, 3 |
 | 8 | YouTube adapter | `src/publish/youtube.ts` + test | 3 |
 | 9 | OAuth flow + `auth` CLI | `src/publish/oauth-flow.ts`, `src/cli.ts` + tests | 2, 4, 8 |
-| 10 | publish-next tick + CLI | `src/loop/publish-next.ts`, `src/loop/lease.ts`, `src/cli.ts` + tests | 4, 5, 6, 7, 8 |
+| 10 | publish-next tick + CLI | `src/loop/publish-next.ts`, `src/loop/lease.ts`, `src/cli.ts` + tests | 2, 3, 4, 5, 6, 7, 8 |
 | 11 | Library DAO + `library` CLI | `src/jobs/library.ts`, `src/cli.ts` + tests | 1 |
 | 12 | Publish manual CLI | `src/cli.ts` + tests | 7 |
-| 13 | Digest publishing section | `src/loop/digest.ts` + tests | 7 |
-| 14 | README + golden path + contract test | `README.md`, `src/jobs/golden-path-loop.test.ts`, `src/publish/youtube.contract.test.ts`, fixture | 8, 9, 10 |
+| 13 | Digest publishing section | `src/loop/digest.ts` + tests | 3, 5, 6, 7 |
+| 14 | README + golden path + contract test | `README.md`, `src/jobs/golden-path-loop.test.ts`, `src/publish/youtube.contract.test.ts`, fixture | 2, 3, 4, 8, 9, 10 |
 
 Execution is sequential (subagent-driven, one task at a time) — same-file tasks (9/10/11/12 all touch `src/cli.ts`) never run concurrently.
 
@@ -914,7 +914,7 @@ git add src/publish/crypto.ts src/publish/crypto.test.ts && git commit -m "feat(
   npx vitest run src/publish/types.test.ts
   ```
 
-  Expected failure: `TypeError: resolvePlatformMeta is not a function` — `resolvePlatformMeta` is not yet exported from `./types.js` (the file exists, so this fails at runtime inside the test, not at import time; esbuild resolves the missing named export to `undefined`). The 6 tests from Step 4 fail/error alongside it because the whole file errors during collection.
+  Expected failure: `TypeError: resolvePlatformMeta is not a function` — `resolvePlatformMeta` is not yet exported from `./types.js` (the file exists, so this fails at runtime inside the test, not at import time; esbuild resolves the missing named export to `undefined`). The 6 tests from Step 4 keep passing — expected red summary: `5 failed | 6 passed`.
 
 - [ ] **Step 9: Implement `resolvePlatformMeta`**
 
@@ -1605,16 +1605,32 @@ House style notes (match them): no semicolons in `src/config/` (`src/stages/_tes
 
   Run: `npx vitest run src/config/channel.test.ts` — expect `Test Files  1 passed (1)`, `Tests  29 passed (29)`.
 
-- [ ] **Step 7: Whole-suite gate**
+- [ ] **Step 7: Patch existing `ChannelConfig` literals and gate on the compiler**
+
+  `publish` is a required field, and `tsconfig.json` includes all of `src/` — so every test file that builds a `ChannelConfig` value directly (bypassing `testChannel`) now fails `tsc --noEmit` even though vitest (which transpiles without type-checking) still runs it. As of plan-writing time the six files below build such values; add `publish: null,` to each builder's literal:
+
+  - `src/jobs/runner.test.ts` (the channel literal near the top)
+  - `src/jobs/costs.test.ts` (the channel-builder function)
+  - `src/stages/assemble.test.ts` (`makeChannel`)
+  - `src/stages/visuals-volume.test.ts` (`makeChannel`)
+  - `src/stages/visuals-premium.test.ts` (`premiumChannel`)
+  - `src/scout/scout.test.ts` (`scoutedChannel`)
+
+  (`src/loop/plan-tick.test.ts` needs nothing — it builds channels via `testChannel(...)` overrides, which this task already defaults.) Place `publish: null,` alongside the other top-level fields, matching each literal's field order.
+
+  Run: `npx tsc --noEmit`
+  Expected: no output, exit 0. **The compiler is the authoritative list** — if it flags a TS2741/TS2345 in any file not named above, patch that file the same way before moving on.
 
   Run: `npm test`
 
-  Expected: every test file passes, zero failures — the new `publish` field is additive (other fixtures that build `ChannelConfig` object literals directly, e.g. `src/stages/visuals-volume.test.ts` and `src/jobs/runner.test.ts`, are out of this task's file scope and untouched; vitest transpiles without type-checking so their missing `publish` key does not fail at runtime).
+  Expected: every test file passes, zero failures — the field is behaviorally inert (`null` = publishing disabled) so no runtime assertions change.
 
 - [ ] **Step 8: Commit the `[publish]` channel config**
 
   ```bash
-  git add src/config/channel.ts src/config/channel.test.ts src/stages/_testkit.ts
+  git add src/config/channel.ts src/config/channel.test.ts src/stages/_testkit.ts \
+    src/jobs/runner.test.ts src/jobs/costs.test.ts src/stages/assemble.test.ts \
+    src/stages/visuals-volume.test.ts src/stages/visuals-premium.test.ts src/scout/scout.test.ts
   git commit -m "$(cat <<'EOF'
   feat: add [publish] channel config table with defaults
 
@@ -4961,7 +4977,11 @@ House rules in force: ESM `.js` suffixes on relative imports; no semicolons, sin
     return { ...actual, claimPublish: vi.fn(actual.claimPublish) }
   })
 
-  const NOW = () => new Date('2026-07-22T14:05:00')
+  // Local-time constructor (month is 0-based): 2026-07-22 14:05 machine-local.
+  // Never string-parse datetimes in these tests — 'YYYY-MM-DDTHH:MM' parses
+  // local while '...Z' parses UTC, and mixing the two makes assertions
+  // timezone-dependent.
+  const NOW = () => new Date(2026, 6, 22, 14, 5)
   const TEST_TOKEN_KEY_HEX = 'ab'.repeat(32)
 
   const cleanupDirs: string[] = []
@@ -5553,10 +5573,12 @@ House rules in force: ESM `.js` suffixes on relative imports; no semicolons, sin
       const db = openDb(':memory:')
       const channelsDir = tmpDir('brainrot-publish-sweep-')
       writeChannel(channelsDir, { name: 'chan-a', slots: ['09:00'] })
+      // Seed the stale claim RELATIVE to NOW (65 min ago > 30-min TTL) so the
+      // age is identical in every timezone the suite runs in.
       db.prepare(
         "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
-          "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', '09:00', 'claimed', 1, '2026-07-22T13:00:00.000Z')",
-      ).run()
+          "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', '09:00', 'claimed', 1, ?)",
+      ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
       const result = await publishNextTick(db, { channelsDir, now: NOW })
       expect(result).toEqual({ action: 'noop', reason: 'no-due-slot' })
       const row = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as { status: string }
@@ -5568,10 +5590,11 @@ House rules in force: ESM `.js` suffixes on relative imports; no semicolons, sin
       const db = openDb(':memory:')
       const channelsDir = tmpDir('brainrot-publish-dryrun-')
       writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+      // Old enough that a real sweep WOULD flip it — proving dry-run skipped it.
       db.prepare(
         "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
-          "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-21', '09:00', 'claimed', 1, '2026-07-22T13:00:00.000Z')",
-      ).run()
+          "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-21', '09:00', 'claimed', 1, ?)",
+      ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
       const jobId = seedReadyVideo(db, { channel: 'chan-a', topic: 'Preview me' })
       seedToken(db, 'chan-a')
       const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
@@ -5674,13 +5697,17 @@ House rules in force: ESM `.js` suffixes on relative imports; no semicolons, sin
         }
       }
       if (candidates.length === 0) {
-        return { action: 'noop', reason: 'no-due-slot' }
+        return dryRun
+          ? { action: 'dry-run', wouldPublish: null, reason: 'no-due-slot' }
+          : { action: 'noop', reason: 'no-due-slot' }
       }
 
       // Quota gate: YouTube quota is per Google Cloud project, counted across
       // every channel — v1's only platform, so one check covers every candidate.
       if (uploadsUsedToday(db, 'youtube', day) >= ytUploadsPerDayCap()) {
-        return { action: 'noop', reason: 'platform-quota' }
+        return dryRun
+          ? { action: 'dry-run', wouldPublish: null, reason: 'platform-quota' }
+          : { action: 'noop', reason: 'platform-quota' }
       }
 
       const ordered = orderCandidates(candidates)
@@ -6693,7 +6720,7 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
 
 - [ ] **Step 3: Implement `parsePublishDays` (green)**
 
-  In `src/cli.ts`, add this function immediately after `parseTopicIds` (before the `// Moved to src/jobs/pipeline.ts ...` re-export line):
+  In `src/cli.ts`, add this function immediately after the ID-parsing helpers — `parseTopicIds` and the `parseLibraryJobIds` that Task 11 added below it — still before the `// Moved to src/jobs/pipeline.ts ...` re-export line:
 
   ```ts
   /**
@@ -7087,7 +7114,7 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
   // src/stages/_testkit.ts — gains `publish: null` default (Task 5)
   export function testChannel(overrides?: Partial<ChannelConfig>): ChannelConfig
   ```
-- Produces: `buildDigest` signature **unchanged** — `export function buildDigest(db: Database, channels: ChannelConfig[]): string` — now emits a `Publishing (last 24h)` section between `Spend today (UTC)` and `Action items`, plus five new Action-items line types. Consumed by the existing (unmodified) `digest` command in `src/cli.ts` (`import { buildDigest } from './loop/digest.js'`).
+- Produces: `buildDigest` signature **unchanged** — `export function buildDigest(db: Database, channels: ChannelConfig[]): string` — now emits a `Publishing (last 24h)` section between `Spend today (UTC)` and `Action items`, plus six new Action-items line types. Consumed by the existing (unmodified) `digest` command in `src/cli.ts` (`import { buildDigest } from './loop/digest.js'`).
 
 ---
 
@@ -7389,7 +7416,7 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
 
   Run `npx vitest run src/loop/digest.test.ts`. All tests pass, including the four new `buildDigest — publishing section` tests and the updated five-section `buildDigest — section order` test.
 
-- [ ] **Step 5: Write failing tests — auth-failed hint, interrupted-check instruction, attempt-capped suggestion**
+- [ ] **Step 5: Write failing tests — auth-failed hint, quota-drift hint, interrupted-check instruction, attempt-capped suggestion**
 
   Insert a new describe block into `src/loop/digest.test.ts` immediately before the line `describe('buildDigest — section order', () => {`:
 
@@ -7402,6 +7429,17 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
       const digest = buildDigest(db, [])
       expect(digest).toContain(
         '  chan-a: 2 auth failures in the last 24h — run brainrot auth youtube --channel chan-a',
+      )
+      db.close()
+    })
+
+    it('flags quota failures distinctly — the cap estimate and reality disagree', () => {
+      const db = openDb(':memory:')
+      seedPublish(db, { jobId: 'j1', channel: 'chan-a', slot: '10:00', status: 'failed', errorKind: 'quota' })
+      seedPublish(db, { jobId: 'j2', channel: 'chan-a', slot: '14:00', status: 'failed', errorKind: 'quota' })
+      const digest = buildDigest(db, [])
+      expect(digest).toContain(
+        "  chan-a: 2 quota failures in the last 24h — YouTube refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the project's real quota",
       )
       db.close()
     })
@@ -7452,13 +7490,13 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
 
 - [ ] **Step 6: Run it — expect failure**
 
-  Run `npx vitest run src/loop/digest.test.ts`. Expect failures in the four new `buildDigest — publishing action items` tests, e.g.:
+  Run `npx vitest run src/loop/digest.test.ts`. Expect failures in the five new `buildDigest — publishing action items` tests, e.g.:
   ```
   AssertionError: expected '...Action items\n  none' to contain '  chan-a: 2 auth failures in the last 24h — run brainrot auth youtube --channel chan-a'
   ```
   (the "under the attempt cap" test passes trivially since the digest doesn't yet contain the string at all — leave it, it still documents intent and will keep passing).
 
-- [ ] **Step 7: Minimal implementation — auth-failed, interrupted, attempt-capped action items**
+- [ ] **Step 7: Minimal implementation — auth-failed, quota-drift, interrupted, attempt-capped action items**
 
   In `src/loop/digest.ts`, add the `MAX_PUBLISH_ATTEMPTS` import. Replace:
 
@@ -7475,7 +7513,7 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
   import type { Platform } from '../publish/types.js'
   ```
 
-  Then insert the three new query blocks immediately before the stable end-of-function line `if (lines.length === sectionStart) lines.push('  none')`. Replace:
+  Then insert the four new query blocks immediately before the stable end-of-function line `if (lines.length === sectionStart) lines.push('  none')`. Replace:
 
   ```ts
     for (const r of candidateDepth) {
@@ -7504,6 +7542,22 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
     for (const r of authFailures) {
       lines.push(
         `  ${r.channel}: ${r.n} auth failures in the last 24h — run brainrot auth youtube --channel ${r.channel}`,
+      )
+    }
+    // Quota failures mean the BRAINROT_YT_UPLOADS_PER_DAY estimate and
+    // YouTube's real project quota disagree (spec §5: "cap vs reality
+    // drift") — a distinct line per channel, mirroring the auth hint.
+    const quotaFailures = db
+      .prepare(
+        `SELECT channel, COUNT(*) AS n FROM publishes
+         WHERE status = 'failed' AND error_kind = 'quota'
+           AND datetime(created_at) >= datetime('now', '-1 day')
+         GROUP BY channel ORDER BY channel`,
+      )
+      .all() as { channel: string; n: number }[]
+    for (const r of quotaFailures) {
+      lines.push(
+        `  ${r.channel}: ${r.n} quota failures in the last 24h — YouTube refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the project's real quota`,
       )
     }
     // Current state, not last-24h (mirrors the failedJobs block above): an
@@ -7541,7 +7595,7 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
 
 - [ ] **Step 8: Run it — expect pass**
 
-  Run `npx vitest run src/loop/digest.test.ts`. All tests pass, including the four new `buildDigest — publishing action items` tests.
+  Run `npx vitest run src/loop/digest.test.ts`. All tests pass, including the five new `buildDigest — publishing action items` tests.
 
 - [ ] **Step 9: Write failing test — ready-backlog per channel with a publish config**
 
@@ -7772,9 +7826,11 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
       lines.push(`  ${r.channel}: ${r.n} ready videos backlogged, oldest ${ageHours}h old`)
     }
     // Local-time slot bookkeeping (decision 13): "yesterday" is the local
-    // day before now, not a UTC one — a slot lapses at local midnight, no
-    // makeup posts.
-    const yesterday = localDay(new Date(now.getTime() - 86_400_000))
+    // calendar day before now — local date-field math, NOT now-minus-24h,
+    // which lands on the wrong local date across DST transitions.
+    const yesterdayDate = new Date(now)
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+    const yesterday = localDay(yesterdayDate)
     for (const channel of channels) {
       if (channel.publish === null) continue
       for (const platform of channel.publish.platforms) {
