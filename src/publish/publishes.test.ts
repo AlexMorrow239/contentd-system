@@ -4,8 +4,10 @@ import { openDb } from '../db/index.js'
 import {
   claimPublish,
   consumedSlots,
+  eligibleVideo,
   markPublishDone,
   markPublishFailed,
+  MAX_PUBLISH_ATTEMPTS,
   sweepInterrupted,
   uploadsUsedToday,
 } from './publishes.js'
@@ -324,6 +326,100 @@ describe('uploadsUsedToday', () => {
 
     expect(uploadsUsedToday(db, 'youtube', '2026-07-20')).toBe(5)
     expect(uploadsUsedToday(db, 'youtube', '2026-07-21')).toBe(0)
+    db.close()
+  })
+})
+
+describe('eligibleVideo', () => {
+  it('only considers ready library rows on the given channel', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-ready', { topic: 'ready topic' })
+    seedJob(db, 'job-review')
+    seedJob(db, 'job-published')
+    seedJob(db, 'job-blocked')
+    seedJob(db, 'job-other-chan', { channel: 'chan-b' })
+    seedLibrary(db, 'job-ready', { state: 'ready' })
+    seedLibrary(db, 'job-review', { state: 'needs-review' })
+    seedLibrary(db, 'job-published', { state: 'published' })
+    seedLibrary(db, 'job-blocked', { state: 'blocked' })
+    seedLibrary(db, 'job-other-chan', { state: 'ready' })
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube')).toEqual({
+      jobId: 'job-ready',
+      videoPath: '/tmp/out.mp4',
+      metadataJson: '{}',
+      topic: 'ready topic',
+    })
+    expect(eligibleVideo(db, 'chan-c', 'youtube')).toBeNull()
+    db.close()
+  })
+
+  it('excludes jobs with a done, claimed, or interrupted row for the platform', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-done')
+    seedJob(db, 'job-claimed')
+    seedJob(db, 'job-interrupted')
+    seedLibrary(db, 'job-done', { state: 'ready' })
+    seedLibrary(db, 'job-claimed', { state: 'ready' })
+    seedLibrary(db, 'job-interrupted', { state: 'ready' })
+    seedPublish(db, { jobId: 'job-done', slot: '08:00', status: 'done' })
+    seedPublish(db, { jobId: 'job-claimed', slot: '09:00', status: 'claimed' })
+    seedPublish(db, { jobId: 'job-interrupted', slot: '10:00', status: 'interrupted' })
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube')).toBeNull()
+    db.close()
+  })
+
+  it('excludes a job at MAX_PUBLISH_ATTEMPTS rejected failures but includes one still under the cap', () => {
+    const db = openDb(':memory:')
+    expect(MAX_PUBLISH_ATTEMPTS).toBe(3)
+    seedJob(db, 'job-capped', { topic: 'capped' })
+    seedJob(db, 'job-under-cap', { topic: 'under cap' })
+    seedLibrary(db, 'job-capped', { state: 'ready' })
+    seedLibrary(db, 'job-under-cap', { state: 'ready' })
+    seedPublish(db, { jobId: 'job-capped', slot: '08:00', status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'job-capped', slot: '09:00', status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'job-capped', slot: '10:00', status: 'failed', errorKind: 'rejected' })
+    // Different day than job-capped's rows: publishes.day plays no part in
+    // eligibleVideo's per-job_id aggregate, but reusing job-capped's
+    // (channel, platform, day, slot) here would collide with the schema's
+    // UNIQUE constraint since both jobs share the default channel/day.
+    seedPublish(db, {
+      jobId: 'job-under-cap',
+      day: '2026-07-21',
+      slot: '08:00',
+      status: 'failed',
+      errorKind: 'rejected',
+    })
+    seedPublish(db, {
+      jobId: 'job-under-cap',
+      day: '2026-07-21',
+      slot: '09:00',
+      status: 'failed',
+      errorKind: 'rejected',
+    })
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe('job-under-cap')
+    db.close()
+  })
+
+  it('orders by fewest failed rows of any kind, then newest library row, then job id', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-a')
+    seedJob(db, 'job-b')
+    seedJob(db, 'job-c')
+    seedJob(db, 'job-d')
+    // job-a: one non-rejected failure — doesn't count toward the cap, but
+    // still outranked by the zero-failure jobs on the primary sort key.
+    seedLibrary(db, 'job-a', { state: 'ready', createdAt: '2026-07-19T00:00:00.000Z' })
+    seedPublish(db, { jobId: 'job-a', slot: '08:00', status: 'failed', errorKind: 'transient' })
+    // job-b, job-c, job-d: zero failures — tie broken by created_at DESC,
+    // then job_id ASC.
+    seedLibrary(db, 'job-b', { state: 'ready', createdAt: '2026-07-18T00:00:00.000Z' })
+    seedLibrary(db, 'job-c', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+    seedLibrary(db, 'job-d', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe('job-c')
     db.close()
   })
 })

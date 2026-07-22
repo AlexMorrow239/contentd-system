@@ -150,3 +150,48 @@ export function uploadsUsedToday(db: Database, platform: Platform, day: string):
     .get(platform, day) as { n: number }
   return row.n
 }
+
+// Eligibility per design spec §6 step 6: 'ready' library rows for jobs on
+// this channel, excluding any job that already has a done/claimed/
+// interrupted row for this platform (it's either published or in
+// flight), and excluding any job at or past MAX_PUBLISH_ATTEMPTS
+// 'rejected' failures (poison-video guard — decision 8; only 'rejected'
+// counts, since auth/quota/transient failures are channel- or
+// platform-wide, not the video's fault). The LEFT JOIN is against a
+// per-job aggregate (grouped by job_id, filtered to this platform) rather
+// than a raw join against `publishes`, so a job with several rows
+// contributes exactly one joined row — no fan-out to dedupe. Order:
+// fewest failed rows of any kind first (spreads attempts during a
+// channel-wide outage), then newest library row first (fresh trend
+// content over stale), then job id for determinism.
+export function eligibleVideo(
+  db: Database,
+  channel: string,
+  platform: Platform,
+): { jobId: string; videoPath: string; metadataJson: string; topic: string } | null {
+  const row = db
+    .prepare(
+      `SELECT l.job_id AS jobId, l.video_path AS videoPath, l.metadata_json AS metadataJson, j.topic AS topic
+       FROM library l
+       JOIN jobs j ON j.id = l.job_id
+       LEFT JOIN (
+         SELECT job_id,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedCount,
+                SUM(CASE WHEN status = 'failed' AND error_kind = 'rejected' THEN 1 ELSE 0 END) AS rejectedCount,
+                SUM(CASE WHEN status IN ('done','claimed','interrupted') THEN 1 ELSE 0 END) AS blockingCount
+         FROM publishes
+         WHERE platform = ?
+         GROUP BY job_id
+       ) p ON p.job_id = l.job_id
+       WHERE l.state = 'ready'
+         AND j.channel = ?
+         AND COALESCE(p.blockingCount, 0) = 0
+         AND COALESCE(p.rejectedCount, 0) < ?
+       ORDER BY COALESCE(p.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
+       LIMIT 1`,
+    )
+    .get(platform, channel, MAX_PUBLISH_ATTEMPTS) as
+    | { jobId: string; videoPath: string; metadataJson: string; topic: string }
+    | undefined
+  return row === undefined ? null : row
+}
