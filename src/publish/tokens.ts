@@ -23,6 +23,11 @@ export function upsertToken(
   ).run(platform, channel, ciphertext, scopes)
 }
 
+// null covers both "never authed" (no row) and "can't be trusted" (decrypt
+// failure — tampered blob, or a rotated BRAINROT_TOKEN_KEY that no longer
+// opens old ciphertext), so callers treat both the same way: skip this
+// candidate, never crash the tick. A decrypt failure is reported once to
+// stderr naming platform+channel — never token bytes.
 export function loadRefreshToken(
   db: Database,
   platform: Platform,
@@ -33,5 +38,10 @@ export function loadRefreshToken(
     .prepare('SELECT token_ciphertext FROM oauth_tokens WHERE platform = ? AND channel = ?')
     .get(platform, channel) as { token_ciphertext: Buffer } | undefined
   if (row === undefined) return null
-  return decryptToken(row.token_ciphertext, key)
+  try {
+    return decryptToken(row.token_ciphertext, key)
+  } catch {
+    process.stderr.write(`loadRefreshToken: decrypt failed for ${platform}/${channel}\n`)
+    return null
+  }
 }
