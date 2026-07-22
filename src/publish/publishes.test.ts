@@ -5,6 +5,7 @@ import {
   claimPublish,
   consumedSlots,
   eligibleVideo,
+  listPublishes,
   markInterruptedDone,
   markPublishDone,
   markPublishFailed,
@@ -510,6 +511,76 @@ describe('markInterruptedDone', () => {
         state: string
       }).state,
     ).toBe('ready')
+    db.close()
+  })
+})
+
+const DAY_MS = 24 * 60 * 60 * 1000
+
+// Explicit timestamps offset from the real clock keep the
+// datetime('now', ...) window comparison inside listPublishes meaningful.
+function isoAgo(ms: number): string {
+  return new Date(Date.now() - ms).toISOString()
+}
+
+describe('listPublishes', () => {
+  it('defaults to a 7-day window, newest first, mapped to camelCase', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-newer')
+    seedJob(db, 'job-older')
+    seedJob(db, 'job-out')
+    const newerAt = isoAgo(1 * DAY_MS)
+    const olderAt = isoAgo(2 * DAY_MS)
+    const newerId = seedPublish(db, {
+      jobId: 'job-newer',
+      status: 'done',
+      postId: 'yt-1',
+      url: 'https://youtube.com/shorts/yt-1',
+      createdAt: newerAt,
+    })
+    const olderId = seedPublish(db, {
+      jobId: 'job-older',
+      slot: '11:00',
+      status: 'failed',
+      errorKind: 'rejected',
+      createdAt: olderAt,
+    })
+    seedPublish(db, {
+      jobId: 'job-out',
+      slot: '12:00',
+      status: 'failed',
+      errorKind: 'transient',
+      createdAt: isoAgo(8 * DAY_MS),
+    })
+
+    const rows = listPublishes(db)
+    expect(rows.map((r) => r.id)).toEqual([newerId, olderId])
+    expect(rows[0]).toEqual({
+      id: newerId,
+      jobId: 'job-newer',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-20',
+      slot: '10:00',
+      status: 'done',
+      postId: 'yt-1',
+      url: 'https://youtube.com/shorts/yt-1',
+      error: null,
+      errorKind: null,
+      attempt: 1,
+      createdAt: newerAt,
+      finishedAt: null,
+    })
+    db.close()
+  })
+
+  it('sinceDays widens or narrows the window', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedPublish(db, { jobId: 'job-1', createdAt: isoAgo(8 * DAY_MS) })
+
+    expect(listPublishes(db)).toHaveLength(0)
+    expect(listPublishes(db, { sinceDays: 10 })).toHaveLength(1)
     db.close()
   })
 })

@@ -239,3 +239,57 @@ export function markInterruptedDone(
   })
   return flip()
 }
+
+const PUBLISH_COLUMNS =
+  'id, job_id, platform, channel, day, slot, status, post_id, url, error, error_kind, attempt, created_at, finished_at'
+
+interface DbPublishRow {
+  id: number
+  job_id: string
+  platform: Platform
+  channel: string
+  day: string
+  slot: string
+  status: PublishStatus
+  post_id: string | null
+  url: string | null
+  error: string | null
+  error_kind: PublishErrorKind | null
+  attempt: number
+  created_at: string
+  finished_at: string | null
+}
+
+function toPublishRow(row: DbPublishRow): PublishRow {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    platform: row.platform,
+    channel: row.channel,
+    day: row.day,
+    slot: row.slot,
+    status: row.status,
+    postId: row.post_id,
+    url: row.url,
+    error: row.error,
+    errorKind: row.error_kind,
+    attempt: row.attempt,
+    createdAt: row.created_at,
+    finishedAt: row.finished_at,
+  }
+}
+
+// Attempt history for `brainrot publishes list` (design spec §7). No
+// `now` parameter — this is a display query, not scheduling logic, so it
+// reads SQLite's own wall clock exactly like the digest's '-1 day' window
+// does.
+export function listPublishes(db: Database, opts?: { sinceDays?: number }): PublishRow[] {
+  const sinceDays = opts?.sinceDays ?? 7
+  const rows = db
+    .prepare(
+      `SELECT ${PUBLISH_COLUMNS} FROM publishes WHERE datetime(created_at) >= datetime('now', ?) ` +
+        'ORDER BY created_at DESC, id DESC',
+    )
+    .all(`-${sinceDays} days`) as DbPublishRow[]
+  return rows.map(toPublishRow)
+}
