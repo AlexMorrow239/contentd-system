@@ -104,3 +104,17 @@ export function markPublishFailed(
     "UPDATE publishes SET status = 'failed', error = ?, error_kind = ?, finished_at = ? WHERE id = ?",
   ).run(error, kind, now.toISOString(), id)
 }
+
+// Repair sweep for a tick that died mid-upload (design spec decision 12):
+// claimed rows older than the TTL are stale — flip to 'interrupted' so
+// they never look like an active claim to a later tick. Guarded by
+// status, so a rerun against the same cutoff finds nothing left to flip.
+export function sweepInterrupted(db: Database, olderThanMs: number, now: Date): number {
+  const cutoff = new Date(now.getTime() - olderThanMs).toISOString()
+  const info = db
+    .prepare(
+      "UPDATE publishes SET status = 'interrupted' WHERE status = 'claimed' AND created_at <= ?",
+    )
+    .run(cutoff)
+  return info.changes
+}

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
-import { claimPublish, markPublishDone, markPublishFailed } from './publishes.js'
+import { claimPublish, markPublishDone, markPublishFailed, sweepInterrupted } from './publishes.js'
 
 // Raw-insert seed: publishes.job_id references jobs(id) (FKs are OFF, but
 // every fixture stays realistic — eligibleVideo's JOIN through jobs needs a
@@ -191,6 +191,96 @@ describe('markPublishFailed', () => {
       (db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as { state: string })
         .state,
     ).toBe('ready')
+    db.close()
+  })
+})
+
+function seedPublish(
+  db: Database,
+  overrides: Partial<{
+    jobId: string
+    platform: string
+    channel: string
+    day: string
+    slot: string
+    status: string
+    postId: string | null
+    url: string | null
+    error: string | null
+    errorKind: string | null
+    attempt: number
+    createdAt: string
+    finishedAt: string | null
+  }> = {},
+): number {
+  const row = {
+    jobId: 'job-1',
+    platform: 'youtube',
+    channel: 'chan-a',
+    day: '2026-07-20',
+    slot: '10:00',
+    status: 'claimed',
+    postId: null,
+    url: null,
+    error: null,
+    errorKind: null,
+    attempt: 1,
+    createdAt: new Date().toISOString(),
+    finishedAt: null,
+    ...overrides,
+  }
+  const res = db
+    .prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, error, error_kind, attempt, created_at, finished_at) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .run(
+      row.jobId,
+      row.platform,
+      row.channel,
+      row.day,
+      row.slot,
+      row.status,
+      row.postId,
+      row.url,
+      row.error,
+      row.errorKind,
+      row.attempt,
+      row.createdAt,
+      row.finishedAt,
+    )
+  return Number(res.lastInsertRowid)
+}
+
+describe('sweepInterrupted', () => {
+  it('flips only claimed rows older than the cutoff, and is idempotent on rerun', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-old')
+    seedJob(db, 'job-fresh')
+    const now = new Date('2026-07-20T12:00:00.000Z')
+    const oldId = seedPublish(db, {
+      jobId: 'job-old',
+      status: 'claimed',
+      createdAt: '2026-07-20T11:00:00.000Z',
+    })
+    const freshId = seedPublish(db, {
+      jobId: 'job-fresh',
+      slot: '14:00',
+      status: 'claimed',
+      createdAt: '2026-07-20T11:55:00.000Z',
+    })
+
+    expect(sweepInterrupted(db, 30 * 60_000, now)).toBe(1)
+    const rows = db.prepare('SELECT id, status FROM publishes ORDER BY id').all() as {
+      id: number
+      status: string
+    }[]
+    expect(rows).toEqual([
+      { id: oldId, status: 'interrupted' },
+      { id: freshId, status: 'claimed' },
+    ])
+
+    expect(sweepInterrupted(db, 30 * 60_000, now)).toBe(0)
     db.close()
   })
 })
