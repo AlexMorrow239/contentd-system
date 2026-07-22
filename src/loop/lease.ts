@@ -4,6 +4,10 @@ import type { Database } from 'better-sqlite3'
 // expiry instead of wedging the loop forever.
 export const PRODUCE_LEASE_TTL_MS = 5_400_000 // 90 min
 
+// One upload per tick, so a much shorter window than produce's suffices —
+// generously above a single resumable-upload call's worst case.
+export const PUBLISH_LEASE_TTL_MS = 1_800_000 // 30 min
+
 // Acquire-if-free-or-expired in one synchronous transaction. BEGIN IMMEDIATE
 // takes the write lock up front so a concurrent process cannot interleave
 // between the read and the upsert. ISO-8601 UTC strings compare correctly

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db/index.js'
-import { acquireLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
+import { acquireLease, PRODUCE_LEASE_TTL_MS, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
 
 describe('leases schema', () => {
   it('openDb creates the leases table with name as primary key', () => {
@@ -98,5 +98,11 @@ describe('releaseLease', () => {
     }
     expect(row.holder).toBe('pid:new')
     db.close()
+  })
+})
+
+describe('PUBLISH_LEASE_TTL_MS', () => {
+  it('is 30 minutes — a much shorter window than produce, one upload per tick', () => {
+    expect(PUBLISH_LEASE_TTL_MS).toBe(1_800_000)
   })
 })
