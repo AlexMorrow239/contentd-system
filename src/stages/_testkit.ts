@@ -43,6 +43,7 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
     budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { ...DEFAULT_SCOUT },
+    publish: null,
     ...overrides,
   };
 }

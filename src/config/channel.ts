@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
+import { PUBLISH_PLATFORMS } from '../publish/types.js'
+import type { PublishChannelConfig } from '../publish/types.js'
 
 export interface CaptionStyle {
   font: string
@@ -44,6 +46,7 @@ export interface ChannelConfig {
   budget: { perVideoUsdMicros: number; premiumPerVideoUsdMicros: number; perDayUsdMicros: number }
   scriptModel: string
   scout: ScoutConfig
+  publish: PublishChannelConfig | null
 }
 
 /**
@@ -79,6 +82,7 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
 
 const DEFAULT_PREMIUM_PER_VIDEO_USD = 7.0
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
+const SLOT_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
 const rawSchema = z.object({
   name: z.string(),
@@ -113,6 +117,20 @@ const rawSchema = z.object({
       min_score: z.number().int().min(0).max(100).default(DEFAULT_SCOUT.minScore),
       per_source_limit: z.number().int().min(1).max(100).default(DEFAULT_SCOUT.perSourceLimit),
       auto_premium: z.boolean().default(DEFAULT_SCOUT.autoPremium),
+    })
+    .optional(),
+  publish: z
+    .object({
+      slots: z
+        .array(z.string().regex(SLOT_RE, 'slots must be zero-padded 24h HH:MM'))
+        .min(1, 'slots must be a non-empty array')
+        .refine((slots) => new Set(slots).size === slots.length, {
+          message: 'slots must not contain duplicates',
+        }),
+      platforms: z.array(z.enum(PUBLISH_PLATFORMS)).default(['youtube']),
+      privacy: z.enum(['public', 'unlisted', 'private']).default('public'),
+      category_id: z.number().int().positive().default(24),
+      made_for_kids: z.boolean().default(false),
     })
     .optional(),
   caption_style: z.object({
@@ -184,6 +202,15 @@ export function loadChannelConfig(path: string): ChannelConfig {
           autoPremium: raw.scout.auto_premium,
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
+    publish: raw.publish
+      ? (Object.freeze({
+          slots: Object.freeze([...raw.publish.slots].sort()),
+          platforms: Object.freeze([...raw.publish.platforms]),
+          privacy: raw.publish.privacy,
+          categoryId: raw.publish.category_id,
+          madeForKids: raw.publish.made_for_kids,
+        }) as PublishChannelConfig)
+      : null,
   }
 }
 

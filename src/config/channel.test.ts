@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir } from './channel.js'
+import { testChannel } from '../stages/_testkit.js'
 
 function writeToml(lines: string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'chan-'))
@@ -280,5 +281,110 @@ describe('loadChannelsDir', () => {
 
   it('throws when the directory does not exist', () => {
     expect(() => loadChannelsDir('/nope/definitely/missing')).toThrow()
+  })
+})
+
+describe('[publish] config', () => {
+  it('defaults publish to null when the [publish] table is absent', () => {
+    const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
+    expect(cfg.publish).toBeNull()
+  })
+
+  it('parses a full [publish] table into camelCase', () => {
+    const cfg = loadChannelConfig(
+      writeToml([
+        ...PLAN1_LINES,
+        '[publish]',
+        'slots = ["10:00", "14:00", "19:00"]',
+        'platforms = ["youtube"]',
+        'privacy = "unlisted"',
+        'category_id = 22',
+        'made_for_kids = true',
+      ]),
+    )
+    expect(cfg.publish).toEqual({
+      slots: ['10:00', '14:00', '19:00'],
+      platforms: ['youtube'],
+      privacy: 'unlisted',
+      categoryId: 22,
+      madeForKids: true,
+    })
+  })
+
+  it('sorts slots ascending regardless of TOML order', () => {
+    const cfg = loadChannelConfig(
+      writeToml([...PLAN1_LINES, '[publish]', 'slots = ["19:00", "10:00", "14:00"]']),
+    )
+    expect(cfg.publish?.slots).toEqual(['10:00', '14:00', '19:00'])
+  })
+
+  it('applies platforms/privacy/category_id/made_for_kids defaults when only slots is given', () => {
+    const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]']))
+    expect(cfg.publish).toEqual({
+      slots: ['10:00'],
+      platforms: ['youtube'],
+      privacy: 'public',
+      categoryId: 24,
+      madeForKids: false,
+    })
+  })
+})
+
+describe('[publish] validation', () => {
+  it('rejects a slot that is not zero-padded 24h HH:MM', () => {
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["9:00"]'])),
+    ).toThrow()
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["24:00"]'])),
+    ).toThrow()
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:60"]'])),
+    ).toThrow()
+  })
+
+  it('rejects duplicate slots', () => {
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00", "10:00"]'])),
+    ).toThrow()
+  })
+
+  it('rejects an empty slots array', () => {
+    expect(() => loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = []']))).toThrow()
+  })
+
+  it('rejects a platform outside PUBLISH_PLATFORMS', () => {
+    expect(() =>
+      loadChannelConfig(
+        writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', 'platforms = ["tiktok"]']),
+      ),
+    ).toThrow()
+  })
+})
+
+describe('[publish] freezing', () => {
+  it('freezes the publish object and its arrays', () => {
+    const cfg = loadChannelConfig(
+      writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00", "14:00"]']),
+    )
+    expect(Object.isFrozen(cfg.publish)).toBe(true)
+    expect(Object.isFrozen(cfg.publish?.slots)).toBe(true)
+    expect(Object.isFrozen(cfg.publish?.platforms)).toBe(true)
+  })
+})
+
+describe('testChannel() publish default', () => {
+  it('defaults publish to null and allows overriding it', () => {
+    expect(testChannel().publish).toBeNull()
+    const withPublish = testChannel({
+      publish: { slots: ['10:00'], platforms: ['youtube'], privacy: 'public', categoryId: 24, madeForKids: false },
+    })
+    expect(withPublish.publish).toEqual({
+      slots: ['10:00'],
+      platforms: ['youtube'],
+      privacy: 'public',
+      categoryId: 24,
+      madeForKids: false,
+    })
   })
 })
