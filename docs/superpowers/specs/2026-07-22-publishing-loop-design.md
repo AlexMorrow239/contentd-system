@@ -107,11 +107,13 @@ interface PublishTarget {
   readonly platformId: string   // 'youtube'
   upload(req: {
     videoPath: string
-    meta: PlatformMeta            // title / description / hashtags from library.metadata_json
-    publish: PublishConfig        // privacy, category_id, made_for_kids
+    meta: PlatformMeta            // ONE platform's entry: { title, description, hashtags }
+    publish: PublishChannelConfig // privacy, category_id, made_for_kids
   }, accessToken: string): Promise<{ postId: string; url: string }>
 }
 ```
+
+`library.metadata_json` is a **per-platform map** (`{youtube: {...}, tiktok: {...}, instagram: {...}}` — the shape the script stage already writes). `resolvePlatformMeta(metadataJson, platform, fallbackTopic)` picks the platform's entry; a missing/invalid entry (legacy `'{}'` rows) falls back to `{ title: fallbackTopic.slice(0, 90), description: '', hashtags: [] }` so old videos stay publishable.
 
 YouTube implementation — direct HTTPS (fetch), **no Google SDK** (consistent with every other provider adapter):
 
@@ -133,7 +135,7 @@ Local file missing (`ENOENT` on the video path) maps to `rejected`.
 
 ## 6. The `publish-next` tick
 
-Cron: `*/15 * * * *`. One JSON line on stdout, always (same contract as `produce-next`): `{outcome: 'published'|'publish-failed'|'noop'|'dry-run', reason?, channel?, jobId?, slot?, postId?, url?, error?}` (`dry-run` only under `--dry-run`). Exit 0 for `published` and every noop; exit 1 for `publish-failed`. Config/DB errors: stderr, nonzero, no JSON line.
+Cron: `*/15 * * * *`. One JSON line on stdout, always (same contract as `produce-next`, including the `action` key name): `{action: 'published'|'publish-failed'|'noop'|'dry-run', reason?, channel?, jobId?, slot?, postId?, url?, error?, wouldPublish?}` (`dry-run` only under `--dry-run`). Exit 0 for `published` and every noop; exit 1 for `publish-failed`. Config/DB errors: stderr, nonzero, no JSON line.
 
 Order of operations:
 
@@ -141,9 +143,9 @@ Order of operations:
 2. **Repair sweep** — `claimed` rows older than the TTL → `interrupted` (idempotent; publish-analog of the topic repair sweep).
 3. **Due slots** — for each channel with `[publish]` and each configured platform: slots with time ≤ local now and no `publishes` row for (channel, platform, local-today, slot). None anywhere → noop `no-due-slot`.
 4. **Platform quota gate** — today's youtube rows that plausibly hit the upload endpoint — `claimed`/`done`/`interrupted` plus `failed` rows whose `error_kind` is not `auth` (auth failures never reach `videos.insert`; a failed insert still burns its 1 600 units) — ≥ `BRAINROT_YT_UPLOADS_PER_DAY` → noop `platform-quota`.
-5. **Channel pick** — lowest filled-fraction (slot-consuming rows today, any status, ÷ slots), tie → earliest due slot, tie → channel name ASC (determinism).
-6. **Video pick** — `library.state = 'ready'`, job's channel matches; exclude jobs with any `done`/`claimed`/`interrupted` row for this platform; exclude jobs with ≥ `MAX_PUBLISH_ATTEMPTS` (3) `failed` rows of `error_kind = 'rejected'`. Order: fewest `failed` rows (any kind) ASC, then `created_at` DESC, then `job_id` ASC. None → noop `no-ready-video` (slot stays open for later ticks today).
-7. **Token** — load + decrypt for (platform, channel). Missing row or decrypt failure → noop `no-auth` (nothing consumed; digest-visible).
+5. **Candidate order** — channels with a due slot, sorted by lowest filled-fraction (slot-consuming rows today, any status, ÷ slots), tie → earliest due slot, tie → channel name ASC (determinism).
+6. **Iterate candidates** — for each candidate in order, until one publishes: pick its video (`library.state = 'ready'`, job's channel matches; exclude jobs with any `done`/`claimed`/`interrupted` row for this platform; exclude jobs with ≥ `MAX_PUBLISH_ATTEMPTS` (3) `failed` rows of `error_kind = 'rejected'`; order: fewest `failed` rows (any kind) ASC, then `created_at` DESC, then `job_id` ASC); none → next candidate. Then load + decrypt its token; missing row or decrypt failure → next candidate. **A blocked candidate never starves the rest** — its slot stays open for later ticks today.
+7. **All candidates exhausted** → noop, with the reason from the *first* candidate's blocker (`no-ready-video` or `no-auth`) — deterministic, and it explains why the top-priority channel didn't post.
 8. **Claim** — insert `claimed` row (slot consumed by the UNIQUE constraint; a conflict here means a racing tick won — noop `claim-conflict`, a defensive exit that should be unreachable under the lease).
 9. **Upload** via adapter. **Success**: one transaction sets `done` + `post_id`/`url` + `finished_at` and flips library → `published` (no crash window between the two facts). **Failure**: `failed` + error + `finished_at`; library stays `ready`.
 10. Emit the JSON line, release the lease (finally-style, as `produce-next` does).
@@ -160,7 +162,7 @@ Time is injected (`now: () => Date` seam) — slot logic fully testable with a f
 | `brainrot publish-next [--dry-run]` | The tick (§6). |
 | `brainrot publish retry <jobId>` | `interrupted` → `failed` (error annotated `manually cleared`), returning the job to the pool. Refuses if the job has no `interrupted` row. |
 | `brainrot publish mark-done <jobId> <postId>` | `interrupted` → `done` with the given post id (URL derived), library → `published`, same-transaction. For when Studio shows the upload landed. |
-| `brainrot publishes list [--day N]` | Attempt history (default last 7 days): job, channel, day+slot, status, attempt, URL/error. |
+| `brainrot publishes list [--days <n>]` | Attempt history (default last 7 days): job, channel, day+slot, status, attempt, URL/error. |
 | `brainrot library list [--state <s>] [--channel <c>]` | Library rows with state, age, title. |
 | `brainrot library approve <jobId...>` | `needs-review` → `ready` (enters publish pool). Parse/validate conventions of `topics approve`. |
 | `brainrot library reject <jobId...>` | `needs-review` → `blocked`. Also accepts `ready` (pull a video from the pool / retire an attempt-capped one). |
