@@ -65,3 +65,42 @@ export function claimPublish(
   })
   return claim()
 }
+
+// ONE transaction: the publishes row flips to done with its post facts, AND
+// the library row flips to 'published' — no window where one fact is
+// visible without the other (design spec §6 step 9). A missing id is a
+// silent no-op (defensive; the tick only ever calls this with an id it
+// just claimed).
+export function markPublishDone(
+  db: Database,
+  id: number,
+  postId: string,
+  url: string,
+  now: Date,
+): void {
+  const selectJobId = db.prepare('SELECT job_id FROM publishes WHERE id = ?')
+  const updatePublish = db.prepare(
+    "UPDATE publishes SET status = 'done', post_id = ?, url = ?, finished_at = ? WHERE id = ?",
+  )
+  const updateLibrary = db.prepare("UPDATE library SET state = 'published' WHERE job_id = ?")
+  db.transaction(() => {
+    const row = selectJobId.get(id) as { job_id: string } | undefined
+    if (row === undefined) return
+    updatePublish.run(postId, url, now.toISOString(), id)
+    updateLibrary.run(row.job_id)
+  })()
+}
+
+// Failure never touches the library row: the video stays 'ready' and
+// re-enters the eligibility pool for the next slot (design spec decision 7).
+export function markPublishFailed(
+  db: Database,
+  id: number,
+  error: string,
+  kind: PublishErrorKind,
+  now: Date,
+): void {
+  db.prepare(
+    "UPDATE publishes SET status = 'failed', error = ?, error_kind = ?, finished_at = ? WHERE id = ?",
+  ).run(error, kind, now.toISOString(), id)
+}
