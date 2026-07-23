@@ -7,6 +7,7 @@ import { resumeJob } from './jobs/resume.js'
 import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
 import { AllSourcesFailedError, scoutAll } from './scout/scout.js'
 import { produceNextTick } from './loop/produce-next.js'
+import { publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
 import { openDb } from './db/index.js'
 import { approveTopics, listTopics, rejectTopics } from './scout/topics.js'
@@ -185,6 +186,25 @@ program
       // noops, so the ternary lands on 0 for them.
       process.stdout.write(JSON.stringify(result) + '\n')
       process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
+    } finally {
+      db.close()
+    }
+  })
+
+program
+  .command('publish-next')
+  .option('--db <path>', 'sqlite db path')
+  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .option('--dry-run', 'preview the next publish without writing anything')
+  .action(async (opts: { db?: string; channelsDir: string; dryRun?: boolean }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      const result = await publishNextTick(db, { channelsDir: opts.channelsDir, dryRun: opts.dryRun })
+      // One cron-greppable JSON line. Exit 1 only for a completed-but-failed
+      // upload attempt (the video stays 'ready' for the next slot); every
+      // noop and dry-run preview is a benign exit 0.
+      process.stdout.write(JSON.stringify(result) + '\n')
+      process.exitCode = result.action === 'publish-failed' ? 1 : 0
     } finally {
       db.close()
     }
