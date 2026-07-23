@@ -109,6 +109,20 @@ describe('mintAccessToken', () => {
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('transient')
   })
+
+  it('maps a malformed JSON body on a 200 to kind "transient"', async () => {
+    // 200 OK but unparseable — a broken success response, not a caller fault.
+    const impl: typeof fetch = async () =>
+      new Response('not json{', { status: 200, headers: { 'content-type': 'application/json' } })
+    const err = await mintAccessToken({
+      refreshToken: 'rt-test-token',
+      clientId: 'client-id-x',
+      clientSecret: 'client-secret-x',
+      fetchImpl: impl,
+    }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(PublishError)
+    expect((err as PublishError).kind).toBe('transient')
+  })
 })
 
 function tempVideoFile(bytes = 'fake video bytes'): string {
@@ -145,7 +159,13 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
     )
     const initInit = calls[0].init!
     expect(initInit.method).toBe('POST')
-    expect((initInit.headers as Record<string, string>).Authorization).toBe('Bearer access-token-x')
+    // Initiate carries the bearer, JSON content type, and the resumable
+    // protocol's declared body length + media type.
+    const initHeaders = initInit.headers as Record<string, string>
+    expect(initHeaders.Authorization).toBe('Bearer access-token-x')
+    expect(initHeaders['Content-Type']).toBe('application/json')
+    expect(initHeaders['X-Upload-Content-Length']).toBe(String(Buffer.byteLength('fake video bytes')))
+    expect(initHeaders['X-Upload-Content-Type']).toBe('video/mp4')
     expect(JSON.parse(initInit.body as string)).toEqual({
       snippet: {
         title: 'A great short',
@@ -156,10 +176,14 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
       status: { privacyStatus: 'public', selfDeclaredMadeForKids: false, containsSyntheticMedia: true },
     })
 
-    // Phase 2: PUT the raw bytes to the Location URL returned by phase 1.
+    // Phase 2: PUT the raw bytes to the Location URL returned by phase 1 — its
+    // own authenticated request (bearer + video/mp4 content type).
     expect(calls[1].url).toBe('https://upload.example.com/session/abc123')
     const putInit = calls[1].init!
     expect(putInit.method).toBe('PUT')
+    const putHeaders = putInit.headers as Record<string, string>
+    expect(putHeaders.Authorization).toBe('Bearer access-token-x')
+    expect(putHeaders['Content-Type']).toBe('video/mp4')
     expect((putInit.body as Buffer).toString()).toBe('fake video bytes')
 
     expect(res).toEqual({ postId: 'yt-video-1', url: 'https://youtube.com/shorts/yt-video-1' })
@@ -237,8 +261,8 @@ describe('youtubeTarget upload — error mapping', () => {
     expect((err as PublishError).kind).toBe('transient')
   })
 
-  it('maps a missing local video file (ENOENT) to kind "rejected"', async () => {
-    const { impl } = fakeFetch([{ status: 200, headers: { location: 'https://upload.example.com/session/ghost' } }])
+  it('maps a missing local video file (ENOENT) to kind "rejected" before any network call', async () => {
+    const { impl, calls } = fakeFetch([{ status: 200, headers: { location: 'https://upload.example.com/session/ghost' } }])
     const target = youtubeTarget(impl)
     const err = await target
       .upload(
@@ -248,5 +272,30 @@ describe('youtubeTarget upload — error mapping', () => {
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('rejected')
+    // The read now precedes the initiate POST — a missing file fails cold.
+    expect(calls).toHaveLength(0)
+  })
+
+  it('maps a malformed JSON body on the 200 upload finalize to kind "transient"', async () => {
+    const videoPath = tempVideoFile('x')
+    let call = 0
+    const impl: typeof fetch = async () => {
+      call++
+      if (call === 1) {
+        return new Response('', {
+          status: 200,
+          headers: { location: 'https://upload.example.com/session/xyz' },
+        })
+      }
+      // 200 OK but the body is not valid JSON — a broken success response, not
+      // a rejection.
+      return new Response('not json{', { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const target = youtubeTarget(impl)
+    const err = await target
+      .upload({ videoPath, meta: META, publish: PUBLISH_CFG }, 'tok')
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(PublishError)
+    expect((err as PublishError).kind).toBe('transient')
   })
 })

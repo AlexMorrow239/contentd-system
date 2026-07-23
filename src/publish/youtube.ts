@@ -79,7 +79,14 @@ export async function mintAccessToken(opts: {
     }
     throw new PublishError(`mintAccessToken: token endpoint responded ${res.status}: ${raw}`, 'auth')
   }
-  const body = (await res.json()) as { access_token?: string }
+  // A 200 with an unparseable body is a broken success response, not a caller
+  // fault — 'transient' so the next tick retries rather than forcing re-auth.
+  let body: { access_token?: string }
+  try {
+    body = (await res.json()) as { access_token?: string }
+  } catch {
+    throw new PublishError('mintAccessToken: malformed JSON in success response', 'transient')
+  }
   if (!body.access_token) {
     throw new PublishError('mintAccessToken: token response carried no access_token', 'auth')
   }
@@ -139,25 +146,9 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
         },
       }
 
-      let initiateRes: Response
-      try {
-        initiateRes = await fetchImpl(INITIATE_URL, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(metadataBody),
-          signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
-        })
-      } catch (err) {
-        throw networkError('youtubeTarget', err)
-      }
-      if (!initiateRes.ok) {
-        throw await mapUploadHttpError('youtubeTarget', initiateRes)
-      }
-      const location = initiateRes.headers.get('location')
-      if (!location) {
-        throw new PublishError('youtubeTarget: resumable initiate response carried no Location header', 'transient')
-      }
-
+      // Read the file BEFORE the initiate POST: the resumable protocol wants
+      // the byte length up front (X-Upload-Content-Length), and a missing file
+      // must fail before any network call rather than after a wasted initiate.
       // Buffer<ArrayBuffer>, not the bare `Buffer` alias: an unparameterized
       // annotation widens the generic to Buffer<ArrayBufferLike>, which fetch's
       // BodyInit rejects (SharedArrayBuffer-shaped, not assignable) even though
@@ -172,10 +163,38 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
         throw err
       }
 
+      let initiateRes: Response
+      try {
+        initiateRes = await fetchImpl(INITIATE_URL, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'X-Upload-Content-Length': String(bytes.length),
+            'X-Upload-Content-Type': 'video/mp4',
+          },
+          body: JSON.stringify(metadataBody),
+          signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+        })
+      } catch (err) {
+        throw networkError('youtubeTarget', err)
+      }
+      if (!initiateRes.ok) {
+        throw await mapUploadHttpError('youtubeTarget', initiateRes)
+      }
+      const location = initiateRes.headers.get('location')
+      if (!location) {
+        throw new PublishError('youtubeTarget: resumable initiate response carried no Location header', 'transient')
+      }
+
+      // The PUT to the session Location is its own authenticated request — the
+      // Bearer token and content type are mandatory. Content-Length is NOT set
+      // by hand: undici derives it from the Buffer body.
       let uploadRes: Response
       try {
         uploadRes = await fetchImpl(location, {
           method: 'PUT',
+          headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'video/mp4' },
           body: bytes,
           signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
         })
@@ -185,7 +204,14 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
       if (!uploadRes.ok) {
         throw await mapUploadHttpError('youtubeTarget', uploadRes)
       }
-      const body = (await uploadRes.json()) as { id?: string }
+      // A 200 with an unparseable body is a broken success response, not a
+      // rejection — 'transient' so the video stays retryable at the next slot.
+      let body: { id?: string }
+      try {
+        body = (await uploadRes.json()) as { id?: string }
+      } catch {
+        throw new PublishError('youtubeTarget: malformed JSON in success response', 'transient')
+      }
       if (!body.id) {
         throw new PublishError('youtubeTarget: upload response carried no video id', 'transient')
       }
