@@ -1,0 +1,340 @@
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { Database } from 'better-sqlite3'
+import { openDb } from '../db/index.js'
+import { parseTokenKey } from '../publish/crypto.js'
+import { claimPublish } from '../publish/publishes.js'
+import { upsertToken } from '../publish/tokens.js'
+import type { Platform, PublishTarget } from '../publish/types.js'
+import { YT_UPLOAD_SCOPE } from '../publish/youtube.js'
+import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
+import { publishNextTick } from './publish-next.js'
+
+// Spies claimPublish so the claim-conflict test can force a `null` return
+// (a racing-tick claim collision the publish lease makes unreachable in a
+// single-process run); every other test calls straight through to the real
+// DAO because vi.fn wraps actual.claimPublish as its default implementation.
+vi.mock('../publish/publishes.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../publish/publishes.js')>()
+  return { ...actual, claimPublish: vi.fn(actual.claimPublish) }
+})
+
+// Local-time constructor (month is 0-based): 2026-07-22 14:05 machine-local.
+// Never string-parse datetimes in these tests — 'YYYY-MM-DDTHH:MM' parses
+// local while '...Z' parses UTC, and mixing the two makes assertions
+// timezone-dependent.
+const NOW = () => new Date(2026, 6, 22, 14, 5)
+const TEST_TOKEN_KEY_HEX = 'ab'.repeat(32)
+
+const cleanupDirs: string[] = []
+function tmpDir(prefix: string): string {
+  const d = mkdtempSync(join(tmpdir(), prefix))
+  cleanupDirs.push(d)
+  return d
+}
+afterAll(() => {
+  for (const d of cleanupDirs) rmSync(d, { recursive: true, force: true })
+})
+
+// Plan-1-shape channel TOML plus an optional [publish] table (spec §3.3).
+function channelToml(opts: { name: string; slots?: string[] }): string {
+  const lines = [
+    `name = "${opts.name}"`,
+    'niche = ["space facts"]',
+    'bg_dir = "assets/bg"',
+    'bgm_dir = "assets/bgm"',
+    '',
+    '[tier_mix]',
+    'volume = 2',
+    'premium = 1',
+    '',
+    '[voice]',
+    'volume = "af_heart"',
+    '',
+    '[caption_style]',
+    'font = "Inter"',
+    'font_size_px = 72',
+    'active_color = "#FFD700"',
+    'inactive_color = "#FFFFFF"',
+    'stroke_px = 8',
+    '',
+    '[budget]',
+    'per_video_usd = 8.0',
+    'per_day_usd = 20.0',
+  ]
+  if (opts.slots !== undefined) {
+    lines.push('', '[publish]', `slots = [${opts.slots.map((s) => `"${s}"`).join(', ')}]`)
+  }
+  return lines.join('\n')
+}
+
+function writeChannel(dir: string, opts: { name: string; slots?: string[] }): void {
+  writeFileSync(join(dir, `${opts.name}.toml`), channelToml(opts))
+}
+
+let jobSeq = 0
+function seedReadyVideo(db: Database, opts: { channel: string; metadataJson?: string; topic?: string }): string {
+  jobSeq += 1
+  const jobId = `job-${jobSeq}`
+  db.prepare("INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, 'done')").run(
+    jobId,
+    opts.channel,
+    opts.topic ?? 'A test topic',
+  )
+  db.prepare("INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, 'ready')").run(
+    jobId,
+    `/tmp/${jobId}.mp4`,
+    opts.metadataJson ?? '{}',
+  )
+  return jobId
+}
+
+function seedToken(db: Database, channel: string): void {
+  const key = parseTokenKey(TEST_TOKEN_KEY_HEX)
+  upsertToken(db, 'youtube', channel, 'rt-test-token', YT_UPLOAD_SCOPE, key)
+}
+
+function seedConsumedSlot(db: Database, opts: { channel: string; platform: Platform; day: string; slot: string; status?: string }): void {
+  db.prepare(
+    'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) VALUES (?, ?, ?, ?, ?, ?, 1)',
+  ).run(`consumed-${opts.channel}-${opts.slot}`, opts.platform, opts.channel, opts.day, opts.slot, opts.status ?? 'done')
+}
+
+function seedQuotaRows(db: Database, opts: { count: number; status?: string }): void {
+  for (let i = 0; i < opts.count; i++) {
+    db.prepare(
+      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) VALUES (?, 'youtube', 'quota-chan', '2026-07-22', ?, ?, 1)",
+    ).run(`quota-job-${i}`, `0${i}:00`, opts.status ?? 'done')
+  }
+}
+
+function fakeTokenFetch(): typeof fetch {
+  const impl: typeof fetch = async () =>
+    new Response(JSON.stringify({ access_token: 'fake-access-token', expires_in: 3600 }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  return impl
+}
+
+function fakeTarget(upload: PublishTarget['upload']): PublishTarget {
+  return { platformId: 'youtube', upload }
+}
+
+beforeEach(() => {
+  vi.stubEnv('YT_CLIENT_ID', 'test-client-id')
+  vi.stubEnv('YT_CLIENT_SECRET', 'test-client-secret')
+  vi.stubEnv('BRAINROT_TOKEN_KEY', TEST_TOKEN_KEY_HEX)
+  vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '')
+})
+afterEach(() => {
+  vi.unstubAllEnvs()
+})
+
+describe('publishNextTick — gates', () => {
+  it('no-ops with reason no-due-slot when no channel has publishing configured', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-nodue-')
+    writeChannel(channelsDir, { name: 'chan-a' })
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'no-due-slot' })
+    db.close()
+  })
+
+  it('no-ops with reason platform-quota once the default cap of 6 is met', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-quota-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedQuotaRows(db, { count: 6 })
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    db.close()
+  })
+
+  it('honors the BRAINROT_YT_UPLOADS_PER_DAY override for the cap', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-quota-override-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedQuotaRows(db, { count: 1 })
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    db.close()
+  })
+
+  it('no-ops with reason no-ready-video when the channel has a due slot but an empty library', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-novideo-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'no-ready-video' })
+    db.close()
+  })
+
+  it('no-ops with reason no-auth when the YouTube client credentials are unset', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-noauth-env-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    vi.stubEnv('YT_CLIENT_ID', '')
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'no-auth' })
+    db.close()
+  })
+
+  it('no-ops with reason no-auth when no oauth token row exists for the channel', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-noauth-token-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'no-auth' })
+    db.close()
+  })
+})
+
+describe('publishNextTick — candidate selection (dry-run)', () => {
+  it('skips a blocked channel and previews the next eligible one', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-iter-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
+    const jobId = seedReadyVideo(db, { channel: 'chan-b', topic: 'Chan B topic' })
+    seedToken(db, 'chan-b')
+    const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
+    expect(result).toEqual({
+      action: 'dry-run',
+      wouldPublish: { channel: 'chan-b', platform: 'youtube', slot: '14:00', jobId, title: 'Chan B topic' },
+    })
+    db.close()
+  })
+
+  it('reports the first candidate blocker when every channel is blocked', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-blocked-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-b' })
+    // chan-b has a video but no token; chan-a has no video at all. chan-a
+    // sorts first (tied fraction, tied slot, channel ASC) so its blocker wins.
+    const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
+    expect(result).toEqual({ action: 'dry-run', wouldPublish: null, reason: 'no-ready-video' })
+    db.close()
+  })
+
+  it('picks the emptier channel over the fuller one regardless of name order', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-fair-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['09:00', '14:00'] })
+    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
+    seedConsumedSlot(db, { channel: 'chan-a', platform: 'youtube', day: '2026-07-22', slot: '09:00' })
+    seedReadyVideo(db, { channel: 'chan-a', topic: 'Chan A topic' })
+    seedToken(db, 'chan-a')
+    const jobB = seedReadyVideo(db, { channel: 'chan-b', topic: 'Chan B topic' })
+    seedToken(db, 'chan-b')
+    const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
+    expect(result).toEqual({
+      action: 'dry-run',
+      wouldPublish: { channel: 'chan-b', platform: 'youtube', slot: '14:00', jobId: jobB, title: 'Chan B topic' },
+    })
+    db.close()
+  })
+})
+
+describe('publishNextTick — publish', () => {
+  it('publishes the eligible video: publishes row done, library flipped, result fields set', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-happy-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const jobId = seedReadyVideo(db, {
+      channel: 'chan-a',
+      metadataJson: JSON.stringify({ youtube: { title: 'Great Video', description: 'desc', hashtags: ['#space'] } }),
+    })
+    seedToken(db, 'chan-a')
+    const target = fakeTarget(async () => ({ postId: 'yt123', url: 'https://youtube.com/shorts/yt123' }))
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      target,
+      fetchImpl: fakeTokenFetch(),
+    })
+    expect(result).toEqual({
+      action: 'published',
+      channel: 'chan-a',
+      platform: 'youtube',
+      jobId,
+      slot: '14:00',
+      postId: 'yt123',
+      url: 'https://youtube.com/shorts/yt123',
+    })
+    const row = db.prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?').get(jobId) as {
+      status: string
+      post_id: string
+      url: string
+    }
+    expect(row).toEqual({ status: 'done', post_id: 'yt123', url: 'https://youtube.com/shorts/yt123' })
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    expect(lib.state).toBe('published')
+    expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+
+  it('marks a rejected upload failed, keeps the video ready, and reports publish-failed', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-fail-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const jobId = seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    const { PublishError } = await import('../publish/types.js')
+    const target = fakeTarget(async () => {
+      throw new PublishError('upload: invalid metadata', 'rejected')
+    })
+    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    expect(result).toEqual({
+      action: 'publish-failed',
+      channel: 'chan-a',
+      platform: 'youtube',
+      jobId,
+      slot: '14:00',
+      error: 'upload: invalid metadata',
+    })
+    const row = db.prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
+      status: string
+      error_kind: string
+    }
+    expect(row).toEqual({ status: 'failed', error_kind: 'rejected' })
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    expect(lib.state).toBe('ready')
+    db.close()
+  })
+
+  it('maps a non-PublishError from the adapter to error_kind transient', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-transient-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const jobId = seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    const target = fakeTarget(async () => {
+      throw new Error('boom')
+    })
+    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    expect(result.action).toBe('publish-failed')
+    const row = db.prepare('SELECT error_kind FROM publishes WHERE job_id = ?').get(jobId) as { error_kind: string }
+    expect(row.error_kind).toBe('transient')
+    db.close()
+  })
+
+  it('no-ops with reason claim-conflict when a racing tick already claimed the slot', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-conflict-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    vi.mocked(claimPublish).mockReturnValueOnce(null)
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
+    db.close()
+  })
+})
