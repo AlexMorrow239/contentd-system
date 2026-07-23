@@ -1,0 +1,93 @@
+import type { Database } from 'better-sqlite3'
+import type { Tier } from './types.js'
+
+export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
+
+export interface LibraryRow {
+  jobId: string
+  channel: string
+  tier: Tier
+  topic: string
+  videoPath: string
+  state: LibraryState
+  createdAt: string
+}
+
+// library only carries job_id/video_path/metadata_json/state/created_at;
+// channel/tier/topic live on the owning job row, hence the JOIN.
+const LIBRARY_COLUMNS =
+  'library.job_id AS job_id, jobs.channel AS channel, jobs.tier AS tier, jobs.topic AS topic, ' +
+  'library.video_path AS video_path, library.state AS state, library.created_at AS created_at'
+
+interface DbLibraryRow {
+  job_id: string
+  channel: string
+  tier: Tier
+  topic: string
+  video_path: string
+  state: LibraryState
+  created_at: string
+}
+
+function toLibraryRow(row: DbLibraryRow): LibraryRow {
+  return {
+    jobId: row.job_id,
+    channel: row.channel,
+    tier: row.tier,
+    topic: row.topic,
+    videoPath: row.video_path,
+    state: row.state,
+    createdAt: row.created_at,
+  }
+}
+
+export function listLibrary(
+  db: Database,
+  filter?: { state?: LibraryState; channel?: string },
+): LibraryRow[] {
+  const where: string[] = []
+  const params: string[] = []
+  if (filter?.state !== undefined) {
+    where.push('library.state = ?')
+    params.push(filter.state)
+  }
+  if (filter?.channel !== undefined) {
+    where.push('jobs.channel = ?')
+    params.push(filter.channel)
+  }
+  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  const rows = db
+    .prepare(
+      `SELECT ${LIBRARY_COLUMNS} FROM library JOIN jobs ON library.job_id = jobs.id${clause} ` +
+        'ORDER BY created_at DESC',
+    )
+    .all(...params) as DbLibraryRow[]
+  return rows.map(toLibraryRow)
+}
+
+// Publish gate (design spec decision 4): only needs-review rows can be
+// promoted into the publish pool, and only into 'ready'. The status guard
+// makes this idempotent and blind to ids in the wrong state — the returned
+// count is what actually changed, which the CLI reports against jobIds.length.
+export function approveLibrary(db: Database, jobIds: string[]): number {
+  if (jobIds.length === 0) return 0
+  const placeholders = jobIds.map(() => '?').join(', ')
+  return db
+    .prepare(
+      `UPDATE library SET state = 'ready' WHERE job_id IN (${placeholders}) AND state = 'needs-review'`,
+    )
+    .run(...jobIds).changes
+}
+
+// Reject retires a row from both waiting states: needs-review (never
+// promoted) or ready (pulled from the pool / an attempt-capped video).
+// published rows are immutable history and never match.
+export function rejectLibrary(db: Database, jobIds: string[]): number {
+  if (jobIds.length === 0) return 0
+  const placeholders = jobIds.map(() => '?').join(', ')
+  return db
+    .prepare(
+      `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready')`,
+    )
+    .run(...jobIds).changes
+}

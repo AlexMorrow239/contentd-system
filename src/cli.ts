@@ -14,6 +14,8 @@ import { approveTopics, listTopics, rejectTopics } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { assertPremiumPreflight, stagesForTier } from './jobs/pipeline.js'
 import type { Tier } from './jobs/types.js'
+import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
+import type { LibraryState } from './jobs/library.js'
 import { runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
@@ -47,6 +49,22 @@ export function parseTopicIds(raw: string[]): number[] {
       throw new Error(`invalid topic id "${token}": ids must be positive integers`)
     }
     return Number(token)
+  })
+}
+
+/**
+ * Validate `library approve/reject` id arguments. jobIds are nanoid strings
+ * (unlike topic ids, no numeric parsing) — the only invalid token is
+ * empty/whitespace-only. Throws naming the FIRST bad token, BEFORE any db
+ * handle exists, so one typo means exit 1 with no writes. Exported so
+ * library.test.ts can assert it in-process.
+ */
+export function parseLibraryJobIds(raw: string[]): string[] {
+  return raw.map((token) => {
+    if (/^\s*$/.test(token)) {
+      throw new Error(`invalid job id "${token}": ids must not be empty or whitespace`)
+    }
+    return token
   })
 }
 
@@ -261,6 +279,59 @@ topics
     const changed = rejectTopics(db, ids)
     // reject takes candidate AND approved; claimed/used rows are skipped.
     console.log(`rejected ${changed} of ${ids.length}`)
+  })
+
+// Operator gate over the produced-video library. Actions are thin: id
+// validation lives in parseLibraryJobIds, state transitions in the library DAO.
+const library = program.command('library')
+
+library
+  .command('list')
+  .option('--db <path>', 'sqlite db path')
+  .option('--state <state>', 'filter by library state')
+  .option('--channel <name>', 'filter by channel')
+  .action((opts: { db?: string; state?: string; channel?: string }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    // An unknown --state matches no rows (the DAO filters verbatim), so the
+    // operator sees an empty table rather than an error.
+    const rows = listLibrary(db, {
+      state: opts.state as LibraryState | undefined,
+      channel: opts.channel,
+    })
+    console.table(
+      rows.map((r) => ({
+        jobId: r.jobId,
+        channel: r.channel,
+        tier: r.tier,
+        state: r.state,
+        topic: r.topic,
+        createdAt: r.createdAt,
+      })),
+    )
+  })
+
+library
+  .command('approve <jobIds...>')
+  .option('--db <path>', 'sqlite db path')
+  .action((rawIds: string[], opts: { db?: string }) => {
+    // jobIds parse BEFORE the db opens: an empty/whitespace token throws to
+    // the parseAsync .catch (message on stderr, exit 1) with no writes.
+    const jobIds = parseLibraryJobIds(rawIds)
+    const db = openDb(resolveDbPath(opts.db))
+    const changed = approveLibrary(db, jobIds)
+    // changed < jobIds.length flags ids that were not in 'needs-review' state.
+    console.log(`approved ${changed} of ${jobIds.length}`)
+  })
+
+library
+  .command('reject <jobIds...>')
+  .option('--db <path>', 'sqlite db path')
+  .action((rawIds: string[], opts: { db?: string }) => {
+    const jobIds = parseLibraryJobIds(rawIds)
+    const db = openDb(resolveDbPath(opts.db))
+    const changed = rejectLibrary(db, jobIds)
+    // reject takes needs-review AND ready; published rows are skipped.
+    console.log(`rejected ${changed} of ${jobIds.length}`)
   })
 
 // Interactive per-channel OAuth grant (design spec §4.2). Thin glue: all flow
