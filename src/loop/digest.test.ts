@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
+import { localDay } from '../publish/slots.js'
 import { testChannel } from '../stages/_testkit.js'
 import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from './digest.js'
 
@@ -36,11 +37,63 @@ function seedJob(
 }
 
 // Library rows carry the ready/needs-review outcome for 'done' jobs — the
-// same insert shape the runner's library upsert writes.
-function seedLibrary(db: Database, jobId: string, state: 'ready' | 'needs-review'): void {
+// same insert shape the runner's library upsert writes. createdAt is
+// optional and only used by tests that need to control backlog age
+// precisely; omitting it keeps the schema default ('now') for every
+// existing caller.
+function seedLibrary(
+  db: Database,
+  jobId: string,
+  state: 'ready' | 'needs-review',
+  createdAt?: string,
+): void {
+  if (createdAt === undefined) {
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, '/tmp/out.mp4', '{}', ?)",
+    ).run(jobId, state)
+    return
+  }
   db.prepare(
-    "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, '/tmp/out.mp4', '{}', ?)",
-  ).run(jobId, state)
+    "INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES (?, '/tmp/out.mp4', '{}', ?, ?)",
+  ).run(jobId, state, createdAt)
+}
+
+// Publishes rows carry the channel/slot/status shape the publish-next tick
+// writes; day/slot default to fixed values so tests control the UNIQUE
+// (channel, platform, day, slot) constraint explicitly.
+function seedPublish(
+  db: Database,
+  opts: {
+    jobId: string
+    channel?: string
+    platform?: 'youtube'
+    day?: string
+    slot?: string
+    status?: 'claimed' | 'done' | 'failed' | 'interrupted'
+    url?: string | null
+    error?: string | null
+    errorKind?: 'auth' | 'quota' | 'rejected' | 'transient' | null
+    attempt?: number
+    createdAt?: string
+  },
+): void {
+  db.prepare(
+    `INSERT INTO publishes
+       (job_id, platform, channel, day, slot, status, url, error, error_kind, attempt, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    opts.jobId,
+    opts.platform ?? 'youtube',
+    opts.channel ?? 'chan-a',
+    opts.day ?? '2026-07-19',
+    opts.slot ?? '10:00',
+    opts.status ?? 'done',
+    opts.url ?? null,
+    opts.error ?? null,
+    opts.errorKind ?? null,
+    opts.attempt ?? 1,
+    opts.createdAt ?? isoAgo(HOUR_MS),
+  )
 }
 
 function seedTopic(
@@ -216,14 +269,197 @@ describe('buildDigest — action items', () => {
   })
 })
 
+describe('buildDigest — publishing section', () => {
+  it('lists a published video with its resolved title and url', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-pub', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, '/tmp/out.mp4', ?, 'published')",
+    ).run('j-pub', JSON.stringify({ youtube: { title: 'Moon Facts', description: 'd', hashtags: [] } }))
+    seedPublish(db, {
+      jobId: 'j-pub',
+      channel: 'chan-a',
+      slot: '10:00',
+      status: 'done',
+      url: 'https://youtube.com/shorts/abc123',
+    })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain('Publishing (last 24h)')
+    expect(digest).toContain('  Published:')
+    expect(digest).toContain('    chan-a 10:00 "Moon Facts" — https://youtube.com/shorts/abc123')
+    db.close()
+  })
+
+  it('lists a failed attempt with its error kind and truncates the error to 80 chars', () => {
+    const db = openDb(':memory:')
+    const longError = 'x'.repeat(120)
+    seedPublish(db, {
+      jobId: 'j-fail',
+      channel: 'chan-b',
+      slot: '14:00',
+      status: 'failed',
+      errorKind: 'rejected',
+      error: longError,
+    })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain(`    chan-b 14:00 rejected: ${'x'.repeat(80)}`)
+    expect(digest).not.toContain('x'.repeat(81))
+    db.close()
+  })
+
+  it('prints none for both subsections when nothing published or failed in the last 24h', () => {
+    const db = openDb(':memory:')
+    const digest = buildDigest(db, [])
+    expect(digest).toContain('  Published:\n    none')
+    expect(digest).toContain('  Failed:\n    none')
+    db.close()
+  })
+
+  it('excludes publishes older than 24h', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-old', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-old', '/tmp/out.mp4', '{}', 'published')",
+    ).run()
+    seedPublish(db, {
+      jobId: 'j-old',
+      channel: 'chan-a',
+      status: 'done',
+      url: 'https://youtube.com/shorts/old',
+      createdAt: isoAgo(3 * DAY_MS),
+    })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain('  Published:\n    none')
+    db.close()
+  })
+})
+
+describe('buildDigest — publishing action items', () => {
+  it('flags channels with auth failures in the last 24h, one line per channel', () => {
+    const db = openDb(':memory:')
+    seedPublish(db, { jobId: 'j1', channel: 'chan-a', slot: '10:00', status: 'failed', errorKind: 'auth' })
+    seedPublish(db, { jobId: 'j2', channel: 'chan-a', slot: '14:00', status: 'failed', errorKind: 'auth' })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain(
+      '  chan-a: 2 auth failures in the last 24h — run brainrot auth youtube --channel chan-a',
+    )
+    db.close()
+  })
+
+  it('flags quota failures distinctly — the cap estimate and reality disagree', () => {
+    const db = openDb(':memory:')
+    seedPublish(db, { jobId: 'j1', channel: 'chan-a', slot: '10:00', status: 'failed', errorKind: 'quota' })
+    seedPublish(db, { jobId: 'j2', channel: 'chan-a', slot: '14:00', status: 'failed', errorKind: 'quota' })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain(
+      "  chan-a: 2 quota failures in the last 24h — YouTube refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the project's real quota",
+    )
+    db.close()
+  })
+
+  it('instructs checking Studio for interrupted uploads of any age', () => {
+    const db = openDb(':memory:')
+    seedPublish(db, {
+      jobId: 'j-int',
+      channel: 'chan-a',
+      slot: '19:00',
+      status: 'interrupted',
+      createdAt: isoAgo(3 * DAY_MS),
+    })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain(
+      '  interrupted publish j-int (chan-a, 19:00) — check YouTube Studio, then brainrot publish retry j-int or brainrot publish mark-done j-int <postId>',
+    )
+    db.close()
+  })
+
+  it('suggests library reject for a job at the rejected attempt cap while still ready', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-capped', channel: 'chan-a' })
+    seedLibrary(db, 'j-capped', 'ready')
+    seedPublish(db, { jobId: 'j-capped', channel: 'chan-a', day: '2026-07-19', slot: '08:00', status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'j-capped', channel: 'chan-a', day: '2026-07-19', slot: '12:00', status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'j-capped', channel: 'chan-a', day: '2026-07-19', slot: '16:00', status: 'failed', errorKind: 'rejected' })
+    const digest = buildDigest(db, [])
+    expect(digest).toContain(
+      '  job j-capped (chan-a) hit the publish attempt cap (3 rejected) — run brainrot library reject j-capped',
+    )
+    db.close()
+  })
+
+  it('does not flag a job under the attempt cap', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-under', channel: 'chan-a' })
+    seedLibrary(db, 'j-under', 'ready')
+    seedPublish(db, { jobId: 'j-under', channel: 'chan-a', day: '2026-07-19', slot: '08:00', status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'j-under', channel: 'chan-a', day: '2026-07-19', slot: '12:00', status: 'failed', errorKind: 'rejected' })
+    const digest = buildDigest(db, [])
+    expect(digest).not.toContain('publish attempt cap')
+    db.close()
+  })
+})
+
+describe('buildDigest — ready-backlog action item', () => {
+  it('reports ready backlog depth and oldest age only for channels with a publish config', () => {
+    const db = openDb(':memory:')
+    const chA = testChannel({
+      name: 'chan-a',
+      publish: { slots: ['10:00'], platforms: ['youtube'], privacy: 'public', categoryId: 24, madeForKids: false },
+    })
+    const chB = testChannel({ name: 'chan-b', publish: null })
+    seedJob(db, { id: 'j-old', channel: 'chan-a' })
+    seedLibrary(db, 'j-old', 'ready', isoAgo(5 * HOUR_MS))
+    seedJob(db, { id: 'j-new', channel: 'chan-a' })
+    seedLibrary(db, 'j-new', 'ready', isoAgo(HOUR_MS))
+    seedJob(db, { id: 'j-nopublish', channel: 'chan-b' })
+    seedLibrary(db, 'j-nopublish', 'ready')
+    const digest = buildDigest(db, [chA, chB])
+    expect(digest).toContain('  chan-a: 2 ready videos backlogged, oldest 5h old')
+    expect(digest).not.toContain('chan-b: 1 ready videos backlogged')
+    db.close()
+  })
+})
+
+describe('buildDigest — lapsed-slots action item', () => {
+  it('reports slots that lapsed unfilled yesterday for channels with a publish config', () => {
+    const db = openDb(':memory:')
+    const yesterday = localDay(new Date(Date.now() - DAY_MS))
+    const chA = testChannel({
+      name: 'chan-a',
+      publish: {
+        slots: ['09:00', '14:00', '19:00'],
+        platforms: ['youtube'],
+        privacy: 'public',
+        categoryId: 24,
+        madeForKids: false,
+      },
+    })
+    seedJob(db, { id: 'j-yday', channel: 'chan-a' })
+    seedPublish(db, { jobId: 'j-yday', channel: 'chan-a', day: yesterday, slot: '09:00', status: 'done' })
+    const digest = buildDigest(db, [chA])
+    expect(digest).toContain(`  chan-a youtube: slots 14:00, 19:00 lapsed unfilled yesterday (${yesterday})`)
+    expect(digest).not.toContain('09:00 lapsed')
+    db.close()
+  })
+
+  it('does not flag lapsed slots for a channel with no publish config', () => {
+    const db = openDb(':memory:')
+    const chB = testChannel({ name: 'chan-b', publish: null })
+    const digest = buildDigest(db, [chB])
+    expect(digest).not.toContain('lapsed unfilled yesterday')
+    db.close()
+  })
+})
+
 describe('buildDigest — section order', () => {
-  it('emits the four sections in the pinned order', () => {
+  it('emits the five sections in the pinned order', () => {
     const db = openDb(':memory:')
     const digest = buildDigest(db, [])
     const positions = [
       digest.indexOf('Topics (last 24h)'),
       digest.indexOf('Jobs (last 24h)'),
       digest.indexOf('Spend today (UTC)'),
+      digest.indexOf('Publishing (last 24h)'),
       digest.indexOf('Action items'),
     ]
     expect(positions.every((p) => p >= 0)).toBe(true)
