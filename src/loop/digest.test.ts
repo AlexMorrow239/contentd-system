@@ -414,7 +414,8 @@ describe('buildDigest — ready-backlog in the Publishing section', () => {
     seedJob(db, { id: 'j-nopublish', channel: 'chan-b' })
     seedLibrary(db, 'j-nopublish', 'ready')
     const digest = buildDigest(db, [chA, chB])
-    const backlogLine = '  chan-a: 2 ready videos backlogged, oldest 5h old'
+    expect(digest).toContain('  Backlog:')
+    const backlogLine = '    chan-a: 2 ready videos backlogged, oldest 5h old'
     expect(digest).toContain(backlogLine)
     expect(digest).not.toContain('chan-b: 1 ready videos backlogged')
     // The backlog line lives in Publishing (last 24h), before Action items —
@@ -422,6 +423,13 @@ describe('buildDigest — ready-backlog in the Publishing section', () => {
     const backlogIdx = digest.indexOf(backlogLine)
     expect(backlogIdx).toBeGreaterThan(digest.indexOf('Publishing (last 24h)'))
     expect(backlogIdx).toBeLessThan(digest.indexOf('Action items'))
+    db.close()
+  })
+
+  it('labels the backlog subsection and falls back to none when no channel has a ready backlog', () => {
+    const db = openDb(':memory:')
+    const digest = buildDigest(db, [])
+    expect(digest).toContain('  Backlog:\n    none')
     db.close()
   })
 })

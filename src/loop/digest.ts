@@ -166,13 +166,14 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
   const publishingChannels = new Set(
     channels.filter((c) => c.publish !== null).map((c) => c.name),
   )
+  lines.push('  Backlog:')
   const backlogStart = lines.length
   for (const r of readyBacklog) {
     if (!publishingChannels.has(r.channel)) continue
     const ageHours = Math.floor((now.getTime() - new Date(r.oldest).getTime()) / 3_600_000)
-    lines.push(`  ${r.channel}: ${r.n} ready videos backlogged, oldest ${ageHours}h old`)
+    lines.push(`    ${r.channel}: ${r.n} ready videos backlogged, oldest ${ageHours}h old`)
   }
-  if (lines.length === backlogStart) lines.push('  none')
+  if (lines.length === backlogStart) lines.push('    none')
 
   lines.push('', 'Action items')
   const sectionStart = lines.length
