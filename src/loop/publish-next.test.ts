@@ -338,3 +338,84 @@ describe('publishNextTick — publish', () => {
     db.close()
   })
 })
+
+describe('publishNextTick — lease and sweep', () => {
+  it('no-ops with reason lease-held while another process holds the lease', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-lease-')
+    // Deliberately an empty library: the lease gate must short-circuit BEFORE
+    // due-slot/candidate work even runs, so this fixture stays safe (no
+    // mintAccessToken/network reachable) whether or not the gate is wired yet.
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    acquireLease(db, 'publish', 'pid:other', PUBLISH_LEASE_TTL_MS)
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'lease-held' })
+    db.close()
+  })
+
+  it('releases the lease after a successful publish', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-release-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    const target = fakeTarget(async () => ({ postId: 'yt1', url: 'https://youtube.com/shorts/yt1' }))
+    await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+
+  it('releases the lease when the tick throws mid-flight', async () => {
+    const db = openDb(':memory:')
+    // an unparseable channel TOML makes loadChannelsDir throw inside the leased window
+    const brokenDir = tmpDir('brainrot-publish-broken-')
+    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+    await expect(publishNextTick(db, { channelsDir: brokenDir, now: NOW })).rejects.toThrow()
+    expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+
+  it('sweeps a stale claimed row to interrupted before planning the tick', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-sweep-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['09:00'] })
+    // Seed the stale claim RELATIVE to NOW (65 min ago > 30-min TTL) so the
+    // age is identical in every timezone the suite runs in.
+    db.prepare(
+      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
+        "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', '09:00', 'claimed', 1, ?)",
+    ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'no-due-slot' })
+    const row = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as { status: string }
+    expect(row.status).toBe('interrupted')
+    db.close()
+  })
+
+  it('dry-run never acquires the lease, never sweeps, and writes nothing', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-dryrun-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    // Old enough that a real sweep WOULD flip it — proving dry-run skipped it.
+    db.prepare(
+      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
+        "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-21', '09:00', 'claimed', 1, ?)",
+    ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
+    const jobId = seedReadyVideo(db, { channel: 'chan-a', topic: 'Preview me' })
+    seedToken(db, 'chan-a')
+    const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
+    expect(result).toEqual({
+      action: 'dry-run',
+      wouldPublish: { channel: 'chan-a', platform: 'youtube', slot: '14:00', jobId, title: 'Preview me' },
+    })
+    // the stale row from a DIFFERENT day is untouched: sweep never ran
+    const stale = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as { status: string }
+    expect(stale.status).toBe('claimed')
+    // no new row for today's slot, no lease taken
+    const count = (db.prepare("SELECT COUNT(*) AS n FROM publishes WHERE day = '2026-07-22'").get() as { n: number }).n
+    expect(count).toBe(0)
+    const lease = db.prepare("SELECT * FROM leases WHERE name = 'publish'").get()
+    expect(lease).toBeUndefined()
+    db.close()
+  })
+})
