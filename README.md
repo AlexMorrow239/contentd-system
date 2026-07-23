@@ -206,10 +206,10 @@ MAILTO=you@example.com
 # One publish attempt per tick, on whichever due slot is furthest behind its
 # channel's cadence (*/15 keeps slots filling within ~15 min of their
 # configured time). Unlike scout, this is deliberately NOT staggered off
-# produce-next's :00/:25/:50 — publish-next and produce-next write disjoint
-# tables (publishes/library vs jobs/topics), so a same-minute co-fire is safe
-# on the DB busy_timeout alone.
-*/15 * * * * cd /Users/alex/code/project-brainrot && npx tsx src/cli.ts publish-next >> logs/publish.log 2>&1
+# produce-next's :00/:25/:50 — the two touch disjoint rows (produce-next
+# inserts new library rows; publish-next updates a ready row's state), and WAL
+# journaling plus the busy_timeout=5000 pragma make a same-minute co-fire safe.
+*/15 * * * * cd /Users/alex/code/project-brainrot && pnpm brainrot publish-next >> logs/publish.log 2>&1
 
 # Daily digest at 08:00 — stdout goes to MAILTO; nothing else delivers it.
 0 8 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot digest
