@@ -10,6 +10,7 @@ import { produceNextTick } from './loop/produce-next.js'
 import { publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
 import { openDb } from './db/index.js'
+import { listPublishes, markInterruptedDone, retryInterrupted } from './publish/publishes.js'
 import { approveTopics, listTopics, rejectTopics } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { assertPremiumPreflight, stagesForTier } from './jobs/pipeline.js'
@@ -66,6 +67,20 @@ export function parseLibraryJobIds(raw: string[]): string[] {
     }
     return token
   })
+}
+
+/**
+ * Validate `publishes list --days` values. Same shape as parseTopicIds's
+ * tokens — positive decimal integers only ("0", "-3", "3.5", "abc" all
+ * reject) — but for a single flag value rather than a list of ids. Throws
+ * BEFORE any db handle exists, so a bad value means exit 1 with no query.
+ * Exported so cli.test.ts can assert it in-process.
+ */
+export function parsePublishDays(raw: string): number {
+  if (!/^[1-9]\d*$/.test(raw)) {
+    throw new Error(`invalid --days "${raw}": must be a positive integer`)
+  }
+  return Number(raw)
 }
 
 // Moved to src/jobs/pipeline.ts so the loop code (resume, produce-next) shares
@@ -392,6 +407,80 @@ program
       }
     } catch (err) {
       console.error(err instanceof Error ? err.message : String(err))
+    }
+  })
+
+// Manual repair for `interrupted` publishes (design spec decision 12):
+// publish-next's own repair sweep marks a stale claim `interrupted` — it
+// never guesses whether the upload actually landed on YouTube, so the
+// operator resolves it by hand after checking YouTube Studio. State
+// transitions live in the publishes DAO (Task 7); these actions are thin glue.
+const publish = program.command('publish')
+
+publish
+  .command('retry <jobId>')
+  .option('--db <path>', 'sqlite db path')
+  .action((jobId: string, opts: { db?: string }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      const ok = retryInterrupted(db, jobId)
+      if (!ok) {
+        console.error(`no interrupted publish for job ${jobId}`)
+        process.exitCode = 1
+        return
+      }
+      console.log(`job ${jobId}: interrupted publish cleared — back in the pool for the next due slot`)
+    } finally {
+      db.close()
+    }
+  })
+
+publish
+  .command('mark-done <jobId> <postId>')
+  .option('--db <path>', 'sqlite db path')
+  .action((jobId: string, postId: string, opts: { db?: string }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      // v1 platform assumption: PUBLISH_PLATFORMS is exactly ['youtube'], so
+      // every interrupted row this command will ever see is a YouTube
+      // upload — the Shorts URL is built here rather than threading a
+      // --platform flag through for what is currently a single-member enum.
+      const url = 'https://youtube.com/shorts/' + postId
+      const ok = markInterruptedDone(db, jobId, postId, url, new Date())
+      if (!ok) {
+        console.error(`no interrupted publish for job ${jobId}`)
+        process.exitCode = 1
+        return
+      }
+      console.log(`job ${jobId}: marked done — ${url}`)
+    } finally {
+      db.close()
+    }
+  })
+
+const publishes = program.command('publishes')
+
+publishes
+  .command('list')
+  .option('--db <path>', 'sqlite db path')
+  .option('--days <n>', 'lookback window in days', '7')
+  .action((opts: { db?: string; days: string }) => {
+    // Validated BEFORE the db opens, mirroring parseTier/parseTopicIds.
+    const days = parsePublishDays(opts.days)
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      const rows = listPublishes(db, { sinceDays: days })
+      if (rows.length === 0) {
+        console.log(`no publishes in the last ${days} days`)
+        return
+      }
+      for (const r of rows) {
+        console.log(
+          `${r.day} ${r.slot} ${r.channel} ${r.platform} ${r.status} attempt ${r.attempt} ${r.jobId} ${r.url ?? r.error ?? '-'}`,
+        )
+      }
+    } finally {
+      db.close()
     }
   })
 

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
-import { assertPremiumPreflight, parseTier, parseTopicIds, stagesForTier } from './cli.js'
+import { assertPremiumPreflight, parsePublishDays, parseTier, parseTopicIds, stagesForTier } from './cli.js'
 import { visualsPremiumStage } from './stages/visuals-premium.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 
@@ -52,6 +52,46 @@ describe('brainrot CLI', () => {
     const { n } = db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }
     db.close()
     return n
+  }
+
+  function seedPublishRow(
+    dbPath: string,
+    opts: {
+      jobId: string
+      channel: string
+      day: string
+      slot: string
+      status: string
+      postId?: string | null
+      url?: string | null
+      error?: string | null
+      errorKind?: string | null
+      attempt?: number
+    },
+  ): void {
+    const db = openDb(dbPath)
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', 'test topic', 'done')",
+    ).run(opts.jobId, opts.channel)
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, '/tmp/video.mp4', '{}', 'ready')",
+    ).run(opts.jobId)
+    db.prepare(
+      `INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, error, error_kind, attempt)
+       VALUES (?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      opts.jobId,
+      opts.channel,
+      opts.day,
+      opts.slot,
+      opts.status,
+      opts.postId ?? null,
+      opts.url ?? null,
+      opts.error ?? null,
+      opts.errorKind ?? null,
+      opts.attempt ?? 1,
+    )
+    db.close()
   }
 
   it('`produce --tier premium` passes tier validation (fails later on the missing channel file)', async () => {
@@ -216,6 +256,137 @@ describe('brainrot CLI', () => {
     expect(result.exitCode).toBe(0)
     expect(result.stderr).toMatch(/ENOENT|no such/)
   }, 60000)
+
+  it('`publish --help` lists the retry/mark-done subcommands', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'publish', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('retry')
+    expect(result.stdout).toContain('mark-done')
+  }, 60000)
+
+  it('`publish retry` on a job with no interrupted publish exits 1 naming the job', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'publish', 'retry', 'no-such-job', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('no interrupted publish for job no-such-job')
+  }, 60000)
+
+  it('`publish retry` on a job with an interrupted publish clears it and returns the job to the pool', async () => {
+    const dbPath = tmpDbPath()
+    seedPublishRow(dbPath, {
+      jobId: 'job-retry-1', channel: 'demo', day: '2026-07-22', slot: '10:00', status: 'interrupted',
+    })
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'publish', 'retry', 'job-retry-1', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('job-retry-1')
+    const db = openDb(dbPath)
+    const row = db
+      .prepare('SELECT status, error_kind, error FROM publishes WHERE job_id = ?')
+      .get('job-retry-1') as { status: string; error_kind: string; error: string }
+    db.close()
+    expect(row.status).toBe('failed')
+    expect(row.error_kind).toBe('transient')
+    expect(row.error).toContain('manually cleared')
+  }, 60000)
+
+  it('`publish mark-done` on a job with no interrupted publish exits 1 naming the job', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'publish', 'mark-done', 'no-such-job', 'yt-post-1', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('no interrupted publish for job no-such-job')
+  }, 60000)
+
+  it('`publish mark-done` on a job with an interrupted publish marks it done and flips the library row', async () => {
+    const dbPath = tmpDbPath()
+    seedPublishRow(dbPath, {
+      jobId: 'job-done-1', channel: 'demo', day: '2026-07-22', slot: '10:00', status: 'interrupted',
+    })
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'publish', 'mark-done', 'job-done-1', 'yt-post-1', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('https://youtube.com/shorts/yt-post-1')
+    const db = openDb(dbPath)
+    const publishRow = db
+      .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
+      .get('job-done-1') as { status: string; post_id: string; url: string }
+    const libraryRow = db
+      .prepare('SELECT state FROM library WHERE job_id = ?')
+      .get('job-done-1') as { state: string }
+    db.close()
+    expect(publishRow.status).toBe('done')
+    expect(publishRow.post_id).toBe('yt-post-1')
+    expect(publishRow.url).toBe('https://youtube.com/shorts/yt-post-1')
+    expect(libraryRow.state).toBe('published')
+  }, 60000)
+
+  it('`publishes --help` lists the list subcommand', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'publishes', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('list')
+  }, 60000)
+
+  it('`publishes list` on an empty db prints a friendly empty message', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm', ['exec', 'tsx', 'src/cli.ts', 'publishes', 'list', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('no publishes in the last 7 days')
+  }, 60000)
+
+  it('`publishes list` prints day/slot/channel/platform/status/attempt/jobId and the url or error', async () => {
+    const dbPath = tmpDbPath()
+    seedPublishRow(dbPath, {
+      jobId: 'job-list-done', channel: 'demo', day: '2026-07-22', slot: '10:00',
+      status: 'done', postId: 'yt-1', url: 'https://youtube.com/shorts/yt-1', attempt: 1,
+    })
+    seedPublishRow(dbPath, {
+      jobId: 'job-list-failed', channel: 'demo', day: '2026-07-22', slot: '14:00',
+      status: 'failed', error: 'upload rejected: bad file', errorKind: 'rejected', attempt: 2,
+    })
+    const result = await execa(
+      'pnpm', ['exec', 'tsx', 'src/cli.ts', 'publishes', 'list', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(
+      '2026-07-22 10:00 demo youtube done attempt 1 job-list-done https://youtube.com/shorts/yt-1',
+    )
+    expect(result.stdout).toContain(
+      '2026-07-22 14:00 demo youtube failed attempt 2 job-list-failed upload rejected: bad file',
+    )
+  }, 60000)
+
+  it('`publishes list --days garbage` exits 1 before opening the db', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'publishes', 'list', '--days', 'garbage', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('invalid --days "garbage"')
+  }, 60000)
 })
 
 describe('tier helpers (in-process)', () => {
@@ -280,5 +451,20 @@ describe('parseTopicIds (in-process)', () => {
     expect(() => parseTopicIds(['-3'])).toThrow('invalid topic id "-3"')
     // the FIRST offender is the one named, even when later tokens are also bad
     expect(() => parseTopicIds(['5', '0', '-3'])).toThrow('invalid topic id "0"')
+  })
+})
+
+describe('parsePublishDays (in-process)', () => {
+  it('parses a positive integer string', () => {
+    expect(parsePublishDays('7')).toBe(7)
+    expect(parsePublishDays('1')).toBe(1)
+    expect(parsePublishDays('30')).toBe(30)
+  })
+
+  it('throws naming the value; "0", "-3", "3.5", "abc" all reject', () => {
+    expect(() => parsePublishDays('0')).toThrow('invalid --days "0": must be a positive integer')
+    expect(() => parsePublishDays('-3')).toThrow('invalid --days "-3"')
+    expect(() => parsePublishDays('3.5')).toThrow('invalid --days "3.5"')
+    expect(() => parsePublishDays('abc')).toThrow('invalid --days "abc"')
   })
 })
