@@ -210,7 +210,12 @@ export function retryInterrupted(db: Database, jobId: string): boolean {
         "WHERE job_id = ? AND status = 'interrupted'",
     )
     .run(jobId)
-  return info.changes === 1
+  // Invariant: eligibleVideo excludes any job with a blocking row (done/
+  // claimed/interrupted) for the platform, so a job never re-enters rotation
+  // to accrue a second interrupted row — ≤1 per (job, platform). `>= 1` (not
+  // `=== 1`) so that even under a hypothetical multi-row state this still
+  // reports the truthful "rows were changed" rather than a false negative.
+  return info.changes >= 1
 }
 
 // Manual resolution path (design spec §7 `publish mark-done`): for when
@@ -233,7 +238,9 @@ export function markInterruptedDone(
   const updateLibrary = db.prepare("UPDATE library SET state = 'published' WHERE job_id = ?")
   const flip = db.transaction((): boolean => {
     const info = updatePublish.run(postId, url, now.toISOString(), jobId)
-    if (info.changes !== 1) return false
+    // `< 1` (not `!== 1`) for the same invariant as retryInterrupted: at most
+    // one interrupted row per (job, platform), so any match is a real flip.
+    if (info.changes < 1) return false
     updateLibrary.run(jobId)
     return true
   })

@@ -102,4 +102,28 @@ describe('runYoutubeAuthFlow', () => {
       }),
     ).rejects.toThrow('runYoutubeAuthFlow: state mismatch on redirect (possible CSRF)')
   })
+
+  it('rejects promptly when the consent redirect carries an error (denial) instead of a code', async () => {
+    const fetchImpl: typeof fetch = async () => {
+      throw new Error('fetchImpl must not be called on a consent denial')
+    }
+
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      // Google's denial redirect: valid state, no code, an error param.
+      await fetch(`${redirectUri}/?error=access_denied&state=${state}`)
+    }
+
+    await expect(
+      runYoutubeAuthFlow({
+        clientId: 'test-client-id',
+        clientSecret: 'test-client-secret',
+        listenPort: 0,
+        openBrowser,
+        fetchImpl,
+      }),
+    ).rejects.toThrow('runYoutubeAuthFlow: consent denied (access_denied)')
+  })
 })

@@ -60,6 +60,13 @@ export async function runYoutubeAuthFlow(opts: {
       rejectCode(new Error('runYoutubeAuthFlow: state mismatch on redirect (possible CSRF)'))
       return
     }
+    // Consent denial (?error=access_denied&state=...) echoes valid state but
+    // carries no code — reject now rather than hang until the 5-min timeout.
+    const error = redirectUrl.searchParams.get('error')
+    if (error) {
+      rejectCode(new Error(`runYoutubeAuthFlow: consent denied (${error})`))
+      return
+    }
     const code = redirectUrl.searchParams.get('code')
     if (code) resolveCode(code)
   })

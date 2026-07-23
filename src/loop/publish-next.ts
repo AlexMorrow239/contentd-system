@@ -159,6 +159,15 @@ export async function publishNextTick(
       }
     }
 
+    // Resolve the channel BEFORE the claim: nothing may throw between the
+    // claim and the upload, or a thrown row would sit 'claimed' until the
+    // sweep heals it. This lookup is defensive — the candidate came from this
+    // same channels list, every entry of which carries a non-null publish.
+    const channel = channels.find((c) => c.name === candidate.channel)
+    if (channel === undefined || channel.publish === null) {
+      throw new Error(`publishNextTick: channel ${candidate.channel} missing publish config at claim time`)
+    }
+
     // The UNIQUE(channel, platform, day, slot) constraint is the real guard;
     // a conflict here means a racing tick won this slot — unreachable under
     // the publish lease, but a defensive exit rather than a crash.
@@ -171,11 +180,6 @@ export async function publishNextTick(
     })
     if (claimId === null) {
       return { action: 'noop', reason: 'claim-conflict' }
-    }
-
-    const channel = channels.find((c) => c.name === candidate.channel)
-    if (channel === undefined || channel.publish === null) {
-      throw new Error(`publishNextTick: channel ${candidate.channel} missing publish config at claim time`)
     }
 
     try {
