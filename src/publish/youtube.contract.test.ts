@@ -75,11 +75,21 @@ describe('youtube adapter (contract)', () => {
       expect(postId).toMatch(/^[A-Za-z0-9_-]{11}$/)
       expect(url).toBe(`https://youtube.com/shorts/${postId}`)
 
+      // Cleanup is best-effort: videos.delete requires the youtube.force-ssl
+      // scope, but this flow grants youtube.upload only — a live run gets a
+      // 403, which must not strand a private upload as a red test. 204 is full
+      // success; 403 warns for a manual Studio delete; anything else fails.
       const del = await fetch(`https://www.googleapis.com/youtube/v3/videos?id=${postId}`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${accessToken}` },
       })
-      expect(del.status).toBe(204)
+      if (del.status === 403) {
+        console.warn(
+          `youtube contract test: could not delete video ${postId} (403 — the upload-only grant lacks youtube.force-ssl); delete it manually in YouTube Studio`,
+        )
+      } else {
+        expect(del.status).toBe(204)
+      }
     } finally {
       db.close()
     }
