@@ -399,8 +399,8 @@ describe('buildDigest — publishing action items', () => {
   })
 })
 
-describe('buildDigest — ready-backlog action item', () => {
-  it('reports ready backlog depth and oldest age only for channels with a publish config', () => {
+describe('buildDigest — ready-backlog in the Publishing section', () => {
+  it('reports ready backlog depth and oldest age inside Publishing (not Action items), publishing channels only', () => {
     const db = openDb(':memory:')
     const chA = testChannel({
       name: 'chan-a',
@@ -414,8 +414,14 @@ describe('buildDigest — ready-backlog action item', () => {
     seedJob(db, { id: 'j-nopublish', channel: 'chan-b' })
     seedLibrary(db, 'j-nopublish', 'ready')
     const digest = buildDigest(db, [chA, chB])
-    expect(digest).toContain('  chan-a: 2 ready videos backlogged, oldest 5h old')
+    const backlogLine = '  chan-a: 2 ready videos backlogged, oldest 5h old'
+    expect(digest).toContain(backlogLine)
     expect(digest).not.toContain('chan-b: 1 ready videos backlogged')
+    // The backlog line lives in Publishing (last 24h), before Action items —
+    // never under Action items where a lone ready video would stand daily.
+    const backlogIdx = digest.indexOf(backlogLine)
+    expect(backlogIdx).toBeGreaterThan(digest.indexOf('Publishing (last 24h)'))
+    expect(backlogIdx).toBeLessThan(digest.indexOf('Action items'))
     db.close()
   })
 })
@@ -423,7 +429,12 @@ describe('buildDigest — ready-backlog action item', () => {
 describe('buildDigest — lapsed-slots action item', () => {
   it('reports slots that lapsed unfilled yesterday for channels with a publish config', () => {
     const db = openDb(':memory:')
-    const yesterday = localDay(new Date(Date.now() - DAY_MS))
+    // Mirror the impl's own local field math (new Date(now); setDate(-1);
+    // localDay) — now-minus-24h lands on the wrong local date across a DST
+    // transition and would diverge from the digest in that window.
+    const yesterdayDate = new Date()
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+    const yesterday = localDay(yesterdayDate)
     const chA = testChannel({
       name: 'chan-a',
       publish: {

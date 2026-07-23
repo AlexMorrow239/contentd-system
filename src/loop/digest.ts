@@ -146,6 +146,33 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
   for (const r of failedPublishRows) {
     lines.push(`    ${r.channel} ${r.slot} ${r.errorKind}: ${(r.error ?? '').slice(0, 80)}`)
   }
+  // buildDigest is not clock-injected (no call site needs it); this single
+  // now() read serves both the ready-backlog age just below and the
+  // lapsed-slots 'yesterday' derivation in Action items.
+  const now = new Date()
+  // Ready-backlog pressure belongs in Publishing (spec §8), NOT Action items:
+  // a lone just-produced video would otherwise stand as a daily action item
+  // and habituate the operator to a non-empty section. Only channels that
+  // actually publish count — ready rows on a channel with no [publish] table
+  // just sit there by design.
+  const readyBacklog = db
+    .prepare(
+      `SELECT j.channel AS channel, COUNT(*) AS n, MIN(l.created_at) AS oldest
+       FROM library l JOIN jobs j ON j.id = l.job_id
+       WHERE l.state = 'ready'
+       GROUP BY j.channel`,
+    )
+    .all() as { channel: string; n: number; oldest: string }[]
+  const publishingChannels = new Set(
+    channels.filter((c) => c.publish !== null).map((c) => c.name),
+  )
+  const backlogStart = lines.length
+  for (const r of readyBacklog) {
+    if (!publishingChannels.has(r.channel)) continue
+    const ageHours = Math.floor((now.getTime() - new Date(r.oldest).getTime()) / 3_600_000)
+    lines.push(`  ${r.channel}: ${r.n} ready videos backlogged, oldest ${ageHours}h old`)
+  }
+  if (lines.length === backlogStart) lines.push('  none')
 
   lines.push('', 'Action items')
   const sectionStart = lines.length
@@ -262,29 +289,6 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     lines.push(
       `  job ${r.jobId} (${r.channel}) hit the publish attempt cap (${r.n} rejected) — run brainrot library reject ${r.jobId}`,
     )
-  }
-  // Single now() read for the two channel-scoped items below — buildDigest
-  // is not clock-injected (no other call site needs it), so this is
-  // computed once here rather than threaded as a parameter.
-  const now = new Date()
-  // Backlog pressure only matters for channels that actually publish —
-  // ready rows on a channel with no [publish] table just sit there by
-  // design.
-  const readyBacklog = db
-    .prepare(
-      `SELECT j.channel AS channel, COUNT(*) AS n, MIN(l.created_at) AS oldest
-       FROM library l JOIN jobs j ON j.id = l.job_id
-       WHERE l.state = 'ready'
-       GROUP BY j.channel`,
-    )
-    .all() as { channel: string; n: number; oldest: string }[]
-  const publishingChannels = new Set(
-    channels.filter((c) => c.publish !== null).map((c) => c.name),
-  )
-  for (const r of readyBacklog) {
-    if (!publishingChannels.has(r.channel)) continue
-    const ageHours = Math.floor((now.getTime() - new Date(r.oldest).getTime()) / 3_600_000)
-    lines.push(`  ${r.channel}: ${r.n} ready videos backlogged, oldest ${ageHours}h old`)
   }
   // Local-time slot bookkeeping (decision 13): "yesterday" is the local
   // calendar day before now — local date-field math, NOT now-minus-24h,
