@@ -9,6 +9,11 @@ import { listTopics } from '../scout/topics.js'
 import { scoutChannel } from '../scout/scout.js'
 import type { FetchLike } from '../scout/sources/types.js'
 import { produceNextTick } from '../loop/produce-next.js'
+import { publishNextTick } from '../loop/publish-next.js'
+import { parseTokenKey } from '../publish/crypto.js'
+import { upsertToken } from '../publish/tokens.js'
+import { YT_UPLOAD_SCOPE } from '../publish/youtube.js'
+import type { PlatformMeta, PublishTarget } from '../publish/types.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName, Tier } from './types.js'
 
@@ -136,10 +141,13 @@ describe('golden-path loop e2e', () => {
     mkdirSync(channelsDir, { recursive: true })
     mkdirSync(runsRoot, { recursive: true })
 
-    // Real channel TOML incl. [scout] — the same file scoutChannel (loaded
-    // via loadChannelsDir here) and produceNextTick (via opts.channelsDir)
-    // read. bg/bgm dirs are schema-required strings; fake stages never read
-    // them.
+    // Real channel TOML incl. [scout] and [publish] — the same file
+    // scoutChannel (loaded via loadChannelsDir here), produceNextTick, and
+    // publishNextTick (via opts.channelsDir) all read. bg/bgm dirs are
+    // schema-required strings; fake stages never read them. slots =
+    // ["00:00"] is deliberately the earliest possible slot: it is <= any
+    // local HH:MM, so the due-slot check below needs no assumption about
+    // the test runner's timezone.
     writeFileSync(
       path.join(channelsDir, 'example.toml'),
       [
@@ -171,6 +179,9 @@ describe('golden-path loop e2e', () => {
         '[scout]',
         'subreddits = ["space"]',
         'min_score = 60',
+        '',
+        '[publish]',
+        'slots = ["00:00"]',
         '',
       ].join('\n'),
     )
@@ -259,6 +270,94 @@ describe('golden-path loop e2e', () => {
     expect(used).toEqual({ status: 'used', job_id: tick.jobId })
 
     // the tick's lease was released in its finally
+    expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
+
+    // ── Publish: the ready video fills the channel's one due slot ───────
+    // Client-credential and token-decryption env, read at call time by
+    // publishNextTick exactly like every other env-sourced constant in
+    // this codebase — never at module load.
+    vi.stubEnv('YT_CLIENT_ID', 'test-client-id')
+    vi.stubEnv('YT_CLIENT_SECRET', 'test-client-secret')
+    vi.stubEnv('BRAINROT_TOKEN_KEY', 'a'.repeat(64))
+    const tokenKey = parseTokenKey('a'.repeat(64))
+
+    // slot "00:00" is due at any local wall-clock time, so this fixed
+    // `now` makes no assumption about the test runner's timezone.
+    const publishNow = () => new Date('2024-01-01T12:00:00Z')
+
+    const uploadCalls: { videoPath: string; meta: PlatformMeta }[] = []
+    const fakeTarget: PublishTarget = {
+      platformId: 'youtube',
+      async upload(req) {
+        uploadCalls.push({ videoPath: req.videoPath, meta: req.meta })
+        return { postId: 'fakeVideoId1', url: 'https://youtube.com/shorts/fakeVideoId1' }
+      },
+    }
+    // Fakes only the token-mint call (threaded via opts.fetchImpl); the
+    // fake target above fakes the upload itself, so no other URL is hit.
+    const tokenFetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url === 'https://oauth2.googleapis.com/token') {
+        return new Response(JSON.stringify({ access_token: 'fake-access-token', expires_in: 3599 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      throw new Error(`unexpected fetch: ${url}`)
+    }) as typeof fetch
+
+    // Before any grant is on file, the due slot is blocked on auth — a
+    // blocked candidate never claims its slot, so it stays open for the
+    // next tick (verified below).
+    const noGrant = await publishNextTick(db, {
+      channelsDir,
+      target: fakeTarget,
+      fetchImpl: tokenFetchImpl,
+      now: publishNow,
+    })
+    expect(noGrant).toEqual({ action: 'noop', reason: 'no-auth' })
+    expect(uploadCalls).toEqual([])
+
+    // Consent flow output (Task 9): an encrypted refresh token on file.
+    upsertToken(db, 'youtube', 'example', 'rt-test-token', YT_UPLOAD_SCOPE, tokenKey)
+
+    const published = await publishNextTick(db, {
+      channelsDir,
+      target: fakeTarget,
+      fetchImpl: tokenFetchImpl,
+      now: publishNow,
+    })
+    expect(published).toEqual({
+      action: 'published',
+      channel: 'example',
+      platform: 'youtube',
+      jobId: tick.jobId,
+      slot: '00:00',
+      postId: 'fakeVideoId1',
+      url: 'https://youtube.com/shorts/fakeVideoId1',
+    })
+    expect(uploadCalls).toEqual([
+      {
+        videoPath: path.join(runsRoot, tick.jobId!, 'assemble', 'final.mp4'),
+        meta: { title: 'Moon', description: 'd', hashtags: ['#moon'] },
+      },
+    ])
+
+    const libAfterPublish = db
+      .prepare('SELECT state FROM library WHERE job_id = ?')
+      .get(tick.jobId!) as { state: string }
+    expect(libAfterPublish.state).toBe('published')
+
+    const publishRow = db
+      .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
+      .get(tick.jobId!) as { status: string; post_id: string; url: string }
+    expect(publishRow).toEqual({
+      status: 'done',
+      post_id: 'fakeVideoId1',
+      url: 'https://youtube.com/shorts/fakeVideoId1',
+    })
+
+    // publish-next released its own lease too
     expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
 
     // ── Second tick: queue drained (the rejected topic is never eligible) ──

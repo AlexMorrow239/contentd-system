@@ -86,11 +86,93 @@ pnpm brainrot jobs    # last 20 jobs
 pnpm brainrot costs   # per-day USD totals, last 7 days
 ```
 
+## Publishing (YouTube)
+
+`ready` library videos upload to YouTube Shorts automatically via the
+`publish-next` cron tick (see Automation below), on a per-channel schedule
+of local-time slots.
+
+### One-time setup (per Google Cloud project, not per channel)
+
+1. Create (or reuse) a project at
+   [console.cloud.google.com](https://console.cloud.google.com).
+2. Enable the **YouTube Data API v3** for that project (APIs & Services →
+   Enable APIs and Services → search "YouTube Data API v3" → Enable).
+3. APIs & Services → Credentials → Create Credentials → OAuth client ID.
+   **Application type: Desktop app** — Desktop-app clients accept a
+   consent redirect to any loopback port, so the CLI's flow needs no
+   redirect URI registered.
+4. Add the client id/secret to `.env`:
+
+   ```
+   YT_CLIENT_ID=...
+   YT_CLIENT_SECRET=...
+   ```
+
+5. Generate a token-encryption key and add it too. Refresh tokens are
+   stored AES-256-GCM-encrypted in the database — this key never leaves
+   `.env`:
+
+   ```bash
+   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+   ```
+
+   ```
+   BRAINROT_TOKEN_KEY=<paste the 64-hex-char output>
+   ```
+
+### Per-channel auth
+
+Each YouTube channel is its own brand account and needs its own consent
+grant — run once per channel, and again any time a grant expires or gets
+revoked:
+
+```bash
+pnpm brainrot auth youtube --channel example
+```
+
+This opens the system browser to Google's consent screen. **Pick the
+channel's YouTube brand account, not your personal Google account** —
+the upload-only scope this flow requests can't read back which channel
+you picked, so the CLI cannot warn you if you pick wrong. A wrong pick is
+recoverable: re-run the command and pick correctly. The first published
+URL in a wrong channel's digest is usually what surfaces the mistake.
+
+### Channel config
+
+Add a `[publish]` table to a channel's TOML to opt it into the publish
+pool — channels without one never publish:
+
+```toml
+[publish]
+slots = ["10:00", "14:00", "19:00"]  # machine-local HH:MM, unique
+platforms = ["youtube"]              # only valid value in v1
+privacy = "public"                   # 'public' | 'unlisted' | 'private'
+category_id = 24                     # YouTube category; 24 = Entertainment
+made_for_kids = false
+```
+
+A slot missed while the machine was asleep fills late the same day; a
+slot still open at local midnight lapses with no makeup post — the
+digest reports lapsed slots so cadence can be adjusted.
+
+### Quota
+
+YouTube's upload quota is per Google Cloud **project**, not per channel:
+10,000 units/day at 1,600 units/upload works out to roughly **6 uploads
+a day, project-wide, across every channel sharing that project**.
+`publish-next` enforces this with a hard pre-upload gate
+(`BRAINROT_YT_UPLOADS_PER_DAY`, default 6). If six a day isn't enough
+headroom for your channel count, request a quota increase at
+<https://support.google.com/youtube/contact/yt_api_form>.
+
 ## Automation (cron)
 
-The production loop is three cron-invoked commands: `scout` fills the topic
+The production loop is four cron-invoked commands: `scout` fills the topic
 queue, `produce-next` performs one unit of work per tick (resume one blocked
-job or produce one video), and `digest` prints a daily report.
+job or produce one video), `publish-next` uploads one `ready` video per tick
+into its channel's next due slot (see Publishing (YouTube) above), and
+`digest` prints a daily report.
 
 No API keys are needed for scouting: reddit subreddits are read through their
 public `.rss` feeds and RSS sources through their own. Reddit's Data API is an
@@ -121,6 +203,14 @@ MAILTO=you@example.com
 # One unit of production per tick (*/25 fires at :00, :25 and :50 each hour).
 */25 * * * * cd /Users/alex/code/project-brainrot && pnpm brainrot produce-next >> logs/produce-next.log 2>&1
 
+# One publish attempt per tick, on whichever due slot is furthest behind its
+# channel's cadence (*/15 keeps slots filling within ~15 min of their
+# configured time). Unlike scout, this is deliberately NOT staggered off
+# produce-next's :00/:25/:50 — publish-next and produce-next write disjoint
+# tables (publishes/library vs jobs/topics), so a same-minute co-fire is safe
+# on the DB busy_timeout alone.
+*/15 * * * * cd /Users/alex/code/project-brainrot && npx tsx src/cli.ts publish-next >> logs/publish.log 2>&1
+
 # Daily digest at 08:00 — stdout goes to MAILTO; nothing else delivers it.
 0 8 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot digest
 ```
@@ -145,7 +235,11 @@ MAILTO=you@example.com
   produce-next lease, so a hand-run invocation can execute concurrently with a
   live tick and both may act on the same job/topic. Stop the produce-next cron
   line (or wait for `lease-held` ticks to clear) before running `produce` or
-  `resume` by hand.
+  `resume` by hand. The same applies on the publishing side: `publish-next`
+  takes its own `publish` lease (separate from `produce`'s), but
+  `brainrot auth youtube`, `library approve`/`reject`, and
+  `publish retry`/`mark-done` all run outside it — stop the publish-next
+  cron line before running any of those by hand against the same channel.
 
 ## Tests
 
