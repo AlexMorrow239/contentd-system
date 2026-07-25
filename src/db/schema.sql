@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS topics (
   url TEXT NOT NULL, dedupe_hash TEXT NOT NULL,
   score INTEGER NOT NULL, reason TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'candidate'
-    CHECK (status IN ('candidate','approved','claimed','used','rejected')),
+    CHECK (status IN ('candidate','claimed','used','rejected')),
   job_id TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE (channel, dedupe_hash)

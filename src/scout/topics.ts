@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
 
-export type TopicStatus = 'candidate' | 'approved' | 'claimed' | 'used' | 'rejected'
+export type TopicStatus = 'candidate' | 'claimed' | 'used' | 'rejected'
 
 export interface TopicRow {
   id: number
@@ -128,25 +128,15 @@ export function recentTopicTitles(
   return rows.map((r) => r.title)
 }
 
-// Operator gate transitions. The status guard in the WHERE clause makes both
-// idempotent and blind to ids in the wrong state — the returned count is what
-// actually changed, which the CLI reports against ids.length.
-export function approveTopics(db: Database, ids: number[]): number {
-  if (ids.length === 0) return 0
-  const placeholders = ids.map(() => '?').join(', ')
-  return db
-    .prepare(
-      `UPDATE topics SET status = 'approved' WHERE id IN (${placeholders}) AND status = 'candidate'`,
-    )
-    .run(...ids).changes
-}
-
+// Operator veto. The status guard in the WHERE clause makes this idempotent
+// and blind to ids in the wrong state — the returned count is what actually
+// changed, which the CLI reports against ids.length.
 export function rejectTopics(db: Database, ids: number[]): number {
   if (ids.length === 0) return 0
   const placeholders = ids.map(() => '?').join(', ')
   return db
     .prepare(
-      `UPDATE topics SET status = 'rejected' WHERE id IN (${placeholders}) AND status IN ('candidate','approved')`,
+      `UPDATE topics SET status = 'rejected' WHERE id IN (${placeholders}) AND status = 'candidate'`,
     )
     .run(...ids).changes
 }
@@ -157,7 +147,7 @@ export function rejectTopics(db: Database, ids: number[]): number {
 export function claimTopic(db: Database, topicId: number, jobId: string): boolean {
   const info = db
     .prepare(
-      "UPDATE topics SET status = 'claimed', job_id = ? WHERE id = ? AND status IN ('candidate','approved')",
+      "UPDATE topics SET status = 'claimed', job_id = ? WHERE id = ? AND status = 'candidate'",
     )
     .run(jobId, topicId)
   return info.changes === 1
@@ -238,7 +228,7 @@ export function listTopics(
 export function eligibleTopic(db: Database, channel: string): TopicRow | null {
   const row = db
     .prepare(
-      `SELECT ${TOPIC_COLUMNS} FROM topics WHERE channel = ? AND status IN ('candidate', 'approved') ` +
+      `SELECT ${TOPIC_COLUMNS} FROM topics WHERE channel = ? AND status = 'candidate' ` +
         'ORDER BY score DESC, created_at ASC, id ASC LIMIT 1',
     )
     .get(channel) as DbTopicRow | undefined

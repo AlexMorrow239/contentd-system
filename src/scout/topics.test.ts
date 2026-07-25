@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import {
-  approveTopics,
   claimTopic,
   eligibleTopic,
   insertTopics,
@@ -103,6 +102,9 @@ describe('topics table schema', () => {
   it('rejects a status outside the lifecycle CHECK', () => {
     const db = openDb(':memory:')
     expect(() => seedTopic(db, { status: 'simmering' })).toThrow(/CHECK/)
+    // 'approved' was a valid status under the old premium-tier lifecycle;
+    // it is no longer part of the CHECK.
+    expect(() => seedTopic(db, { status: 'approved' })).toThrow(/CHECK/)
     db.close()
   })
 })
@@ -166,7 +168,7 @@ describe('recentTopicTitles', () => {
     seedTopic(db, { title: 'oldest', createdAt: '2026-07-18T00:00:00.000Z' })
     seedTopic(db, { title: 'skipped', createdAt: '2026-07-19T00:00:00.000Z', status: 'rejected' })
     seedTopic(db, { title: 'middle', createdAt: '2026-07-19T12:00:00.000Z', status: 'used' })
-    seedTopic(db, { title: 'newest', createdAt: '2026-07-20T00:00:00.000Z', status: 'approved' })
+    seedTopic(db, { title: 'newest', createdAt: '2026-07-20T00:00:00.000Z', status: 'claimed', jobId: 'job-1' })
     seedTopic(db, { title: 'other channel', channel: 'chan-b', createdAt: '2026-07-20T06:00:00.000Z' })
     expect(recentTopicTitles(db, 'chan-a')).toEqual(['newest', 'middle', 'oldest'])
     expect(recentTopicTitles(db, 'chan-a', 2)).toEqual(['newest', 'middle'])
@@ -184,43 +186,22 @@ describe('recentTopicTitles', () => {
   })
 })
 
-describe('approveTopics / rejectTopics', () => {
-  it('approve flips candidates only and reports the changed count', () => {
+describe('rejectTopics', () => {
+  it('reject flips candidate only, leaves claimed/used alone, and reports the changed count', () => {
     const db = openDb(':memory:')
     const a = seedTopic(db) // candidate
-    const b = seedTopic(db, { status: 'used' })
-    const c = seedTopic(db) // candidate
-    // b is not a candidate and 9999 does not exist: both silently skipped
-    expect(approveTopics(db, [a, b, c, 9999])).toBe(2)
-    const statuses = db.prepare('SELECT id, status FROM topics ORDER BY id').all() as {
-      id: number
-      status: string
-    }[]
-    expect(statuses).toEqual([
-      { id: a, status: 'approved' },
-      { id: b, status: 'used' },
-      { id: c, status: 'approved' },
-    ])
-    expect(approveTopics(db, [])).toBe(0)
-    db.close()
-  })
-
-  it('reject flips candidate and approved, leaves claimed/used alone', () => {
-    const db = openDb(':memory:')
-    const a = seedTopic(db) // candidate
-    const b = seedTopic(db, { status: 'approved' })
-    const c = seedTopic(db, { status: 'claimed', jobId: 'job-1' })
-    const d = seedTopic(db, { status: 'used' })
-    expect(rejectTopics(db, [a, b, c, d])).toBe(2)
+    const b = seedTopic(db, { status: 'claimed', jobId: 'job-1' })
+    const c = seedTopic(db, { status: 'used' })
+    // b and c are not candidates and 9999 does not exist: all silently skipped
+    expect(rejectTopics(db, [a, b, c, 9999])).toBe(1)
     const statuses = db.prepare('SELECT id, status FROM topics ORDER BY id').all() as {
       id: number
       status: string
     }[]
     expect(statuses).toEqual([
       { id: a, status: 'rejected' },
-      { id: b, status: 'rejected' },
-      { id: c, status: 'claimed' },
-      { id: d, status: 'used' },
+      { id: b, status: 'claimed' },
+      { id: c, status: 'used' },
     ])
     expect(rejectTopics(db, [])).toBe(0)
     db.close()
@@ -230,7 +211,7 @@ describe('approveTopics / rejectTopics', () => {
 describe('claimTopic / markTopicUsedByJob', () => {
   it('claim binds the topic to its job and reports success', () => {
     const db = openDb(':memory:')
-    const id = seedTopic(db, { status: 'approved' })
+    const id = seedTopic(db) // candidate
     expect(claimTopic(db, id, 'job-42')).toBe(true)
     const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
       status: string
@@ -412,20 +393,19 @@ describe('listTopics', () => {
   it('filters by channel and status independently', () => {
     const db = openDb(':memory:')
     seedTopic(db, { channel: 'chan-a', status: 'candidate' })
-    seedTopic(db, { channel: 'chan-a', status: 'approved' })
-    seedTopic(db, { channel: 'chan-b', status: 'approved' })
+    seedTopic(db, { channel: 'chan-a', status: 'claimed', jobId: 'job-1' })
+    seedTopic(db, { channel: 'chan-b', status: 'claimed', jobId: 'job-2' })
     expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(2)
-    expect(listTopics(db, { status: 'approved' })).toHaveLength(2)
-    expect(listTopics(db, { channel: 'chan-a', status: 'approved' })).toHaveLength(1)
+    expect(listTopics(db, { status: 'claimed' })).toHaveLength(2)
+    expect(listTopics(db, { channel: 'chan-a', status: 'claimed' })).toHaveLength(1)
     db.close()
   })
 })
 
 describe('eligibleTopic', () => {
-  it('takes candidate or approved, highest score first', () => {
+  it('takes only candidate, highest score first, ignoring every other status', () => {
     const db = openDb(':memory:')
-    seedTopic(db, { score: 70, status: 'candidate', title: 'runner-up' })
-    seedTopic(db, { score: 90, status: 'approved', title: 'winner' })
+    seedTopic(db, { score: 70, status: 'candidate', title: 'winner' })
     seedTopic(db, { score: 95, status: 'rejected', title: 'rejected' })
     seedTopic(db, { score: 99, status: 'used', title: 'used' })
     seedTopic(db, { score: 99, status: 'claimed', title: 'claimed', jobId: 'job-1' })
