@@ -82,12 +82,16 @@ function pushNoneIfEmpty(lines: string[], sectionStart: number, noneLine: string
  * to sqlite's own datetime() format — a raw string compare against
  * datetime('now','-1 day') would widen the window to the whole boundary day.
  * `env` exists for tests only — production callers pass nothing and the
- * environment is read here.
+ * environment is read here. `opts.channelsError` is the caller's way of saying
+ * "the channels dir did not load": the sqlite-only sections still report and
+ * the failure becomes an action item, rather than the whole report collapsing
+ * to one error line on the morning it matters most.
  */
 export function buildDigest(
   db: Database,
   channels: ChannelConfig[],
   env: Partial<DigestEnv> = {},
+  opts: { channelsError?: string } = {},
 ): string {
   const digestEnv = resolveDigestEnv(env)
   const lines: string[] = []
@@ -232,6 +236,14 @@ export function buildDigest(
 
   lines.push('', 'Action items')
   const actionItemsStart = lines.length
+  // First, because it explains every other section's silence: with no channels
+  // loaded, spend, publishing and the channel-derived action items below have
+  // nothing to report and would otherwise read as "all clear".
+  if (opts.channelsError !== undefined) {
+    lines.push(
+      `  the channels dir did not load (${opts.channelsError}) — spend, publishing, and channel-derived action items are missing from this report`,
+    )
+  }
   // Current state, not last-24h: a failed job awaits manual resume until the
   // operator acts, however old it is. Only the newest FAILED_JOBS_LIMIT are
   // listed (selected newest-first, then reversed back to the oldest-first

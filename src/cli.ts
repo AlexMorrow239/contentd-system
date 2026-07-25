@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 import { createJob, runJob } from './jobs/runner.js'
 import { resumeJob } from './jobs/resume.js'
-import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
+import { loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './config/channel.js'
 import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from './scout/scout.js'
 import { acquireLease, releaseLease } from './loop/lease.js'
 import { produceNextTick } from './loop/produce-next.js'
@@ -449,10 +449,15 @@ program
     // MAILTO should deliver whatever printed, so even a config/db error is
     // reported on stderr and the process still exits 0.
     try {
-      const channels = loadChannelsDir(opts.channelsDir)
+      // A channels dir that fails to load used to take the entire report with
+      // it (one stderr line, nothing else) — exactly when the operator needs
+      // the report. Every sqlite-derived section still renders; the config
+      // failure becomes the first action item instead. The catch below stays
+      // for genuinely unexpected digest failures (a db that will not open).
+      const loaded = tryLoadChannelsDir(opts.channelsDir)
       const db = openDb(resolveDbPath(opts.db))
       try {
-        process.stdout.write(buildDigest(db, channels) + '\n')
+        process.stdout.write(buildDigest(db, loaded.channels, {}, { channelsError: loaded.error }) + '\n')
       } finally {
         db.close()
       }

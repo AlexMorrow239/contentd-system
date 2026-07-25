@@ -265,3 +265,21 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
     .map((p) => p.cfg)
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 }
+
+/**
+ * loadChannelsDir for the unattended surfaces (both loop ticks and the daily
+ * digest), where a throw is the worst outcome: it costs the tick its JSON line
+ * (exit 1, silence, every firing) and the digest its whole report. One broken
+ * TOML — or a channels dir that is missing entirely — is still a hard config
+ * error here, never a channel to skip: callers get an EMPTY list plus the
+ * underlying message, and each decides how to report it. `brainrot produce` and
+ * the other operator-facing commands keep calling loadChannelsDir directly, so
+ * a human at a terminal still gets the throw.
+ */
+export function tryLoadChannelsDir(dir: string): { channels: ChannelConfig[]; error?: string } {
+  try {
+    return { channels: loadChannelsDir(dir) }
+  } catch (err) {
+    return { channels: [], error: err instanceof Error ? err.message : String(err) }
+  }
+}

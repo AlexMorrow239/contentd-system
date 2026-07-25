@@ -535,10 +535,19 @@ describe('publishNextTick — lease and sweep', () => {
 
   it('releases the lease when the tick throws mid-flight', async () => {
     const db = openDb(':memory:')
-    // an unparseable channel TOML makes loadChannelsDir throw inside the leased window
-    const brokenDir = tmpDir('brainrot-publish-broken-')
-    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
-    await expect(publishNextTick(db, { channelsDir: brokenDir, now: NOW })).rejects.toThrow()
+    const channelsDir = tmpDir('brainrot-publish-throw-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    // A throw from inside the leased window (here: the claim write) must still
+    // release on the way out, so one crash cannot wedge publishing for a TTL.
+    vi.mocked(claimPublish).mockImplementationOnce(() => {
+      throw new Error('disk full')
+    })
+    const target = fakeTarget(async () => ({ postId: 'yt1', url: 'https://youtube.com/shorts/yt1' }))
+    await expect(
+      publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() }),
+    ).rejects.toThrow('disk full')
     expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
@@ -584,6 +593,64 @@ describe('publishNextTick — lease and sweep', () => {
     expect(count).toBe(0)
     const lease = db.prepare("SELECT * FROM leases WHERE name = 'publish'").get()
     expect(lease).toBeUndefined()
+    db.close()
+  })
+})
+
+describe('publishNextTick — config errors', () => {
+  it('no-ops with reason config-error on an unparseable channel TOML, naming the file on stderr', async () => {
+    const db = openDb(':memory:')
+    const brokenDir = tmpDir('brainrot-publish-broken-')
+    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await publishNextTick(db, { channelsDir: brokenDir, now: NOW })
+    // One well-formed JSON line (exit 0 at the CLI) instead of a throw that
+    // escaped with no line at all, every 15 minutes, until the file is fixed.
+    expect(result.action).toBe('noop')
+    expect(result.reason).toBe('config-error')
+    expect(result.error).toContain('broken.toml')
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('broken.toml'))
+    stderr.mockRestore()
+    db.close()
+  })
+
+  it('no-ops with reason config-error when the channels dir does not exist', async () => {
+    const db = openDb(':memory:')
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await publishNextTick(db, {
+      channelsDir: join(tmpdir(), 'brainrot-no-such-channels-dir'),
+      now: NOW,
+    })
+    expect(result.action).toBe('noop')
+    expect(result.reason).toBe('config-error')
+    stderr.mockRestore()
+    db.close()
+  })
+
+  it('never takes the publish lease on a broken config', async () => {
+    const db = openDb(':memory:')
+    const brokenDir = tmpDir('brainrot-publish-broken-lease-')
+    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await publishNextTick(db, { channelsDir: brokenDir, now: NOW })
+    // Never acquired, not merely released: a broken config cannot burn a lease
+    // slot, and the sweep it would have run never touches rows either.
+    expect(db.prepare("SELECT * FROM leases WHERE name = 'publish'").get()).toBeUndefined()
+    expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
+    stderr.mockRestore()
+    db.close()
+  })
+
+  it('a healthy channels dir is unaffected: the tick publishes as before', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-healthy-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    const target = fakeTarget(async () => ({ postId: 'yt1', url: 'https://youtube.com/shorts/yt1' }))
+    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    expect(result.action).toBe('published')
+    expect(result.reason).toBeUndefined()
     db.close()
   })
 })

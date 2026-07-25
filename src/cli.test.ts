@@ -371,7 +371,9 @@ describe('brainrot CLI', () => {
     expect(result.stdout).toContain('Action items')
   }, 60000)
 
-  it('`digest` with a missing channels dir still exits 0 (report, not check)', async () => {
+  // A channels dir that will not load used to cost the operator the whole
+  // report — one stderr line and nothing else, on the morning it matters most.
+  it('`digest` with a missing channels dir still prints the db sections and names the config error', async () => {
     const dbPath = tmpDbPath()
     const result = await execa(
       'pnpm',
@@ -380,7 +382,28 @@ describe('brainrot CLI', () => {
       { reject: false },
     )
     expect(result.exitCode).toBe(0)
-    expect(result.stderr).toMatch(/ENOENT|no such/)
+    expect(result.stdout).toContain('Topics (last 24h)')
+    expect(result.stdout).toContain('Jobs (last 24h)')
+    expect(result.stdout).toContain('Action items')
+    expect(result.stdout).toContain('the channels dir did not load')
+    expect(result.stdout).toMatch(/ENOENT|no such/)
+  }, 60000)
+
+  it('`digest` with an unparseable channel TOML still prints the db sections and names the file', async () => {
+    const dbPath = tmpDbPath()
+    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-digest-broken-'))
+    cleanup.push(channelsDir)
+    writeFileSync(path.join(channelsDir, 'broken.toml'), 'this is not toml [')
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'digest', '--db', dbPath, '--channels-dir', channelsDir],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('Topics (last 24h)')
+    expect(result.stdout).toContain('Jobs (last 24h)')
+    expect(result.stdout).toContain('the channels dir did not load')
+    expect(result.stdout).toContain('broken.toml')
   }, 60000)
 
   it('`publish --help` lists the retry/mark-done subcommands', async () => {

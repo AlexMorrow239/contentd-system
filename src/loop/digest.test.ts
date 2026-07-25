@@ -329,6 +329,28 @@ describe('buildDigest — action items', () => {
     expect(buildDigest(db, [])).toContain('Action items\n  none')
     db.close()
   })
+
+  // The caller (the digest command) hands the load failure down instead of
+  // aborting: the sqlite sections are still worth printing, and a report that
+  // silently omits every channel-derived section reads as "all clear".
+  it('names a channels-dir load failure as the first action item, above the db-derived ones', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-failed', status: 'failed' })
+    const digest = buildDigest(db, [], {}, { channelsError: 'failed to load channel config a.toml: bad' })
+    expect(digest).toContain(
+      'Action items\n  the channels dir did not load (failed to load channel config a.toml: bad) — spend, publishing, and channel-derived action items are missing from this report',
+    )
+    // and it never displaces the sqlite-derived items
+    expect(digest).toContain('  failed job j-failed (chan-a, volume) — resume manually')
+    db.close()
+  })
+
+  it('the config-error line suppresses the none placeholder', () => {
+    const db = openDb(':memory:')
+    const digest = buildDigest(db, [], {}, { channelsError: 'ENOENT: no such file or directory' })
+    expect(digest).not.toContain('Action items\n  none')
+    db.close()
+  })
 })
 
 describe('buildDigest — publishing section', () => {

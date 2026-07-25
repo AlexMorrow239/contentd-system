@@ -213,15 +213,66 @@ describe('produceNextTick — lease', () => {
     db.close()
   })
 
-  it('releases the lease when the tick throws mid-flight', async () => {
+})
+
+describe('produceNextTick — config errors', () => {
+  it('no-ops with reason config-error on an unparseable channel TOML, naming the file on stderr', async () => {
     const { db, runsRoot } = setup()
-    // an unparseable channel TOML makes loadChannelsDir throw inside the leased window
     const brokenDir = tmpDir('brainrot-loop-broken-')
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
-    await expect(
-      produceNextTick(db, { channelsDir: brokenDir, runsRoot, stagesFor: neverStages }),
-    ).rejects.toThrow()
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await produceNextTick(db, {
+      channelsDir: brokenDir,
+      runsRoot,
+      stagesFor: neverStages,
+    })
+    // The whole point of the fix: a well-formed JSON line (exit 0 at the CLI)
+    // instead of a throw that escapes with no line at all, every firing.
+    expect(result.action).toBe('noop')
+    expect(result.reason).toBe('config-error')
+    expect(result.error).toContain('broken.toml')
+    // ...and the cause on stderr, where cron mail (or the log) will show it.
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('broken.toml'))
+    stderr.mockRestore()
+    db.close()
+  })
+
+  it('no-ops with reason config-error when the channels dir does not exist', async () => {
+    const { db, runsRoot } = setup()
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await produceNextTick(db, {
+      channelsDir: join(tmpdir(), 'brainrot-no-such-channels-dir'),
+      runsRoot,
+      stagesFor: neverStages,
+    })
+    expect(result.action).toBe('noop')
+    expect(result.reason).toBe('config-error')
+    stderr.mockRestore()
+    db.close()
+  })
+
+  it('never takes the produce lease on a broken config', async () => {
+    const { db, runsRoot } = setup()
+    const brokenDir = tmpDir('brainrot-loop-broken-lease-')
+    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await produceNextTick(db, { channelsDir: brokenDir, runsRoot, stagesFor: neverStages })
+    // Not merely released — never acquired: the row does not exist at all, so
+    // a config error can never cost the next firing its own lease attempt.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'produce'").get()).toEqual({
+      n: 0,
+    })
     expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    stderr.mockRestore()
+    db.close()
+  })
+
+  it('a healthy channels dir is unaffected: the tick produces as before', async () => {
+    const { db, runsRoot } = setup()
+    seedTopic(db)
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result.action).toBe('produced')
+    expect(result.reason).toBeUndefined()
     db.close()
   })
 })
@@ -318,6 +369,9 @@ describe('produceNextTick — lost claims', () => {
     await expect(
       produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages }),
     ).rejects.toThrow('disk full')
+    // A throw mid-flight still releases the lease on the way out (the finally),
+    // so one crash cannot wedge the loop until the TTL expires.
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
 })
@@ -384,5 +438,27 @@ describe('produce-next CLI', () => {
     // exactly one cron-greppable JSON line
     expect(result.stdout.trim().split('\n')).toHaveLength(1)
     expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-eligible-work' })
+  }, 60000)
+
+  // The G14 symptom end to end: this used to exit 1 with an empty stdout, so a
+  // cron log of JSON lines simply had a hole in it every 25 minutes.
+  it('`produce-next` over a broken channels dir still prints one JSON line and exits 0', async () => {
+    const root = tmpDir('brainrot-loop-cli-broken-')
+    const brokenDir = tmpDir('brainrot-loop-cli-broken-channels-')
+    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'produce-next',
+        '--db', join(root, 'brainrot.db'), '--channels-dir', brokenDir, '--runs-root', join(root, 'runs')],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trim().split('\n')).toHaveLength(1)
+    const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
+    expect(line.action).toBe('noop')
+    expect(line.reason).toBe('config-error')
+    expect(line.error).toContain('broken.toml')
+    // stderr keeps the cause visible where the JSON line is only grepped
+    expect(result.stderr).toContain('broken.toml')
   }, 60000)
 })

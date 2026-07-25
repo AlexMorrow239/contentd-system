@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { loadChannelsDir } from '../config/channel.js'
+import { tryLoadChannelsDir } from '../config/channel.js'
 import { stagesForTier } from '../jobs/pipeline.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
@@ -11,11 +11,12 @@ import { planTick } from './plan-tick.js'
 
 export interface TickResult {
   action: 'resumed' | 'produced' | 'noop'
-  reason?: 'lease-held' | 'no-eligible-work' | 'no-fal-key' | 'claim-conflict'
+  reason?: 'lease-held' | 'no-eligible-work' | 'no-fal-key' | 'claim-conflict' | 'config-error'
   jobId?: string
   topicId?: number
   tier?: Tier
   status?: JobResult['status']
+  error?: string
 }
 
 // The topic slipped away between planning and claiming. Its own class so the
@@ -36,6 +37,20 @@ export async function produceNextTick(
   },
 ): Promise<TickResult> {
   const stagesFor = opts.stagesFor ?? stagesForTier
+  // Config load comes BEFORE the lease: a broken channel TOML (or a missing
+  // channels dir) blocks the whole tick either way, and burning a lease slot on
+  // it would only mean the next firing waits on a lease that was never going to
+  // do work. Reported like every other blocked-tick outcome — one JSON line,
+  // exit 0, a named cause — instead of escaping to the CLI's catch as exit 1
+  // with no JSON line at all, every firing, for as long as the file stays bad.
+  // The message also goes to stderr, because a JSON line the operator only
+  // greps for `action` would otherwise carry the whole story silently.
+  const loaded = tryLoadChannelsDir(opts.channelsDir)
+  if (loaded.error !== undefined) {
+    console.error(`produce-next: ${loaded.error}`)
+    return { action: 'noop', reason: 'config-error', error: loaded.error }
+  }
+  const channels = loaded.channels
   // A held lease is the NORMAL case while a long render from the previous
   // cron firing is still running — benign no-op, exit 0 at the CLI. The
   // pid-tagged holder means an expiry takeover can never be released by the
@@ -45,7 +60,6 @@ export async function produceNextTick(
     return { action: 'noop', reason: 'lease-held' }
   }
   try {
-    const channels = loadChannelsDir(opts.channelsDir)
     // Repair sweep (heals the crash window between runJob committing the library
     // row and markTopicUsedByJob running): a topic left 'claimed' but bound to a
     // job that already landed in the library would stay claimed forever — resume

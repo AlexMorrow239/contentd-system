@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
-import { loadChannelsDir } from '../config/channel.js'
+import { tryLoadChannelsDir } from '../config/channel.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import {
   claimPublish,
@@ -35,6 +35,7 @@ export interface PublishTickResult {
     | 'no-auth'
     | 'claim-conflict'
     | 'bad-env'
+    | 'config-error'
   channel?: string
   platform?: Platform
   jobId?: string
@@ -95,6 +96,19 @@ export async function publishNextTick(
   if (envError !== undefined) {
     return { action: 'noop', reason: 'bad-env', error: envError }
   }
+  // Same rule for the channels dir, and for the same reason it sits ahead of
+  // the lease: a broken channel TOML (or a missing dir) blocks every candidate,
+  // so nothing should be leased on its behalf. Loading it here instead of
+  // inside the leased try also means the failure can no longer escape as exit 1
+  // with no JSON line — the shape cron greps for — every 15 minutes. The
+  // message goes to stderr too, so the cause is not buried in a field of a line
+  // that is usually read only for `action`.
+  const loaded = tryLoadChannelsDir(opts.channelsDir)
+  if (loaded.error !== undefined) {
+    console.error(`publish-next: ${loaded.error}`)
+    return { action: 'noop', reason: 'config-error', error: loaded.error }
+  }
+  const channels = loaded.channels
   // A held lease is the NORMAL case while a previous firing's upload is still
   // in flight — benign no-op, exit 0 at the CLI. Dry-run never touches the
   // lease: it is a pure read-only preview, never a competing writer.
@@ -110,7 +124,6 @@ export async function publishNextTick(
       // 'interrupted' before planning this tick's slot.
       sweepInterrupted(db, PUBLISH_LEASE_TTL_MS, now)
     }
-    const channels = loadChannelsDir(opts.channelsDir)
     const day = localDay(now)
 
     const candidates: SlotCandidate[] = []
