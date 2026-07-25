@@ -1,4 +1,9 @@
-import { platformEntrySchema, type PlatformMeta } from './platform-meta.js'
+import {
+  normalizePlatformMeta,
+  normalizeTitle,
+  platformEntrySchema,
+  type PlatformMeta,
+} from './platform-meta.js'
 
 // One platform's entry out of library.metadata_json's per-platform map —
 // re-exported so this module stays the whole publish type surface.
@@ -46,13 +51,18 @@ export interface PublishTarget {
 // `platform` — corrupt JSON, a missing key, a malformed entry — falls back
 // to a synthesized meta so old or broken library rows stay publishable
 // instead of blocking their slot forever.
+//
+// This is also the single read-side choke point for platform limits, so every
+// entry leaves here normalized (normalizePlatformMeta): the schema has no
+// length caps, and metadata is never rewritten between attempts, so an
+// over-long model title would otherwise be rejected identically at all three.
 export function resolvePlatformMeta(
   metadataJson: string,
   platform: Platform,
   fallbackTopic: string,
 ): PlatformMeta {
   const fallback: PlatformMeta = {
-    title: fallbackTopic.slice(0, 90),
+    title: normalizeTitle(fallbackTopic.slice(0, 90)),
     description: '',
     hashtags: [],
   }
@@ -65,5 +75,10 @@ export function resolvePlatformMeta(
   if (parsed === null || typeof parsed !== 'object') return fallback
   const entry = (parsed as Record<string, unknown>)[platform]
   const result = platformEntrySchema.safeParse(entry)
-  return result.success ? result.data : fallback
+  if (!result.success) return fallback
+  const meta = normalizePlatformMeta(result.data)
+  // A title that normalizes away to nothing (whitespace, or only the characters
+  // the platform rejects) is a guaranteed 400 — keep the entry's copy, take the
+  // topic-derived title.
+  return meta.title === '' ? { ...meta, title: fallback.title } : meta
 }

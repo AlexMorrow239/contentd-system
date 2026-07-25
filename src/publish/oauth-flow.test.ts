@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import http from 'node:http'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AUTH_FLOW_TIMEOUT_MS, runYoutubeAuthFlow } from './oauth-flow.js'
 import { YT_UPLOAD_SCOPE } from './youtube.js'
 
@@ -125,5 +126,55 @@ describe('runYoutubeAuthFlow', () => {
         fetchImpl,
       }),
     ).rejects.toThrow('runYoutubeAuthFlow: consent denied (access_denied)')
+  })
+
+  // Every other case drives the redirect synchronously, so the 5-minute timeout
+  // and the teardown that follows it never execute. Fake timers make the wait
+  // instant; the port probe afterwards pins the finally-block close.
+  it('rejects and frees the callback port when the consent redirect never arrives', async () => {
+    let redirectPort = 0
+    let markOpened: () => void
+    const browserOpened = new Promise<void>((resolve) => {
+      markOpened = resolve
+    })
+    // Consent opens and is then simply abandoned — no redirect ever reaches the
+    // loopback listener.
+    const openBrowser = async (url: string) => {
+      const redirectUri = new URL(url).searchParams.get('redirect_uri') ?? ''
+      redirectPort = Number(new URL(redirectUri).port)
+      markOpened()
+    }
+    const fetchImpl: typeof fetch = async () => {
+      throw new Error('fetchImpl must not be called on a timeout')
+    }
+
+    vi.useFakeTimers()
+    const flow = runYoutubeAuthFlow({
+      clientId: 'test-client-id',
+      clientSecret: 'test-client-secret',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+    })
+    const rejection = expect(flow).rejects.toThrow(
+      `runYoutubeAuthFlow: timed out waiting for consent redirect after ${AUTH_FLOW_TIMEOUT_MS}ms`,
+    )
+    await browserOpened
+    // A zero tick first: the flow only arms its timeout after openBrowser resolves.
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(AUTH_FLOW_TIMEOUT_MS)
+    await rejection
+    vi.useRealTimers()
+
+    const probe = http.createServer()
+    await new Promise<void>((resolve, reject) => {
+      probe.once('error', reject)
+      probe.listen(redirectPort, '127.0.0.1', resolve)
+    })
+    await new Promise<void>((resolve) => probe.close(() => resolve()))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 })
