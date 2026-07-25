@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { renderDescription } from './platform-meta.js'
+import { renderDescription, renderTags } from './platform-meta.js'
 import { PublishError } from './types.js'
 import type { PublishTarget } from './types.js'
 
@@ -160,7 +160,7 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
         snippet: {
           title: meta.title,
           description,
-          tags: meta.hashtags.map((h) => h.replace(/^#/, '')),
+          tags: renderTags(meta.hashtags),
           categoryId: String(publish.categoryId),
         },
         status: {

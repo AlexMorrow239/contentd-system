@@ -20,6 +20,10 @@ export type PlatformMeta = z.infer<typeof platformEntrySchema>
 // Normalizing on the read side keeps a near-miss publishable.
 export const TITLE_MAX_CHARS = 100
 export const DESCRIPTION_MAX_CHARS = 5000
+// YouTube also 400s a request whose `tags` array totals over 500 characters —
+// a separate, far tighter budget than the description's, and one a hashtag
+// block comfortably inside 5000 chars can still blow.
+export const TAGS_MAX_CHARS = 500
 
 export function normalizeTitle(title: string): string {
   return title.replace(/[<>]/g, '').trim().slice(0, TITLE_MAX_CHARS)
@@ -34,6 +38,22 @@ export function renderDescription(description: string, hashtags: string[]): stri
   return hashtags.length > 0 ? `${description}\n\n${hashtags.join(' ')}` : description
 }
 
+// The exact tags array youtubeTarget.upload sends: the leading '#' is not part
+// of a YouTube tag. Same construction rule as renderDescription — the adapter
+// composes through here, so the bounded form and the sent form are one string
+// list by construction.
+export function renderTags(hashtags: string[]): string[] {
+  return hashtags.map((h) => h.replace(/^#/, ''))
+}
+
+// What the 500-char budget is measured against: the tag characters plus one
+// separator between adjacent tags. The separator term is how YouTube accounts
+// for the list, and counting it here keeps the bound conservative rather than
+// landing exactly on a limit the API might measure a byte differently.
+export function tagsPayloadLength(tags: string[]): number {
+  return tags.reduce((n, t) => n + t.length, 0) + Math.max(0, tags.length - 1)
+}
+
 /**
  * Bound one platform entry to what the platform will actually accept.
  * Well-formed metadata passes through unchanged; only the over-long or
@@ -44,6 +64,13 @@ export function normalizePlatformMeta(meta: PlatformMeta): PlatformMeta {
   // A hashtag with whitespace inside is two tags glued together (or a stray
   // fragment) — it renders as garbage in the description and as a bogus tag.
   const hashtags = meta.hashtags.filter((h) => h !== '' && !/\s/.test(h))
+  // Tags budget first, since it is the tighter of the two and drops from the
+  // same tail: a set that fits here can still need description trimming below,
+  // never the reverse. Leading hashtags are the ones the model ranked first,
+  // so the tail is what goes.
+  while (hashtags.length > 0 && tagsPayloadLength(renderTags(hashtags)) > TAGS_MAX_CHARS) {
+    hashtags.pop()
+  }
   // Trim the description first: it carries the copy. Trailing hashtags only go
   // when the block alone still busts the limit.
   while (hashtags.length > 0 && renderDescription('', hashtags).length > DESCRIPTION_MAX_CHARS) {

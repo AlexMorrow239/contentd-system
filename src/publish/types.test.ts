@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { PUBLISH_PLATFORMS, PublishError, resolvePlatformMeta } from './types.js'
 import type { PublishErrorKind } from './types.js'
+import { renderTags, TAGS_MAX_CHARS, tagsPayloadLength } from './platform-meta.js'
 
 describe('PUBLISH_PLATFORMS', () => {
   it('is exactly youtube for v1', () => {
@@ -133,6 +134,28 @@ describe('resolvePlatformMeta', () => {
       )
       expect(meta.hashtags.length).toBeLessThan(700)
       expect(renderedDescription(meta).length).toBeLessThanOrEqual(5000)
+    })
+
+    // The description bound alone does not cover this: YouTube rejects a
+    // request whose `tags` array totals over 500 chars, and the description
+    // has ten times that room, so a hashtag block well inside 5000 could
+    // still 400 the upload at every attempt.
+    it('bounds the tags payload to the 500 chars YouTube allows', () => {
+      const meta = resolvePlatformMeta(
+        mapOf({ title: 'ok', description: 'd', hashtags: Array(60).fill('#aaaaaaaaaa') }),
+        'youtube',
+        'fallback topic',
+      )
+      expect(meta.hashtags.length).toBeLessThan(60)
+      expect(tagsPayloadLength(renderTags(meta.hashtags))).toBeLessThanOrEqual(TAGS_MAX_CHARS)
+      // Trailing tags go; the leading ones survive intact.
+      expect(meta.hashtags[0]).toBe('#aaaaaaaaaa')
+    })
+
+    it('leaves an ordinary hashtag set untouched by the tags bound', () => {
+      const entry = { title: 'ok', description: 'd', hashtags: ['#space', '#saturn', '#shorts'] }
+      const meta = resolvePlatformMeta(mapOf(entry), 'youtube', 'fallback topic')
+      expect(meta.hashtags).toEqual(entry.hashtags)
     })
 
     it('drops empty and whitespace-bearing hashtags', () => {
