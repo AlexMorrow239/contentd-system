@@ -30,9 +30,15 @@ inactive_color = "#FFFFFF"
 stroke_px = 8
 
 [budget]
-per_video_usd = 8.0    # volume per-video cap; loader converts to usdMicros
+# Volume videos cost ~$0.05-0.15 (sonnet script + free local TTS); 0.50 is
+# generous headroom that still catches a runaway stage.
+per_video_usd = 0.5
+# Premium realistically lands $3-6 (ElevenLabs + fal image/video per scene).
 premium_per_video_usd = 7.0
-per_day_usd = 20.0
+# Worst honest day under tier_mix 2v+1p: 2 x 0.5 + 7 = 8; 10 leaves headroom
+# while staying well under the global daily cap. Keep >= premium_per_video_usd
+# or a premium video can never fit in a day.
+per_day_usd = 10.0
 
 [publish]
 slots = ["10:00", "14:00", "19:00"]
