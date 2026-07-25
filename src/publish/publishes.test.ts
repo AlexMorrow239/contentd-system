@@ -295,6 +295,33 @@ describe('sweepInterrupted', () => {
     expect(sweepInterrupted(db, 30 * 60_000, now)).toBe(0)
     db.close()
   })
+
+  // The cutoff is inclusive (publishes.ts): a row created at exactly
+  // now - olderThanMs is stale, one millisecond later is not.
+  it('sweeps a row created exactly at the cutoff, not one a millisecond after it', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-at-cutoff')
+    seedJob(db, 'job-past-cutoff')
+    const now = new Date('2026-07-20T12:00:00.000Z')
+    const atCutoffId = seedPublish(db, {
+      jobId: 'job-at-cutoff',
+      status: 'claimed',
+      createdAt: '2026-07-20T11:30:00.000Z',
+    })
+    const pastCutoffId = seedPublish(db, {
+      jobId: 'job-past-cutoff',
+      slot: '14:00',
+      status: 'claimed',
+      createdAt: '2026-07-20T11:30:00.001Z',
+    })
+
+    expect(sweepInterrupted(db, 30 * 60_000, now)).toBe(1)
+    expect(db.prepare('SELECT id, status FROM publishes ORDER BY id').all()).toEqual([
+      { id: atCutoffId, status: 'interrupted' },
+      { id: pastCutoffId, status: 'claimed' },
+    ])
+    db.close()
+  })
 })
 
 describe('consumedSlots', () => {

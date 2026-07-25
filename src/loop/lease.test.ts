@@ -1,6 +1,12 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openDb } from '../db/index.js'
 import { acquireLease, PRODUCE_LEASE_TTL_MS, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
+
+// Only the boundary test fakes the clock; restoring here keeps a failing
+// assertion inside it from leaking a frozen clock into the rest of the file.
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('leases schema', () => {
   it('openDb creates the leases table with name as primary key', () => {
@@ -68,6 +74,23 @@ describe('acquireLease', () => {
       .get() as { holder: string; expires_at: string }
     expect(row.holder).toBe('pid:new')
     expect(Date.parse(row.expires_at)).toBeGreaterThan(Date.now())
+    db.close()
+  })
+
+  // The guard is strictly-greater (lease.ts): expires_at exactly equal to the
+  // acquire instant is already expired. Frozen clock, because the boundary is
+  // the one instant the wall clock cannot be made to land on.
+  it('treats an expiry equal to the acquire instant as expired, one millisecond later as held', () => {
+    const db = openDb(':memory:')
+    const now = new Date('2026-07-20T12:00:00.000Z')
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const insert = db.prepare('INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)')
+    insert.run('produce', 'pid:dead', now.toISOString())
+    insert.run('publish', 'pid:live', new Date(now.getTime() + 1).toISOString())
+
+    expect(acquireLease(db, 'produce', 'pid:new', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(acquireLease(db, 'publish', 'pid:new', PUBLISH_LEASE_TTL_MS)).toBe(false)
     db.close()
   })
 })
