@@ -4,12 +4,16 @@ script_model = "claude-sonnet-5"
 bg_dir = "assets/bg"
 bgm_dir = "assets/bgm"
 
-# One premium video per UTC day, no volume videos. `0 < 0` is false, so the
-# volume slot is permanently closed; filledFraction still divides by
-# volume + premium = 1, so this is not the both-zero NaN case.
+# One VOLUME video per UTC day, no premium. Premium visuals are proven
+# (job IIdIDrIif_mphsUIdxalH, $5.18, QC 12/12) but too expensive to soak-test
+# with — volume reuses a background clip from bg_dir instead of generating
+# scenes, dropping the per-video cost to roughly the script call alone.
+# `0 < 0` is false, so the premium slot is closed; filledFraction still
+# divides by volume + premium = 1, so this is not the both-zero NaN case.
+# The [premium] table below is left intact so switching back is one edit.
 [tier_mix]
-volume = 0
-premium = 1
+volume = 1
+premium = 0
 
 # No [voice.premium] table on purpose: premium jobs fall through to the same
 # free kokoro -> edge-tts chain volume tier uses. This is what makes the
