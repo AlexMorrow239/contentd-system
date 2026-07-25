@@ -136,8 +136,39 @@ Details:
 
 - **G23** (tests): "per-file DB fixture helpers risk divergent defaults" — verifier: helpers are scoped, not divergent; no behavioral risk.
 
-## Triage
+## Triage decision (2026-07-24)
 
-Reply in any form — e.g. `accept G1-G4, G6; reject G15; defer the rest` — or edit
-this file directly. Part A (minus S3) begins executing on branch
-`plan-5-refinement` immediately; S3 and all accepted G-rows follow your triage.
+Alex accepted **all 26 Part B rows** (G1–G22, B1–B4). No rejections, no deferrals.
+
+## Final status (2026-07-24, post-implementation)
+
+Every Part A item and every accepted Part B row is implemented on branch
+`plan-5-refinement` with a regression test. S3 landed inside the G1/G4 commit as
+planned. Suite: 490 (phase start) → 589 green; `tsc` clean.
+
+Whole-branch adversarial review (fresh opus reviewer + Codex pass, both primed with
+this doc): verdict **"With fixes"** — all rows closed, refactor track regression-free,
+no smuggled assertion drift. Six surviving findings got one consolidated fix wave:
+
+- **F1 (major, Codex, orchestrator-confirmed):** G5's skip + `eligibleVideo LIMIT 1`
+  let a pruned newest video permanently shadow its channel's older ready videos.
+  Fixed: exclusion-list re-query loop; `no-video-file` only when all are missing.
+- **F2 (important, native):** `topics requeue` refused `blocked` jobs — the exact
+  strand it was built for — and the digest named a nonexistent remedy. Fixed.
+- **F3 (convergent, both reviewers):** scout kept G14's old symptom on a broken
+  channels dir. Fixed: same `config-error` JSON line as the other loops.
+- **F4:** a global day-budget cap breach made every later scout run exit 1 (G12
+  over-trigger). Fixed: budget-blocked channels are a healthy outcome.
+- **F5:** `per_video_usd = 0` would reopen G2's livelock. Fixed: budget caps must be
+  positive at config load.
+- **F6:** tags reached YouTube unbounded against its 500-char limit. Fixed in the
+  G6 normalization pass.
+
+**Documented residual (not fixed, by design):** G3 covers the unreadable-outcome
+window after YouTube accepts the bytes, but one sub-case remains — the 5-minute
+AbortSignal firing after the PUT bytes were sent and before response headers arrive
+still maps to `'transient'` (youtube.ts). The adapter cannot distinguish
+sent-and-accepted from never-arrived at that point; the findings row overstated what
+is decidable. Risk accepted: requires a timeout landing in that exact window, and the
+next-slot re-upload is the same failure mode YouTube's own idempotency does not
+protect against either.
