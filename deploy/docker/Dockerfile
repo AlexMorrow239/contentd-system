@@ -23,9 +23,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # supercronic: cron built for containers — logs every job to stdout, runs fine as
 # PID 1 and as a non-root user, and does not overlap a job with itself.
 ENV SUPERCRONIC_VERSION=v0.2.48 \
-    SUPERCRONIC_SHA1SUM=2ab9b3bdcf290f60b59700aad876b6e68f3a6b06
+    SUPERCRONIC_SHA256SUM=50ae8755e04fa72812d0a1bc47a112a856811cc91cce7b6c875c378a850788bc
 RUN curl -fsSLO "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-arm64" \
- && echo "${SUPERCRONIC_SHA1SUM}  supercronic-linux-arm64" | sha1sum -c - \
+ && echo "${SUPERCRONIC_SHA256SUM}  supercronic-linux-arm64" | sha256sum -c - \
  && chmod +x supercronic-linux-arm64 \
  && mv supercronic-linux-arm64 /usr/local/bin/supercronic
 
@@ -42,10 +42,19 @@ USER node
 COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
+# Bake the headless browser as its own layer while it only needs node_modules,
+# so a source edit below does not invalidate this ~217 MB download. Must stay
+# above the full-source COPY for that reason.
+RUN pnpm exec remotion browser ensure
+
 COPY --chown=node:node . .
 
-# Bake the browser and the voice model as layers, as the runtime user.
-RUN pnpm exec remotion browser ensure
+# warm-kokoro imports KOKORO_MODEL_ID from src/stages/voice.ts, so unlike the
+# browser layer above it genuinely needs the source copy and must stay below it.
 RUN pnpm exec tsx deploy/docker/warm-kokoro.ts
 
-CMD ["supercronic", "/app/deploy/docker/crontab"]
+# -passthrough-logs: without it supercronic wraps each job's stdout in its own
+# logfmt line (`msg="{...}"`, braces/quotes escaped), which breaks the CLI's
+# one-JSON-line-per-tick contract relied on by ~10 source comments and the
+# README. With the flag, a tick's own JSON reaches `docker compose logs` bare.
+CMD ["supercronic", "-passthrough-logs", "/app/deploy/docker/crontab"]
