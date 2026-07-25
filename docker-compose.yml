@@ -16,6 +16,45 @@ services:
       WHISPERX_MAX_UPLOAD_MB: ${WHISPERX_MAX_UPLOAD_MB:-64}
     volumes:
       - whisperx-cache:/root/.cache   # persist downloaded alignment models
+    healthcheck:
+      # python rather than curl: the sidecar image has no curl and adding one
+      # for a probe is not worth a layer.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8585/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  brainrot:
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      whisperx:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      # These override the dev values in .env. Compose applies `environment`
+      # after `env_file`, so the container always runs against production state
+      # no matter what the host copy of .env says.
+      BRAINROT_DB: data/brainrot.db
+      BRAINROT_CHANNELS_DIR: channels
+      BRAINROT_RUNS_ROOT: runs
+      # Service DNS, not localhost — the sidecar is a different container.
+      WHISPERX_URL: http://whisperx:8585
+    volumes:
+      - ./assets:/app/assets:ro      # 21 GB, never copied, never written
+      - ./channels:/app/channels:ro  # production config, re-read every tick
+      - ./data:/app/data             # the SQLite file, shared with host-side OAuth
+      - ./runs:/app/runs             # per-job artifacts, inspectable from the host
+    # Chrome's default 64 MB /dev/shm in Docker is the classic renderer crash.
+    shm_size: 1gb
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
 
 volumes:
   whisperx-cache:

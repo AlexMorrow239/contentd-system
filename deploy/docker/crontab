@@ -1,0 +1,21 @@
+# Times are container-local (TZ=America/Chicago, set in the Dockerfile).
+# Supercronic does not overlap a job with itself, so a 40-minute render blocks
+# the next produce-next firing rather than stacking one up behind the lease.
+# Paths and env come from the compose service; there is no PATH/cd preamble
+# because supercronic is not cron and does not run with a bare environment.
+
+# Scout trends into the topic queue, staggered 5 minutes off the hour so it
+# never co-fires with produce-next — defense in depth on top of the DB
+# busy_timeout, since both processes write one SQLite file.
+5 7,12,17 * * * pnpm brainrot scout
+
+# One unit of production per tick: resume one blocked job, or produce one video.
+*/25 * * * * pnpm brainrot produce-next
+
+# One publish attempt per tick, on whichever due slot is furthest behind its
+# channel's cadence. Deliberately NOT staggered off produce-next: the two touch
+# disjoint rows and WAL plus busy_timeout make a same-minute co-fire safe.
+*/15 * * * * pnpm brainrot publish-next
+
+# Daily report. Its only delivery is the container log stream.
+0 8 * * * pnpm brainrot digest
