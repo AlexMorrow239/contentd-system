@@ -9,6 +9,15 @@ export function chunkWords(words: WordTiming[], size = 4): WordTiming[][] {
   return pages
 }
 
+// `em` in a flex container's `gap` resolves against that CONTAINER's own
+// font-size, not the word spans' fontSizePx -- with no font-size set on the
+// container itself that's the browser default (16px), so a "0.25em" gap
+// rendered as a near-invisible 4px regardless of caption size. Compute the
+// gap directly off the caption's own fontSizePx instead.
+export function captionWordGapPx(fontSizePx: number): number {
+  return Math.round(fontSizePx * 0.25)
+}
+
 export const Captions: React.FC<{ words: WordTiming[]; style: CaptionStyle }> = ({ words, style }) => {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
@@ -31,7 +40,7 @@ export const Captions: React.FC<{ words: WordTiming[]; style: CaptionStyle }> = 
         flexWrap: 'wrap',
         justifyContent: 'center',
         alignItems: 'center',
-        gap: '0.25em',
+        gap: `${captionWordGapPx(style.fontSizePx)}px`,
         padding: '0 5%',
         textAlign: 'center',
       }}

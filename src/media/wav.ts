@@ -80,6 +80,18 @@ export function parseWavDurationMs(buf: Buffer): number {
   return Math.floor((data.length / byteRate) * 1000);
 }
 
+function msToFrames(ms: number, sampleRate: number): number {
+  return Math.round((ms / 1000) * sampleRate);
+}
+
+// Zeroed 16-bit PCM of exactly `durationMs`, at `sampleRate`/`channels` -- used
+// to splice a real, deterministic gap between two synthesized sections (e.g.
+// the hook and the rest of the narration) rather than relying on a TTS
+// backend's own pacing.
+export function silencePcm(durationMs: number, sampleRate: number, channels: number): Buffer {
+  return Buffer.alloc(msToFrames(durationMs, sampleRate) * channels * BYTES_PER_SAMPLE);
+}
+
 // Kokoro pads every generated chunk with multi-second trailing silence, so
 // naive chunk concatenation embeds internal dead air and a long silent tail
 // that desynchronizes captions from video (Plan 1 real tail run: 15375ms
@@ -118,7 +130,7 @@ export function trimTrailingSilence(
   }
   if (lastLoudFrame === -1) return pcm;
 
-  const keepFrames = Math.round((keepMs / 1000) * sampleRate);
+  const keepFrames = msToFrames(keepMs, sampleRate);
   const endFrame = Math.min(frameCount, lastLoudFrame + 1 + keepFrames);
   return pcm.subarray(0, endFrame * bytesPerFrame);
 }

@@ -3,7 +3,7 @@ niche = ["space facts", "astronomy"]
 script_model = "claude-sonnet-5"
 bg_dir = "assets/bg"
 bgm_dir = "assets/bgm"
-videos_per_day = 1
+videos_per_day = 3
 
 # No [voice.premium] table: this channel uses the free kokoro -> edge-tts
 # chain. This is what makes the WhisperX sidecar mandatory for every job

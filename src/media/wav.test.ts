@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { encodePcmWav, parseWavDurationMs, pcmFromFloat32, trimTrailingSilence } from './wav.js';
+import { encodePcmWav, parseWavDurationMs, pcmFromFloat32, silencePcm, trimTrailingSilence } from './wav.js';
 
 const RATE = 24000; // kokoro's native sample rate
 
@@ -77,5 +77,19 @@ describe('trimTrailingSilence', () => {
     // Loud right-channel samples survive at their interleaved positions.
     expect(trimmed.readInt16LE(0)).toBe(0);
     expect(trimmed.readInt16LE(2)).toBe(5000);
+  });
+});
+
+describe('silencePcm', () => {
+  it('produces exactly durationMs of zeroed 16-bit PCM at the given rate/channels', () => {
+    const pcm = silencePcm(500, RATE, 1);
+    expect(pcm.length).toBe(Math.round((500 / 1000) * RATE) * 2); // 2 bytes/sample, mono
+    expect(pcm.every((byte) => byte === 0)).toBe(true);
+    expect(parseWavDurationMs(encodePcmWav([pcm], RATE, 1))).toBe(500);
+  });
+
+  it('accounts for channel count in the byte length', () => {
+    const pcm = silencePcm(250, RATE, 2);
+    expect(pcm.length).toBe(Math.round((250 / 1000) * RATE) * 2 * 2); // 2 channels
   });
 });

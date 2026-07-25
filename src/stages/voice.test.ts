@@ -12,7 +12,7 @@ vi.mock('../providers/elevenlabs.js', () => ({
 import { KokoroTTS } from 'kokoro-js';
 import { MsEdgeTTS } from 'msedge-tts';
 import { voiceStage, MAX_CHUNK_WORDS } from './voice.js';
-import { countWords } from './narration-text.js';
+import { countWords, HOOK_PAUSE_MS } from './narration-text.js';
 import { parseWavDurationMs } from '../media/wav.js';
 import { makeCtx, testChannel, testScript } from './_testkit.js';
 import type { JobContext } from '../jobs/types.js';
@@ -79,6 +79,10 @@ function premiumChannel() {
 }
 
 const PREMIUM_NARRATION = 'Hook here\n\nOne.\n\nTwo.';
+// The hook and body are sent as one call, but with an explicit SSML break
+// between them so ElevenLabs (which understands the tag) leaves a real,
+// deliberate pause instead of reading straight through -- see HOOK_PAUSE_MS.
+const PREMIUM_NARRATION_WITH_BREAK = `Hook here <break time="${HOOK_PAUSE_MS}ms" />\n\nOne.\n\nTwo.`;
 
 const ELEVEN_WAV = buildWav(16000); // 1000 ms — plausible for the 4-word narration
 const ELEVEN_WORDS = [
@@ -125,12 +129,15 @@ describe('voiceStage', () => {
 
     await voiceStage.run(ctx);
 
-    // 4 words fits in one chunk, so the text still reaches kokoro in one call.
-    expect(generate).toHaveBeenCalledTimes(1);
+    // Hook and body are synthesized separately so a real pause can be spliced
+    // between them -- each fits in one chunk on its own.
+    expect(generate).toHaveBeenCalledTimes(2);
+    expect(generate).toHaveBeenNthCalledWith(1, 'Hook here', { voice: 'af_heart' });
     // Chunk packing rejoins sentence pieces with single spaces.
-    expect(generate).toHaveBeenCalledWith('Hook here\n\nOne. Two.', { voice: 'af_heart' });
+    expect(generate).toHaveBeenNthCalledWith(2, 'One. Two.', { voice: 'af_heart' });
     const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
-    expect(meta).toEqual({ provider: 'kokoro', voiceId: 'af_heart', durationMs: 2000 });
+    // hook 1000ms + HOOK_PAUSE_MS + body 1000ms
+    expect(meta).toEqual({ provider: 'kokoro', voiceId: 'af_heart', durationMs: 2000 + HOOK_PAUSE_MS });
   });
 
   it('splits long narration into multiple under-budget kokoro calls and concatenates them', async () => {
@@ -141,13 +148,17 @@ describe('voiceStage', () => {
     await voiceStage.run(ctx);
 
     const texts = generate.mock.calls.map((c) => c[0] as string);
-    expect(texts.length).toBeGreaterThan(1);
+    // The hook (one sentence, under budget) is synthesized alone, first.
+    expect(texts[0]).toBe(SENTENCE);
+    const bodyTexts = texts.slice(1);
+    expect(bodyTexts.length).toBeGreaterThan(1);
     for (const t of texts) expect(countWords(t)).toBeLessThanOrEqual(MAX_CHUNK_WORDS);
     // Nothing may be dropped: every narration word must appear in some chunk.
     expect(texts.reduce((n, t) => n + countWords(t), 0)).toBe(LONG_SCRIPT_WORDS);
 
-    // Concatenated wav duration == sum of the per-chunk durations.
-    const expectedMs = texts.reduce((ms, t) => ms + countWords(t) * 500, 0);
+    // Concatenated wav duration == sum of the per-chunk durations, plus the
+    // deliberate pause spliced between the hook and the body.
+    const expectedMs = texts.reduce((ms, t) => ms + countWords(t) * 500, 0) + HOOK_PAUSE_MS;
     const wav = await fs.readFile(ctx.artifactPath('voice', 'narration.wav'));
     expect(parseWavDurationMs(wav)).toBe(expectedMs);
     const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
@@ -172,7 +183,8 @@ describe('voiceStage', () => {
     expect(texts.length).toBeGreaterThan(1);
     // Each chunk keeps its speech plus at most 250ms of tail: the 3s pads are
     // gone both between chunks (internal gaps) and after the last one (tail).
-    const expectedMs = texts.reduce((ms, t) => ms + countWords(t) * 500 + 250, 0);
+    // Plus the deliberate pause spliced between the hook and the body.
+    const expectedMs = texts.reduce((ms, t) => ms + countWords(t) * 500 + 250, 0) + HOOK_PAUSE_MS;
     const wav = await fs.readFile(ctx.artifactPath('voice', 'narration.wav'));
     expect(parseWavDurationMs(wav)).toBe(expectedMs);
     const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
@@ -195,7 +207,9 @@ describe('voiceStage', () => {
     const ctx = await ctxWithScript();
     vi.mocked(KokoroTTS.from_pretrained).mockRejectedValue(new Error('no model'));
     const setMetadata = vi.fn().mockResolvedValue(undefined);
-    const toStream = vi.fn().mockReturnValue({ audioStream: Readable.from([ONE_SECOND_WAV]) });
+    // Hook and body are now separate toStream calls: a fresh Readable per call,
+    // since a shared one would be exhausted (empty) on the second read.
+    const toStream = vi.fn(() => ({ audioStream: Readable.from([ONE_SECOND_WAV]) }));
     // vitest v4 constructs `new MsEdgeTTS()` via the mock implementation; an arrow
     // function is not a constructor, so use a regular function returning the stub.
     vi.mocked(MsEdgeTTS).mockImplementation(function () { return { setMetadata, toStream }; } as never);
@@ -203,7 +217,8 @@ describe('voiceStage', () => {
     await voiceStage.run(ctx);
 
     const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
-    expect(meta).toEqual({ provider: 'edge-tts', voiceId: 'en-US-AriaNeural', durationMs: 1000 });
+    // Hook and body each resolve to the mocked 1000ms wav, plus the spliced pause.
+    expect(meta).toEqual({ provider: 'edge-tts', voiceId: 'en-US-AriaNeural', durationMs: 2000 + HOOK_PAUSE_MS });
   });
 
   it('chunks and concatenates on the edge-tts path too', async () => {
@@ -220,9 +235,10 @@ describe('voiceStage', () => {
     const texts = toStream.mock.calls.map((c) => c[0]);
     expect(texts.length).toBeGreaterThan(1);
     for (const t of texts) expect(countWords(t)).toBeLessThanOrEqual(MAX_CHUNK_WORDS);
-    // PCM payloads concatenate into one valid wav of the summed duration.
+    // PCM payloads concatenate into one valid wav of the summed duration, plus
+    // the deliberate pause spliced between the hook and the body.
     const wav = await fs.readFile(ctx.artifactPath('voice', 'narration.wav'));
-    expect(parseWavDurationMs(wav)).toBe(texts.length * 12000);
+    expect(parseWavDurationMs(wav)).toBe(texts.length * 12000 + HOOK_PAUSE_MS);
   });
 
   it('throws when both kokoro and edge-tts fail', async () => {
@@ -254,7 +270,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
     expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledWith({
       voiceId: 'EXAVITQu4vr4xnSDxMaL',
       modelId: 'eleven_multilingual_v2',
-      text: PREMIUM_NARRATION,
+      text: PREMIUM_NARRATION_WITH_BREAK,
     });
     expect(vi.mocked(KokoroTTS.from_pretrained)).not.toHaveBeenCalled();
 
@@ -265,12 +281,37 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
     const timings = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'timings.json'), 'utf8'));
     expect(timings).toEqual({ words: ELEVEN_WORDS });
 
-    // Ledger: the estimate is reserved pre-call, the ACTUAL cost is recorded.
-    expect(vi.mocked(estimateTtsCostMicros)).toHaveBeenCalledWith(PREMIUM_NARRATION);
+    // Ledger: the estimate is reserved pre-call (against the SSML-augmented
+    // text actually sent, never the shorter plain narration), the ACTUAL cost
+    // is recorded from the same call.
+    expect(vi.mocked(estimateTtsCostMicros)).toHaveBeenCalledWith(PREMIUM_NARRATION_WITH_BREAK);
     const costs = ctx.db
       .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
       .all(ctx.jobId);
     expect(costs).toEqual([{ provider: 'elevenlabs', operation: 'tts', usd_micros: 42_000 }]);
+  });
+
+  it('strips any leaked SSML break-tag fragments out of the returned word timings', async () => {
+    const ctx = await premiumCtx();
+    vi.mocked(synthWithTimestamps).mockResolvedValue({
+      ...elevenSynthResult(),
+      // Defense in depth: if a provider ever echoes the injected break tag
+      // back into its character alignment instead of consuming it as markup,
+      // the leaked fragments must not reach captions.
+      words: [
+        ...ELEVEN_WORDS,
+        { word: '<break', startMs: 960, endMs: 970 },
+        { word: `time="${HOOK_PAUSE_MS}ms"`, startMs: 970, endMs: 980 },
+        { word: '/>', startMs: 980, endMs: 990 },
+      ],
+    });
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    const timings = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'timings.json'), 'utf8'));
+    expect(timings).toEqual({ words: ELEVEN_WORDS });
   });
 
   it('falls back to kokoro when elevenlabs fails, leaving no timings.json and no cost row', async () => {

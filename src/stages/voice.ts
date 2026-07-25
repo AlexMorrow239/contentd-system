@@ -6,8 +6,15 @@ import type { ScriptArtifact } from './script.js';
 import { assertBudget, recordCost } from '../jobs/costs.js';
 import { estimateTtsCostMicros, synthWithTimestamps } from '../providers/elevenlabs.js';
 import type { WordTiming } from '../providers/whisperx.js';
-import { narrationText, countWords, minPlausibleNarrationMs, MAX_PLAUSIBLE_WORDS_PER_SEC } from './narration-text.js';
-import { encodePcmWav, pcmFromFloat32, parseWav, parseWavDurationMs, trimTrailingSilence } from '../media/wav.js';
+import {
+  narrationText,
+  bodyText,
+  countWords,
+  minPlausibleNarrationMs,
+  MAX_PLAUSIBLE_WORDS_PER_SEC,
+  HOOK_PAUSE_MS,
+} from './narration-text.js';
+import { encodePcmWav, pcmFromFloat32, parseWav, parseWavDurationMs, silencePcm, trimTrailingSilence } from '../media/wav.js';
 
 export interface VoiceMeta {
   provider: 'kokoro' | 'edge-tts' | 'elevenlabs';
@@ -88,11 +95,19 @@ interface PcmChunk {
   channels: number;
 }
 
+// A section's (hook or body's) synthesized chunks, unjoined so encodePcmWav
+// still copies the payload only once across the whole hook+silence+body splice.
+interface PcmSection {
+  parts: Buffer[];
+  sampleRate: number;
+  channels: number;
+}
+
 /**
- * Synthesize `text` one under-budget chunk at a time and write the concatenated
- * PCM as a single WAV. Chunks are synthesized sequentially on purpose: kokoro is
- * local ONNX inference against one model instance and edge-tts reuses one socket,
- * so concurrency would only contend.
+ * Synthesize `text` one under-budget chunk at a time and return the trimmed,
+ * unconcatenated chunk buffers. Chunks are synthesized sequentially on
+ * purpose: kokoro is local ONNX inference against one model instance and
+ * edge-tts reuses one socket, so concurrency would only contend.
  *
  * Each chunk's trailing silence is capped before concatenation: kokoro pads
  * every generation with multi-second silence, which would otherwise embed dead
@@ -104,8 +119,7 @@ async function synthChunked(
   text: string,
   provider: string,
   synth: (chunk: string) => Promise<PcmChunk>,
-  wavPath: string,
-): Promise<void> {
+): Promise<PcmSection> {
   const parts: Buffer[] = [];
   let sampleRate = 0;
   let channels = 0;
@@ -116,26 +130,45 @@ async function synthChunked(
     channels = pcm.channels;
   }
   if (parts.length === 0 || sampleRate <= 0) throw new Error(`${provider} produced no audio`);
-  await fs.writeFile(wavPath, encodePcmWav(parts, sampleRate, Math.max(1, channels)));
+  return { parts, sampleRate, channels: Math.max(1, channels) };
 }
 
-async function synthKokoro(text: string, voiceId: string, wavPath: string): Promise<void> {
-  const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype: 'q8' });
-  await synthChunked(
-    text,
-    'kokoro',
-    async (chunk) => {
-      // ctx.channel.voice.volume is a runtime-configured string; kokoro-js types the
-      // `voice` option as a narrow union of built-in voice names. Narrow the config
-      // value here, mirroring the EDGE_FORMAT cast above.
-      const audio = await tts.generate(chunk, { voice: voiceId as GenerateOptions['voice'] });
-      return { data: pcmFromFloat32(audio.audio), sampleRate: audio.sampling_rate, channels: 1 };
-    },
+/**
+ * Synthesize `hook` and `body` as two separate chunked sections and splice
+ * them together with HOOK_PAUSE_MS of true silence, writing the result as a
+ * single WAV. kokoro and edge-tts have no SSML/pause markup support, so the
+ * pause has to be a real, physically synthesized gap rather than a text-level
+ * hint the backend might honor.
+ */
+async function synthHookAndBody(
+  hook: string,
+  body: string,
+  provider: string,
+  synth: (chunk: string) => Promise<PcmChunk>,
+  wavPath: string,
+): Promise<void> {
+  const hookPcm = await synthChunked(hook, provider, synth);
+  const bodyPcm = await synthChunked(body, provider, synth);
+  const silence = silencePcm(HOOK_PAUSE_MS, hookPcm.sampleRate, hookPcm.channels);
+  await fs.writeFile(
     wavPath,
+    encodePcmWav([...hookPcm.parts, silence, ...bodyPcm.parts], hookPcm.sampleRate, hookPcm.channels),
   );
 }
 
-async function synthEdge(text: string, wavPath: string): Promise<void> {
+async function synthKokoro(hook: string, body: string, voiceId: string, wavPath: string): Promise<void> {
+  const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype: 'q8' });
+  const synth = async (chunk: string): Promise<PcmChunk> => {
+    // ctx.channel.voice.volume is a runtime-configured string; kokoro-js types the
+    // `voice` option as a narrow union of built-in voice names. Narrow the config
+    // value here, mirroring the EDGE_FORMAT cast above.
+    const audio = await tts.generate(chunk, { voice: voiceId as GenerateOptions['voice'] });
+    return { data: pcmFromFloat32(audio.audio), sampleRate: audio.sampling_rate, channels: 1 };
+  };
+  await synthHookAndBody(hook, body, 'kokoro', synth, wavPath);
+}
+
+async function synthEdge(hook: string, body: string, wavPath: string): Promise<void> {
   const tts = new MsEdgeTTS();
   await tts.setMetadata(EDGE_VOICE, EDGE_FORMAT);
 
@@ -143,27 +176,37 @@ async function synthEdge(text: string, wavPath: string): Promise<void> {
   // are undocumented and could not be exercised here (the endpoint currently answers
   // 403), so the same chunking is applied defensively. It is safe either way: each
   // response is a self-contained RIFF stream whose PCM payloads concatenate cleanly.
-  await synthChunked(
-    text,
-    'edge-tts',
-    async (chunk) => {
-      // toStream is synchronous in current msedge-tts; awaiting a plain object is a
-      // no-op, so this is robust across versions that return a promise.
-      const { audioStream } = await tts.toStream(chunk);
-      const buffers: Buffer[] = [];
-      for await (const b of audioStream as AsyncIterable<Uint8Array>) buffers.push(Buffer.from(b));
-      const wav = parseWav(Buffer.concat(buffers));
-      return { data: wav.data, sampleRate: wav.sampleRate, channels: wav.channels };
-    },
-    wavPath,
-  );
+  const synth = async (chunk: string): Promise<PcmChunk> => {
+    // toStream is synchronous in current msedge-tts; awaiting a plain object is a
+    // no-op, so this is robust across versions that return a promise.
+    const { audioStream } = await tts.toStream(chunk);
+    const buffers: Buffer[] = [];
+    for await (const b of audioStream as AsyncIterable<Uint8Array>) buffers.push(Buffer.from(b));
+    const wav = parseWav(Buffer.concat(buffers));
+    return { data: wav.data, sampleRate: wav.sampleRate, channels: wav.channels };
+  };
+  await synthHookAndBody(hook, body, 'edge-tts', synth, wavPath);
 }
+
+// ElevenLabs' eleven_multilingual_v2 model (the only premium model this repo
+// wires up) understands the SSML break tag as a real, timed pause rather than
+// literal text (verified against ElevenLabs' own docs: "the AI has an actual
+// understanding of this syntax"). Sent as one call so the API's own pacing
+// carries across the hook/body boundary, instead of splicing two separate
+// syntheses together as the local kokoro/edge-tts path must.
+const HOOK_BREAK_TAG = `<break time="${HOOK_PAUSE_MS}ms" />`;
+// Defense in depth: if a provider ever echoed the tag's characters back into
+// its alignment instead of consuming it as markup, match on the tag's
+// distinctive markup shape rather than the exact fragments we happened to
+// send — robust to whitespace/quoting variance a Set of literal tokens is not.
+const BREAK_TAG_FRAGMENT = /^<\/?break\b|^time\s*=|^\/?>$/i;
 
 export const voiceStage: StageDef = {
   name: 'voice',
   async run(ctx: JobContext): Promise<void> {
     const script = JSON.parse(await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8')) as ScriptArtifact;
     const narration = narrationText(script);
+    const body = bodyText(script);
     const wavPath = ctx.artifactPath('voice', 'narration.wav');
     const timingsPath = ctx.artifactPath('voice', 'timings.json');
 
@@ -179,12 +222,19 @@ export const voiceStage: StageDef = {
 
     const premiumVoice = ctx.channel.voice.premium;
     if (premiumVoice) {
+      // The hook and body go in one call, with an explicit SSML break between
+      // them so ElevenLabs leaves a deliberate pause instead of reading
+      // straight into the story (see HOOK_BREAK_TAG above).
+      const elevenText = `${script.hook} ${HOOK_BREAK_TAG}\n\n${body}`;
+
       // Paid call: reserve the character-based estimate against the per-video
       // cap before dialing out. This sits OUTSIDE the fallback catch on
       // purpose — a budget breach is enforcement, not a provider fault, so
       // BudgetExceededError propagates and the runner parks the job 'blocked'
-      // instead of silently downgrading the voice.
-      assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(narration));
+      // instead of silently downgrading the voice. Estimated off the actual
+      // (SSML-augmented) text sent — never under-reserve against the shorter
+      // plain narration.
+      assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(elevenText));
 
       // ONLY the provider call is fallback-eligible: while nothing has been
       // delivered, a failure legitimately means "use the volume chain".
@@ -193,7 +243,7 @@ export const voiceStage: StageDef = {
         synth = await synthWithTimestamps({
           voiceId: premiumVoice.voiceId,
           modelId: premiumVoice.modelId,
-          text: narration,
+          text: elevenText,
         });
       } catch (err) {
         // The timings write is deferred past the duration guard, so this
@@ -214,19 +264,19 @@ export const voiceStage: StageDef = {
         voiceId = premiumVoice.voiceId;
         // timings.json is NOT written here: it becomes visible to captions
         // only after the shared duration guard below has accepted the audio.
-        premiumWords = synth.words;
+        premiumWords = synth.words.filter((w) => !BREAK_TAG_FRAGMENT.test(w.word));
       }
     }
 
     if (provider === undefined) {
       try {
-        await synthKokoro(narration, ctx.channel.voice.volume, wavPath);
+        await synthKokoro(script.hook, body, ctx.channel.voice.volume, wavPath);
         provider = 'kokoro';
         voiceId = ctx.channel.voice.volume;
       } catch (kokoroErr) {
         ctx.log.warn({ err: kokoroErr }, 'kokoro TTS failed; falling back to edge-tts');
         try {
-          await synthEdge(narration, wavPath);
+          await synthEdge(script.hook, body, wavPath);
           provider = 'edge-tts';
           voiceId = EDGE_VOICE;
         } catch (edgeErr) {
