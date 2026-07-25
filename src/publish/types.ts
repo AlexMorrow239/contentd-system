@@ -1,4 +1,8 @@
-import { z } from 'zod'
+import { platformEntrySchema, type PlatformMeta } from './platform-meta.js'
+
+// One platform's entry out of library.metadata_json's per-platform map —
+// re-exported so this module stays the whole publish type surface.
+export type { PlatformMeta }
 
 // v1 ships YouTube Shorts only; PublishTarget, the publishes table, and the
 // scheduler stay platform-agnostic so TikTok/Instagram are additive later
@@ -18,13 +22,6 @@ export class PublishError extends Error {
   }
 }
 
-// One platform's entry out of library.metadata_json's per-platform map.
-export interface PlatformMeta {
-  title: string
-  description: string
-  hashtags: string[]
-}
-
 // Parsed [publish] TOML table for a channel (src/config/channel.ts, Task 5).
 export interface PublishChannelConfig {
   slots: string[]
@@ -41,12 +38,6 @@ export interface PublishTarget {
     accessToken: string,
   ): Promise<{ postId: string; url: string }>
 }
-
-const platformEntrySchema = z.object({
-  title: z.string(),
-  description: z.string(),
-  hashtags: z.array(z.string()),
-})
 
 // library.metadata_json is the per-platform map the script stage writes
 // (src/stages/script.ts platformMetaSchema): {youtube:{...}, tiktok:{...},

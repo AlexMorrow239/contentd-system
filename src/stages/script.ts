@@ -5,6 +5,7 @@ import type { StageDef, JobContext } from '../jobs/types.js';
 import { assertBudget, recordCost } from '../jobs/costs.js';
 import { structuredCompletion } from '../providers/anthropic.js';
 import { errorCostUsdMicros } from '../providers/errors.js';
+import { platformEntrySchema } from '../publish/platform-meta.js';
 
 // Pre-flight budget reservation for the script LLM call (~$0.02). assertBudget
 // blocks the stage if the job or day is already too close to its cap.
@@ -16,12 +17,6 @@ import { errorCostUsdMicros } from '../providers/errors.js';
 // stage's budget gate — so a rare oversized script cannot silently escape the
 // caps, it just parks the job 'blocked' one stage later.
 export const ESTIMATED_SCRIPT_COST_MICROS = 20_000;
-
-const platformEntrySchema = z.object({
-  title: z.string(),
-  description: z.string(),
-  hashtags: z.array(z.string()),
-});
 
 // Shared by both output formats: platformMeta rules are identical for story
 // and scenes scripts.
