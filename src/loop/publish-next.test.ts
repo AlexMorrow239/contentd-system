@@ -88,7 +88,13 @@ let videoRoot: string | undefined
 let jobSeq = 0
 function seedReadyVideo(
   db: Database,
-  opts: { channel: string; metadataJson?: string; topic?: string; videoExists?: boolean },
+  opts: {
+    channel: string
+    metadataJson?: string
+    topic?: string
+    videoExists?: boolean
+    createdAt?: string
+  },
 ): string {
   jobSeq += 1
   const jobId = `job-${jobSeq}`
@@ -100,10 +106,16 @@ function seedReadyVideo(
   videoRoot ??= tmpDir('brainrot-publish-videos-')
   const videoPath = join(videoRoot, `${jobId}.mp4`)
   if (opts.videoExists !== false) writeFileSync(videoPath, 'fake video bytes')
-  db.prepare("INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, 'ready')").run(
+  // created_at is explicit only where a test pins eligibleVideo's newest-first
+  // tiebreak; otherwise the column default stands.
+  db.prepare(
+    'INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(
     jobId,
     videoPath,
     opts.metadataJson ?? '{}',
+    'ready',
+    opts.createdAt ?? new Date().toISOString(),
   )
   return jobId
 }
@@ -306,6 +318,66 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       action: 'dry-run',
       wouldPublish: { channel: 'chan-b', platform: 'youtube', slot: '14:00', jobId: jobB, title: 'Chan B topic' },
     })
+    db.close()
+  })
+
+  // eligibleVideo returns ONE row, so a pruned newest video would otherwise
+  // shadow every older healthy video on its channel forever: the scan skipped
+  // the whole candidate and the next tick re-picked the same dead row. The
+  // scan now re-queries with the pruned job excluded until it finds a file.
+  it('publishes an older ready video when the newest one on the channel is pruned', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-shadow-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const older = seedReadyVideo(db, {
+      channel: 'chan-a',
+      topic: 'Older topic',
+      createdAt: '2026-07-20T00:00:00.000Z',
+    })
+    seedReadyVideo(db, {
+      channel: 'chan-a',
+      topic: 'Newest topic',
+      createdAt: '2026-07-21T00:00:00.000Z',
+      videoExists: false,
+    })
+    seedToken(db, 'chan-a')
+    const target = fakeTarget(async () => ({ postId: 'yt-old', url: 'https://youtube.com/shorts/yt-old' }))
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      target,
+      fetchImpl: fakeTokenFetch(),
+    })
+    expect(result).toEqual({
+      action: 'published',
+      channel: 'chan-a',
+      platform: 'youtube',
+      jobId: older,
+      slot: '14:00',
+      postId: 'yt-old',
+      url: 'https://youtube.com/shorts/yt-old',
+    })
+    db.close()
+  })
+
+  it('reports no-video-file only once every ready video on the channel is pruned', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-shadow-all-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, {
+      channel: 'chan-a',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      videoExists: false,
+    })
+    seedReadyVideo(db, {
+      channel: 'chan-a',
+      createdAt: '2026-07-21T00:00:00.000Z',
+      videoExists: false,
+    })
+    seedToken(db, 'chan-a')
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({ action: 'noop', reason: 'no-video-file' })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 0 })
     db.close()
   })
 

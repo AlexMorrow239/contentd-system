@@ -529,6 +529,41 @@ describe('eligibleVideo', () => {
     expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe('job-c')
     db.close()
   })
+
+  // The exclusion list is how the publish tick walks past ready rows whose
+  // video file was pruned: without it the single returned row shadows every
+  // older healthy row on the channel.
+  it('skips excluded job ids and returns the next one in order', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-new')
+    seedJob(db, 'job-mid')
+    seedJob(db, 'job-old')
+    seedLibrary(db, 'job-new', { createdAt: '2026-07-20T00:00:00.000Z' })
+    seedLibrary(db, 'job-mid', { createdAt: '2026-07-19T00:00:00.000Z' })
+    seedLibrary(db, 'job-old', { createdAt: '2026-07-18T00:00:00.000Z' })
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube', [])?.jobId).toBe('job-new')
+    expect(eligibleVideo(db, 'chan-a', 'youtube', ['job-new'])?.jobId).toBe('job-mid')
+    expect(eligibleVideo(db, 'chan-a', 'youtube', ['job-new', 'job-mid'])?.jobId).toBe('job-old')
+    expect(eligibleVideo(db, 'chan-a', 'youtube', ['job-new', 'job-mid', 'job-old'])).toBeNull()
+    db.close()
+  })
+
+  // The exclusion list reaches SQL as placeholders, never as interpolated
+  // text: a job id carrying quotes matches literally and closes nothing.
+  it('binds excluded job ids as parameters rather than interpolating them', () => {
+    const db = openDb(':memory:')
+    const nasty = `job-'); DROP TABLE library; --`
+    seedJob(db, nasty)
+    seedJob(db, 'job-plain')
+    seedLibrary(db, nasty, { createdAt: '2026-07-20T00:00:00.000Z' })
+    seedLibrary(db, 'job-plain', { createdAt: '2026-07-19T00:00:00.000Z' })
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe(nasty)
+    expect(eligibleVideo(db, 'chan-a', 'youtube', [nasty])?.jobId).toBe('job-plain')
+    expect(db.prepare('SELECT COUNT(*) AS n FROM library').get()).toEqual({ n: 2 })
+    db.close()
+  })
 })
 
 describe('retryInterrupted', () => {

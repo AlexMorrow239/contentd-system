@@ -194,11 +194,22 @@ export function uploadsUsedToday(db: Database, platform: Platform, day: string):
 // fewest failed rows of any kind first (spreads attempts during a
 // channel-wide outage), then newest library row first (fresh trend
 // content over stale), then job id for determinism.
+//
+// `excludeJobIds` lets a caller walk PAST the top row and see the next one:
+// the publish tick uses it to step over ready rows whose video file was
+// pruned off disk, a condition no column here can express. Only the count of
+// ids shapes the SQL (one `?` each) — the ids themselves are bound
+// parameters, never interpolated text.
 export function eligibleVideo(
   db: Database,
   channel: string,
   platform: Platform,
+  excludeJobIds: readonly string[] = [],
 ): { jobId: string; videoPath: string; metadataJson: string; topic: string } | null {
+  const exclusion =
+    excludeJobIds.length === 0
+      ? ''
+      : `AND l.job_id NOT IN (${excludeJobIds.map(() => '?').join(', ')})`
   const row = db
     .prepare(
       `SELECT l.job_id AS jobId, l.video_path AS videoPath, l.metadata_json AS metadataJson, j.topic AS topic
@@ -217,10 +228,11 @@ export function eligibleVideo(
          AND j.channel = ?
          AND COALESCE(p.blockingCount, 0) = 0
          AND COALESCE(p.rejectedCount, 0) < ?
+         ${exclusion}
        ORDER BY COALESCE(p.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
        LIMIT 1`,
     )
-    .get(platform, channel, MAX_PUBLISH_ATTEMPTS) as
+    .get(platform, channel, MAX_PUBLISH_ATTEMPTS, ...excludeJobIds) as
     | { jobId: string; videoPath: string; metadataJson: string; topic: string }
     | undefined
   return row === undefined ? null : row

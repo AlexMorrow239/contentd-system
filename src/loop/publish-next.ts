@@ -69,6 +69,11 @@ function badEnvMessage(): string | undefined {
   return undefined
 }
 
+// How many pruned ready videos one candidate may step over before the tick
+// gives up on its channel. Reaching it is pathological (a wholesale runs/
+// prune), and giving up is harmless: the next tick starts the scan over.
+const MAX_VIDEO_FILE_SCANS = 50
+
 /**
  * Selects and executes one upload: env check -> due slots -> quota gate ->
  * fairness order -> candidate scan (video, its file, then token) -> claim ->
@@ -175,17 +180,36 @@ export async function publishNextTick(
       | undefined
 
     for (const candidate of ordered) {
-      const video = eligibleVideo(db, candidate.channel, candidate.platform)
-      if (video === null) {
-        if (firstReason === undefined) firstReason = 'no-ready-video'
-        continue
-      }
       // Video-file pre-flight: a pruned runs/ tree leaves a 'ready' library
       // row pointing at nothing, and claiming it first would burn the slot
       // plus a quota unit on an ENOENT the adapter can only report as
       // 'rejected'. A pure read, so dry-run previews the same skip.
-      if (!existsSync(video.videoPath)) {
-        if (firstReason === undefined) firstReason = 'no-video-file'
+      //
+      // eligibleVideo returns only the TOP row, so a pruned one must be
+      // excluded and the query re-run — skipping the whole channel instead
+      // would let one dead row shadow every older healthy video on it for
+      // good (nothing ever clears the row, so every later tick re-picks it).
+      // Only when every ready row on the channel is pruned does the candidate
+      // fall through as 'no-video-file'.
+      const prunedJobIds: string[] = []
+      let video: { jobId: string; videoPath: string; metadataJson: string; topic: string } | null = null
+      // Defensive bound: the exclusion list grows by one per pass, so the
+      // query is strictly monotonic and terminates on its own — the cap only
+      // limits how much a channel of thousands of pruned rows can cost a tick.
+      for (let scan = 0; scan < MAX_VIDEO_FILE_SCANS; scan++) {
+        const row = eligibleVideo(db, candidate.channel, candidate.platform, prunedJobIds)
+        if (row === null) break
+        if (existsSync(row.videoPath)) {
+          video = row
+          break
+        }
+        prunedJobIds.push(row.jobId)
+      }
+      if (video === null) {
+        // Nothing pruned means the channel simply had no eligible row.
+        if (firstReason === undefined) {
+          firstReason = prunedJobIds.length === 0 ? 'no-ready-video' : 'no-video-file'
+        }
         continue
       }
       // Missing client credentials or the token-encryption key blocks every
