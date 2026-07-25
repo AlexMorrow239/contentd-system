@@ -32,6 +32,13 @@ export function ytUploadsPerDayCap(): number {
   return n
 }
 
+// The public watch URL for an uploaded Short. Built here rather than at each
+// call site so the upload path and the manual `publish mark-done` path can
+// never record two different URLs for the same video.
+export function youtubeShortsUrl(postId: string): string {
+  return `https://youtube.com/shorts/${postId}`
+}
+
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 
 // A thrown fetch (network failure, or an aborted/timed-out request) always
@@ -215,7 +222,7 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
       if (!body.id) {
         throw new PublishError('youtubeTarget: upload response carried no video id', 'transient')
       }
-      return { postId: body.id, url: `https://youtube.com/shorts/${body.id}` }
+      return { postId: body.id, url: youtubeShortsUrl(body.id) }
     },
   }
 }

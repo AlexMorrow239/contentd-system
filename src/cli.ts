@@ -20,6 +20,7 @@ import type { LibraryState } from './jobs/library.js'
 import { runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
+import { youtubeShortsUrl } from './publish/youtube.js'
 
 const TIERS: readonly Tier[] = ['volume', 'premium']
 
@@ -443,9 +444,10 @@ publish
     try {
       // v1 platform assumption: PUBLISH_PLATFORMS is exactly ['youtube'], so
       // every interrupted row this command will ever see is a YouTube
-      // upload — the Shorts URL is built here rather than threading a
-      // --platform flag through for what is currently a single-member enum.
-      const url = 'https://youtube.com/shorts/' + postId
+      // upload — the Shorts URL is built from the adapter's own helper rather
+      // than threading a --platform flag through for what is currently a
+      // single-member enum.
+      const url = youtubeShortsUrl(postId)
       const ok = markInterruptedDone(db, jobId, postId, url, new Date())
       if (!ok) {
         console.error(`no interrupted publish for job ${jobId}`)
