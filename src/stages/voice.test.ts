@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { Readable } from 'node:stream';
 
@@ -11,7 +11,7 @@ vi.mock('../providers/elevenlabs.js', () => ({
 
 import { KokoroTTS } from 'kokoro-js';
 import { MsEdgeTTS } from 'msedge-tts';
-import { voiceStage, MAX_CHUNK_WORDS } from './voice.js';
+import { voiceStage, MAX_CHUNK_WORDS, DEV_VOICE_ENV } from './voice.js';
 import { countWords, HOOK_PAUSE_MS } from './narration-text.js';
 import { parseWavDurationMs } from '../media/wav.js';
 import { makeCtx, testChannel, testScript } from './_testkit.js';
@@ -109,7 +109,23 @@ async function ctxWithScript(script: unknown = SCRIPT): Promise<JobContext> {
   return ctx;
 }
 
-beforeEach(() => vi.clearAllMocks());
+// Hermeticity guard: capture whatever the ambient environment actually had
+// for this var (e.g. an operator's own `BRAINROT_DEV_VOICE=1 npx vitest run`,
+// exactly as the README instructs) so every test in this file starts from a
+// known-clean slate, then restore it once the whole file is done. Without
+// this, an ambient BRAINROT_DEV_VOICE=1 would make every premium-configured
+// test below silently skip the elevenlabs branch it exists to exercise.
+const ORIGINAL_DEV_VOICE_ENV = process.env[DEV_VOICE_ENV];
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  delete process.env[DEV_VOICE_ENV];
+});
+
+afterAll(() => {
+  if (ORIGINAL_DEV_VOICE_ENV === undefined) delete process.env[DEV_VOICE_ENV];
+  else process.env[DEV_VOICE_ENV] = ORIGINAL_DEV_VOICE_ENV;
+});
 
 describe('parseWavDurationMs', () => {
   it('computes duration from data size / byteRate', () => {
@@ -421,10 +437,6 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
 });
 
 describe('voiceStage dev mode', () => {
-  afterEach(() => {
-    delete process.env.BRAINROT_DEV_VOICE;
-  });
-
   it('channel.voice.dev=true skips elevenlabs and its budget check even when premium is configured', async () => {
     const channel = premiumChannel();
     channel.voice = { ...channel.voice, dev: true };
@@ -445,7 +457,7 @@ describe('voiceStage dev mode', () => {
   });
 
   it('BRAINROT_DEV_VOICE=1 skips elevenlabs even when the channel has no dev flag set', async () => {
-    process.env.BRAINROT_DEV_VOICE = '1';
+    process.env[DEV_VOICE_ENV] = '1';
     const ctx = await premiumCtx();
     const generate = vi.fn(async (t: string) => chunkAudio(t));
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
@@ -458,7 +470,7 @@ describe('voiceStage dev mode', () => {
   });
 
   it('leaves premium behavior untouched when BRAINROT_DEV_VOICE is unset or not "1"', async () => {
-    process.env.BRAINROT_DEV_VOICE = '0';
+    process.env[DEV_VOICE_ENV] = '0';
     const ctx = await premiumCtx();
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult());
 

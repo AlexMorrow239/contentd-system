@@ -21,6 +21,7 @@ import { runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
 import { youtubeShortsUrl } from './publish/youtube.js'
+import { DEV_VOICE_ENV } from './stages/voice.js'
 
 /**
  * Validate `topics reject`/`requeue` id arguments. Throws naming the FIRST bad
@@ -72,6 +73,11 @@ export function parsePublishDays(raw: string): number {
 // keep their import path.
 export { pipelineStages } from './jobs/pipeline.js'
 
+// Re-exported so in-process importers (cli.test.ts) can assert against the
+// same constant applyDevFlag uses, without a second import path into
+// src/stages/voice.ts.
+export { DEV_VOICE_ENV } from './stages/voice.js'
+
 function resolveDbPath(flagDb?: string): string {
   return flagDb ?? process.env.BRAINROT_DB ?? 'data/brainrot.db'
 }
@@ -82,7 +88,7 @@ function resolveDbPath(flagDb?: string): string {
  * assert the wiring in-process instead of spawning a subprocess.
  */
 export function applyDevFlag(dev?: boolean): void {
-  if (dev) process.env.BRAINROT_DEV_VOICE = '1'
+  if (dev) process.env[DEV_VOICE_ENV] = '1'
 }
 
 const program = new Command()

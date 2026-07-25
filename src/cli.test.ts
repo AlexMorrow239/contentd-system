@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
-import { applyDevFlag, parsePublishDays, parseTopicIds, pipelineStages } from './cli.js'
+import { applyDevFlag, DEV_VOICE_ENV, parsePublishDays, parseTopicIds, pipelineStages } from './cli.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 
 const cleanup: string[] = []
@@ -572,23 +572,23 @@ describe('parsePublishDays (in-process)', () => {
 })
 
 describe('applyDevFlag (in-process)', () => {
-  const ORIGINAL = process.env.BRAINROT_DEV_VOICE
+  const ORIGINAL = process.env[DEV_VOICE_ENV]
 
   afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env.BRAINROT_DEV_VOICE
-    else process.env.BRAINROT_DEV_VOICE = ORIGINAL
+    if (ORIGINAL === undefined) delete process.env[DEV_VOICE_ENV]
+    else process.env[DEV_VOICE_ENV] = ORIGINAL
   })
 
   it('sets BRAINROT_DEV_VOICE=1 when dev is true', () => {
     applyDevFlag(true)
-    expect(process.env.BRAINROT_DEV_VOICE).toBe('1')
+    expect(process.env[DEV_VOICE_ENV]).toBe('1')
   })
 
   it('leaves BRAINROT_DEV_VOICE untouched when dev is falsy', () => {
-    delete process.env.BRAINROT_DEV_VOICE
+    delete process.env[DEV_VOICE_ENV]
     applyDevFlag(undefined)
-    expect(process.env.BRAINROT_DEV_VOICE).toBeUndefined()
+    expect(process.env[DEV_VOICE_ENV]).toBeUndefined()
     applyDevFlag(false)
-    expect(process.env.BRAINROT_DEV_VOICE).toBeUndefined()
+    expect(process.env[DEV_VOICE_ENV]).toBeUndefined()
   })
 })

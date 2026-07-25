@@ -23,6 +23,7 @@ Keys in `.env`:
 - `ANTHROPIC_API_KEY` — script generation
 - `ELEVENLABS_API_KEY` — premium voice (optional; unset falls back to kokoro/edge-tts)
 - `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (default 25)
+- `BRAINROT_DEV_VOICE` — set to 1 to force the cheap voice chain, skipping ElevenLabs (see below)
 
 ## Seed background footage
 
@@ -65,7 +66,11 @@ to kokoro/edge-tts on failure or when unconfigured. This requires
 To skip ElevenLabs on purpose — for a local test run of a channel that has
 `[voice.premium]` configured — pass `--dev` to `produce` or `resume`, set
 `BRAINROT_DEV_VOICE=1` in the environment, or add `dev = true` to the
-channel's `[voice]` table to force it for every job on that channel.
+channel's `[voice]` table to force it for every job on that channel. Forcing
+the volume chain this way reinstates the WhisperX dependency for captions:
+since the audio no longer comes from ElevenLabs, captions need the WhisperX
+sidecar running (`docker compose up -d whisperx`), same as any non-premium
+channel.
 
 ## Where outputs land
 
