@@ -35,7 +35,6 @@
   <key>StandardErrorPath</key>
   <string>/Users/alex/code/project-brainrot/logs/publish-next.log</string>
 
-  <key>ProcessType</key>
-  <string>Background</string>
+  <!-- No ProcessType: Background defers timers while the session is idle. -->
 </dict>
 </plist>

@@ -40,8 +40,10 @@
   <key>StandardErrorPath</key>
   <string>/Users/alex/code/project-brainrot/logs/produce-next.log</string>
 
-  <!-- A render can outlast the default nice level's patience under load. -->
-  <key>ProcessType</key>
-  <string>Background</string>
+  <!-- Deliberately NO ProcessType. The default (Standard) is correct for a
+       periodic agent. Setting it to Background opts the job into aggressive
+       timer deferral whenever the GUI session is idle: on the first night
+       live this suppressed every tick between 21:52 and 07:52 on a machine
+       that never slept (2 of an expected 41 firings). -->
 </dict>
 </plist>
