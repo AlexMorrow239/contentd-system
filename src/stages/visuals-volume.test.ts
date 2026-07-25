@@ -29,7 +29,7 @@ async function makeClip(file: string): Promise<void> {
   ])
 }
 
-function makeChannel(bgDir: string): ChannelConfig {
+function makeChannel(bgDir: string | string[]): ChannelConfig {
   return {
     name: 'testchan',
     niche: ['space'],
@@ -37,7 +37,7 @@ function makeChannel(bgDir: string): ChannelConfig {
     voice: { volume: 'af_heart' },
     premium: { imageModel: 'fal-ai/flux/dev', videoModel: 'fal-ai/kling-video/v3/standard/image-to-video', sceneConcurrency: 3 },
     captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
-    bgDir,
+    bgDir: Array.isArray(bgDir) ? bgDir : [bgDir],
     bgmDir: tmp('brainrot-bgm-'),
     budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
@@ -94,26 +94,30 @@ describe('visualsVolumeStage', () => {
       .prepare('SELECT file FROM bg_usage WHERE channel = ?')
       .all('testchan') as { file: string }[]
     expect(rows.length).toBe(1)
-    expect(['clip1.mp4', 'clip2.mp4']).toContain(rows[0].file)
+    expect([path.resolve(bgDir, 'clip1.mp4'), path.resolve(bgDir, 'clip2.mp4')]).toContain(
+      rows[0].file,
+    )
   }, 60000)
 
   it('excludes recently used clips (chooses the unused one)', async () => {
     const bgDir = tmp('brainrot-bg-')
-    await makeClip(path.join(bgDir, 'clip1.mp4'))
-    await makeClip(path.join(bgDir, 'clip2.mp4'))
+    const clip1 = path.join(bgDir, 'clip1.mp4')
+    const clip2 = path.join(bgDir, 'clip2.mp4')
+    await makeClip(clip1)
+    await makeClip(clip2)
     const channel = makeChannel(bgDir)
     const ctx = makeCtx(tmp('brainrot-run-'), channel)
     seedVoice(ctx, 2000)
     ctx.db
       .prepare('INSERT INTO bg_usage (channel, file, used_at) VALUES (?, ?, ?)')
-      .run('testchan', 'clip1.mp4', new Date().toISOString())
+      .run('testchan', path.resolve(clip1), new Date().toISOString())
 
     await visualsVolumeStage.run(ctx)
 
     const rows = ctx.db
       .prepare('SELECT file FROM bg_usage WHERE channel = ? ORDER BY used_at DESC LIMIT 1')
       .all('testchan') as { file: string }[]
-    expect(rows[0].file).toBe('clip2.mp4') // clip1 excluded as recently used
+    expect(rows[0].file).toBe(path.resolve(clip2)) // clip1 excluded as recently used
   }, 60000)
 
   it('throws when bgDir has no mp4 clips', async () => {
@@ -122,4 +126,101 @@ describe('visualsVolumeStage', () => {
     seedVoice(ctx, 2000)
     await expect(visualsVolumeStage.run(ctx)).rejects.toThrow(/no .mp4 background clips/)
   })
+
+  it('discovers clips nested in subfolders', async () => {
+    const bgDir = tmp('brainrot-bg-')
+    const sub = path.join(bgDir, 'minecraft-parkour')
+    mkdirSync(sub, { recursive: true })
+    const nestedClip = path.join(sub, 'clip1.mp4')
+    await makeClip(nestedClip)
+    const channel = makeChannel(bgDir)
+    const ctx = makeCtx(tmp('brainrot-run-'), channel)
+    seedVoice(ctx, 2000)
+
+    await visualsVolumeStage.run(ctx)
+
+    const rows = ctx.db
+      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
+      .all('testchan') as { file: string }[]
+    expect(rows[0].file).toBe(path.resolve(nestedClip))
+  }, 60000)
+
+  it('ignores non-mp4 files in subfolders', async () => {
+    const bgDir = tmp('brainrot-bg-')
+    const sub = path.join(bgDir, 'sub')
+    mkdirSync(sub, { recursive: true })
+    writeFileSync(path.join(sub, 'notes.txt'), 'not a clip')
+    const clip = path.join(sub, 'clip1.mp4')
+    await makeClip(clip)
+    const channel = makeChannel(bgDir)
+    const ctx = makeCtx(tmp('brainrot-run-'), channel)
+    seedVoice(ctx, 2000)
+
+    await visualsVolumeStage.run(ctx)
+
+    const rows = ctx.db
+      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
+      .all('testchan') as { file: string }[]
+    expect(rows[0].file).toBe(path.resolve(clip))
+  }, 60000)
+
+  it('pools clips from multiple configured roots', async () => {
+    const rootA = tmp('brainrot-bg-a-')
+    const rootB = tmp('brainrot-bg-b-')
+    const clipA = path.join(rootA, 'clipA.mp4')
+    const clipB = path.join(rootB, 'clipB.mp4')
+    await makeClip(clipA)
+    await makeClip(clipB)
+    const channel = makeChannel([rootA, rootB])
+    const ctx = makeCtx(tmp('brainrot-run-'), channel)
+    seedVoice(ctx, 2000)
+
+    await visualsVolumeStage.run(ctx)
+
+    const rows = ctx.db
+      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
+      .all('testchan') as { file: string }[]
+    expect([path.resolve(clipA), path.resolve(clipB)]).toContain(rows[0].file)
+  }, 60000)
+
+  it('treats same-basename clips in different roots as distinct pool entries', async () => {
+    const rootA = tmp('brainrot-bg-a-')
+    const rootB = tmp('brainrot-bg-b-')
+    const clipA = path.join(rootA, 'clip.mp4') // same basename, different roots
+    const clipB = path.join(rootB, 'clip.mp4')
+    await makeClip(clipA)
+    await makeClip(clipB)
+    const channel = makeChannel([rootA, rootB])
+    const ctx = makeCtx(tmp('brainrot-run-'), channel)
+    seedVoice(ctx, 2000)
+    ctx.db
+      .prepare('INSERT INTO bg_usage (channel, file, used_at) VALUES (?, ?, ?)')
+      .run('testchan', path.resolve(clipA), new Date().toISOString())
+
+    await visualsVolumeStage.run(ctx)
+
+    const rows = ctx.db
+      .prepare('SELECT file FROM bg_usage WHERE channel = ? ORDER BY used_at DESC LIMIT 1')
+      .all('testchan') as { file: string }[]
+    // clipA was recently used, so despite sharing a basename with clipB the
+    // resolved-path key correctly excludes only clipA, not both.
+    expect(rows[0].file).toBe(path.resolve(clipB))
+  }, 60000)
+
+  it('tolerates a missing root as long as another configured root has clips', async () => {
+    const goodRoot = tmp('brainrot-bg-good-')
+    const missingRoot = path.join(tmpdir(), 'brainrot-bg-does-not-exist')
+    const clip = path.join(goodRoot, 'clip1.mp4')
+    await makeClip(clip)
+    const channel = makeChannel([missingRoot, goodRoot])
+    const ctx = makeCtx(tmp('brainrot-run-'), channel)
+    seedVoice(ctx, 2000)
+
+    await visualsVolumeStage.run(ctx)
+
+    const rows = ctx.db
+      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
+      .all('testchan') as { file: string }[]
+    expect(rows[0].file).toBe(path.resolve(clip))
+  }, 60000)
 })

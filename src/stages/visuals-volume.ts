@@ -6,6 +6,32 @@ import type { JobContext, StageDef } from '../jobs/types.js'
 
 const PAD_MS = 500
 
+// Recursively collects .mp4 files under each root (case-insensitive
+// extension match), deduping overlapping/nested roots by resolved path. A
+// root that doesn't exist or isn't readable is skipped rather than failing
+// the whole scan, matching the tolerance the old single-dir code had.
+function listMp4sRecursively(dirs: string[]): string[] {
+  const found = new Set<string>()
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.resolve(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(full)
+      } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.mp4')) {
+        found.add(full)
+      }
+    }
+  }
+  for (const dir of dirs) {
+    try {
+      walk(path.resolve(dir))
+    } catch {
+      // missing/unreadable root: skip it, same as the old flat scan
+    }
+  }
+  return [...found]
+}
+
 export const visualsVolumeStage: StageDef = {
   name: 'visuals',
   async run(ctx: JobContext): Promise<void> {
@@ -13,15 +39,10 @@ export const visualsVolumeStage: StageDef = {
       readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
     ) as { durationMs: number }
 
-    const bgDir = ctx.channel.bgDir
-    let all: string[]
-    try {
-      all = readdirSync(bgDir).filter((f) => f.toLowerCase().endsWith('.mp4'))
-    } catch {
-      all = []
-    }
+    const bgDirs = ctx.channel.bgDir
+    const all = listMp4sRecursively(bgDirs)
     if (all.length === 0) {
-      throw new Error(`visuals: no .mp4 background clips found in bgDir '${bgDir}'`)
+      throw new Error(`visuals: no .mp4 background clips found under bgDir(s): ${bgDirs.join(', ')}`)
     }
 
     const recent = (
@@ -33,8 +54,7 @@ export const visualsVolumeStage: StageDef = {
     let candidates = all.filter((f) => !recentSet.has(f))
     if (candidates.length === 0) candidates = all // don't empty the pool
 
-    const chosen = candidates[Math.floor(Math.random() * candidates.length)]
-    const chosenPath = path.join(bgDir, chosen)
+    const chosenPath = candidates[Math.floor(Math.random() * candidates.length)]
 
     const p = await probe(chosenPath)
     const targetMs = voice.durationMs + PAD_MS
@@ -56,8 +76,8 @@ export const visualsVolumeStage: StageDef = {
 
     ctx.db
       .prepare('INSERT INTO bg_usage (channel, file, used_at) VALUES (?, ?, ?)')
-      .run(ctx.channel.name, chosen, new Date().toISOString())
+      .run(ctx.channel.name, chosenPath, new Date().toISOString())
 
-    ctx.log.info({ chosen, targetMs, out }, 'visuals: background prepared')
+    ctx.log.info({ chosen: chosenPath, targetMs, out }, 'visuals: background prepared')
   },
 }

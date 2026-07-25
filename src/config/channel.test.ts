@@ -118,6 +118,21 @@ describe('loadChannelConfig', () => {
     expect(() => loadChannelConfig('channels/does-not-exist.toml')).toThrow()
   })
 
+  it('normalizes a single-string bg_dir into a one-element array', () => {
+    const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
+    expect(cfg.bgDir).toEqual(['assets/bg'])
+  })
+
+  it('parses an array bg_dir as-is', () => {
+    const lines = PLAN1_LINES.map((l) =>
+      l === 'bg_dir = "assets/bg"'
+        ? 'bg_dir = ["assets/bg/minecraft-parkour", "assets/bg/subway-surfers"]'
+        : l,
+    )
+    const cfg = loadChannelConfig(writeToml(lines))
+    expect(cfg.bgDir).toEqual(['assets/bg/minecraft-parkour', 'assets/bg/subway-surfers'])
+  })
+
   // A zero cap is never a real intent, and it read as one: plan-tick's resume
   // floor became 0, `0 < 0` is false, and the job livelocked instead of being
   // parked. Rejecting it at config load is the loud failure it deserves.

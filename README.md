@@ -28,14 +28,25 @@ Keys in `.env`:
 
 ## Seed background footage
 
-Drop vertical-friendly clips into the channel's background folder (default
+Drop vertical-friendly clips into the channel's background folder(s) (default
 `assets/bg/`) and royalty-free music into `assets/bgm/`. The volume tier picks
-a clip at random, avoiding the 5 most recently used per channel.
+a clip at random from the pool, avoiding the 5 most recently used per channel.
 
 ```bash
 cp ~/footage/*.mp4 assets/bg/
 cp ~/music/*.mp3  assets/bgm/
 ```
+
+`bg_dir` in a channel TOML accepts either a single path or a list of paths,
+and each path is scanned **recursively** — so `bg_dir = "assets/bg"` pools
+every clip under `assets/bg/`, including subfolders, while
+
+```toml
+bg_dir = ["assets/bg/minecraft-parkour", "assets/bg/subway-surfers"]
+```
+
+restricts the pool to just those two category trees (and their own
+subfolders).
 
 ## Produce a video
 

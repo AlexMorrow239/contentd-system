@@ -38,7 +38,7 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
     },
     premium: { ...DEFAULT_PREMIUM },
     captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
-    bgDir: 'assets/bg',
+    bgDir: ['assets/bg'],
     bgmDir: 'assets/bgm',
     budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',

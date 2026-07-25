@@ -41,7 +41,7 @@ export interface ChannelConfig {
   voice: { volume: string; premium?: PremiumVoiceConfig }
   premium: PremiumConfig
   captionStyle: CaptionStyle
-  bgDir: string
+  bgDir: string[]
   bgmDir: string
   budget: { perVideoUsdMicros: number; premiumPerVideoUsdMicros: number; perDayUsdMicros: number }
   scriptModel: string
@@ -152,7 +152,10 @@ const rawSchema = z.object({
       .default(DEFAULT_PREMIUM_PER_VIDEO_USD),
     per_day_usd: z.number().positive('per_day_usd must be greater than 0'),
   }),
-  bg_dir: z.string(),
+  bg_dir: z.preprocess(
+    (v) => (Array.isArray(v) ? v : [v]),
+    z.array(z.string()).min(1),
+  ),
   bgm_dir: z.string(),
 })
 
