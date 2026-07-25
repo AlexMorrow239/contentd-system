@@ -167,58 +167,155 @@ a day, project-wide, across every channel sharing that project**.
 headroom for your channel count, request a quota increase at
 <https://support.google.com/youtube/contact/yt_api_form>.
 
-## Automation (cron)
+## Automation
 
-The production loop is four cron-invoked commands: `scout` fills the topic
-queue, `produce-next` performs one unit of work per tick (resume one blocked
-job or produce one video), `publish-next` uploads one `ready` video per tick
-into its channel's next due slot (see Publishing (YouTube) above), and
-`digest` prints a daily report.
+The production loop is four commands, scheduled inside the container by
+supercronic — there is no host cron and no launchd agent anymore. `scout`
+fills the topic queue, `produce-next` performs one unit of work per tick
+(resume one blocked job or produce one video), `publish-next` uploads one
+`ready` video per tick into its channel's next due slot (see Publishing
+(YouTube) above), and `digest` prints a daily report.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
 flag, so mod stickies are indistinguishable from real posts and simply score
 low.
 
-Paste into `crontab -e`, adjusting the paths:
+### Start
 
-```cron
-# cron runs with a bare PATH (/usr/bin:/bin): pnpm, node, and ffmpeg do not
-# resolve without this line. Find your dirs with `which pnpm` / `which ffmpeg`.
-PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
-
-# Digest delivery is operator wiring: cron mails each job's output to MAILTO
-# (needs working local mail), or replace the digest line with a pipe into
-# your notifier of choice.
-MAILTO=you@example.com
-
-# Scout trends into the topic queue, 3x/day at 07:05 / 12:05 / 17:05. Staggered
-# 5 minutes off the hour so it never co-fires with the produce-next tick at :00
-# — defense in depth on top of the DB busy_timeout, since scout and produce-next
-# are two processes writing one SQLite file.
-5 7,12,17 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot scout >> logs/scout.log 2>&1
-
-# One unit of production per tick (*/25 fires at :00, :25 and :50 each hour).
-*/25 * * * * cd /Users/alex/code/project-brainrot && pnpm brainrot produce-next >> logs/produce-next.log 2>&1
-
-# One publish attempt per tick, on whichever due slot is furthest behind its
-# channel's cadence (*/15 keeps slots filling within ~15 min of their
-# configured time). Unlike scout, this is deliberately NOT staggered off
-# produce-next's :00/:25/:50 — the two touch disjoint rows (produce-next
-# inserts new library rows; publish-next updates a ready row's state), and WAL
-# journaling plus the busy_timeout=5000 pragma make a same-minute co-fire safe.
-*/15 * * * * cd /Users/alex/code/project-brainrot && pnpm brainrot publish-next >> logs/publish.log 2>&1
-
-# Daily digest at 08:00 — stdout goes to MAILTO; nothing else delivers it.
-0 8 * * * cd /Users/alex/code/project-brainrot && pnpm brainrot digest
+```bash
+docker compose up -d
 ```
 
-- **`cd` into the repo, absolute paths only.** Every entry `cd`s to the repo
-  root first so `.env` (dotenv), `channels/`, `data/brainrot.db`, `runs/`,
-  and `logs/` all resolve. Replace `/Users/alex/code/project-brainrot` with
-  your absolute repo path and run `mkdir -p logs` in the repo once before
-  the first firing. If you would rather not set `PATH`, use the absolute
-  binary path from `which pnpm` in each entry instead.
+brings up both services: `whisperx` (the caption-alignment sidecar) and
+`brainrot` (supercronic running the schedule below), which waits on
+`whisperx`'s healthcheck before its own ticks begin. There is one log
+stream for everything the loop does:
+
+```bash
+docker compose logs -f brainrot
+```
+
+Each tick prints one JSON line, and a `noop` line is normal, not a failure —
+`produce-next` noops with `lease-held`, `no-eligible-work`, `claim-conflict`
+(an operator command won a topic or job mid-tick), or `config-error`;
+`publish-next` with `lease-held`, `no-due-slot`, `platform-quota`,
+`no-ready-video`, `no-video-file` (the `ready` row's file was pruned from
+`runs/`), `no-auth`, `claim-conflict`, `bad-env` (a malformed
+`BRAINROT_TOKEN_KEY` or `BRAINROT_YT_UPLOADS_PER_DAY`), or `config-error`
+(the channels dir would not load — the message also goes to stderr); `scout`
+with `lease-held` or that same `config-error`. All of those exit `0`. Exit
+`1` means real work failed: a `failed`/`blocked` produce, a `publish-failed`
+upload attempt, or a scout run whose every channel died.
+
+### Schedule
+
+| Command | Cadence |
+|---|---|
+| `scout` | 07:05, 12:05, 17:05 — staggered 5 min off the hour so it never co-fires with `produce-next` |
+| `produce-next` | every 25 min |
+| `publish-next` | every 15 min — deliberately not staggered off `produce-next`; the two touch disjoint rows and WAL plus the `busy_timeout=5000` pragma make a same-minute co-fire safe |
+| `digest` | 08:00 — printed to the log stream only, nothing else delivers it |
+
+Times are container-local (`TZ=America/Chicago`, set in
+`deploy/docker/Dockerfile`), regardless of the host Mac's own timezone. The
+schedule itself is `deploy/docker/crontab`, baked into the image — changing
+it means editing that file and running `docker compose build brainrot`,
+same as any other source change. There is no hot reload.
+
+### Development vs. production
+
+|  | Production (container) | Development (host) |
+|---|---|---|
+| channels | `channels/` | `channels-dev/` |
+| db | `data/brainrot.db` | `data/dev.db` |
+| runs | `runs/` | `runs-dev/` |
+| voice | real chain | `--dev` / `[voice] dev = true` |
+
+A bare `pnpm brainrot ...` on the host reads and writes only the development
+triple — the host's `.env` carries those defaults. The same command run
+inside the container reads and writes only production, because
+`docker-compose.yml`'s `environment:` block overrides all three no matter
+what the host's `.env` says:
+
+```bash
+pnpm brainrot jobs                               # host: reads data/dev.db
+docker compose exec brainrot pnpm brainrot jobs  # container: reads data/brainrot.db
+```
+
+This is what makes local iteration safe: a half-finished channel's jobs are
+invisible to the production `produce-next` loop, and its spend never enters
+the ledger the production budget caps read.
+
+### Promotion
+
+Once a channel developed under `channels-dev/` is ready to go live:
+
+```bash
+cp channels-dev/<name>.toml channels/<name>.toml   # edit as needed
+
+BRAINROT_DB=data/brainrot.db BRAINROT_CHANNELS_DIR=channels \
+  pnpm brainrot auth youtube --channel <name>
+```
+
+`auth youtube` is the one command that still runs on the host instead of
+through `docker compose exec`, and the explicit `BRAINROT_DB`/
+`BRAINROT_CHANNELS_DIR` above is what points it at production rather than
+the host's own dev defaults. Two things force it out of the container:
+`src/publish/oauth-flow.ts:14` shells out to macOS `open` to launch the
+consent screen, which does not exist in the Debian image, and the flow binds
+an ephemeral loopback port that Compose has no way to publish in advance
+(the port isn't chosen until the flow starts). Because `data/` is a bind
+mount shared with the container, the AES-256-GCM-encrypted refresh token
+still lands in the production DB regardless of which side wrote it. Running
+on the host costs nothing in validation: `auth youtube` still calls
+`loadChannelsDir()` against the directory it's pointed at, which enforces
+the basename-equals-`name` invariant and rejects duplicate declared names —
+a malformed promotion fails at promotion time, not at the next tick.
+
+### Recovery
+
+Everything else that renders or mutates job state goes through the
+container, not the host — same binary, same filesystem layout, no drift.
+Manual commands take no lease of their own, so a hand-run invocation can
+execute concurrently with a live tick and both may act on the same
+job/topic — `produce-next` holds a `produce` lease and `publish-next` holds
+its own separate `publish` lease, but neither one covers a manual command.
+Stop the loop first:
+
+```bash
+docker compose stop brainrot
+docker compose exec brainrot pnpm brainrot resume <jobId>
+docker compose exec brainrot pnpm brainrot library approve <jobIds...>
+docker compose exec brainrot pnpm brainrot publish retry <jobId>
+docker compose start brainrot
+```
+
+The same pattern covers `produce`, `library reject`, and `publish
+mark-done`.
+
+- **A stranded topic can be returned to the queue.** A topic stays `claimed`
+  for as long as its job might still run, so a job abandoned for good leaves
+  its topic bound forever. `pnpm brainrot topics requeue <id>` returns it to
+  `candidate` and unbinds the dead job; it refuses only while a `queued` or
+  `running` job still holds the topic. A `blocked` job's topic can be
+  requeued — that job sits out the resume pass until an operator repairs the
+  config behind it, and unbinding is safe because a later resume of that job
+  keys its `used` flip on `job_id`, which by then matches nothing.
+
+### Operational caveats
+
+- **A sleeping Mac drops ticks, with no catch-up firing.** launchd used to
+  coalesce missed runs after the machine woke up; supercronic does not. A
+  missed publish slot simply stays due for the rest of the local day and
+  fills on the next tick; a slept-through `scout` window is skipped until its
+  next scheduled firing.
+- **Docker Desktop must be set to start at login**, or nothing runs after a
+  reboot and there is no alarm that fires — the failure looks identical to an
+  idle day.
+
+### Timezones: two different clocks
+
 - **Budget caps and the daily video quota roll over at UTC midnight;
   publishing rolls over at local midnight.** The spend caps and the
   per-channel `videos_per_day` quota both key off the cost ledger /
@@ -231,34 +328,6 @@ MAILTO=you@example.com
   A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
   render from the previous firing is still running — `scout` takes a lease of
   its own (30 min) and prints the same line if a previous run is still going.
-- **Every tick prints one JSON line, and a noop is not a failure.**
-  `produce-next` noops with `lease-held`, `no-eligible-work`,
-  `claim-conflict` (an operator command won a topic or job mid-tick), or
-  `config-error`; `publish-next` with `lease-held`, `no-due-slot`,
-  `platform-quota`, `no-ready-video`, `no-video-file` (the `ready` row's file
-  was pruned from `runs/`), `no-auth`, `claim-conflict`, `bad-env` (a
-  malformed `BRAINROT_TOKEN_KEY` or `BRAINROT_YT_UPLOADS_PER_DAY`), or
-  `config-error` (the channels dir would not load — the message also goes to
-  stderr); `scout` with `lease-held` or that same `config-error`. All of those
-  exit `0`. Exit `1` means real work failed: a `failed`/`blocked` produce, a
-  `publish-failed` upload attempt, or a scout run whose every channel died.
-- **A stranded topic can be returned to the queue.** A topic stays `claimed`
-  for as long as its job might still run, so a job abandoned for good leaves
-  its topic bound forever. `pnpm brainrot topics requeue <id>` returns it to
-  `candidate` and unbinds the dead job; it refuses only while a `queued` or
-  `running` job still holds the topic. A `blocked` job's topic can be
-  requeued — that job sits out the resume pass until an operator repairs the
-  config behind it, and unbinding is safe because a later resume of that job
-  keys its `used` flip on `job_id`, which by then matches nothing.
-- **Manual runs take no lease.** `produce` and `resume` run outside the
-  produce-next lease, so a hand-run invocation can execute concurrently with a
-  live tick and both may act on the same job/topic. Stop the produce-next cron
-  line (or wait for `lease-held` ticks to clear) before running `produce` or
-  `resume` by hand. The same applies on the publishing side: `publish-next`
-  takes its own `publish` lease (separate from `produce`'s), but
-  `brainrot auth youtube`, `library approve`/`reject`, and
-  `publish retry`/`mark-done` all run outside it — stop the publish-next
-  cron line before running any of those by hand against the same channel.
 
 ## Tests
 
