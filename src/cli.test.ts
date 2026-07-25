@@ -1,10 +1,10 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, describe, expect, it } from 'vitest'
 import { execa } from 'execa'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
-import { parsePublishDays, parseTopicIds, pipelineStages } from './cli.js'
+import { applyDevFlag, parsePublishDays, parseTopicIds, pipelineStages } from './cli.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 
 const cleanup: string[] = []
@@ -43,6 +43,22 @@ describe('brainrot CLI', () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('--channel')
     expect(result.stdout).toContain('--topic')
+  }, 60000)
+
+  it('`produce --help` lists --dev', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'produce', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('--dev')
+  }, 60000)
+
+  it('`resume --help` lists --dev', async () => {
+    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'resume', '--help'], {
+      reject: false,
+    })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('--dev')
   }, 60000)
 
   function countJobs(dbPath: string): number {
@@ -552,5 +568,27 @@ describe('parsePublishDays (in-process)', () => {
     expect(() => parsePublishDays('-3')).toThrow('invalid --days "-3"')
     expect(() => parsePublishDays('3.5')).toThrow('invalid --days "3.5"')
     expect(() => parsePublishDays('abc')).toThrow('invalid --days "abc"')
+  })
+})
+
+describe('applyDevFlag (in-process)', () => {
+  const ORIGINAL = process.env.BRAINROT_DEV_VOICE
+
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.BRAINROT_DEV_VOICE
+    else process.env.BRAINROT_DEV_VOICE = ORIGINAL
+  })
+
+  it('sets BRAINROT_DEV_VOICE=1 when dev is true', () => {
+    applyDevFlag(true)
+    expect(process.env.BRAINROT_DEV_VOICE).toBe('1')
+  })
+
+  it('leaves BRAINROT_DEV_VOICE untouched when dev is falsy', () => {
+    delete process.env.BRAINROT_DEV_VOICE
+    applyDevFlag(undefined)
+    expect(process.env.BRAINROT_DEV_VOICE).toBeUndefined()
+    applyDevFlag(false)
+    expect(process.env.BRAINROT_DEV_VOICE).toBeUndefined()
   })
 })

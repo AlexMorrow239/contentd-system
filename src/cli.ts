@@ -76,6 +76,15 @@ function resolveDbPath(flagDb?: string): string {
   return flagDb ?? process.env.BRAINROT_DB ?? 'data/brainrot.db'
 }
 
+/**
+ * Sets BRAINROT_DEV_VOICE for the current process when --dev is passed, so
+ * voiceStage treats [voice.premium] as absent. Exported so cli.test.ts can
+ * assert the wiring in-process instead of spawning a subprocess.
+ */
+export function applyDevFlag(dev?: boolean): void {
+  if (dev) process.env.BRAINROT_DEV_VOICE = '1'
+}
+
 const program = new Command()
 program.name('brainrot').description('Brainrot Machine CLI')
 
@@ -85,7 +94,12 @@ program
   .requiredOption('--topic <text>', 'topic text')
   .option('--db <path>', 'sqlite db path')
   .option('--runs-root <path>', 'runs root directory', 'runs')
-  .action(async (opts: { channel: string; topic: string; db?: string; runsRoot: string }) => {
+  .option(
+    '--dev',
+    'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
+  )
+  .action(async (opts: { channel: string; topic: string; db?: string; runsRoot: string; dev?: boolean }) => {
+    applyDevFlag(opts.dev)
     const channel = loadChannelConfig(opts.channel)
     const db = openDb(resolveDbPath(opts.db))
     const jobId = createJob(db, channel, { topic: opts.topic })
@@ -157,11 +171,16 @@ program
   .option('--runs-root <path>', 'runs root directory', 'runs')
   .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
   .option('--force', 'resume a job stuck in running (asserts no live process holds it)')
+  .option(
+    '--dev',
+    'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
+  )
   .action(
     async (
       jobId: string,
-      opts: { db?: string; runsRoot: string; channelsDir: string; force?: boolean },
+      opts: { db?: string; runsRoot: string; channelsDir: string; force?: boolean; dev?: boolean },
     ) => {
+      applyDevFlag(opts.dev)
       const db = openDb(resolveDbPath(opts.db))
       try {
         const result = await resumeJob(db, jobId, {
