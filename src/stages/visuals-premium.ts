@@ -7,6 +7,7 @@ import { visionJudgment } from '../providers/anthropic.js';
 import { animateImage, estimateImageCostMicros, estimateVideoCostMicros, generateImage } from '../providers/fal.js';
 import { errorCostUsdMicros } from '../providers/errors.js';
 import type { WordTiming } from '../providers/whisperx.js';
+import { MAX_CLIP_MS, MIN_CLIP_MS } from './clip-bounds.js';
 import { computeSceneWindows } from './scene-windows.js';
 import { isScenesOutput, type ScenesOutput, type ScriptArtifact } from './script.js';
 
@@ -20,12 +21,6 @@ export const ESTIMATED_VISION_COST_MICROS = 15_000;
 // on provider error.
 const MAX_IMAGE_ATTEMPTS = 3;
 const MAX_VIDEO_ATTEMPTS = 2;
-
-// Reused-clip sanity bounds — the SAME range premium QC enforces (qc.ts
-// MIN_CLIP_MS/MAX_CLIP_MS). A resume trusts an on-disk clip only if it probes
-// inside these; a truncated file from a killed run must not be reused.
-const REUSE_MIN_CLIP_MS = 3000;
-const REUSE_MAX_CLIP_MS = 15000;
 
 // A scene window shorter than this has essentially no spoken time — almost
 // always an empty/near-empty narration. Refuse to spend on it: fail before any
@@ -190,7 +185,7 @@ export const visualsPremiumStage: StageDef = {
         let reusable = false;
         try {
           const { durationMs } = await probe(clipPath);
-          reusable = durationMs >= REUSE_MIN_CLIP_MS && durationMs <= REUSE_MAX_CLIP_MS;
+          reusable = durationMs >= MIN_CLIP_MS && durationMs <= MAX_CLIP_MS;
         } catch {
           reusable = false;
         }

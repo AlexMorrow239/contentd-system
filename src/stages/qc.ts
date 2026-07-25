@@ -10,6 +10,7 @@ import { visionJudgment } from '../providers/anthropic.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import { isScenesOutput, type ScriptArtifact } from './script.js'
+import { MAX_CLIP_MS, MIN_CLIP_MS } from './clip-bounds.js'
 import type { ScenesManifest } from './visuals-premium.js'
 import { narrationWordCount, minPlausibleNarrationMs } from './narration-text.js'
 
@@ -23,12 +24,10 @@ type QcCheck = QcResult['checks'][number]
 const MB = 1024 * 1024
 const MAX_SIZE_BYTES = 256 * MB
 
-// Scene-coverage sanity bounds: fal clips are generated at native 5s or 10s, so
-// anything under 3s or over 15s is a truncated or corrupt encode. The 50ms end
-// tolerance absorbs word-timing rounding; window starts/joins are exact by the
-// scene-windows contract (integer ms, exact tiling).
-const MIN_CLIP_MS = 3000
-const MAX_CLIP_MS = 15000
+// Scene-coverage tolerance: the 50ms end tolerance absorbs word-timing
+// rounding; window starts/joins are exact by the scene-windows contract
+// (integer ms, exact tiling). The per-clip duration bounds live in
+// ./clip-bounds.js — the visuals resume checkpoint enforces the same pair.
 const COVERAGE_TOLERANCE_MS = 50
 
 // Pre-flight budget reservation for the qc vision call: three PNG frames plus a
