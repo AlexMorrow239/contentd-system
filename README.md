@@ -236,7 +236,9 @@ upload attempt, or a scout run whose every channel died.
 | `digest` | 08:00 — printed to the log stream only, nothing else delivers it |
 
 Times are container-local (`TZ=America/Chicago`, set in
-`deploy/docker/Dockerfile`), regardless of the host Mac's own timezone. The
+`deploy/docker/Dockerfile` and pinned again in `docker-compose.yml`'s
+`environment:` block — an `env_file` value of the same name would otherwise
+override the image's `ENV`), regardless of the host Mac's own timezone. The
 schedule itself is `deploy/docker/crontab`, baked into the image — changing
 it means editing that file and running `docker compose build brainrot`,
 same as any other source change. There is no hot reload.
