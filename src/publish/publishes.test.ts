@@ -33,6 +33,32 @@ function seedJob(
   )
 }
 
+// Transaction mode leaves no trace in the resulting rows, so it is asserted
+// white-box: wrap db.transaction and record which runner the DAO invokes.
+// The plain call is a deferred BEGIN, whose read snapshot a concurrent
+// writer can invalidate — SQLITE_BUSY_SNAPSHOT is the one busy error
+// busy_timeout cannot retry, which is why these writes run `.immediate()`.
+function recordTransactionModes(db: Database): string[] {
+  const modes: string[] = []
+  const original = db.transaction.bind(db)
+  db.transaction = ((fn: (...args: unknown[]) => unknown) => {
+    const txn = original(fn as never) as unknown as {
+      (...args: unknown[]): unknown
+      immediate(...args: unknown[]): unknown
+    }
+    const wrapped = ((...args: unknown[]) => {
+      modes.push('deferred')
+      return txn(...args)
+    }) as unknown as typeof txn
+    wrapped.immediate = (...args: unknown[]) => {
+      modes.push('immediate')
+      return txn.immediate(...args)
+    }
+    return wrapped
+  }) as unknown as Database['transaction']
+  return modes
+}
+
 describe('claimPublish', () => {
   it('numbers attempts 1-based per (jobId, platform), counting every prior row regardless of slot or day', () => {
     const db = openDb(':memory:')
@@ -106,6 +132,23 @@ describe('claimPublish', () => {
     expect(rows).toEqual([{ job_id: 'job-1' }])
     db.close()
   })
+
+  it('counts prior attempts and inserts inside one immediate transaction', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    const modes = recordTransactionModes(db)
+
+    claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-20',
+      slot: '10:00',
+    })
+
+    expect(modes).toEqual(['immediate'])
+    db.close()
+  })
 })
 
 // Same insert shape the runner's final-gate library upsert writes
@@ -164,6 +207,40 @@ describe('markPublishDone', () => {
       (db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as { state: string })
         .state,
     ).toBe('published')
+    db.close()
+  })
+
+  it('runs the two-table flip in one immediate transaction', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    const id = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-20',
+      slot: '10:00',
+    }) as number
+    const modes = recordTransactionModes(db)
+
+    markPublishDone(db, id, 'yt-abc123', 'https://youtube.com/shorts/yt-abc123', new Date())
+
+    expect(modes).toEqual(['immediate'])
+    db.close()
+  })
+
+  it('leaves both tables untouched when no row carries the id', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedLibrary(db, 'job-1', { state: 'ready' })
+
+    markPublishDone(db, 999, 'yt-ghost', 'https://youtube.com/shorts/yt-ghost', new Date())
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 0 })
+    expect(
+      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as { state: string })
+        .state,
+    ).toBe('ready')
     db.close()
   })
 })
@@ -516,6 +593,19 @@ describe('markInterruptedDone', () => {
         state: string
       }).state,
     ).toBe('published')
+    db.close()
+  })
+
+  it('runs the two-table flip in one immediate transaction', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    seedPublish(db, { jobId: 'job-1', status: 'interrupted' })
+    const modes = recordTransactionModes(db)
+
+    markInterruptedDone(db, 'job-1', 'yt-xyz789', 'https://youtube.com/shorts/yt-xyz789', new Date())
+
+    expect(modes).toEqual(['immediate'])
     db.close()
   })
 

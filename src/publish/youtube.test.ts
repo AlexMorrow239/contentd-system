@@ -6,6 +6,7 @@ import type { PlatformMeta, PublishChannelConfig } from './types.js'
 import { PublishError } from './types.js'
 import {
   DEFAULT_YT_UPLOADS_PER_DAY,
+  PublishOutcomeUnknownError,
   UPLOAD_TIMEOUT_MS,
   YT_UPLOAD_SCOPE,
   mintAccessToken,
@@ -38,11 +39,15 @@ describe('ytUploadsPerDayCap', () => {
     expect(ytUploadsPerDayCap()).toBe(2)
   })
 
-  it('throws on a non-positive or non-numeric value', () => {
+  it('throws on a non-positive, non-numeric, or fractional value', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '0')
     expect(() => ytUploadsPerDayCap()).toThrow(/invalid BRAINROT_YT_UPLOADS_PER_DAY/)
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', 'abc')
     expect(() => ytUploadsPerDayCap()).toThrow(/invalid BRAINROT_YT_UPLOADS_PER_DAY/)
+    // A fraction would otherwise round the cap UP: the tick's `>=` gate lets
+    // 2 uploads through at 1.5.
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1.5')
+    expect(() => ytUploadsPerDayCap()).toThrow(/positive integer/)
   })
 })
 
@@ -276,7 +281,12 @@ describe('youtubeTarget upload — error mapping', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('maps a malformed JSON body on the 200 upload finalize to kind "transient"', async () => {
+  // The PUT returned 2xx: YouTube HAS the video. Neither of the two ways its
+  // body can be unreadable is a failure kind — a 'transient' here would send
+  // the same video up again at the next slot (a duplicate public upload), so
+  // both raise PublishOutcomeUnknownError instead and the tick leaves the row
+  // claimed for the sweep.
+  it('raises PublishOutcomeUnknownError on a malformed JSON body on the 200 upload finalize', async () => {
     const videoPath = tempVideoFile('x')
     let call = 0
     const impl: typeof fetch = async () => {
@@ -287,15 +297,28 @@ describe('youtubeTarget upload — error mapping', () => {
           headers: { location: 'https://upload.example.com/session/xyz' },
         })
       }
-      // 200 OK but the body is not valid JSON — a broken success response, not
-      // a rejection.
       return new Response('not json{', { status: 200, headers: { 'content-type': 'application/json' } })
     }
     const target = youtubeTarget(impl)
     const err = await target
       .upload({ videoPath, meta: META, publish: PUBLISH_CFG }, 'tok')
       .catch((e: unknown) => e)
-    expect(err).toBeInstanceOf(PublishError)
-    expect((err as PublishError).kind).toBe('transient')
+    expect(err).toBeInstanceOf(PublishOutcomeUnknownError)
+    expect(err).not.toBeInstanceOf(PublishError)
+    expect((err as Error).message).toMatch(/accepted the upload/)
+  })
+
+  it('raises PublishOutcomeUnknownError when the 200 upload finalize carries no video id', async () => {
+    const videoPath = tempVideoFile('x')
+    const { impl } = fakeFetch([
+      { status: 200, headers: { location: 'https://upload.example.com/session/noid' } },
+      { status: 200, body: { kind: 'youtube#video' } },
+    ])
+    const target = youtubeTarget(impl)
+    const err = await target
+      .upload({ videoPath, meta: META, publish: PUBLISH_CFG }, 'tok')
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(PublishOutcomeUnknownError)
+    expect((err as Error).message).toMatch(/no video id/)
   })
 })

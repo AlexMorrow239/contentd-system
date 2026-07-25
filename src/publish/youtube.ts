@@ -24,12 +24,27 @@ export function ytUploadsPerDayCap(): number {
     return DEFAULT_YT_UPLOADS_PER_DAY
   }
   const n = Number(raw)
-  if (!Number.isFinite(n) || n <= 0) {
+  // Integer-only: the tick gates on `used >= cap`, so a fractional 1.5 would
+  // permit 2 uploads — a cap that silently rounds itself up.
+  if (!Number.isInteger(n) || n <= 0) {
     throw new Error(
-      `invalid BRAINROT_YT_UPLOADS_PER_DAY: ${JSON.stringify(raw)} (expected a positive number of uploads)`,
+      `invalid BRAINROT_YT_UPLOADS_PER_DAY: ${JSON.stringify(raw)} (expected a positive integer number of uploads)`,
     )
   }
   return n
+}
+
+// The platform ACCEPTED the upload — the video exists on YouTube — but its
+// outcome is unreadable (broken success body, no video id). Deliberately NOT
+// a PublishError: no failure kind fits, and marking the row failed would make
+// the same video eligible again at the next slot, publishing it twice. The
+// tick leaves the row 'claimed' so the repair sweep heals it to 'interrupted'
+// — the designed "uploaded but DB state unknown" operator path.
+export class PublishOutcomeUnknownError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PublishOutcomeUnknownError'
+  }
 }
 
 // The public watch URL for an uploaded Short. Built here rather than at each
@@ -211,16 +226,22 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
       if (!uploadRes.ok) {
         throw await mapUploadHttpError('youtubeTarget', uploadRes)
       }
-      // A 200 with an unparseable body is a broken success response, not a
-      // rejection — 'transient' so the video stays retryable at the next slot.
+      // Past this point the bytes are accepted: the video is live on YouTube
+      // whatever the body says. An unreadable body is therefore an unknown
+      // outcome, never a retryable failure — a retry would upload the same
+      // video a second time.
       let body: { id?: string }
       try {
         body = (await uploadRes.json()) as { id?: string }
       } catch {
-        throw new PublishError('youtubeTarget: malformed JSON in success response', 'transient')
+        throw new PublishOutcomeUnknownError(
+          'youtubeTarget: accepted the upload but returned a malformed JSON success body',
+        )
       }
       if (!body.id) {
-        throw new PublishError('youtubeTarget: upload response carried no video id', 'transient')
+        throw new PublishOutcomeUnknownError(
+          'youtubeTarget: accepted the upload but its success body carried no video id',
+        )
       }
       return { postId: body.id, url: youtubeShortsUrl(body.id) }
     },

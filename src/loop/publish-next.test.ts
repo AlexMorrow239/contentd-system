@@ -6,20 +6,25 @@ import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { parseTokenKey } from '../publish/crypto.js'
-import { claimPublish } from '../publish/publishes.js'
+import { claimPublish, markPublishDone } from '../publish/publishes.js'
 import { upsertToken } from '../publish/tokens.js'
 import type { Platform, PublishTarget } from '../publish/types.js'
-import { YT_UPLOAD_SCOPE } from '../publish/youtube.js'
+import { PublishOutcomeUnknownError, YT_UPLOAD_SCOPE } from '../publish/youtube.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
 import { publishNextTick } from './publish-next.js'
 
 // Spies claimPublish so the claim-conflict test can force a `null` return
 // (a racing-tick claim collision the publish lease makes unreachable in a
-// single-process run); every other test calls straight through to the real
-// DAO because vi.fn wraps actual.claimPublish as its default implementation.
+// single-process run), and markPublishDone so the post-upload DB-failure
+// test can force a throw; every other test calls straight through to the
+// real DAO because vi.fn wraps the actual implementation as its default.
 vi.mock('../publish/publishes.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../publish/publishes.js')>()
-  return { ...actual, claimPublish: vi.fn(actual.claimPublish) }
+  return {
+    ...actual,
+    claimPublish: vi.fn(actual.claimPublish),
+    markPublishDone: vi.fn(actual.markPublishDone),
+  }
 })
 
 // Local-time constructor (month is 0-based): 2026-07-22 14:05 machine-local.
@@ -75,8 +80,16 @@ function writeChannel(dir: string, opts: { name: string; slots?: string[] }): vo
   writeFileSync(join(dir, `${opts.name}.toml`), channelToml(opts))
 }
 
+// The candidate scan pre-flights video_path with existsSync (a pruned runs/
+// tree must never burn a slot), so a publishable fixture needs a real file
+// on disk. `videoExists: false` seeds the pruned case: the library row still
+// points at a path, but nothing is there.
+let videoRoot: string | undefined
 let jobSeq = 0
-function seedReadyVideo(db: Database, opts: { channel: string; metadataJson?: string; topic?: string }): string {
+function seedReadyVideo(
+  db: Database,
+  opts: { channel: string; metadataJson?: string; topic?: string; videoExists?: boolean },
+): string {
   jobSeq += 1
   const jobId = `job-${jobSeq}`
   db.prepare("INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, 'done')").run(
@@ -84,9 +97,12 @@ function seedReadyVideo(db: Database, opts: { channel: string; metadataJson?: st
     opts.channel,
     opts.topic ?? 'A test topic',
   )
+  videoRoot ??= tmpDir('brainrot-publish-videos-')
+  const videoPath = join(videoRoot, `${jobId}.mp4`)
+  if (opts.videoExists !== false) writeFileSync(videoPath, 'fake video bytes')
   db.prepare("INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, 'ready')").run(
     jobId,
-    `/tmp/${jobId}.mp4`,
+    videoPath,
     opts.metadataJson ?? '{}',
   )
   return jobId
@@ -194,6 +210,42 @@ describe('publishNextTick — gates', () => {
     expect(result).toEqual({ action: 'noop', reason: 'no-auth' })
     db.close()
   })
+
+  // A malformed env var used to throw out of the tick — exit 1, no JSON line,
+  // every firing, with no DB trace. Unset, the same vars degrade gracefully,
+  // so present-but-invalid must too.
+  it('no-ops with reason bad-env on a malformed BRAINROT_TOKEN_KEY, naming the variable but never its value', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-badkey-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    const badKey = 'ab'.repeat(31) + 'a' // 63 hex chars: one short of a 32-byte key
+    vi.stubEnv('BRAINROT_TOKEN_KEY', badKey)
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result.action).toBe('noop')
+    expect(result.reason).toBe('bad-env')
+    expect(result.error).toContain('BRAINROT_TOKEN_KEY')
+    expect(result.error).not.toContain(badKey)
+    // Validated before any lease or candidate work: nothing was claimed and
+    // the lease is free for the next firing.
+    expect(db.prepare("SELECT * FROM leases WHERE name = 'publish'").get()).toBeUndefined()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('no-ops with reason bad-env on an unparseable BRAINROT_YT_UPLOADS_PER_DAY', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-badcap-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', 'six')
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result.action).toBe('noop')
+    expect(result.reason).toBe('bad-env')
+    expect(result.error).toContain('BRAINROT_YT_UPLOADS_PER_DAY')
+    expect(result.error).not.toContain('six')
+    db.close()
+  })
 })
 
 describe('publishNextTick — candidate selection (dry-run)', () => {
@@ -222,6 +274,38 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     // sorts first (tied fraction, tied slot, channel ASC) so its blocker wins.
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
     expect(result).toEqual({ action: 'dry-run', wouldPublish: null, reason: 'no-ready-video' })
+    db.close()
+  })
+
+  // A pruned runs/ tree leaves a 'ready' library row pointing at nothing.
+  // Without the pre-flight the claim happens first and the ENOENT comes back
+  // as 'rejected' — three burnt slots and three quota units before the
+  // poison cap retires the row.
+  it('skips a ready video whose file is gone and reports no-video-file', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-nofile-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a', videoExists: false })
+    seedToken(db, 'chan-a')
+    const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
+    expect(result).toEqual({ action: 'dry-run', wouldPublish: null, reason: 'no-video-file' })
+    db.close()
+  })
+
+  it('falls through to a channel whose file is present when an earlier one is pruned', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-nofile-fallthrough-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
+    seedReadyVideo(db, { channel: 'chan-a', videoExists: false })
+    seedToken(db, 'chan-a')
+    const jobB = seedReadyVideo(db, { channel: 'chan-b', topic: 'Chan B topic' })
+    seedToken(db, 'chan-b')
+    const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
+    expect(result).toEqual({
+      action: 'dry-run',
+      wouldPublish: { channel: 'chan-b', platform: 'youtube', slot: '14:00', jobId: jobB, title: 'Chan B topic' },
+    })
     db.close()
   })
 
@@ -324,6 +408,89 @@ describe('publishNextTick — publish', () => {
     expect(result.action).toBe('publish-failed')
     const row = db.prepare('SELECT error_kind FROM publishes WHERE job_id = ?').get(jobId) as { error_kind: string }
     expect(row.error_kind).toBe('transient')
+    db.close()
+  })
+
+  // The upload landed — the video is public — and only the finalize write
+  // failed. Marking the row failed would put the same job back in the
+  // eligibility pool and publish it a second time, so the row stays claimed
+  // and the repair sweep heals it to 'interrupted' for `publish mark-done`.
+  it('leaves the row claimed when the finalize write throws after a live upload', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-finalize-throw-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const jobId = seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    const target = fakeTarget(async () => ({ postId: 'yt-live-1', url: 'https://youtube.com/shorts/yt-live-1' }))
+    vi.mocked(markPublishDone).mockImplementationOnce(() => {
+      throw new Error('database is locked')
+    })
+    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    expect(result.action).toBe('publish-failed')
+    expect(result.jobId).toBe(jobId)
+    // The post facts survive in the error text — the operator needs them to
+    // confirm the upload in Studio and run `publish mark-done`.
+    expect(result.error).toContain('yt-live-1')
+    expect(result.error).toContain('https://youtube.com/shorts/yt-live-1')
+    const row = db.prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
+      status: string
+      error_kind: string | null
+    }
+    expect(row).toEqual({ status: 'claimed', error_kind: null })
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    expect(lib.state).toBe('ready')
+    db.close()
+  })
+
+  // Same duplicate-upload hazard from the other side: YouTube accepted the
+  // bytes but its success body was unreadable.
+  it('leaves the row claimed when the adapter reports an unknown outcome', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-unknown-outcome-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const jobId = seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    const target = fakeTarget(async () => {
+      throw new PublishOutcomeUnknownError('youtubeTarget: accepted the upload but its success body carried no video id')
+    })
+    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    expect(result).toEqual({
+      action: 'publish-failed',
+      channel: 'chan-a',
+      platform: 'youtube',
+      jobId,
+      slot: '14:00',
+      error: 'youtubeTarget: accepted the upload but its success body carried no video id',
+    })
+    const row = db.prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
+      status: string
+      error_kind: string | null
+    }
+    expect(row).toEqual({ status: 'claimed', error_kind: null })
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    expect(lib.state).toBe('ready')
+    db.close()
+  })
+
+  it('stamps finished_at when the write happens, not when the tick started', async () => {
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-finished-at-')
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    const jobId = seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    // A clock that advances between the tick's planning read and the
+    // finalize write, standing in for a multi-minute upload.
+    const started = NOW()
+    const finished = new Date(started.getTime() + 4 * 60_000)
+    const clock = [started, finished]
+    let call = 0
+    const now = () => clock[Math.min(call++, clock.length - 1)]
+    const target = fakeTarget(async () => ({ postId: 'yt-slow-1', url: 'https://youtube.com/shorts/yt-slow-1' }))
+    await publishNextTick(db, { channelsDir, now, target, fetchImpl: fakeTokenFetch() })
+    const row = db.prepare('SELECT finished_at FROM publishes WHERE job_id = ?').get(jobId) as {
+      finished_at: string
+    }
+    expect(row.finished_at).toBe(finished.toISOString())
     db.close()
   })
 

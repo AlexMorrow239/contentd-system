@@ -44,6 +44,10 @@ export function claimPublish(
     "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
       "VALUES (?, ?, ?, ?, ?, 'claimed', ?)",
   )
+  // `.immediate()` (not a deferred BEGIN): the count read and the INSERT must
+  // share one write-locked snapshot, or a writer committing in between
+  // invalidates it as SQLITE_BUSY_SNAPSHOT — the one busy error busy_timeout
+  // cannot retry. Same rationale as acquireLease (lease.ts).
   const claim = db.transaction((): number | null => {
     const { n } = countPriorAttempts.get(opts.jobId, opts.platform) as { n: number }
     try {
@@ -63,14 +67,50 @@ export function claimPublish(
       throw err
     }
   })
-  return claim()
+  return claim.immediate()
 }
 
-// ONE transaction: the publishes row flips to done with its post facts, AND
-// the library row flips to 'published' — no window where one fact is
-// visible without the other (design spec §6 step 9). A missing id is a
-// silent no-op (defensive; the tick only ever calls this with an id it
-// just claimed).
+// Which publishes row a done-flip targets: the tick keys the row it just
+// claimed by id, the manual mark-done path keys it by job_id + status.
+type PublishTargetRow = { id: number } | { jobId: string; status: PublishStatus }
+
+// The done-flip both finalize paths share: the publishes row takes its post
+// facts AND the library row flips to 'published' in ONE transaction — no
+// window where one fact is visible without the other (design spec §6 step
+// 9). `.immediate()` for the same reason as claimPublish: the job_id read
+// and the two writes must share one write-locked snapshot. job_id is read
+// inside the transaction because one caller keys by id and the other by
+// job_id + status; the read must precede the UPDATE, which changes the very
+// status the second form matches on. Returns the number of publishes rows
+// flipped so each caller keeps its own return semantics.
+function finishPublish(
+  db: Database,
+  target: PublishTargetRow,
+  postId: string,
+  url: string,
+  now: Date,
+): number {
+  // Fixed literals, chosen by the target shape — never caller-supplied SQL.
+  const where = 'id' in target ? 'id = ?' : 'job_id = ? AND status = ?'
+  const params: (number | string)[] =
+    'id' in target ? [target.id] : [target.jobId, target.status]
+  const selectJobIds = db.prepare(`SELECT job_id FROM publishes WHERE ${where}`)
+  const updatePublish = db.prepare(
+    `UPDATE publishes SET status = 'done', post_id = ?, url = ?, finished_at = ? WHERE ${where}`,
+  )
+  const updateLibrary = db.prepare("UPDATE library SET state = 'published' WHERE job_id = ?")
+  const flip = db.transaction((): number => {
+    const rows = selectJobIds.all(...params) as { job_id: string }[]
+    if (rows.length === 0) return 0
+    const info = updatePublish.run(postId, url, now.toISOString(), ...params)
+    for (const row of rows) updateLibrary.run(row.job_id)
+    return info.changes
+  })
+  return flip.immediate()
+}
+
+// Tick finalize (design spec §6 step 9). A missing id is a silent no-op
+// (defensive; the tick only ever calls this with an id it just claimed).
 export function markPublishDone(
   db: Database,
   id: number,
@@ -78,17 +118,7 @@ export function markPublishDone(
   url: string,
   now: Date,
 ): void {
-  const selectJobId = db.prepare('SELECT job_id FROM publishes WHERE id = ?')
-  const updatePublish = db.prepare(
-    "UPDATE publishes SET status = 'done', post_id = ?, url = ?, finished_at = ? WHERE id = ?",
-  )
-  const updateLibrary = db.prepare("UPDATE library SET state = 'published' WHERE job_id = ?")
-  db.transaction(() => {
-    const row = selectJobId.get(id) as { job_id: string } | undefined
-    if (row === undefined) return
-    updatePublish.run(postId, url, now.toISOString(), id)
-    updateLibrary.run(row.job_id)
-  })()
+  finishPublish(db, { id }, postId, url, now)
 }
 
 // Failure never touches the library row: the video stays 'ready' and
@@ -219,11 +249,12 @@ export function retryInterrupted(db: Database, jobId: string): boolean {
 }
 
 // Manual resolution path (design spec §7 `publish mark-done`): for when
-// Studio confirms the upload actually landed. Same one-transaction shape
-// as markPublishDone, guarded on the interrupted row existing — the
-// library flip only runs when the publishes update actually matched a
-// row, so a job with no interrupted row leaves both tables untouched and
-// reports false.
+// Studio confirms the upload actually landed. Shares markPublishDone's
+// transaction via finishPublish, guarded on the interrupted row existing —
+// a job with no interrupted row leaves both tables untouched and reports
+// false. `>= 1` (not `=== 1`) for the same invariant as retryInterrupted:
+// at most one interrupted row per (job, platform), so any match is a real
+// flip.
 export function markInterruptedDone(
   db: Database,
   jobId: string,
@@ -231,20 +262,7 @@ export function markInterruptedDone(
   url: string,
   now: Date,
 ): boolean {
-  const updatePublish = db.prepare(
-    "UPDATE publishes SET status = 'done', post_id = ?, url = ?, finished_at = ? " +
-      "WHERE job_id = ? AND status = 'interrupted'",
-  )
-  const updateLibrary = db.prepare("UPDATE library SET state = 'published' WHERE job_id = ?")
-  const flip = db.transaction((): boolean => {
-    const info = updatePublish.run(postId, url, now.toISOString(), jobId)
-    // `< 1` (not `!== 1`) for the same invariant as retryInterrupted: at most
-    // one interrupted row per (job, platform), so any match is a real flip.
-    if (info.changes < 1) return false
-    updateLibrary.run(jobId)
-    return true
-  })
-  return flip()
+  return finishPublish(db, { jobId, status: 'interrupted' }, postId, url, now) >= 1
 }
 
 const PUBLISH_COLUMNS =
