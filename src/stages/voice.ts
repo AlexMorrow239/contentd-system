@@ -220,7 +220,11 @@ export const voiceStage: StageDef = {
     let voiceId = '';
     let premiumWords: WordTiming[] | undefined;
 
-    const premiumVoice = ctx.channel.voice.premium;
+    // Dev mode (channel-level `[voice] dev = true` or BRAINROT_DEV_VOICE=1)
+    // forces the volume chain regardless of [voice.premium] — see
+    // docs/superpowers/specs/2026-07-25-dev-voice-mode-design.md.
+    const devMode = ctx.channel.voice.dev === true || process.env.BRAINROT_DEV_VOICE === '1';
+    const premiumVoice = devMode ? undefined : ctx.channel.voice.premium;
     if (premiumVoice) {
       // The hook and body go in one call, with an explicit SSML break between
       // them so ElevenLabs leaves a deliberate pause instead of reading

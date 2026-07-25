@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'node:fs';
 import { Readable } from 'node:stream';
 
@@ -417,5 +417,53 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
     // no timings.json for captions to trust (and no voice.json either).
     await expect(fs.access(ctx.artifactPath('voice', 'timings.json'))).rejects.toThrow();
     await expect(fs.access(ctx.artifactPath('voice', 'voice.json'))).rejects.toThrow();
+  });
+});
+
+describe('voiceStage dev mode', () => {
+  afterEach(() => {
+    delete process.env.BRAINROT_DEV_VOICE;
+  });
+
+  it('channel.voice.dev=true skips elevenlabs and its budget check even when premium is configured', async () => {
+    const channel = premiumChannel();
+    channel.voice = { ...channel.voice, dev: true };
+    // Cap set below the mocked 40_000 elevenlabs estimate: if dev mode did not
+    // skip the premium branch entirely, this would throw BudgetExceededError
+    // instead of falling through to kokoro.
+    channel.budget = { ...channel.budget, perVideoUsdMicros: 10_000 };
+    const ctx = await premiumCtx(SCRIPT, channel);
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    expect(vi.mocked(estimateTtsCostMicros)).not.toHaveBeenCalled();
+    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled();
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta.provider).toBe('kokoro');
+  });
+
+  it('BRAINROT_DEV_VOICE=1 skips elevenlabs even when the channel has no dev flag set', async () => {
+    process.env.BRAINROT_DEV_VOICE = '1';
+    const ctx = await premiumCtx();
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+
+    await voiceStage.run(ctx);
+
+    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled();
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
+    expect(meta.provider).toBe('kokoro');
+  });
+
+  it('leaves premium behavior untouched when BRAINROT_DEV_VOICE is unset or not "1"', async () => {
+    process.env.BRAINROT_DEV_VOICE = '0';
+    const ctx = await premiumCtx();
+    vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult());
+
+    await voiceStage.run(ctx);
+
+    expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledTimes(1);
   });
 });
