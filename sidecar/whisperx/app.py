@@ -50,6 +50,16 @@ async def reject_oversized_content_length(request: Request, call_next):
     return await call_next(request)
 
 
+@app.get("/health")
+def health():
+    """Liveness only. Deliberately does NOT touch get_align_model(): the model
+    is lazy by design (see below), and warming it here would turn a fast probe
+    into a multi-minute cold start that the compose healthcheck would read as a
+    failed container. A healthy response therefore means "serving", not
+    "alignment is warm" — the first real /align call still pays the load."""
+    return {"ok": True}
+
+
 # Alignment model is loaded once and cached at module level. Lazy so importing
 # this module (e.g. in tests) does not trigger a model download.
 _align = {"model": None, "metadata": None}

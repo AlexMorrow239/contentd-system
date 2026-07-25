@@ -159,3 +159,20 @@ def test_chunked_write_preserves_bytes(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"words": []}
     assert seen["bytes"] == wav  # chunk-reassembled temp file is byte-identical
+
+
+def test_health_returns_ok_without_loading_the_align_model(monkeypatch):
+    # The align model is lazy (get_align_model) and takes a long time to
+    # download on first call. Health must stay a liveness probe: if it ever
+    # triggers a load, the compose healthcheck would time out on a cold start
+    # and the app container would never come up.
+    def explode(*args, **kwargs):
+        raise AssertionError("/health must not load the align model")
+
+    monkeypatch.setattr(app_module.whisperx, "load_align_model", explode)
+
+    client = TestClient(app_module.app)
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
