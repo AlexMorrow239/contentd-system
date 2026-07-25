@@ -51,15 +51,17 @@ cmd_uninstall() {
 }
 
 cmd_status() {
-  printf '%-28s %-10s %s\n' AGENT STATE 'LAST EXIT'
+  printf '%-28s %-12s %-6s %s\n' AGENT LOADED RUNS 'LAST EXIT'
   for a in "${AGENTS[@]}"; do
-    local label="com.brainrot.$a"
-    if launchctl print "$DOMAIN/$label" >/dev/null 2>&1; then
-      local last
-      last="$(launchctl print "$DOMAIN/$label" 2>/dev/null | awk '/last exit code/ {print $NF; exit}')"
-      printf '%-28s %-10s %s\n' "$label" loaded "${last:-–}"
+    local label="com.brainrot.$a" info runs last
+    if info="$(launchctl print "$DOMAIN/$label" 2>/dev/null)"; then
+      # "last exit code = 0" or "last exit code = (never exited)"
+      runs="$(sed -n 's/^[[:space:]]*runs = \(.*\)$/\1/p' <<<"$info" | head -1)"
+      last="$(sed -n 's/^[[:space:]]*last exit code = \(.*\)$/\1/p' <<<"$info" | head -1)"
+      [[ "$last" == "(never exited)" ]] && last="never run"
+      printf '%-28s %-12s %-6s %s\n' "$label" yes "${runs:-0}" "${last:-?}"
     else
-      printf '%-28s %-10s %s\n' "$label" '-' '–'
+      printf '%-28s %-12s %-6s %s\n' "$label" no '-' '-'
     fi
   done
 }
