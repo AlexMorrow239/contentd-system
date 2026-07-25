@@ -62,7 +62,7 @@ def health():
 
 # Alignment model is loaded once and cached at module level. Lazy so importing
 # this module (e.g. in tests) does not trigger a model download.
-_align = {"model": None, "metadata": None}
+_align: dict[str, object] = {"model": None, "metadata": None}
 
 
 def get_align_model():
