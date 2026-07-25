@@ -35,14 +35,43 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      # These override the dev values in .env. Compose applies `environment`
-      # after `env_file`, so the container always runs against production state
-      # no matter what the host copy of .env says.
+      # env_file above forwards EVERY key in the host's (dev-pointing) .env —
+      # provider keys, BRAINROT_TOKEN_KEY, etc — straight into this container.
+      # Compose applies `environment` after `env_file`, so only the keys
+      # listed below are guaranteed to hold their production value regardless
+      # of what the host .env says; every other .env key passes through
+      # unmodified, which is intended for provider keys but was previously
+      # unbounded for path/behavior toggles too. Anything host-only that
+      # controls where data lands or how the pipeline behaves belongs here.
       BRAINROT_DB: data/brainrot.db
       BRAINROT_CHANNELS_DIR: channels
       BRAINROT_RUNS_ROOT: runs
       # Service DNS, not localhost — the sidecar is a different container.
       WHISPERX_URL: http://whisperx:8585
+      # The Dockerfile's `ENV TZ=America/Chicago` is only a default — an
+      # env_file value of the same name overrides an image ENV — and the
+      # entire publish-slot design (src/publish/slots.ts) assumes
+      # container-local wall-clock time, so pin it explicitly.
+      TZ: America/Chicago
+      # voice.ts:231 forces the free voice chain only when this is exactly
+      # '1'; empty is verified equivalent to unset (safely OFF). Both
+      # .env.example and the README invite setting BRAINROT_DEV_VOICE=1 for
+      # local runs — if that landed in the host .env, every production video
+      # would silently and permanently lose ElevenLabs with nothing in QC
+      # catching it. Pinning to "" closes that off. Do not pin any other value.
+      BRAINROT_DEV_VOICE: ""
+      # Pins the cross-channel daily spend cap currently effective via the
+      # host .env (BRAINROT_GLOBAL_DAILY_USD=12), so this commit does not
+      # change today's budget behavior while removing the coupling to
+      # whatever the host .env happens to contain. costs.ts treats an empty
+      # string as "unset" (falls back to its own $25 default), so this must
+      # be a real number, not "".
+      BRAINROT_GLOBAL_DAILY_USD: "12"
+      # Pins youtube.ts's own DEFAULT_YT_UPLOADS_PER_DAY (unset in .env
+      # today, so this was already the effective value) rather than leaving
+      # it implicit. youtube.ts also treats "" as unset, so this must be a
+      # real integer, not "".
+      BRAINROT_YT_UPLOADS_PER_DAY: "6"
     volumes:
       - ./assets:/app/assets:ro      # 21 GB, never copied, never written
       - ./channels:/app/channels:ro  # production config, re-read every tick
