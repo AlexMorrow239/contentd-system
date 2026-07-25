@@ -28,6 +28,7 @@ pnpm brainrot produce --channel channels/<name>.toml --topic "..." [--tier volum
 pnpm brainrot scout | produce-next | publish-next | digest
 pnpm brainrot jobs | costs
 pnpm brainrot topics list|approve|reject <ids...>
+pnpm brainrot topics requeue <id>   # orphaned 'claimed' topic -> 'candidate'; refuses while a live job holds it
 pnpm brainrot library list|approve|reject <jobIds...>
 pnpm brainrot publish retry|mark-done <jobId>
 pnpm brainrot publishes list [--days N]
@@ -83,13 +84,19 @@ cadence controls throughput, not a loop inside the code. Both:
 
 - take a named lease (`src/loop/lease.ts`, `leases` table) so only one
   process is doing that kind of work at a time; a held lease is a normal
-  no-op, not an error.
+  no-op, not an error. `scout` takes one too (name `scout`, 30-min TTL,
+  acquired in its CLI action) and prints the same `lease-held` noop line.
+  `produce-next` heartbeats its lease at every stage start (`runJob`'s
+  `heartbeat` option, threaded through `resumeJob` as well) so a render
+  longer than the TTL is not taken over mid-flight.
 - run an idempotent **repair sweep** at the top of the lease window to heal
   state left inconsistent by a crash between two writes that should have been
   atomic (e.g. a topic left `claimed` after its job already landed in
   `library`; a `publishes` row left `claimed` after an upload that never
   confirmed).
-- read `channels/*.toml` fresh every tick via `loadChannelsDir`.
+- read `channels/*.toml` fresh every tick — via `tryLoadChannelsDir`, before
+  the lease: a broken TOML is reported as a `config-error` noop line rather
+  than thrown, because a tick that throws prints no JSON line at all.
 
 `produce-next` asks `planTick` (`src/loop/plan-tick.ts`) whether to resume a
 blocked job or claim+produce a new topic; `publish-next` scans due slots

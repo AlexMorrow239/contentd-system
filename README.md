@@ -230,7 +230,23 @@ MAILTO=you@example.com
   have approved (`pnpm brainrot topics approve <id>`) unless the channel
   TOML sets `auto_premium = true` under `[scout]`; volume flows unattended.
   A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
-  render from the previous firing is still running.
+  render from the previous firing is still running — `scout` takes a lease of
+  its own (30 min) and prints the same line if a previous run is still going.
+- **Every tick prints one JSON line, and a noop is not a failure.**
+  `produce-next` noops with `lease-held`, `no-eligible-work`, `no-fal-key`,
+  `claim-conflict` (an operator command won a topic or job mid-tick), or
+  `config-error`; `publish-next` with `lease-held`, `no-due-slot`,
+  `platform-quota`, `no-ready-video`, `no-video-file` (the `ready` row's file
+  was pruned from `runs/`), `no-auth`, `claim-conflict`, `bad-env` (a
+  malformed `BRAINROT_TOKEN_KEY` or `BRAINROT_YT_UPLOADS_PER_DAY`), or
+  `config-error` (the channels dir would not load — the message also goes to
+  stderr). All of those exit `0`. Exit `1` means real work failed:
+  a `failed`/`blocked` produce, or a `publish-failed` upload attempt.
+- **A stranded topic can be returned to the queue.** A topic stays `claimed`
+  for as long as its job might still run, so a job abandoned for good leaves
+  its topic bound forever. `pnpm brainrot topics requeue <id>` returns it to
+  `candidate` and unbinds the dead job; it refuses while a `queued`,
+  `running`, or `blocked` job still holds the topic.
 - **Manual runs take no lease.** `produce` and `resume` run outside the
   produce-next lease, so a hand-run invocation can execute concurrently with a
   live tick and both may act on the same job/topic. Stop the produce-next cron
