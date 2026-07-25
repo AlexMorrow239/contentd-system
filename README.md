@@ -62,6 +62,11 @@ dependency on the happy path) — no separate flag or tier needed. It falls back
 to kokoro/edge-tts on failure or when unconfigured. This requires
 `ELEVENLABS_API_KEY` in `.env`.
 
+To skip ElevenLabs on purpose — for a local test run of a channel that has
+`[voice.premium]` configured — pass `--dev` to `produce` or `resume`, set
+`BRAINROT_DEV_VOICE=1` in the environment, or add `dev = true` to the
+channel's `[voice]` table to force it for every job on that channel.
+
 ## Where outputs land
 
 - Per-job artifacts: `runs/<jobId>/<stage>/` (`script.json`, `narration.wav`,
