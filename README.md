@@ -221,11 +221,15 @@ MAILTO=you@example.com
   your absolute repo path and run `mkdir -p logs` in the repo once before
   the first firing. If you would rather not set `PATH`, use the absolute
   binary path from `which pnpm` in each entry instead.
-- **The quota/cap day is UTC.** Daily tier quotas and the spend caps share
-  the cost ledger's UTC day boundary, so "today" flips at midnight UTC —
-  7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern — not at
-  local midnight. Expect fresh quota slots and budget headroom in the early
-  evening.
+- **Budget caps and tier quotas roll over at UTC midnight; publishing rolls
+  over at local midnight.** The spend caps and the per-channel tier_mix quota
+  both key off the cost ledger / `jobs.created_at`, which is UTC, so "today"
+  for those flips at midnight UTC — 7 pm EST / 8 pm EDT, i.e. late
+  afternoon/early evening US-Eastern — not at local midnight. Expect fresh
+  quota slots and budget headroom in the early evening. Publish slots and the
+  YouTube per-day upload counter are the opposite: they key off the machine's
+  local wall-clock day, so they roll over at local midnight, not UTC
+  midnight.
 - **Premium stays gated.** `produce-next` only claims premium topics you
   have approved (`pnpm brainrot topics approve <id>`) unless the channel
   TOML sets `auto_premium = true` under `[scout]`; volume flows unattended.
