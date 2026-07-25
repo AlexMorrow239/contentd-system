@@ -22,7 +22,6 @@ const OTHER_KEY_HEX = Buffer.alloc(32, 0x11).toString('hex')
 // process.env by default; tests pass explicit presence flags so a developer's
 // own .env can never flip an assertion.
 const ENV_OK = {
-  falKeyPresent: true,
   ytClientIdPresent: true,
   ytClientSecretPresent: true,
   tokenKeyHex: TEST_KEY_HEX,
@@ -39,17 +38,15 @@ function seedJob(
   opts: {
     id: string
     channel?: string
-    tier?: 'volume' | 'premium'
     status?: 'queued' | 'running' | 'failed' | 'done' | 'blocked'
     createdAt?: string
   },
 ): void {
   db.prepare(
-    'INSERT INTO jobs (id, channel, tier, topic, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    "INSERT INTO jobs (id, channel, tier, topic, status, created_at) VALUES (?, ?, 'volume', ?, ?, ?)",
   ).run(
     opts.id,
     opts.channel ?? 'chan-a',
-    opts.tier ?? 'volume',
     'digest test topic',
     opts.status ?? 'done',
     opts.createdAt ?? isoAgo(HOUR_MS),
@@ -222,23 +219,22 @@ describe('buildDigest — topics section', () => {
 })
 
 describe('buildDigest — jobs section', () => {
-  it('counts last-24h jobs per channel and tier with library-resolved outcomes', () => {
+  it('counts last-24h jobs per channel with library-resolved outcomes', () => {
     const db = openDb(':memory:')
-    // chan-a volume: one ready (done + library row), one failed
+    // one ready (done + library row), one failed
     seedJob(db, { id: 'j-ready', status: 'done' })
     seedLibrary(db, 'j-ready', 'ready')
     seedJob(db, { id: 'j-failed', status: 'failed' })
-    // chan-a premium: one needs-review, one blocked
-    seedJob(db, { id: 'j-review', tier: 'premium', status: 'done' })
+    // one needs-review, one blocked
+    seedJob(db, { id: 'j-review', status: 'done' })
     seedLibrary(db, 'j-review', 'needs-review')
-    seedJob(db, { id: 'j-blocked', tier: 'premium', status: 'blocked' })
+    seedJob(db, { id: 'j-blocked', status: 'blocked' })
     // 3 days old — outside the window, not counted here (it will surface in
     // the action-items section, which is current-state, not last-24h)
     seedJob(db, { id: 'j-old', status: 'failed', createdAt: isoAgo(3 * DAY_MS) })
     const digest = buildDigest(db, [])
     expect(digest).toContain('Jobs (last 24h)')
-    expect(digest).toContain('  chan-a volume: 2 — 1 ready, 0 needs-review, 1 failed, 0 blocked')
-    expect(digest).toContain('  chan-a premium: 2 — 0 ready, 1 needs-review, 0 failed, 1 blocked')
+    expect(digest).toContain('  chan-a: 4 — 1 ready, 1 needs-review, 1 failed, 1 blocked')
     db.close()
   })
 
@@ -255,7 +251,6 @@ describe('buildDigest — spend section', () => {
     const db = openDb(':memory:')
     const budget = {
       perVideoUsdMicros: 8_000_000,
-      premiumPerVideoUsdMicros: 7_000_000,
       perDayUsdMicros: 20_000_000,
     }
     const chA = testChannel({ name: 'chan-a', budget })
@@ -286,16 +281,16 @@ describe('buildDigest — spend section', () => {
 describe('buildDigest — action items', () => {
   it('lists failed jobs and flags running jobs older than the zombie threshold', () => {
     const db = openDb(':memory:')
-    seedJob(db, { id: 'j-dead', tier: 'premium', status: 'failed' })
+    seedJob(db, { id: 'j-dead', status: 'failed' })
     // 3h-old running job: past ZOMBIE_RUNNING_MS (2h) — flagged
     seedJob(db, { id: 'j-zombie', status: 'running', createdAt: isoAgo(3 * HOUR_MS) })
     // 1h-old running job: healthy — must NOT be flagged
     seedJob(db, { id: 'j-live', status: 'running', createdAt: isoAgo(HOUR_MS) })
     const digest = buildDigest(db, [])
     expect(digest).toContain('Action items')
-    expect(digest).toContain('  failed job j-dead (chan-a, premium) — resume manually')
+    expect(digest).toContain('  failed job j-dead (chan-a) — resume manually')
     expect(digest).toContain(
-      '  running job j-zombie (chan-a, volume) running > 2h — probably crashed — resume with --force',
+      '  running job j-zombie (chan-a) running > 2h — probably crashed — resume with --force',
     )
     expect(digest).not.toContain('j-live')
     db.close()
@@ -310,7 +305,7 @@ describe('buildDigest — action items', () => {
     seedJob(db, { id: 'j-fresh', status: 'queued', createdAt: isoAgo(0) })
     const digest = buildDigest(db, [])
     expect(digest).toContain(
-      '  queued job j-stranded (chan-a, volume) — stranded before start — resume with brainrot resume j-stranded',
+      '  queued job j-stranded (chan-a) — stranded before start — resume with brainrot resume j-stranded',
     )
     expect(digest).not.toContain('j-fresh')
     db.close()
@@ -325,7 +320,7 @@ describe('buildDigest — action items', () => {
     // claimed/used topics are neither queued nor awaiting approval
     seedTopic(db, { dedupeHash: 'h5', status: 'used' })
     const digest = buildDigest(db, [])
-    expect(digest).toContain('  chan-a: 2 approved premium topics queued')
+    expect(digest).toContain('  chan-a: 2 approved topics queued')
     expect(digest).toContain('  chan-a: 1 candidate topics awaiting approval')
     expect(digest).toContain('  chan-b: 1 candidate topics awaiting approval')
     db.close()
@@ -348,7 +343,7 @@ describe('buildDigest — action items', () => {
       'Action items\n  the channels dir did not load (failed to load channel config a.toml: bad) — spend, publishing, and channel-derived action items are missing from this report',
     )
     // and it never displaces the sqlite-derived items
-    expect(digest).toContain('  failed job j-failed (chan-a, volume) — resume manually')
+    expect(digest).toContain('  failed job j-failed (chan-a) — resume manually')
     db.close()
   })
 
@@ -581,7 +576,7 @@ describe('buildDigest — zombie age comes from the latest stage start', () => {
     seedStage(db, 'j-stuck', 'visuals', isoAgo(3 * HOUR_MS))
     const digest = buildDigest(db, [], ENV_OK)
     expect(digest).toContain(
-      '  running job j-stuck (chan-a, volume) running > 2h — probably crashed — resume with --force',
+      '  running job j-stuck (chan-a) running > 2h — probably crashed — resume with --force',
     )
     db.close()
   })
@@ -590,7 +585,7 @@ describe('buildDigest — zombie age comes from the latest stage start', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'j-nostage', status: 'running', createdAt: isoAgo(3 * HOUR_MS) })
     const digest = buildDigest(db, [], ENV_OK)
-    expect(digest).toContain('  running job j-nostage (chan-a, volume) running > 2h')
+    expect(digest).toContain('  running job j-nostage (chan-a) running > 2h')
     db.close()
   })
 })
@@ -603,8 +598,8 @@ describe('buildDigest — failed-job list cap', () => {
       seedJob(db, { id: `j-f${i}`, status: 'failed', createdAt: isoAgo((13 - i) * HOUR_MS) })
     }
     const digest = buildDigest(db, [], ENV_OK)
-    expect(digest).toContain('  failed job j-f12 (chan-a, volume) — resume manually')
-    expect(digest).toContain('  failed job j-f3 (chan-a, volume) — resume manually')
+    expect(digest).toContain('  failed job j-f12 (chan-a) — resume manually')
+    expect(digest).toContain('  failed job j-f3 (chan-a) — resume manually')
     expect(digest).not.toContain('j-f2 ')
     expect(digest).not.toContain('j-f0 ')
     expect(digest).toContain('  and 3 older failures')
@@ -619,7 +614,7 @@ describe('buildDigest — failed-job list cap', () => {
       seedJob(db, { id: `j-f${i}`, status: 'failed', createdAt: isoAgo((10 - i) * HOUR_MS) })
     }
     const digest = buildDigest(db, [], ENV_OK)
-    expect(digest).toContain('  failed job j-f0 (chan-a, volume) — resume manually')
+    expect(digest).toContain('  failed job j-f0 (chan-a) — resume manually')
     expect(digest).not.toContain('older failures')
     db.close()
   })
@@ -635,7 +630,7 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     seedJob(db, { id: 'j-orphan', channel: 'gone', status: 'blocked' })
     const digest = buildDigest(db, [], ENV_OK)
     expect(digest).toContain(
-      '  blocked job j-orphan (gone, volume) — no channel config named gone in the channels dir — restore gone.toml then brainrot resume j-orphan',
+      '  blocked job j-orphan (gone) — no channel config named gone in the channels dir — restore gone.toml then brainrot resume j-orphan',
     )
     // No claimed topic behind this job, so no requeue clause is offered.
     expect(digest).not.toContain('topics requeue')
@@ -653,27 +648,14 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     db.close()
   })
 
-  it('names FAL_KEY as the reason a blocked premium job cannot resume', () => {
+  it('names an exhausted per-video cap', () => {
     const db = openDb(':memory:')
-    seedJob(db, { id: 'j-prem', channel: 'chan-a', tier: 'premium', status: 'blocked' })
-    const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], {
-      ...ENV_OK,
-      falKeyPresent: false,
-    })
-    expect(digest).toContain(
-      '  blocked job j-prem (chan-a, premium) — premium resume needs FAL_KEY, which is unset — set it in .env',
-    )
-    db.close()
-  })
-
-  it('names an exhausted per-video cap, measured against the tier cap', () => {
-    const db = openDb(':memory:')
-    seedJob(db, { id: 'j-spent', channel: 'chan-a', tier: 'premium', status: 'blocked' })
-    // testChannel's premium per-video cap is $7.00.
-    seedCost(db, 'j-spent', 7_000_000)
+    seedJob(db, { id: 'j-spent', channel: 'chan-a', status: 'blocked' })
+    // testChannel's per-video cap is $8.00.
+    seedCost(db, 'j-spent', 8_000_000)
     const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], ENV_OK)
     expect(digest).toContain(
-      '  blocked job j-spent (chan-a, premium) — premium per-video budget spent ($7.00 of $7.00) — raise the cap in chan-a.toml then brainrot resume j-spent',
+      '  blocked job j-spent (chan-a) — per-video budget spent ($8.00 of $8.00) — raise the cap in chan-a.toml then brainrot resume j-spent',
     )
     db.close()
   })
@@ -683,9 +665,9 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     seedJob(db, { id: 'j-wait', channel: 'chan-a', status: 'blocked' })
     seedCost(db, 'j-wait', 2_000_000)
     const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], ENV_OK)
-    // volume per-video cap is $8.00 in testChannel.
+    // per-video cap is $8.00 in testChannel.
     expect(digest).toContain(
-      '  blocked job j-wait (chan-a, volume) — $6.00 of its $8.00 per-video budget left — awaiting the resume pass',
+      '  blocked job j-wait (chan-a) — $6.00 of its $8.00 per-video budget left — awaiting the resume pass',
     )
     db.close()
   })
@@ -729,7 +711,6 @@ describe('buildDigest — publish token health', () => {
     const db = openDb(':memory:')
     upsertToken(db, 'youtube', 'chan-a', 'rt-test-token', 'scope', TEST_KEY)
     const digest = buildDigest(db, [publishChannel('chan-a'), publishChannel('chan-b')], {
-      falKeyPresent: true,
       ytClientIdPresent: false,
       ytClientSecretPresent: true,
       tokenKeyHex: undefined,

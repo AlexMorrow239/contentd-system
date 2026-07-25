@@ -3,21 +3,11 @@ niche = ["space facts", "astronomy"]
 script_model = "claude-sonnet-5"
 bg_dir = "assets/bg"
 bgm_dir = "assets/bgm"
+videos_per_day = 1
 
-# One VOLUME video per UTC day, no premium. Premium visuals are proven
-# (job IIdIDrIif_mphsUIdxalH, $5.18, QC 12/12) but too expensive to soak-test
-# with — volume reuses a background clip from bg_dir instead of generating
-# scenes, dropping the per-video cost to roughly the script call alone.
-# `0 < 0` is false, so the premium slot is closed; filledFraction still
-# divides by volume + premium = 1, so this is not the both-zero NaN case.
-# The [premium] table below is left intact so switching back is one edit.
-[tier_mix]
-volume = 1
-premium = 0
-
-# No [voice.premium] table on purpose: premium jobs fall through to the same
-# free kokoro -> edge-tts chain volume tier uses. This is what makes the
-# WhisperX sidecar mandatory for every job (see docker-compose.yml).
+# No [voice.premium] table: this channel uses the free kokoro -> edge-tts
+# chain. This is what makes the WhisperX sidecar mandatory for every job
+# (see docker-compose.yml).
 [voice]
 volume = "af_heart"
 
@@ -32,16 +22,6 @@ rss = [
 ]
 min_score = 60
 per_source_limit = 25
-# Mandatory for an unattended premium-only channel: with the default false,
-# the premium tier can only draw topics approved by hand, so the loop would
-# scout candidates forever and never produce anything.
-auto_premium = true
-
-[premium]
-image_model = "fal-ai/flux/dev"
-video_model = "fal-ai/kling-video/v3/standard/image-to-video"
-style_prefix = "vivid digital illustration, cinematic lighting"
-scene_concurrency = 3
 
 [caption_style]
 font = "Inter"
@@ -51,13 +31,7 @@ inactive_color = "#FFFFFF"
 stroke_px = 8
 
 [budget]
-# Unused while volume = 0, but the schema requires it positive.
 per_video_usd = 0.5
-# Honest worst case is 8 scenes x 10s plus a keyframe retry, ~$7.4-7.5 —
-# above the old 7.0 cap, which would block long videos mid-render.
-premium_per_video_usd = 8.0
-# The real daily ceiling. Must stay >= premium_per_video_usd or a premium
-# video can never fit in a day.
 per_day_usd = 10.0
 
 # Only one video exists per day, so the later two slots noop at zero cost —

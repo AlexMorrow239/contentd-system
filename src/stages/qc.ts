@@ -1,17 +1,8 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
+import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { execa } from 'execa'
-import { z } from 'zod'
-import type Anthropic from '@anthropic-ai/sdk'
 import { probe } from '../media/ffmpeg.js'
-import { assertBudget, recordCost } from '../jobs/costs.js'
-import { visionJudgment } from '../providers/anthropic.js'
-import { errorCostUsdMicros } from '../providers/errors.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
-import { isScenesOutput, type ScriptArtifact } from './script.js'
-import { MAX_CLIP_MS, MIN_CLIP_MS } from './clip-bounds.js'
-import type { ScenesManifest } from './visuals-premium.js'
+import type { ScriptArtifact } from './script.js'
 import { narrationWordCount, minPlausibleNarrationMs } from './narration-text.js'
 
 export interface QcResult {
@@ -19,22 +10,8 @@ export interface QcResult {
   checks: { name: string; passed: boolean; detail: string }[]
 }
 
-type QcCheck = QcResult['checks'][number]
-
 const MB = 1024 * 1024
 const MAX_SIZE_BYTES = 256 * MB
-
-// Scene-coverage tolerance: the 50ms end tolerance absorbs word-timing
-// rounding; window starts/joins are exact by the scene-windows contract
-// (integer ms, exact tiling). The per-clip duration bounds live in
-// ./clip-bounds.js — the visuals resume checkpoint enforces the same pair.
-const COVERAGE_TOLERANCE_MS = 50
-
-// Pre-flight budget reservation for the qc vision call: three PNG frames plus a
-// short prompt against claude-sonnet-5 lands well under $0.015 at list price.
-const ESTIMATED_VISION_COST_MICROS = 15_000
-
-const SpotCheckSchema = z.object({ pass: z.boolean(), issues: z.array(z.string()) })
 
 // Optional artifacts: a missing or unreadable one is a failed check, not a crash.
 function readJson<T>(path: string): T | undefined {
@@ -83,138 +60,7 @@ function longestFreezeMs(stderr: string, videoDurationMs: number): number {
   return max
 }
 
-// Premium check (a): the scenes manifest must tile [0, voice.durationMs] with no
-// gaps or overlaps, and every referenced clip must exist and probe sane. Free
-// and deterministic; returns on the FIRST violation so the detail names it.
-async function sceneCoverageCheck(ctx: JobContext, voiceDurationMs: number): Promise<QcCheck> {
-  const name = 'scene-coverage'
-  const manifest = readJson<ScenesManifest>(ctx.artifactPath('visuals', 'scenes.json'))
-  if (!manifest || !Array.isArray(manifest.scenes) || manifest.scenes.length === 0) {
-    return { name, passed: false, detail: 'visuals/scenes.json missing, unreadable, or has no scenes' }
-  }
-  const scenes = manifest.scenes
-  if (scenes[0].startMs !== 0) {
-    return { name, passed: false, detail: `scene 1 starts at ${scenes[0].startMs}ms; expected 0` }
-  }
-  for (let i = 0; i < scenes.length - 1; i++) {
-    if (scenes[i].endMs !== scenes[i + 1].startMs) {
-      return {
-        name,
-        passed: false,
-        detail: `gap/overlap: scene ${i + 1} ends at ${scenes[i].endMs}ms but scene ${i + 2} starts at ${scenes[i + 1].startMs}ms`,
-      }
-    }
-  }
-  const lastEnd = scenes[scenes.length - 1].endMs
-  if (Math.abs(lastEnd - voiceDurationMs) > COVERAGE_TOLERANCE_MS) {
-    return {
-      name,
-      passed: false,
-      detail: `last scene ends at ${lastEnd}ms but voice runs ${voiceDurationMs}ms (tolerance ${COVERAGE_TOLERANCE_MS}ms)`,
-    }
-  }
-  for (const scene of scenes) {
-    const clipPath = ctx.artifactPath('visuals', scene.clip)
-    if (!existsSync(clipPath)) {
-      return { name, passed: false, detail: `clip missing: ${scene.clip}` }
-    }
-    let clipMs: number
-    try {
-      clipMs = (await probe(clipPath)).durationMs
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return { name, passed: false, detail: `clip unreadable: ${scene.clip} (${message})` }
-    }
-    if (clipMs < MIN_CLIP_MS || clipMs > MAX_CLIP_MS) {
-      return {
-        name,
-        passed: false,
-        detail: `clip ${scene.clip} probes ${clipMs}ms, outside [${MIN_CLIP_MS}, ${MAX_CLIP_MS}]ms`,
-      }
-    }
-  }
-  return {
-    name,
-    passed: true,
-    detail: `${scenes.length} scenes tile [0, ${voiceDurationMs}ms]; all clips present and probe within [${MIN_CLIP_MS}, ${MAX_CLIP_MS}]ms`,
-  }
-}
-
-// Premium check (b): sample three frames from the finished video and have the
-// vision model judge them against the scene intents — catches assembly-level
-// faults the per-keyframe check cannot (wrong ordering, corrupted encode,
-// captions obscuring the subject). This is a paid call: budget gate before,
-// ledger after. ANY thrown error (ffmpeg, budget breach, provider 5xx) degrades
-// to a failed check so the job parks needs-review instead of crashing the stage.
-async function visionSpotCheck(
-  ctx: JobContext,
-  script: ScriptArtifact | undefined,
-  finalPath: string,
-  finalDurationMs: number,
-  client?: Anthropic,
-): Promise<QcCheck> {
-  const name = 'vision-spot-check'
-  try {
-    if (!script || !isScenesOutput(script)) {
-      return { name, passed: false, detail: 'script.json missing, unreadable, or not scenes format' }
-    }
-    const frameDir = mkdtempSync(path.join(tmpdir(), 'brainrot-qc-frames-'))
-    try {
-      const framePaths: string[] = []
-      for (const [i, fraction] of [0.1, 0.5, 0.9].entries()) {
-        const seekSec = ((finalDurationMs * fraction) / 1000).toFixed(3)
-        const framePath = path.join(frameDir, `frame-${i + 1}.png`)
-        await execa('ffmpeg', ['-ss', seekSec, '-i', finalPath, '-frames:v', '1', '-y', framePath])
-        framePaths.push(framePath)
-      }
-      const sceneList = script.scenes.map((s, i) => `Scene ${i + 1}: ${s.visualPrompt}`).join('\n')
-      // Same discipline as every paid call: budget gate before, ledger after.
-      assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_VISION_COST_MICROS, 'premium')
-      const { data, cost } = await visionJudgment({
-        model: ctx.channel.scriptModel,
-        system:
-          'You are a strict quality-control reviewer for AI-generated short-form vertical video. ' +
-          'Judge only what is visible in the provided frames. ' +
-          'Return your answer ONLY by calling the `emit` tool.',
-        prompt: [
-          'Three frames sampled at 10%, 50%, and 90% of the finished video, in order.',
-          'The video was assembled from AI-generated scene clips with burned-in word captions; captions over the visuals are expected and fine.',
-          '',
-          'Scene intents, in narration order:',
-          sceneList,
-          '',
-          'Set pass=false only for assembly-level faults: frames that match no scene intent at all, scenes clearly out of order, a corrupted or garbled encode, or captions fully obscuring the subject.',
-          'Minor stylistic drift from the intents is acceptable. List each concrete issue in `issues`; return an empty issues array when passing.',
-        ].join('\n'),
-        imagePaths: framePaths,
-        schema: SpotCheckSchema,
-        client,
-      })
-      recordCost(ctx.db, ctx.jobId, 'anthropic', 'qc-vision', cost.usdMicros)
-      return {
-        name,
-        passed: data.pass,
-        detail: data.pass
-          ? 'sampled frames consistent with scene intents'
-          : data.issues.join('; ') || 'model failed the frames without naming issues',
-      }
-    } finally {
-      rmSync(frameDir, { recursive: true, force: true })
-    }
-  } catch (err) {
-    // Any thrown error degrades this spot check to a failed check rather than
-    // crashing the stage. A BudgetExceededError here deliberately degrades to a
-    // failed check (job parks needs-review), NOT blocked: the video is already
-    // rendered, so a parked library row is more useful than killing the run over
-    // a spot check we could not afford. A schema-invalid but paid vision response
-    // still cost money — ledger it before degrading so the spend is not lost.
-    const paid = errorCostUsdMicros(err)
-    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'qc-vision', paid)
-    return { name, passed: false, detail: err instanceof Error ? err.message : String(err) }
-  }
-}
-
-export function qcStage(opts?: { minMs?: number; maxMs?: number; client?: Anthropic }): StageDef {
+export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
   const minMs = opts?.minMs ?? 15000
   const maxMs = opts?.maxMs ?? 180000
   return {
@@ -272,9 +118,7 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number; client?: Anthro
       // A TTS backend that silently truncates still emits a valid WAV, so the gate
       // re-checks the voice track against the script it was meant to narrate. Same
       // rule as the voice-stage guard, applied here so an old or partially
-      // regenerated artifact set cannot slip through. Read as the ScriptArtifact
-      // union: a premium job's script.json is a ScenesOutput, and
-      // narrationWordCount handles both formats.
+      // regenerated artifact set cannot slip through.
       const script = readJson<ScriptArtifact>(ctx.artifactPath('script', 'script.json'))
       const narrationWords = script ? narrationWordCount(script) : 0
       const minNarrationMs = minPlausibleNarrationMs(narrationWords)
@@ -314,11 +158,6 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number; client?: Anthro
         passed: bytes < MAX_SIZE_BYTES,
         detail: `${(bytes / MB).toFixed(2)} MB`,
       })
-
-      if (ctx.tier === 'premium') {
-        checks.push(await sceneCoverageCheck(ctx, voice.durationMs))
-        checks.push(await visionSpotCheck(ctx, script, finalPath, p.durationMs, opts?.client))
-      }
 
       const result: QcResult = { passed: checks.every((c) => c.passed), checks }
       writeFileSync(ctx.artifactPath('qc', 'qc.json'), JSON.stringify(result, null, 2))

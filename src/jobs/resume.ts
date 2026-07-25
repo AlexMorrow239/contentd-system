@@ -3,10 +3,10 @@ import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../config/channel.js'
 import { markTopicUsedByJob } from '../scout/topics.js'
-import { assertPremiumPreflight, stagesForTier } from './pipeline.js'
+import { pipelineStages } from './pipeline.js'
 import { runJob } from './runner.js'
 import type { JobResult } from './runner.js'
-import type { StageDef, Tier } from './types.js'
+import type { StageDef } from './types.js'
 
 // A refusal to resume (missing job, non-resumable status, missing channel
 // TOML) — distinct from a crash so the CLI prints just the reason and exits 1.
@@ -38,7 +38,7 @@ export async function resumeJob(
     runsRoot: string
     channelsDir: string
     force?: boolean
-    stagesFor?: (tier: Tier) => StageDef[]
+    stagesFor?: () => StageDef[]
     // Best-effort keep-alive for a caller's loop lease, fired at each stage
     // start. A resumed render is exactly as long as a fresh one — the produce
     // tick passes the same callback down both paths so neither can outlive the
@@ -48,8 +48,8 @@ export async function resumeJob(
   },
 ): Promise<JobResult> {
   const job = db
-    .prepare('SELECT channel, tier, status FROM jobs WHERE id = ?')
-    .get(jobId) as { channel: string; tier: Tier; status: string } | undefined
+    .prepare('SELECT channel, status FROM jobs WHERE id = ?')
+    .get(jobId) as { channel: string; status: string } | undefined
   if (!job) {
     throw new ResumeError(`job not found: ${jobId}`)
   }
@@ -71,15 +71,11 @@ export async function resumeJob(
   if (!existsSync(channelPath)) {
     throw new ResumeError(`channel config not found: ${channelPath}`)
   }
-  // Same pre-flight as produce: resuming a premium job without FAL_KEY could
-  // only convert a parked job into a failed one.
-  assertPremiumPreflight(job.tier)
   const channel = loadChannelConfig(channelPath)
   // The runner's skip-done-stages resume recovers the sunk cost; the stage
   // list is the exact produce wiring unless a test injects its own.
-  const stages = opts.stagesFor?.(job.tier) ?? stagesForTier(job.tier)
-  // Claim atomically AFTER every refusal (including the premium preflight, so a
-  // key-less refusal never flips the row): the guards above read status but
+  const stages = opts.stagesFor?.() ?? pipelineStages()
+  // Claim atomically AFTER every refusal above: the guards read status but
   // runJob's flip to 'running' was unconditional, so a manual resume and a tick
   // could both run one job. If another process already claimed it, refuse here
   // rather than double-spend; runJob's own later flip to 'running' is then a

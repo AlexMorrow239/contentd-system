@@ -1,20 +1,19 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
-import { stagesForTier } from '../jobs/pipeline.js'
+import { pipelineStages } from '../jobs/pipeline.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
-import type { StageDef, Tier } from '../jobs/types.js'
+import type { StageDef } from '../jobs/types.js'
 import { claimTopic, markTopicUsedByJob } from '../scout/topics.js'
 import { acquireLease, extendLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
 import { planTick } from './plan-tick.js'
 
 export interface TickResult {
   action: 'resumed' | 'produced' | 'noop'
-  reason?: 'lease-held' | 'no-eligible-work' | 'no-fal-key' | 'claim-conflict' | 'config-error'
+  reason?: 'lease-held' | 'no-eligible-work' | 'claim-conflict' | 'config-error'
   jobId?: string
   topicId?: number
-  tier?: Tier
   status?: JobResult['status']
   error?: string
 }
@@ -33,10 +32,10 @@ export async function produceNextTick(
   opts: {
     channelsDir: string
     runsRoot: string
-    stagesFor?: (tier: Tier) => StageDef[]
+    stagesFor?: () => StageDef[]
   },
 ): Promise<TickResult> {
-  const stagesFor = opts.stagesFor ?? stagesForTier
+  const stagesFor = opts.stagesFor ?? pipelineStages
   // Config load comes BEFORE the lease: a broken channel TOML (or a missing
   // channels dir) blocks the whole tick either way, and burning a lease slot on
   // it would only mean the next firing waits on a lease that was never going to
@@ -77,7 +76,7 @@ export async function produceNextTick(
     db.prepare(
       "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
     ).run()
-    const plan = planTick(db, channels, { falKeyPresent: !!process.env.FAL_KEY })
+    const plan = planTick(db, channels)
 
     if (plan.kind === 'noop') {
       return { action: 'noop', reason: plan.reason }
@@ -104,7 +103,7 @@ export async function produceNextTick(
         }
         throw err
       }
-      return { action: 'resumed', jobId: plan.jobId, tier: plan.tier, status: result.status }
+      return { action: 'resumed', jobId: plan.jobId, status: result.status }
     }
 
     const channel = channels.find((c) => c.name === plan.channel)
@@ -119,7 +118,7 @@ export async function produceNextTick(
     let jobId: string
     try {
       jobId = db.transaction(() => {
-        const id = createJob(db, channel, { topic: plan.topic, tier: plan.tier })
+        const id = createJob(db, channel, { topic: plan.topic })
         if (!claimTopic(db, plan.topicId, id)) {
           throw new ClaimConflictError(
             `topic ${plan.topicId} is no longer claimable (status changed since planning)`,
@@ -135,7 +134,7 @@ export async function produceNextTick(
       }
       throw err
     }
-    const result = await runJob(db, channel, jobId, stagesFor(plan.tier), {
+    const result = await runJob(db, channel, jobId, stagesFor(), {
       runsRoot: opts.runsRoot,
       heartbeat,
     })
@@ -145,7 +144,7 @@ export async function produceNextTick(
       // so the topic is never re-claimed or lost.
       markTopicUsedByJob(db, jobId)
     }
-    return { action: 'produced', jobId, topicId: plan.topicId, tier: plan.tier, status: result.status }
+    return { action: 'produced', jobId, topicId: plan.topicId, status: result.status }
   } finally {
     releaseLease(db, 'produce', holder)
   }

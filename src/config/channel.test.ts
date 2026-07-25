@@ -12,20 +12,15 @@ function writeToml(lines: string[]): string {
   return file
 }
 
-// Exactly the Plan-1-era channels/example.toml shape: no [voice.premium], no
-// [premium], no premium_per_video_usd. Parsing this unchanged is the backward-
-// compatibility contract. NOTE: [budget] is the last table, so a bare key
-// appended to this array lands inside [budget].
+// Baseline channel TOML shape: no [voice.premium]. NOTE: [budget] is the last
+// table, so a bare key appended to this array lands inside [budget].
 const PLAN1_LINES = [
   'name = "legacy"',
   'niche = ["space facts", "astronomy"]',
   'script_model = "claude-sonnet-5"',
   'bg_dir = "assets/bg"',
   'bgm_dir = "assets/bgm"',
-  '',
-  '[tier_mix]',
-  'volume = 2',
-  'premium = 1',
+  'videos_per_day = 2',
   '',
   '[voice]',
   'volume = "af_heart"',
@@ -51,18 +46,11 @@ describe('loadChannelConfig', () => {
     expect(() => loadChannelsDir('channels')).not.toThrow()
   })
 
-  it('parses a Plan-1-era TOML: voice.premium undefined, premium defaults applied', () => {
+  it('parses a baseline TOML: voice.premium undefined, budget in micros', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
     expect(cfg.voice.premium).toBeUndefined()
-    expect(cfg.premium).toEqual({
-      imageModel: 'fal-ai/flux/dev',
-      videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
-      sceneConcurrency: 3,
-    })
-    expect(cfg.premium.stylePrefix).toBeUndefined()
     expect(cfg.budget).toEqual({
       perVideoUsdMicros: 8_000_000,
-      premiumPerVideoUsdMicros: 7_000_000, // default 7.0 USD
       perDayUsdMicros: 20_000_000,
     })
   })
@@ -81,24 +69,6 @@ describe('loadChannelConfig', () => {
       voiceId: 'EXAVITQu4vr4xnSDxMaL',
       modelId: 'eleven_multilingual_v2',
     })
-  })
-
-  it('applies per-field defaults inside a partial [premium] table', () => {
-    const cfg = loadChannelConfig(
-      writeToml([...PLAN1_LINES, '[premium]', 'scene_concurrency = 5', 'style_prefix = "watercolor"']),
-    )
-    expect(cfg.premium).toEqual({
-      imageModel: 'fal-ai/flux/dev',
-      videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
-      stylePrefix: 'watercolor',
-      sceneConcurrency: 5,
-    })
-  })
-
-  it('converts an explicit premium_per_video_usd to micros', () => {
-    // appended bare key lands in [budget] (last table in PLAN1_LINES)
-    const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, 'premium_per_video_usd = 3.5']))
-    expect(cfg.budget.premiumPerVideoUsdMicros).toBe(3_500_000)
   })
 
   it('defaults scriptModel to claude-sonnet-5 when script_model is absent', () => {
@@ -145,11 +115,6 @@ describe('loadChannelConfig', () => {
     expect(() => loadChannelConfig(writeToml(withBudget('per_day_usd = 0')))).toThrow(
       /per_day_usd must be greater than 0/,
     )
-    // premium_per_video_usd is absent from PLAN1_LINES; a bare appended key
-    // lands in [budget], the last table.
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, 'premium_per_video_usd = 0'])),
-    ).toThrow(/premium_per_video_usd must be greater than 0/)
     expect(() => loadChannelConfig(writeToml(withBudget('per_video_usd = -1')))).toThrow(
       /per_video_usd must be greater than 0/,
     )
@@ -164,14 +129,12 @@ describe('[scout] config', () => {
       rss: [],
       minScore: 60,
       perSourceLimit: 25,
-      autoPremium: false,
     })
     expect(DEFAULT_SCOUT).toEqual({
       subreddits: [],
       rss: [],
       minScore: 60,
       perSourceLimit: 25,
-      autoPremium: false,
     })
   })
 
@@ -184,7 +147,6 @@ describe('[scout] config', () => {
         'rss = ["https://www.sciencedaily.com/rss/space_time.xml"]',
         'min_score = 75',
         'per_source_limit = 10',
-        'auto_premium = true',
       ]),
     )
     expect(cfg.scout).toEqual({
@@ -192,7 +154,6 @@ describe('[scout] config', () => {
       rss: ['https://www.sciencedaily.com/rss/space_time.xml'],
       minScore: 75,
       perSourceLimit: 10,
-      autoPremium: true,
     })
   })
 
@@ -203,7 +164,6 @@ describe('[scout] config', () => {
       rss: [],
       minScore: 60,
       perSourceLimit: 25,
-      autoPremium: false,
     })
   })
 

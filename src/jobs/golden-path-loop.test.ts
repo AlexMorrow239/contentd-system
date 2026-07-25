@@ -15,7 +15,7 @@ import { upsertToken } from '../publish/tokens.js'
 import { YT_UPLOAD_SCOPE } from '../publish/youtube.js'
 import type { PlatformMeta, PublishTarget } from '../publish/types.js'
 import { STAGE_ORDER } from './types.js'
-import type { JobContext, StageDef, StageName, Tier } from './types.js'
+import type { JobContext, StageDef, StageName } from './types.js'
 
 const cleanup: string[] = []
 function tmp(prefix: string): string {
@@ -98,9 +98,9 @@ function scoringClient(): { client: Anthropic; create: ReturnType<typeof vi.fn> 
 // assemble/final.mp4 existing for JobResult.videoPath. passed=true ->
 // library state 'ready' (library-landed -> the claimed topic flips 'used').
 // Deliberately orchestration-scoped (spec §9): the loop invokes the same
-// runJob/stagesForTier as `produce`, so the real volume pipeline stays
-// covered by the existing golden-path test rather than re-rendered here.
-function fakeStagesFor(calls: StageName[]): (tier: Tier) => StageDef[] {
+// runJob/pipelineStages as `produce`, so the real pipeline stays covered by
+// the existing golden-path test rather than re-rendered here.
+function fakeStagesFor(calls: StageName[]): () => StageDef[] {
   return () =>
     STAGE_ORDER.map((name) => ({
       name,
@@ -157,10 +157,7 @@ describe('golden-path loop e2e', () => {
         // top-level keys must precede every [section] header (smol-toml scoping)
         'bg_dir = "assets/bg"',
         'bgm_dir = "assets/bgm"',
-        '',
-        '[tier_mix]',
-        'volume = 2',
-        'premium = 1',
+        'videos_per_day = 2',
         '',
         '[voice]',
         'volume = "af_heart"',
@@ -186,10 +183,7 @@ describe('golden-path loop e2e', () => {
       ].join('\n'),
     )
 
-    // Determinism regardless of the developer shell: no FAL key (planTick
-    // skips premium slots; the scouted candidate is unapproved anyway) and
-    // the default global cap.
-    vi.stubEnv('FAL_KEY', '')
+    // Determinism regardless of the developer shell: the default global cap.
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '25')
 
     const db = openDb(path.join(workspace, 'brainrot.db'))
@@ -242,7 +236,6 @@ describe('golden-path loop e2e', () => {
       throw new Error(`loop golden path did not land: ${JSON.stringify({ tick, stageRows })}`)
     }
 
-    expect(tick.tier).toBe('volume')
     expect(tick.topicId).toBe(topic.id)
     expect(tick.jobId).toBeDefined()
     expect(calls).toEqual([...STAGE_ORDER])

@@ -1,11 +1,10 @@
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { execa } from 'execa'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
-import { assertPremiumPreflight, parsePublishDays, parseTier, parseTopicIds, stagesForTier } from './cli.js'
-import { visualsPremiumStage } from './stages/visuals-premium.js'
+import { parsePublishDays, parseTopicIds, pipelineStages } from './cli.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 
 const cleanup: string[] = []
@@ -37,14 +36,13 @@ describe('brainrot CLI', () => {
     expect(result.stdout).toContain('status')
   }, 60000)
 
-  it('`produce --help` prints usage with --channel/--topic/--tier', async () => {
+  it('`produce --help` prints usage with --channel/--topic', async () => {
     const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'produce', '--help'], {
       reject: false,
     })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('--channel')
     expect(result.stdout).toContain('--topic')
-    expect(result.stdout).toContain('--tier')
   }, 60000)
 
   function countJobs(dbPath: string): number {
@@ -94,61 +92,12 @@ describe('brainrot CLI', () => {
     db.close()
   }
 
-  it('`produce --tier premium` passes tier validation (fails later on the missing channel file)', async () => {
-    const dbPath = tmpDbPath()
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'produce',
-        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'premium', '--db', dbPath],
-      // FAL_KEY set so the premium pre-flight passes and the run reaches the
-      // channel load; this test isolates tier validation, not the key check
-      // (which is covered in-process below).
-      { reject: false, env: { FAL_KEY: 'test-fal-key' } },
-    )
-    expect(result.exitCode).toBe(1)
-    // Tier accepted: the failure is the nonexistent channel file, NOT the tier.
-    expect(result.stderr).toMatch(/ENOENT|no such file/)
-    expect(result.stderr).not.toContain('unsupported --tier')
-    // The channel load throws before openDb/createJob, so no job row exists.
-    expect(countJobs(dbPath)).toBe(0)
-  }, 60000)
-
-  it('`produce --tier premium` aborts before any spend when FAL_KEY is unset', async () => {
-    const dbPath = tmpDbPath()
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'produce',
-        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'premium', '--db', dbPath],
-      // Explicitly clear FAL_KEY (and keep dotenv from supplying one) so the
-      // pre-flight fires before loadChannelConfig ever runs.
-      { reject: false, env: { FAL_KEY: '' } },
-    )
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('premium tier requires FAL_KEY')
-    // The pre-flight throws before openDb/createJob, so no job row exists.
-    expect(countJobs(dbPath)).toBe(0)
-  }, 60000)
-
-  it('`produce --tier garbage` exits 1 listing both valid tiers and creates no job', async () => {
-    const dbPath = tmpDbPath()
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'produce',
-        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'garbage', '--db', dbPath],
-      { reject: false },
-    )
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('unsupported --tier "garbage"')
-    expect(result.stderr).toContain('valid tiers are "volume", "premium"')
-    expect(countJobs(dbPath)).toBe(0)
-  }, 60000)
-
   it('`produce` with a nonexistent --channel exits 1 with a clean one-line error (no stack)', async () => {
     const dbPath = tmpDbPath()
     const result = await execa(
       'pnpm',
       ['exec', 'tsx', 'src/cli.ts', 'produce',
-        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--tier', 'volume', '--db', dbPath],
+        '--channel', '/no/such/channel.toml', '--topic', 'venus', '--db', dbPath],
       { reject: false },
     )
     expect(result.exitCode).toBe(1)
@@ -165,10 +114,7 @@ describe('brainrot CLI', () => {
     'niche = ["space facts"]',
     'bg_dir = "assets/bg"',
     'bgm_dir = "assets/bgm"',
-    '',
-    '[tier_mix]',
-    'volume = 2',
-    'premium = 1',
+    'videos_per_day = 2',
     '',
     '[voice]',
     'volume = "af_heart"',
@@ -566,49 +512,12 @@ describe('brainrot CLI', () => {
   }, 60000)
 })
 
-describe('tier helpers (in-process)', () => {
-  it('parseTier accepts both tiers and rejects others naming the valid set', () => {
-    expect(parseTier('volume')).toBe('volume')
-    expect(parseTier('premium')).toBe('premium')
-    expect(() => parseTier('4k')).toThrow(
-      'unsupported --tier "4k": valid tiers are "volume", "premium"',
-    )
-  })
-
-  it('stagesForTier swaps only the visuals slot by tier', () => {
-    const volume = stagesForTier('volume')
-    const premium = stagesForTier('premium')
+describe('pipelineStages (in-process)', () => {
+  it('returns the fixed stage list', () => {
+    const stages = pipelineStages()
     const order = ['script', 'voice', 'captions', 'visuals', 'assemble', 'qc']
-    expect(volume.map((s) => s.name)).toEqual(order)
-    expect(premium.map((s) => s.name)).toEqual(order)
-    // The visuals slot is the tier branch — asserted by identity.
-    expect(volume[3]).toBe(visualsVolumeStage)
-    expect(premium[3]).toBe(visualsPremiumStage)
-    // script/voice/captions/assemble are the same stage objects in both lists
-    // (they branch internally on ctx.tier). qcStage() mints a fresh StageDef
-    // per call, so it is covered by the name assertion above, not identity.
-    for (const i of [0, 1, 2, 4]) expect(premium[i]).toBe(volume[i])
-  })
-})
-
-describe('assertPremiumPreflight (in-process)', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it('throws for premium when FAL_KEY is unset, before any config/db/job work', () => {
-    vi.stubEnv('FAL_KEY', undefined)
-    expect(() => assertPremiumPreflight('premium')).toThrow(
-      'premium tier requires FAL_KEY in the environment (see .env.example); aborting before any spend',
-    )
-  })
-
-  it('passes for premium when FAL_KEY is set, and never blocks volume', () => {
-    vi.stubEnv('FAL_KEY', 'fal-test-key')
-    expect(() => assertPremiumPreflight('premium')).not.toThrow()
-    // Volume never needs a fal key, even when it is absent.
-    vi.stubEnv('FAL_KEY', undefined)
-    expect(() => assertPremiumPreflight('volume')).not.toThrow()
+    expect(stages.map((s) => s.name)).toEqual(order)
+    expect(stages[3]).toBe(visualsVolumeStage)
   })
 })
 

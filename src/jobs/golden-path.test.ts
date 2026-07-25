@@ -55,10 +55,7 @@ describe('golden-path e2e', () => {
         // header, else TOML nests them under the last-opened table (e.g. budget).
         `bg_dir = ${JSON.stringify(bgDir)}`,
         `bgm_dir = ${JSON.stringify(bgmDir)}`,
-        '',
-        '[tier_mix]',
-        'volume = 2',
-        'premium = 1',
+        'videos_per_day = 2',
         '',
         '[voice]',
         'volume = "af_heart"',
@@ -79,7 +76,7 @@ describe('golden-path e2e', () => {
 
     const channel = loadChannelConfig(tomlPath)
     const db = openDb(path.join(workspace, 'brainrot.db'))
-    const jobId = createJob(db, channel, { topic: 'Space facts about Venus', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'Space facts about Venus' })
 
     // Pre-seed script/voice/captions as done.
     for (const stage of ['script', 'voice', 'captions']) {

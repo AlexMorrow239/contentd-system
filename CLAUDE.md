@@ -17,14 +17,13 @@ built from the same root and `pnpm install`.
 ```bash
 pnpm install
 cp .env.example .env          # provider keys — see README for which are required
-docker compose up -d whisperx # caption-alignment sidecar (volume tier + premium voice-fallback only)
+docker compose up -d whisperx # caption-alignment sidecar (captions + ElevenLabs-fallback)
 
 pnpm build                    # tsc --noEmit on both src/ and remotion/ — no emit, type-check only
 pnpm test                     # vitest run — mocked providers, real ffmpeg/Remotion
-pnpm test:contract            # CONTRACT=1 — real paid calls (~$0.20): FLUX, MiniMax, ElevenLabs, one LLM call
-pnpm test:contract:premium    # + CONTRACT_PREMIUM=1 — also renders one real Kling clip (~$0.40 total)
+pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one LLM call
 
-pnpm brainrot produce --channel channels/<name>.toml --topic "..." [--tier volume|premium]
+pnpm brainrot produce --channel channels/<name>.toml --topic "..."
 pnpm brainrot scout | produce-next | publish-next | digest
 pnpm brainrot jobs | costs
 pnpm brainrot topics list|approve|reject <ids...>
@@ -47,13 +46,13 @@ cost real money — don't run them without a reason.
 A "job" runs a fixed ordered list of stages against one `JobContext`
 (`src/jobs/types.ts`). Each `StageDef` is `{ name, run(ctx) }`; stages read
 prior stages' artifacts off disk via `ctx.artifactPath(stage, file)`
-(`runs/<jobId>/<stage>/<file>`) and write their own. `stagesForTier(tier)` in
+(`runs/<jobId>/<stage>/<file>`) and write their own. `pipelineStages()` in
 `src/jobs/pipeline.ts` is the single source of truth for stage order — CLI
 `produce`, `resume`, and `produce-next` all wire through it so they can never
 drift apart:
 
 ```
-script -> voice -> captions -> visuals (volume|premium branch) -> assemble -> qc
+script -> voice -> captions -> visuals -> assemble -> qc
 ```
 
 `runJob` (`src/jobs/runner.ts`) drives this: it persists per-stage status to
@@ -70,11 +69,13 @@ A stage failure marks the job `failed`, *except* a thrown `BudgetExceededError`
 enforcement outcome, not a crash, and `produce-next`/digest treat the two
 differently.
 
-Volume vs. premium tier only branches the **visuals** stage
-(`visuals-volume.ts` picks a random background clip; `visuals-premium.ts`
-generates FLUX keyframes + Kling/MiniMax image-to-video per scene via fal.ai);
-script/voice/captions/qc branch internally on `ctx.tier` instead of swapping
-implementations.
+There is a single visuals implementation: `visuals-volume.ts` picks a random
+background clip from `channel.bgDir` and loops/crops it to the narration
+duration. Voice synthesis has its own independent fallback chain
+(`src/stages/voice.ts`): if the channel config sets `[voice.premium]`
+(ElevenLabs), that provider is tried first and falls back to kokoro/edge-tts
+on failure or absence — this is a plain per-channel setting, not a pipeline
+branch.
 
 ### Two cron loops share one SQLite file
 
@@ -124,24 +125,21 @@ TOML with no `[publish]` table never enters the publish pool; one with no
 ### Budget enforcement is layered, not a single check
 
 `src/jobs/costs.ts`'s `assertBudget` is called before every paid provider call
-and checks, in order: per-video cap (tier-specific) → channel-day cap (UTC) →
-global-day cap (`BRAINROT_GLOBAL_DAILY_USD`, spans all channels). A breach
-throws `BudgetExceededError` *before* the call fires. Providers that pay for a
-call that then fails downstream (e.g. a schema-invalid LLM response, or a fal
-asset whose download fails after a paid `subscribe`) still have to ledger that
-spend — see `src/providers/errors.ts`'s `ProviderCostError` /
-`errorCostUsdMicros` duck-typed cost-recovery convention, used in
-`src/stages/qc.ts`'s vision spot-check as the canonical example.
+and checks, in order: per-video cap (`channel.budget.perVideoUsdMicros`) →
+channel-day cap (UTC) → global-day cap (`BRAINROT_GLOBAL_DAILY_USD`, spans all
+channels). A breach throws `BudgetExceededError` *before* the call fires.
+Providers that pay for a call that then fails downstream (e.g. a schema-invalid
+LLM response) still have to ledger that spend — see `src/providers/errors.ts`'s
+`ProviderCostError` / `errorCostUsdMicros` duck-typed cost-recovery convention.
 
 ### Providers and the sidecar
 
-`src/providers/*.ts` wrap external APIs (Anthropic for scripts/vision judging,
-fal.ai for premium visuals, ElevenLabs for premium voice, kokoro/edge-tts for
-volume-tier and premium-fallback voice). `src/providers/whisperx.ts` talks to
-the Dockerized WhisperX sidecar (`docker-compose.yml`) for caption word-level
-alignment — only needed for volume tier and when premium's ElevenLabs synth
-falls back to kokoro/edge-tts (ElevenLabs itself returns word timings
-directly, no alignment pass needed).
+`src/providers/*.ts` wrap external APIs (Anthropic for scripts, ElevenLabs for
+premium voice, kokoro/edge-tts for the free voice fallback chain).
+`src/providers/whisperx.ts` talks to the Dockerized WhisperX sidecar
+(`docker-compose.yml`) for caption word-level alignment — needed whenever a
+job's voice.json wasn't produced by a successful ElevenLabs synth (ElevenLabs
+itself returns word timings directly, no alignment pass needed).
 
 ### Publishing: OAuth + encrypted refresh tokens
 

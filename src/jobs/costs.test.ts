@@ -25,15 +25,15 @@ function tempDb() {
 // Budget shorthand: testChannel() (Task 5) supplies every non-budget field.
 function channel(
   name: string,
-  budget: { perVideoUsdMicros: number; premiumPerVideoUsdMicros: number; perDayUsdMicros: number },
+  budget: { perVideoUsdMicros: number; perDayUsdMicros: number },
 ): ChannelConfig {
   return testChannel({ name, budget })
 }
 
 // Cost rows attribute to a channel through the jobs table (costs has no channel
 // column), so every job that carries spend must exist as a real jobs row.
-function seedJob(db: Database, ch: ChannelConfig, tier: 'volume' | 'premium' = 'volume'): string {
-  return createJob(db, ch, { topic: 'budget test topic', tier })
+function seedJob(db: Database, ch: ChannelConfig): string {
+  return createJob(db, ch, { topic: 'budget test topic' })
 }
 
 const GENEROUS = 100_000_000 // $100 — never the cap under test
@@ -62,12 +62,11 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const ch = channel('chan-a', {
       perVideoUsdMicros: 8_000_000,
-      premiumPerVideoUsdMicros: 7_000_000,
       perDayUsdMicros: 20_000_000,
     })
     const jobId = seedJob(db, ch)
     recordCost(db, jobId, 'anthropic', 'script', 2_000_000)
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'volume')).not.toThrow()
+    expect(() => assertBudget(db, ch, jobId, 1_000_000)).not.toThrow()
     db.close()
   })
 
@@ -75,50 +74,14 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const ch = channel('chan-a', {
       perVideoUsdMicros: 8_000_000,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const jobId = seedJob(db, ch)
     recordCost(db, jobId, 'anthropic', 'script', 7_500_000)
     // 7.5M + 1M = 8.5M > 8M volume cap
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'volume')).toThrow(BudgetExceededError)
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'volume')).toThrow(
+    expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(BudgetExceededError)
+    expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(
       /^per-video budget exceeded/,
-    )
-    db.close()
-  })
-
-  it('premium tier judges the job against the premium per-video cap', () => {
-    const db = tempDb()
-    const ch = channel('chan-a', {
-      perVideoUsdMicros: 1_000_000,
-      premiumPerVideoUsdMicros: 7_000_000,
-      perDayUsdMicros: GENEROUS,
-    })
-    const jobId = seedJob(db, ch, 'premium')
-    recordCost(db, jobId, 'fal', 'image', 2_000_000)
-    // Identical db state, tier argument alone picks the cap (assertBudget uses
-    // the tier PARAMETER, not the jobs row): 2M + 1M busts the 1M volume cap
-    // but fits the 7M premium cap.
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'premium')).not.toThrow()
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'volume')).toThrow(
-      /^per-video budget exceeded/,
-    )
-    db.close()
-  })
-
-  it('throws on a premium per-video breach, naming the premium cap', () => {
-    const db = tempDb()
-    const ch = channel('chan-a', {
-      perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: 7_000_000,
-      perDayUsdMicros: GENEROUS,
-    })
-    const jobId = seedJob(db, ch, 'premium')
-    recordCost(db, jobId, 'fal', 'video', 6_500_000)
-    // 6.5M + 1M = 7.5M > 7M premium cap
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'premium')).toThrow(
-      /^premium per-video budget exceeded/,
     )
     db.close()
   })
@@ -130,12 +93,10 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const chA = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: 10_000_000,
     })
     const chB = channel('chan-b', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: 10_000_000,
     })
     const jobA1 = seedJob(db, chA)
@@ -144,12 +105,12 @@ describe('recordCost + assertBudget', () => {
     recordCost(db, jobA1, 'anthropic', 'script', 6_000_000)
     recordCost(db, jobA2, 'fal', 'image', 3_500_000)
     // chan-a today: 9.5M; + 1M = 10.5M > its 10M channel-day cap
-    expect(() => assertBudget(db, chA, jobA2, 1_000_000, 'volume')).toThrow(
+    expect(() => assertBudget(db, chA, jobA2, 1_000_000)).toThrow(
       /^channel-day budget exceeded for "chan-a"/,
     )
     // chan-b has spent nothing today: the identical call passes (global day
     // would be 10.5M, well under the $25 default global cap)
-    expect(() => assertBudget(db, chB, jobB, 1_000_000, 'volume')).not.toThrow()
+    expect(() => assertBudget(db, chB, jobB, 1_000_000)).not.toThrow()
     db.close()
   })
 
@@ -158,12 +119,10 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const chA = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const chB = channel('chan-b', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const jobA = seedJob(db, chA)
@@ -172,7 +131,7 @@ describe('recordCost + assertBudget', () => {
     recordCost(db, jobB, 'fal', 'image', 1_500_000)
     // all channels today: 4.5M; + 1M = 5.5M > 5M env cap — trips even though
     // chan-b's own channel-day sum is only 2.5M
-    expect(() => assertBudget(db, chB, jobB, 1_000_000, 'volume')).toThrow(
+    expect(() => assertBudget(db, chB, jobB, 1_000_000)).toThrow(
       /^global-day budget exceeded/,
     )
     db.close()
@@ -183,15 +142,14 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const ch = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const jobId = seedJob(db, ch)
     recordCost(db, jobId, 'fal', 'video', 24_500_000)
     // 24.5M + 0.5M == 25M default cap exactly: boundary passes (strict >)
-    expect(() => assertBudget(db, ch, jobId, 500_000, 'volume')).not.toThrow()
+    expect(() => assertBudget(db, ch, jobId, 500_000)).not.toThrow()
     // 24.5M + 1M = 25.5M > 25M default cap
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'volume')).toThrow(
+    expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(
       /^global-day budget exceeded/,
     )
     db.close()
@@ -201,7 +159,6 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const daily = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: 5_000_000,
     })
     const jobId = seedJob(db, daily)
@@ -209,14 +166,13 @@ describe('recordCost + assertBudget', () => {
       "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, 'fal', 'video', ?, '2020-01-01T00:00:00.000Z')",
     ).run(jobId, 4_900_000)
     // 4.9M spent in 2020: today's daily sums are 0, so +1M clears the 5M daily cap
-    expect(() => assertBudget(db, daily, jobId, 1_000_000, 'volume')).not.toThrow()
+    expect(() => assertBudget(db, daily, jobId, 1_000_000)).not.toThrow()
     // ...but the per-video cap is lifetime: 4.9M + 1M busts a 5M per-video cap
     const tight = channel('chan-a', {
       perVideoUsdMicros: 5_000_000,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: 5_000_000,
     })
-    expect(() => assertBudget(db, tight, jobId, 1_000_000, 'volume')).toThrow(
+    expect(() => assertBudget(db, tight, jobId, 1_000_000)).toThrow(
       /^per-video budget exceeded/,
     )
     db.close()
@@ -227,13 +183,12 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const ch = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const jobId = seedJob(db, ch)
     let caught: unknown
     try {
-      assertBudget(db, ch, jobId, 1_000, 'volume')
+      assertBudget(db, ch, jobId, 1_000)
     } catch (err) {
       caught = err
     }
@@ -249,13 +204,12 @@ describe('recordCost + assertBudget', () => {
     const db = tempDb()
     const ch = channel('chan-a', {
       perVideoUsdMicros: 8_000_000,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: 20_000_000,
     })
     const jobId = seedJob(db, ch)
     recordCost(db, jobId, 'anthropic', 'script', 7_000_000)
     // per-video: 7M + 1M == 8M cap; channel-day 8M < 20M; global 8M < 25M default
-    expect(() => assertBudget(db, ch, jobId, 1_000_000, 'volume')).not.toThrow()
+    expect(() => assertBudget(db, ch, jobId, 1_000_000)).not.toThrow()
     db.close()
   })
 })
@@ -267,12 +221,10 @@ describe('day-spend helpers', () => {
     const db = tempDb()
     const chA = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const chB = channel('chan-b', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const jobA = seedJob(db, chA)
@@ -290,7 +242,6 @@ describe('day-spend helpers', () => {
     const db = tempDb()
     const ch = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const jobId = seedJob(db, ch)
@@ -308,7 +259,6 @@ describe('day-spend helpers', () => {
     const db = tempDb()
     const ch = channel('chan-a', {
       perVideoUsdMicros: GENEROUS,
-      premiumPerVideoUsdMicros: GENEROUS,
       perDayUsdMicros: GENEROUS,
     })
     const jobId = seedJob(db, ch)

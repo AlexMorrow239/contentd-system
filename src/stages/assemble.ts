@@ -3,11 +3,9 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bundle } from '@remotion/bundler'
 import { renderMedia, selectComposition } from '@remotion/renderer'
-import { probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import type { WordTiming } from '../providers/whisperx.js'
-import type { SceneClip, ShortVideoProps } from '../remotion-types.js'
-import type { ScenesManifest } from './visuals-premium.js'
+import type { ShortVideoProps } from '../remotion-types.js'
 
 // Resolved relative to THIS module, not process.cwd(): the CLI may be invoked
 // from any directory (pnpm -C, cron, a wrapper script), and a cwd-relative
@@ -29,24 +27,6 @@ function getBundle(): Promise<string> {
     bundlePromise = inFlight
   }
   return bundlePromise
-}
-
-/**
- * Fit a probed clip into its scene window (both integer ms).
- * - Window shorter than (or equal to) the clip: play at 1x and trim — the
- *   Series.Sequence simply ends at windowMs.
- * - Window longer than the clip: slow playback to cover it, but never below
- *   0.75x. A clip exhausted at 0.75x freezes on its last frame for the
- *   remainder of the window; QC's freeze check bounds how bad that can get.
- *   Windows needing < 0.75x violate script-stage pacing constraints and are
- *   caught by QC's duration/coverage checks, not silently stretched further.
- */
-export function fitClipToWindow(
-  clipMs: number,
-  windowMs: number,
-): { playbackRate: number; durationMs: number } {
-  if (windowMs <= clipMs) return { playbackRate: 1, durationMs: windowMs }
-  return { playbackRate: Math.max(0.75, clipMs / windowMs), durationMs: windowMs }
 }
 
 export const assembleStage: StageDef = {
@@ -95,35 +75,11 @@ export const assembleStage: StageDef = {
         durationMs: voice.durationMs,
       }
 
-      let props: ShortVideoProps
-      if (ctx.tier === 'premium') {
-        // Premium: sequence the per-scene clips from the visuals manifest.
-        // Each clip is probed for its REAL duration (fal can deliver 5.04s for
-        // a "5s" clip; never trust clipDurationSec for timeline math) and
-        // fitted to its scene window via fitClipToWindow.
-        const manifest = JSON.parse(
-          readFileSync(ctx.artifactPath('visuals', 'scenes.json'), 'utf8'),
-        ) as ScenesManifest
-        const sceneClips: SceneClip[] = []
-        for (const entry of manifest.scenes) {
-          const clipPath = ctx.artifactPath('visuals', entry.clip)
-          const probed = await probe(clipPath)
-          const fit = fitClipToWindow(probed.durationMs, entry.endMs - entry.startMs)
-          copyFileSync(clipPath, path.join(publicJobDir, entry.clip))
-          sceneClips.push({
-            src: `${ctx.jobId}/${entry.clip}`,
-            durationMs: fit.durationMs,
-            playbackRate: fit.playbackRate,
-          })
-        }
-        props = { ...base, sceneClips }
-      } else {
-        copyFileSync(
-          ctx.artifactPath('visuals', 'background.mp4'),
-          path.join(publicJobDir, 'background.mp4'),
-        )
-        props = { ...base, backgroundSrc: `${ctx.jobId}/background.mp4` }
-      }
+      copyFileSync(
+        ctx.artifactPath('visuals', 'background.mp4'),
+        path.join(publicJobDir, 'background.mp4'),
+      )
+      const props: ShortVideoProps = { ...base, backgroundSrc: `${ctx.jobId}/background.mp4` }
 
       const composition = await selectComposition({
         serveUrl,

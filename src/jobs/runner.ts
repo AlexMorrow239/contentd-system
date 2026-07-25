@@ -6,7 +6,7 @@ import pino from 'pino'
 import type { ChannelConfig } from '../config/channel.js'
 import { BudgetExceededError } from './costs.js'
 import { STAGE_ORDER } from './types.js'
-import type { JobContext, StageDef, StageName, Tier } from './types.js'
+import type { JobContext, StageDef, StageName } from './types.js'
 
 const nowIso = (): string => new Date().toISOString()
 
@@ -19,18 +19,21 @@ export interface JobResult {
 export function createJob(
   db: Database,
   channel: ChannelConfig,
-  opts: { topic: string; tier: Tier },
+  opts: { topic: string },
   _options: { runsRoot?: string } = {},
 ): string {
   const jobId = nanoid()
+  // The 'tier' column is a legacy NOT NULL CHECK ('volume','premium') left in
+  // place for historical rows (see schema.sql) — no application code models a
+  // tier concept anymore, so every new row just writes the literal 'volume'.
   const insertJob = db.prepare(
-    'INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, ?, ?, ?)',
+    "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, ?)",
   )
   const insertStage = db.prepare(
     'INSERT INTO job_stages (job_id, stage, status) VALUES (?, ?, ?)',
   )
   db.transaction(() => {
-    insertJob.run(jobId, channel.name, opts.tier, opts.topic, 'queued')
+    insertJob.run(jobId, channel.name, opts.topic, 'queued')
     for (const stage of STAGE_ORDER) {
       insertStage.run(jobId, stage, 'pending')
     }
@@ -56,8 +59,8 @@ export async function runJob(
   const runDir = join(runsRoot, jobId)
 
   const jobRow = db
-    .prepare('SELECT topic, tier FROM jobs WHERE id = ?')
-    .get(jobId) as { topic: string; tier: Tier } | undefined
+    .prepare('SELECT topic FROM jobs WHERE id = ?')
+    .get(jobId) as { topic: string } | undefined
   if (!jobRow) {
     throw new Error(`job not found: ${jobId}`)
   }
@@ -68,7 +71,6 @@ export async function runJob(
     jobId,
     db,
     channel,
-    tier: jobRow.tier,
     topic: jobRow.topic,
     runDir,
     artifactPath(stage: StageName, file: string): string {

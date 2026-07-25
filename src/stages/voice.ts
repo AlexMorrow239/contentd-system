@@ -178,47 +178,43 @@ export const voiceStage: StageDef = {
     let premiumWords: WordTiming[] | undefined;
 
     const premiumVoice = ctx.channel.voice.premium;
-    if (ctx.tier === 'premium') {
-      if (!premiumVoice) {
-        ctx.log.warn('premium tier requested but channel has no [voice.premium] config; using volume voice chain');
-      } else {
-        // Paid call: reserve the character-based estimate against the premium
-        // per-video cap before dialing out. This sits OUTSIDE the fallback catch
-        // on purpose — a budget breach is enforcement, not a provider fault, so
-        // BudgetExceededError propagates and the runner parks the job 'blocked'
-        // instead of silently downgrading the voice and spending on visuals.
-        assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(narration), ctx.tier);
+    if (premiumVoice) {
+      // Paid call: reserve the character-based estimate against the per-video
+      // cap before dialing out. This sits OUTSIDE the fallback catch on
+      // purpose — a budget breach is enforcement, not a provider fault, so
+      // BudgetExceededError propagates and the runner parks the job 'blocked'
+      // instead of silently downgrading the voice.
+      assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(narration));
 
-        // ONLY the provider call is fallback-eligible: while nothing has been
-        // delivered, a failure legitimately means "use the volume chain".
-        let synth: Awaited<ReturnType<typeof synthWithTimestamps>> | undefined;
-        try {
-          synth = await synthWithTimestamps({
-            voiceId: premiumVoice.voiceId,
-            modelId: premiumVoice.modelId,
-            text: narration,
-          });
-        } catch (err) {
-          // The timings write is deferred past the duration guard, so this
-          // attempt cannot have created timings.json — the rm is defense in
-          // depth against the write ever drifting back into the try.
-          await fs.rm(timingsPath, { force: true });
-          ctx.log.warn({ err }, 'elevenlabs TTS failed; falling back to volume voice chain');
-        }
+      // ONLY the provider call is fallback-eligible: while nothing has been
+      // delivered, a failure legitimately means "use the volume chain".
+      let synth: Awaited<ReturnType<typeof synthWithTimestamps>> | undefined;
+      try {
+        synth = await synthWithTimestamps({
+          voiceId: premiumVoice.voiceId,
+          modelId: premiumVoice.modelId,
+          text: narration,
+        });
+      } catch (err) {
+        // The timings write is deferred past the duration guard, so this
+        // attempt cannot have created timings.json — the rm is defense in
+        // depth against the write ever drifting back into the try.
+        await fs.rm(timingsPath, { force: true });
+        ctx.log.warn({ err }, 'elevenlabs TTS failed; falling back to volume voice chain');
+      }
 
-        if (synth) {
-          // Paid audio is in hand, so the spend is real: ledger it BEFORE any
-          // fallible local write. A failure below is a local fault, not a
-          // provider one — it surfaces as a stage error rather than a silent
-          // downgrade that would strand this charge unrecorded.
-          recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros);
-          await fs.writeFile(wavPath, synth.wavBytes);
-          provider = 'elevenlabs';
-          voiceId = premiumVoice.voiceId;
-          // timings.json is NOT written here: it becomes visible to captions
-          // only after the shared duration guard below has accepted the audio.
-          premiumWords = synth.words;
-        }
+      if (synth) {
+        // Paid audio is in hand, so the spend is real: ledger it BEFORE any
+        // fallible local write. A failure below is a local fault, not a
+        // provider one — it surfaces as a stage error rather than a silent
+        // downgrade that would strand this charge unrecorded.
+        recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros);
+        await fs.writeFile(wavPath, synth.wavBytes);
+        provider = 'elevenlabs';
+        voiceId = premiumVoice.voiceId;
+        // timings.json is NOT written here: it becomes visible to captions
+        // only after the shared duration guard below has accepted the audio.
+        premiumWords = synth.words;
       }
     }
 

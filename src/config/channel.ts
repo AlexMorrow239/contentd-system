@@ -19,47 +19,25 @@ export interface PremiumVoiceConfig {
   modelId: string
 }
 
-export interface PremiumConfig {
-  imageModel: string
-  videoModel: string
-  stylePrefix?: string
-  sceneConcurrency: number
-}
-
 export interface ScoutConfig {
   subreddits: string[]
   rss: string[]
   minScore: number
   perSourceLimit: number
-  autoPremium: boolean
 }
 
 export interface ChannelConfig {
   name: string
   niche: string[]
-  tierMix: { volume: number; premium: number }
+  videosPerDay: number
   voice: { volume: string; premium?: PremiumVoiceConfig }
-  premium: PremiumConfig
   captionStyle: CaptionStyle
   bgDir: string[]
   bgmDir: string
-  budget: { perVideoUsdMicros: number; premiumPerVideoUsdMicros: number; perDayUsdMicros: number }
+  budget: { perVideoUsdMicros: number; perDayUsdMicros: number }
   scriptModel: string
   scout: ScoutConfig
   publish: PublishChannelConfig | null
-}
-
-/**
- * Defaults for the [premium] TOML table: applied whole when the table is
- * absent, per-field (via the zod defaults below) when it is partial.
- * Endpoint ids follow the plan's Interface Contract; FAL_PRICE_TABLE in
- * src/providers/fal.ts (Task 8) is the source of truth for verified live
- * ids and prices — if verification changes an id, update it here too.
- */
-export const DEFAULT_PREMIUM: PremiumConfig = {
-  imageModel: 'fal-ai/flux/dev',
-  videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
-  sceneConcurrency: 3,
 }
 
 /**
@@ -77,10 +55,8 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
   rss: Object.freeze([] as string[]),
   minScore: 60,
   perSourceLimit: 25,
-  autoPremium: false,
 }) as ScoutConfig
 
-const DEFAULT_PREMIUM_PER_VIDEO_USD = 7.0
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
 const SLOT_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
@@ -88,10 +64,7 @@ const rawSchema = z.object({
   name: z.string(),
   niche: z.array(z.string()),
   script_model: z.string().default('claude-sonnet-5'),
-  tier_mix: z.object({
-    volume: z.number(),
-    premium: z.number(),
-  }),
+  videos_per_day: z.number(),
   voice: z.object({
     volume: z.string(),
     premium: z
@@ -102,21 +75,12 @@ const rawSchema = z.object({
       })
       .optional(),
   }),
-  premium: z
-    .object({
-      image_model: z.string().default(DEFAULT_PREMIUM.imageModel),
-      video_model: z.string().default(DEFAULT_PREMIUM.videoModel),
-      style_prefix: z.string().optional(),
-      scene_concurrency: z.number().default(DEFAULT_PREMIUM.sceneConcurrency),
-    })
-    .optional(),
   scout: z
     .object({
       subreddits: z.array(z.string()).default([]),
       rss: z.array(z.string()).default([]),
       min_score: z.number().int().min(0).max(100).default(DEFAULT_SCOUT.minScore),
       per_source_limit: z.number().int().min(1).max(100).default(DEFAULT_SCOUT.perSourceLimit),
-      auto_premium: z.boolean().default(DEFAULT_SCOUT.autoPremium),
     })
     .optional(),
   publish: z
@@ -146,10 +110,6 @@ const rawSchema = z.object({
   // so it fails loudly here rather than quietly at 3am.
   budget: z.object({
     per_video_usd: z.number().positive('per_video_usd must be greater than 0'),
-    premium_per_video_usd: z
-      .number()
-      .positive('premium_per_video_usd must be greater than 0')
-      .default(DEFAULT_PREMIUM_PER_VIDEO_USD),
     per_day_usd: z.number().positive('per_day_usd must be greater than 0'),
   }),
   bg_dir: z.preprocess(
@@ -169,7 +129,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
   return {
     name: raw.name,
     niche: raw.niche,
-    tierMix: { volume: raw.tier_mix.volume, premium: raw.tier_mix.premium },
+    videosPerDay: raw.videos_per_day,
     voice: {
       volume: raw.voice.volume,
       premium: raw.voice.premium
@@ -180,14 +140,6 @@ export function loadChannelConfig(path: string): ChannelConfig {
           }
         : undefined,
     },
-    premium: raw.premium
-      ? {
-          imageModel: raw.premium.image_model,
-          videoModel: raw.premium.video_model,
-          stylePrefix: raw.premium.style_prefix,
-          sceneConcurrency: raw.premium.scene_concurrency,
-        }
-      : { ...DEFAULT_PREMIUM },
     captionStyle: {
       font: raw.caption_style.font,
       fontSizePx: raw.caption_style.font_size_px,
@@ -199,7 +151,6 @@ export function loadChannelConfig(path: string): ChannelConfig {
     bgmDir: raw.bgm_dir,
     budget: {
       perVideoUsdMicros: usdToMicros(raw.budget.per_video_usd),
-      premiumPerVideoUsdMicros: usdToMicros(raw.budget.premium_per_video_usd),
       perDayUsdMicros: usdToMicros(raw.budget.per_day_usd),
     },
     scriptModel: raw.script_model,
@@ -209,7 +160,6 @@ export function loadChannelConfig(path: string): ChannelConfig {
           rss: raw.scout.rss,
           minScore: raw.scout.min_score,
           perSourceLimit: raw.scout.per_source_limit,
-          autoPremium: raw.scout.auto_premium,
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
     publish: raw.publish

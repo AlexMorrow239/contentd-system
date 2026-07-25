@@ -1,6 +1,5 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
-import type { Tier } from './types.js'
 
 // Operator-level safety net across ALL channels (design spec §5).
 const DEFAULT_GLOBAL_DAILY_USD = 25
@@ -94,33 +93,30 @@ export function assertGlobalDayBudget(db: Database, upcomingUsdMicros: number): 
 
 /**
  * Pre-call budget checkpoint. Enforces, in order:
- *  1. per-video cap — tier picks the cap (premium → premiumPerVideoUsdMicros),
- *     against the job's lifetime spend
+ *  1. per-video cap — channel.budget.perVideoUsdMicros, against the job's
+ *     lifetime spend
  *  2. channel-day cap — today's UTC spend attributed through the jobs table
  *     vs channel.budget.perDayUsdMicros
  *  3. global-day cap — today's UTC spend across ALL channels vs
  *     BRAINROT_GLOBAL_DAILY_USD (USD, default 25)
  * All comparisons are strict `>` (equal-to-cap passes). Messages start with the
- * cap name (per-video / premium per-video / channel-day / global-day) — the
- * runner surfaces them verbatim as the blocked reason.
+ * cap name (per-video / channel-day / global-day) — the runner surfaces them
+ * verbatim as the blocked reason.
  */
 export function assertBudget(
   db: Database,
   channel: ChannelConfig,
   jobId: string,
   upcomingUsdMicros: number,
-  tier: Tier,
 ): void {
-  const perVideoCap =
-    tier === 'premium' ? channel.budget.premiumPerVideoUsdMicros : channel.budget.perVideoUsdMicros
-  const perVideoLabel = tier === 'premium' ? 'premium per-video' : 'per-video'
+  const perVideoCap = channel.budget.perVideoUsdMicros
   const jobRow = db
     .prepare('SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?')
     .get(jobId) as { total: number }
   const jobProjected = jobRow.total + upcomingUsdMicros
   if (jobProjected > perVideoCap) {
     throw new BudgetExceededError(
-      `${perVideoLabel} budget exceeded: ${jobProjected} > ${perVideoCap} usdMicros`,
+      `per-video budget exceeded: ${jobProjected} > ${perVideoCap} usdMicros`,
     )
   }
 

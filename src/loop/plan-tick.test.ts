@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { DEFAULT_SCOUT } from '../config/channel.js'
 import { openDb } from '../db/index.js'
 import { recordCost } from '../jobs/costs.js'
 import { testChannel } from '../stages/_testkit.js'
@@ -17,7 +16,6 @@ function seedJob(
   overrides: Partial<{
     id: string
     channel: string
-    tier: string
     status: string
     createdAt: string
   }> = {},
@@ -26,14 +24,13 @@ function seedJob(
   const row = {
     id: `job-${jobSeq}`,
     channel: 'test',
-    tier: 'volume',
     status: 'done',
     createdAt: new Date().toISOString(),
     ...overrides,
   }
   db.prepare(
-    'INSERT INTO jobs (id, channel, tier, topic, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-  ).run(row.id, row.channel, row.tier, `topic for ${row.id}`, row.status, row.createdAt)
+    "INSERT INTO jobs (id, channel, tier, topic, status, created_at) VALUES (?, ?, 'volume', ?, ?, ?)",
+  ).run(row.id, row.channel, `topic for ${row.id}`, row.status, row.createdAt)
   return row.id
 }
 
@@ -96,7 +93,7 @@ describe('planTick basics', () => {
 
   it('noops when there are no blocked jobs and no topics', () => {
     const db = openDb(':memory:')
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual(NOOP)
+    expect(planTick(db, [testChannel()])).toEqual(NOOP)
     db.close()
   })
 })
@@ -106,11 +103,10 @@ describe('resume pass', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'job-parked', status: 'blocked' })
     seedTopic(db) // a claimable topic must not outrank the parked job
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+    expect(planTick(db, [testChannel()])).toEqual({
       kind: 'resume',
       jobId: 'job-parked',
       channel: 'test',
-      tier: 'volume',
     })
     db.close()
   })
@@ -119,7 +115,7 @@ describe('resume pass', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'job-newer', status: 'blocked', createdAt: '2026-07-02T00:00:00.000Z' })
     seedJob(db, { id: 'job-older', status: 'blocked', createdAt: '2026-07-01T00:00:00.000Z' })
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+    expect(planTick(db, [testChannel()])).toMatchObject({
       kind: 'resume',
       jobId: 'job-older',
     })
@@ -136,21 +132,9 @@ describe('resume pass', () => {
       createdAt: '2026-07-01T00:00:00.000Z',
     })
     seedJob(db, { id: 'job-live', status: 'blocked', createdAt: '2026-07-02T00:00:00.000Z' })
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+    expect(planTick(db, [testChannel()])).toMatchObject({
       kind: 'resume',
       jobId: 'job-live',
-    })
-    db.close()
-  })
-
-  it('carries the premium tier through the plan', () => {
-    const db = openDb(':memory:')
-    seedJob(db, { id: 'job-prem', tier: 'premium', status: 'blocked' })
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
-      kind: 'resume',
-      jobId: 'job-prem',
-      channel: 'test',
-      tier: 'premium',
     })
     db.close()
   })
@@ -159,21 +143,11 @@ describe('resume pass', () => {
 describe('resume pass skip conditions', () => {
   const cases: {
     reason: string
-    falKeyPresent: boolean
-    expected: 'no-eligible-work' | 'no-fal-key'
+    expected: 'no-eligible-work'
     seed: (db: Database) => void
   }[] = [
     {
-      reason: 'the job is premium and the FAL key is absent',
-      falKeyPresent: false,
-      expected: 'no-fal-key',
-      seed: (db) => {
-        seedJob(db, { id: 'job-parked', tier: 'premium', status: 'blocked' })
-      },
-    },
-    {
       reason: 'channel-day headroom is under the resume minimum',
-      falKeyPresent: true,
       expected: 'no-eligible-work',
       seed: (db) => {
         seedJob(db, { id: 'job-parked', status: 'blocked' })
@@ -184,7 +158,6 @@ describe('resume pass skip conditions', () => {
     },
     {
       reason: 'global-day headroom is under the resume minimum',
-      falKeyPresent: true,
       expected: 'no-eligible-work',
       seed: (db) => {
         seedJob(db, { id: 'job-parked', status: 'blocked' })
@@ -195,10 +168,10 @@ describe('resume pass skip conditions', () => {
     },
   ]
 
-  it.each(cases)('skips the blocked job when $reason', ({ falKeyPresent, expected, seed }) => {
+  it.each(cases)('skips the blocked job when $reason', ({ expected, seed }) => {
     const db = openDb(':memory:')
     seed(db)
-    expect(planTick(db, [testChannel()], { falKeyPresent })).toEqual({
+    expect(planTick(db, [testChannel()])).toEqual({
       kind: 'noop',
       reason: expected,
     })
@@ -210,26 +183,15 @@ describe('resume pass per-video headroom', () => {
   it('skips a blocked job at its per-video cap so the claim pass still runs', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'job-capped', status: 'blocked' })
-    // The whole $8 volume per-video cap is already spent: resuming could only
+    // The whole $8 per-video cap is already spent: resuming could only
     // re-block at the first checkpoint, and the job keeps its place at the
     // head of the oldest-first queue — every channel starves forever.
     recordCost(db, 'job-capped', 'fal', 'video', 8_000_000)
     const topicId = seedTopic(db)
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+    expect(planTick(db, [testChannel()])).toMatchObject({
       kind: 'produce',
       topicId,
-      tier: 'volume',
     })
-    db.close()
-  })
-
-  it('reads the premium cap for a premium job', () => {
-    const db = openDb(':memory:')
-    seedJob(db, { id: 'job-prem', tier: 'premium', status: 'blocked' })
-    // $6.90 spent: under the premium $7 cap's minimum step, while the $8
-    // volume cap would still look resumable — the tier must pick the cap.
-    recordCost(db, 'job-prem', 'fal', 'video', 6_900_000)
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual(NOOP)
     db.close()
   })
 
@@ -239,7 +201,7 @@ describe('resume pass per-video headroom', () => {
     // $8 cap − $6 spent = exactly the $2 step: the guard is strictly-less, so
     // this job is still worth resuming.
     recordCost(db, 'job-parked', 'fal', 'video', 6_000_000)
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+    expect(planTick(db, [testChannel()])).toMatchObject({
       kind: 'resume',
       jobId: 'job-parked',
     })
@@ -252,13 +214,9 @@ describe('resume pass per-video headroom', () => {
     // A $1.50/day channel can never clear the absolute $2 floor, so a flat
     // floor would lock its blocked jobs out permanently — even at zero spend.
     const ch = testChannel({
-      budget: {
-        perVideoUsdMicros: 1_000_000,
-        premiumPerVideoUsdMicros: 1_000_000,
-        perDayUsdMicros: 1_500_000,
-      },
+      budget: { perVideoUsdMicros: 1_000_000, perDayUsdMicros: 1_500_000 },
     })
-    expect(planTick(db, [ch], { falKeyPresent: true })).toMatchObject({
+    expect(planTick(db, [ch])).toMatchObject({
       kind: 'resume',
       jobId: 'job-parked',
     })
@@ -267,16 +225,15 @@ describe('resume pass per-video headroom', () => {
 })
 
 describe('claim pass', () => {
-  it('claims the best eligible volume topic', () => {
+  it('claims the best eligible topic', () => {
     const db = openDb(':memory:')
     const best = seedTopic(db, { title: 'Why the Moon is drifting away', score: 90 })
     seedTopic(db, { title: 'runner-up', score: 70 })
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
+    expect(planTick(db, [testChannel()])).toEqual({
       kind: 'produce',
       channel: 'test',
       topicId: best,
       topic: 'Why the Moon is drifting away',
-      tier: 'volume',
     })
     db.close()
   })
@@ -284,13 +241,13 @@ describe('claim pass', () => {
 
 describe('claim pass quota', () => {
   it.each(['queued', 'running', 'failed', 'done'])(
-    'a %s job created today consumes its tier slot',
+    'a %s job created today consumes its daily slot',
     (status) => {
       const db = openDb(':memory:')
       seedJob(db, { status })
       seedTopic(db)
-      const ch = testChannel({ tierMix: { volume: 1, premium: 0 } })
-      expect(planTick(db, [ch], { falKeyPresent: true })).toEqual(NOOP)
+      const ch = testChannel({ videosPerDay: 1 })
+      expect(planTick(db, [ch])).toEqual(NOOP)
       db.close()
     },
   )
@@ -302,8 +259,8 @@ describe('claim pass quota', () => {
     seedJob(db, { status: 'blocked' })
     recordCost(db, 'scout:test', 'anthropic', 'scout-score', 23_500_000)
     seedTopic(db)
-    const ch = testChannel({ tierMix: { volume: 1, premium: 0 } })
-    expect(planTick(db, [ch], { falKeyPresent: true })).toEqual(NOOP)
+    const ch = testChannel({ videosPerDay: 1 })
+    expect(planTick(db, [ch])).toEqual(NOOP)
     db.close()
   })
 
@@ -311,8 +268,8 @@ describe('claim pass quota', () => {
     const db = openDb(':memory:')
     seedJob(db, { status: 'failed', createdAt: '2020-01-01T00:00:00.000Z' })
     const topicId = seedTopic(db)
-    const ch = testChannel({ tierMix: { volume: 1, premium: 0 } })
-    expect(planTick(db, [ch], { falKeyPresent: true })).toMatchObject({
+    const ch = testChannel({ videosPerDay: 1 })
+    expect(planTick(db, [ch])).toMatchObject({
       kind: 'produce',
       topicId,
     })
@@ -320,86 +277,16 @@ describe('claim pass quota', () => {
   })
 })
 
-describe('claim pass tier selection', () => {
-  it('fills the premium slot first when an approved topic exists', () => {
-    const db = openDb(':memory:')
-    const approved = seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
-    seedTopic(db, { title: 'hot candidate', score: 95 })
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
-      kind: 'produce',
-      channel: 'test',
-      topicId: approved,
-      topic: 'approved pick',
-      tier: 'premium',
-    })
-    db.close()
-  })
-
-  it('falls back to volume when no topic is premium-eligible', () => {
-    const db = openDb(':memory:')
-    const candidate = seedTopic(db, { title: 'hot candidate', score: 95 })
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
-      kind: 'produce',
-      channel: 'test',
-      topicId: candidate,
-      topic: 'hot candidate',
-      tier: 'volume',
-    })
-    db.close()
-  })
-
-  it('auto_premium lifts the approval gate', () => {
-    const db = openDb(':memory:')
-    const candidate = seedTopic(db, { title: 'hot candidate', score: 95 })
-    const ch = testChannel({ scout: { ...DEFAULT_SCOUT, autoPremium: true } })
-    expect(planTick(db, [ch], { falKeyPresent: true })).toEqual({
-      kind: 'produce',
-      channel: 'test',
-      topicId: candidate,
-      topic: 'hot candidate',
-      tier: 'premium',
-    })
-    db.close()
-  })
-
-  it('skips premium claims entirely without the FAL key', () => {
-    const db = openDb(':memory:')
-    const approved = seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
-    expect(planTick(db, [testChannel()], { falKeyPresent: false })).toEqual({
-      kind: 'produce',
-      channel: 'test',
-      topicId: approved,
-      topic: 'approved pick',
-      tier: 'volume',
-    })
-    db.close()
-  })
-
-  it('does not claim premium once its slot is filled today', () => {
-    const db = openDb(':memory:')
-    seedJob(db, { tier: 'premium', status: 'failed' })
-    const approved = seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
-    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual({
-      kind: 'produce',
-      channel: 'test',
-      topicId: approved,
-      topic: 'approved pick',
-      tier: 'volume',
-    })
-    db.close()
-  })
-})
-
 describe('claim pass channel fairness', () => {
-  it('prefers the channel with the lowest filled fraction of its mix', () => {
+  it('prefers the channel with the lowest filled fraction of its daily quota', () => {
     const db = openDb(':memory:')
     seedJob(db, { channel: 'chan-a' }) // 1 of 2 slots → 0.5
     seedJob(db, { channel: 'chan-b' }) // 1 of 4 slots → 0.25
     seedTopic(db, { channel: 'chan-a', title: 'a topic' })
     const bTopic = seedTopic(db, { channel: 'chan-b', title: 'b topic' })
-    const chA = testChannel({ name: 'chan-a', tierMix: { volume: 2, premium: 0 } })
-    const chB = testChannel({ name: 'chan-b', tierMix: { volume: 4, premium: 0 } })
-    expect(planTick(db, [chA, chB], { falKeyPresent: true })).toMatchObject({
+    const chA = testChannel({ name: 'chan-a', videosPerDay: 2 })
+    const chB = testChannel({ name: 'chan-b', videosPerDay: 4 })
+    expect(planTick(db, [chA, chB])).toMatchObject({
       kind: 'produce',
       channel: 'chan-b',
       topicId: bTopic,
@@ -411,10 +298,10 @@ describe('claim pass channel fairness', () => {
     const db = openDb(':memory:')
     seedTopic(db, { channel: 'chan-a', title: 'a topic' })
     seedTopic(db, { channel: 'chan-b', title: 'b topic' })
-    const chA = testChannel({ name: 'chan-a', tierMix: { volume: 2, premium: 0 } })
-    const chB = testChannel({ name: 'chan-b', tierMix: { volume: 2, premium: 0 } })
+    const chA = testChannel({ name: 'chan-a', videosPerDay: 2 })
+    const chB = testChannel({ name: 'chan-b', videosPerDay: 2 })
     // Reversed input order: the sort, not the argument order, must decide.
-    expect(planTick(db, [chB, chA], { falKeyPresent: true })).toMatchObject({
+    expect(planTick(db, [chB, chA])).toMatchObject({
       kind: 'produce',
       channel: 'chan-a',
     })
@@ -424,34 +311,13 @@ describe('claim pass channel fairness', () => {
   it('falls through to the next channel when the fairest one has no topics', () => {
     const db = openDb(':memory:')
     const bTopic = seedTopic(db, { channel: 'chan-b', title: 'b topic' })
-    const chA = testChannel({ name: 'chan-a', tierMix: { volume: 2, premium: 0 } })
-    const chB = testChannel({ name: 'chan-b', tierMix: { volume: 2, premium: 0 } })
-    expect(planTick(db, [chA, chB], { falKeyPresent: true })).toMatchObject({
+    const chA = testChannel({ name: 'chan-a', videosPerDay: 2 })
+    const chB = testChannel({ name: 'chan-b', videosPerDay: 2 })
+    expect(planTick(db, [chA, chB])).toMatchObject({
       kind: 'produce',
       channel: 'chan-b',
       topicId: bTopic,
     })
-    db.close()
-  })
-})
-
-describe('no-fal-key noop reason', () => {
-  it('surfaces the missing key when an approved topic waits on a premium-only channel', () => {
-    const db = openDb(':memory:')
-    // approved → volume-eligible too, but this channel has no volume slots,
-    // so the ONLY skipped work was premium work behind the missing key
-    seedTopic(db, { title: 'approved pick', score: 60, status: 'approved' })
-    const ch = testChannel({ tierMix: { volume: 0, premium: 1 } })
-    expect(planTick(db, [ch], { falKeyPresent: false })).toEqual({
-      kind: 'noop',
-      reason: 'no-fal-key',
-    })
-    db.close()
-  })
-
-  it('stays no-eligible-work when nothing premium was skipped for the key', () => {
-    const db = openDb(':memory:')
-    expect(planTick(db, [testChannel()], { falKeyPresent: false })).toEqual(NOOP)
     db.close()
   })
 })

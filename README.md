@@ -7,9 +7,8 @@ finished, QC-checked, word-captioned 9:16 MP4 in the library.
 
 - Node >= 22 and [pnpm](https://pnpm.io)
 - [ffmpeg](https://ffmpeg.org) + ffprobe on `PATH` (`brew install ffmpeg`)
-- Docker (for the WhisperX caption-alignment sidecar — volume tier and premium
-  voice-fallback runs; a premium run whose ElevenLabs synth succeeds never
-  touches it)
+- Docker (for the WhisperX caption-alignment sidecar — needed for captions
+  whenever a job's voice wasn't synthesized by a successful ElevenLabs call)
 
 ## Setup
 
@@ -21,15 +20,14 @@ docker compose up -d whisperx # caption alignment sidecar
 
 Keys in `.env`:
 
-- `ANTHROPIC_API_KEY` — scripts (both tiers), premium vision checks
-- `FAL_KEY` — premium visuals (FLUX keyframes, Kling/MiniMax image-to-video)
-- `ELEVENLABS_API_KEY` — premium voice (unset: premium falls back to kokoro/edge-tts)
+- `ANTHROPIC_API_KEY` — script generation
+- `ELEVENLABS_API_KEY` — premium voice (optional; unset falls back to kokoro/edge-tts)
 - `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (default 25)
 
 ## Seed background footage
 
 Drop vertical-friendly clips into the channel's background folder(s) (default
-`assets/bg/`) and royalty-free music into `assets/bgm/`. The volume tier picks
+`assets/bg/`) and royalty-free music into `assets/bgm/`. The visuals stage picks
 a clip at random from the pool, avoiding the 5 most recently used per channel.
 
 ```bash
@@ -52,40 +50,22 @@ subfolders).
 
 ```bash
 pnpm brainrot produce --channel channels/example.toml --topic "Why is Venus so hot?"
-# options: --tier volume|premium  --db data/brainrot.db  --runs-root runs
+# options: --db data/brainrot.db  --runs-root runs
 ```
 
 Prints the `JobResult` as one JSON line; exit code `0` on `ready`/`needs-review`,
 `1` on `failed` or `blocked` (a `blocked` status means a budget cap was hit).
 
-## Premium tier
-
-`--tier premium` swaps library footage for AI-generated visuals: per scene, a
-FLUX keyframe is generated, vision-checked by Claude, then animated with Kling
-image-to-video (all via fal.ai). Narration comes from ElevenLabs with
-word-level timings (no WhisperX dependency on the happy path), and QC adds
-scene-coverage and vision spot checks.
-
-```bash
-pnpm brainrot produce --channel channels/example.toml \
-  --topic "Why is Venus so hot?" --tier premium
-```
-
-Requires `ANTHROPIC_API_KEY`, `FAL_KEY`, and `ELEVENLABS_API_KEY` in `.env`.
-
-Cost envelope: a typical ~35s premium video runs **typically $3.00–6.00** (5s
-scenes ~$0.42/clip, 10s scenes ~$0.84/clip; ElevenLabs + keyframes + vision
-checks add ~$0.15–0.40); the **$7.00** default per-video cap
-(`premium_per_video_usd` in the channel TOML) absorbs retries — long narrations
-(>~14 words) force 10s clips, so shorter scenes are cheaper. A breach parks the
-job `blocked` before the overspending call fires. Per-channel (`per_day_usd`)
-and global (`BRAINROT_GLOBAL_DAILY_USD`, default $25/day) daily caps stack on top.
+A channel that sets `[voice.premium]` (ElevenLabs voiceId/modelId) gets that
+narration provider automatically, with word-level timings (no WhisperX
+dependency on the happy path) — no separate flag or tier needed. It falls back
+to kokoro/edge-tts on failure or when unconfigured. This requires
+`ELEVENLABS_API_KEY` in `.env`.
 
 ## Where outputs land
 
 - Per-job artifacts: `runs/<jobId>/<stage>/` (`script.json`, `narration.wav`,
-  `words.json`, then `background.mp4` for volume or `scene-NN.png` /
-  `scene-NN.mp4` + `scenes.json` for premium, `final.mp4`, `qc.json`)
+  `words.json`, `background.mp4`, `final.mp4`, `qc.json`)
 - Finished video: `runs/<jobId>/assemble/final.mp4`
 - State + library + cost ledger: SQLite at `data/brainrot.db` (override with
   `--db` or `BRAINROT_DB`)
@@ -232,23 +212,20 @@ MAILTO=you@example.com
   your absolute repo path and run `mkdir -p logs` in the repo once before
   the first firing. If you would rather not set `PATH`, use the absolute
   binary path from `which pnpm` in each entry instead.
-- **Budget caps and tier quotas roll over at UTC midnight; publishing rolls
-  over at local midnight.** The spend caps and the per-channel tier_mix quota
-  both key off the cost ledger / `jobs.created_at`, which is UTC, so "today"
-  for those flips at midnight UTC — 7 pm EST / 8 pm EDT, i.e. late
-  afternoon/early evening US-Eastern — not at local midnight. Expect fresh
-  quota slots and budget headroom in the early evening. Publish slots and the
-  YouTube per-day upload counter are the opposite: they key off the machine's
-  local wall-clock day, so they roll over at local midnight, not UTC
-  midnight.
-- **Premium stays gated.** `produce-next` only claims premium topics you
-  have approved (`pnpm brainrot topics approve <id>`) unless the channel
-  TOML sets `auto_premium = true` under `[scout]`; volume flows unattended.
+- **Budget caps and the daily video quota roll over at UTC midnight;
+  publishing rolls over at local midnight.** The spend caps and the
+  per-channel `videos_per_day` quota both key off the cost ledger /
+  `jobs.created_at`, which is UTC, so "today" for those flips at midnight
+  UTC — 7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern —
+  not at local midnight. Expect a fresh quota slot and budget headroom in the
+  early evening. Publish slots and the YouTube per-day upload counter are the
+  opposite: they key off the machine's local wall-clock day, so they roll
+  over at local midnight, not UTC midnight.
   A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
   render from the previous firing is still running — `scout` takes a lease of
   its own (30 min) and prints the same line if a previous run is still going.
 - **Every tick prints one JSON line, and a noop is not a failure.**
-  `produce-next` noops with `lease-held`, `no-eligible-work`, `no-fal-key`,
+  `produce-next` noops with `lease-held`, `no-eligible-work`,
   `claim-conflict` (an operator command won a topic or job mid-tick), or
   `config-error`; `publish-next` with `lease-held`, `no-due-slot`,
   `platform-quota`, `no-ready-video`, `no-video-file` (the `ready` row's file
@@ -279,9 +256,8 @@ MAILTO=you@example.com
 ## Tests
 
 ```bash
-pnpm test                   # unit + integration (mocked providers; real ffmpeg/Remotion)
-pnpm test:contract          # real paid calls, ~$0.20 total (FLUX image $0.05, MiniMax clip ~$0.10, ElevenLabs synth ~$0.01, one LLM call)
-pnpm test:contract:premium  # additionally renders one real Kling clip (~ $0.40 total)
+pnpm test           # unit + integration (mocked providers; real ffmpeg/Remotion)
+pnpm test:contract  # real paid calls, a few cents total (ElevenLabs synth, one LLM call)
 ```
 
 Media/render tests shell out to ffmpeg and run a real Remotion render; the first

@@ -78,20 +78,7 @@ function premiumChannel() {
   return testChannel({ voice: { volume: 'af_heart', premium: { ...PREMIUM_VOICE } } });
 }
 
-// Premium script artifact (Task 10 scenes format). narrationText composes
-// scenes narration as hook + scenes[].narration joined with single spaces —
-// that composition is a binding contract, asserted below.
-const SCENES_SCRIPT = {
-  format: 'scenes',
-  hook: 'Hook here',
-  styleBlock: 'Muted watercolor palette, soft dawn light, gentle grain.',
-  scenes: [
-    { narration: 'One.', visualPrompt: 'a red planet', motionPrompt: 'slow push-in' },
-    { narration: 'Two.', visualPrompt: 'a blue comet', motionPrompt: 'drift left' },
-  ],
-  platformMeta: testScript().platformMeta,
-};
-const SCENES_NARRATION = 'Hook here One. Two.';
+const PREMIUM_NARRATION = 'Hook here\n\nOne.\n\nTwo.';
 
 const ELEVEN_WAV = buildWav(16000); // 1000 ms — plausible for the 4-word narration
 const ELEVEN_WORDS = [
@@ -104,11 +91,10 @@ function elevenSynthResult() {
   return { wavBytes: ELEVEN_WAV, durationMs: 1000, words: ELEVEN_WORDS, costUsdMicros: 42_000 };
 }
 
-// makeCtx creates volume jobs; premium stage behavior keys off ctx.tier, so a
-// spread-override is all a stage unit test needs (the DB job row's tier is not
-// read by the voice stage; budget queries join on channel, not tier).
-async function premiumCtx(script: unknown = SCENES_SCRIPT, channel = premiumChannel()): Promise<JobContext> {
-  const ctx: JobContext = { ...makeCtx(channel), tier: 'premium' };
+// The elevenlabs branch is gated purely on ctx.channel.voice.premium being
+// configured — no tier concept is involved.
+async function premiumCtx(script: unknown = SCRIPT, channel = premiumChannel()): Promise<JobContext> {
+  const ctx = makeCtx(channel);
   await fs.writeFile(ctx.artifactPath('script', 'script.json'), JSON.stringify(script));
   return ctx;
 }
@@ -253,7 +239,7 @@ describe('voiceStage', () => {
   });
 });
 
-describe('voiceStage premium (elevenlabs)', () => {
+describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   it('synthesizes via elevenlabs: wav + timings + meta written, cost recorded, volume chain untouched', async () => {
     const ctx = await premiumCtx();
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult());
@@ -268,7 +254,7 @@ describe('voiceStage premium (elevenlabs)', () => {
     expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledWith({
       voiceId: 'EXAVITQu4vr4xnSDxMaL',
       modelId: 'eleven_multilingual_v2',
-      text: SCENES_NARRATION,
+      text: PREMIUM_NARRATION,
     });
     expect(vi.mocked(KokoroTTS.from_pretrained)).not.toHaveBeenCalled();
 
@@ -280,7 +266,7 @@ describe('voiceStage premium (elevenlabs)', () => {
     expect(timings).toEqual({ words: ELEVEN_WORDS });
 
     // Ledger: the estimate is reserved pre-call, the ACTUAL cost is recorded.
-    expect(vi.mocked(estimateTtsCostMicros)).toHaveBeenCalledWith(SCENES_NARRATION);
+    expect(vi.mocked(estimateTtsCostMicros)).toHaveBeenCalledWith(PREMIUM_NARRATION);
     const costs = ctx.db
       .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
       .all(ctx.jobId);
@@ -350,18 +336,14 @@ describe('voiceStage premium (elevenlabs)', () => {
     expect(meta.provider).toBe('kokoro');
   });
 
-  it('premium tier without [voice.premium] config warns once and uses the volume chain', async () => {
-    // testChannel() includes voice.premium by default (Task 5); override the
-    // voice table wholesale to strip it and exercise the missing-config path.
-    const ctx = await premiumCtx(SCENES_SCRIPT, testChannel({ voice: { volume: 'af_heart' } }));
-    const warn = vi.spyOn(ctx.log, 'warn');
+  it('a channel with no [voice.premium] config uses the volume chain', async () => {
+    const ctx = await premiumCtx(SCRIPT, testChannel({ voice: { volume: 'af_heart' } }));
     const generate = vi.fn(async (t: string) => chunkAudio(t));
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
 
     await voiceStage.run(ctx);
 
     expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled();
-    expect(warn).toHaveBeenCalledTimes(1);
     const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
     expect(meta.provider).toBe('kokoro');
   });
@@ -369,8 +351,8 @@ describe('voiceStage premium (elevenlabs)', () => {
   it('rethrows BudgetExceededError instead of downgrading to the free chain', async () => {
     const channel = premiumChannel();
     // estimateTtsCostMicros mock returns 40_000; cap it below that.
-    channel.budget = { ...channel.budget, premiumPerVideoUsdMicros: 10_000 };
-    const ctx = await premiumCtx(SCENES_SCRIPT, channel);
+    channel.budget = { ...channel.budget, perVideoUsdMicros: 10_000 };
+    const ctx = await premiumCtx(SCRIPT, channel);
     const generate = vi.fn(async (t: string) => chunkAudio(t));
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
 
@@ -382,29 +364,10 @@ describe('voiceStage premium (elevenlabs)', () => {
     await expect(fs.access(ctx.artifactPath('voice', 'voice.json'))).rejects.toThrow();
   });
 
-  it('volume tier ignores [voice.premium] entirely', async () => {
-    // Channel HAS premium voice configured, but the job is volume tier.
-    const ctx = makeCtx(premiumChannel());
-    await fs.writeFile(ctx.artifactPath('script', 'script.json'), JSON.stringify(SCRIPT));
-    const generate = vi.fn(async (t: string) => chunkAudio(t));
-    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
-
-    await voiceStage.run(ctx);
-
-    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled();
-    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'));
-    expect(meta).toEqual({ provider: 'kokoro', voiceId: 'af_heart', durationMs: 2000 });
-    await expect(fs.access(ctx.artifactPath('voice', 'timings.json'))).rejects.toThrow();
-  });
-
   it('applies the implausibly-short truncation guard to elevenlabs audio too', async () => {
-    // 15 scenes x 19-word sentence + 2-word hook = 287 words -> >= 57400ms
-    // plausibility floor, but the mock returns 1000ms of audio.
-    const longScenes = {
-      ...SCENES_SCRIPT,
-      scenes: Array.from({ length: 15 }, () => ({ narration: SENTENCE, visualPrompt: 'v', motionPrompt: 'm' })),
-    };
-    const ctx = await premiumCtx(longScenes);
+    // LONG_SCRIPT: 285 narration words -> >= 57000ms plausibility floor, but
+    // the mock returns 1000ms of audio.
+    const ctx = await premiumCtx(LONG_SCRIPT);
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult());
 
     await expect(voiceStage.run(ctx)).rejects.toThrow(/truncated by provider "elevenlabs"/);

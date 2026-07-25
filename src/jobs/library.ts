@@ -1,12 +1,10 @@
 import type { Database } from 'better-sqlite3'
-import type { Tier } from './types.js'
 
 export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
 
 export interface LibraryRow {
   jobId: string
   channel: string
-  tier: Tier
   topic: string
   videoPath: string
   state: LibraryState
@@ -14,15 +12,14 @@ export interface LibraryRow {
 }
 
 // library only carries job_id/video_path/metadata_json/state/created_at;
-// channel/tier/topic live on the owning job row, hence the JOIN.
+// channel/topic live on the owning job row, hence the JOIN.
 const LIBRARY_COLUMNS =
-  'library.job_id AS job_id, jobs.channel AS channel, jobs.tier AS tier, jobs.topic AS topic, ' +
+  'library.job_id AS job_id, jobs.channel AS channel, jobs.topic AS topic, ' +
   'library.video_path AS video_path, library.state AS state, library.created_at AS created_at'
 
 interface DbLibraryRow {
   job_id: string
   channel: string
-  tier: Tier
   topic: string
   video_path: string
   state: LibraryState
@@ -33,7 +30,6 @@ function toLibraryRow(row: DbLibraryRow): LibraryRow {
   return {
     jobId: row.job_id,
     channel: row.channel,
-    tier: row.tier,
     topic: row.topic,
     videoPath: row.video_path,
     state: row.state,

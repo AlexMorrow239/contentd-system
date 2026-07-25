@@ -21,9 +21,8 @@ function testChannel(): ChannelConfig {
   return {
     name: 'test',
     niche: ['space'],
-    tierMix: { volume: 2, premium: 1 },
+    videosPerDay: 2,
     voice: { volume: 'af_heart' },
-    premium: { imageModel: 'fal-ai/flux/dev', videoModel: 'fal-ai/kling-video/v3/standard/image-to-video', sceneConcurrency: 3 },
     captionStyle: {
       font: 'Inter',
       fontSizePx: 72,
@@ -33,7 +32,7 @@ function testChannel(): ChannelConfig {
     },
     bgDir: ['assets/bg'],
     bgmDir: 'assets/bgm',
-    budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
+    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { ...DEFAULT_SCOUT },
     publish: null,
@@ -81,7 +80,7 @@ function buildStages(calls: StageName[], opts: { qcPassed: boolean } = { qcPasse
 describe('createJob', () => {
   it('inserts a queued job and six pending stages', () => {
     const { db } = setup()
-    const jobId = createJob(db, testChannel(), { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, testChannel(), { topic: 'space' })
     expect(typeof jobId).toBe('string')
     expect(jobId.length).toBeGreaterThan(0)
     const job = row<{ channel: string; tier: string; topic: string; status: string }>(
@@ -109,7 +108,7 @@ describe('runJob', () => {
   it('happy path: qc pass → library ready with videoPath and metadata', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const calls: StageName[] = []
     const result = await runJob(db, channel, jobId, buildStages(calls), { runsRoot })
 
@@ -141,7 +140,7 @@ describe('runJob', () => {
   it('qc fail → library needs-review, job still done', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const calls: StageName[] = []
     const result = await runJob(db, channel, jobId, buildStages(calls, { qcPassed: false }), {
       runsRoot,
@@ -159,7 +158,7 @@ describe('runJob', () => {
   it('middle-stage throw → job failed, later stages untouched, no library row', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const calls: StageName[] = []
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
@@ -208,7 +207,7 @@ describe('runJob', () => {
   it('resume: pre-done stages are skipped and their run fns are not called', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     // Simulate a prior partial run: first two stages already done.
     db.prepare(
       "UPDATE job_stages SET status = 'done' WHERE job_id = ? AND stage IN ('script','voice')",
@@ -232,7 +231,7 @@ describe('runJob', () => {
   it('heartbeat fires once per stage actually run, never for skipped ones', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     db.prepare(
       "UPDATE job_stages SET status = 'done' WHERE job_id = ? AND stage IN ('script','voice')",
     ).run(jobId)
@@ -249,7 +248,7 @@ describe('runJob', () => {
   it('a throwing heartbeat never kills the job', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const calls: StageName[] = []
     const heartbeat = vi.fn(() => {
       throw new Error('database is locked')
@@ -265,7 +264,7 @@ describe('runJob', () => {
   it('artifactPath creates each stage directory on demand', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const seen: Record<string, boolean> = {}
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
@@ -290,7 +289,7 @@ describe('runJob', () => {
   it('budget breach → job blocked, result blocked, no library row', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
       async run(ctx: JobContext) {
@@ -332,7 +331,7 @@ describe('runJob', () => {
   it('is idempotent: a second runJob on a completed job returns cleanly with one library row', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
 
     const first = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
     expect(first.status).toBe('ready')
@@ -351,7 +350,7 @@ describe('runJob', () => {
   it('is idempotent even with a pre-seeded library row (crash before job marked done)', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
 
     // Simulate a crash after the library row was written but before the job was
     // marked done: mark every stage done and pre-seed a stale library row.
@@ -382,7 +381,7 @@ describe('runJob', () => {
   it('final gate: corrupt qc.json → job failed in DB (not stuck running), no library row', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
       async run(ctx: JobContext) {
@@ -413,7 +412,7 @@ describe('runJob', () => {
   it('final gate: missing qc.json → job failed in DB, no library row', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
       async run(ctx: JobContext) {
@@ -436,7 +435,7 @@ describe('runJob', () => {
   it('final gate: corrupt script.json → job failed, not an unhandled throw', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
       async run(ctx: JobContext) {
@@ -467,7 +466,7 @@ describe('runJob', () => {
   it('resume after a failed stage clears the stale job_stages.error on success', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'space' })
 
     // First run: captions blows up and records an error on its stage row.
     const failing: StageDef[] = STAGE_ORDER.map((name) => ({

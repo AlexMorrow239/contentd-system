@@ -5,7 +5,7 @@ import pino from 'pino';
 import { openDb } from '../db/index.js';
 import { createJob } from '../jobs/runner.js';
 import type { JobContext } from '../jobs/types.js';
-import { DEFAULT_PREMIUM, DEFAULT_SCOUT } from '../config/channel.js';
+import { DEFAULT_SCOUT } from '../config/channel.js';
 import type { ChannelConfig } from '../config/channel.js';
 import type { ScriptOutput } from './script.js';
 
@@ -31,16 +31,15 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
   return {
     name: 'test',
     niche: ['space facts', 'astronomy'],
-    tierMix: { volume: 2, premium: 1 },
+    videosPerDay: 2,
     voice: {
       volume: 'af_heart',
       premium: { provider: 'elevenlabs', voiceId: 'EXAVITQu4vr4xnSDxMaL', modelId: 'eleven_multilingual_v2' },
     },
-    premium: { ...DEFAULT_PREMIUM },
     captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
     bgDir: ['assets/bg'],
     bgmDir: 'assets/bgm',
-    budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
+    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { ...DEFAULT_SCOUT },
     publish: null,
@@ -50,13 +49,12 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
 
 export function makeCtx(channel: ChannelConfig = testChannel(), topic = 'Why the Moon is drifting away'): JobContext {
   const db = openDb(':memory:');
-  const jobId = createJob(db, channel, { topic, tier: 'volume' });
+  const jobId = createJob(db, channel, { topic });
   const runDir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-test-'));
   return {
     jobId,
     db,
     channel,
-    tier: 'volume',
     topic,
     runDir,
     artifactPath(stage, file) {

@@ -1,5 +1,4 @@
 import type { Database } from 'better-sqlite3'
-import type { Tier } from '../jobs/types.js'
 
 export type TopicStatus = 'candidate' | 'approved' | 'claimed' | 'used' | 'rejected'
 
@@ -185,8 +184,8 @@ export type RequeueOutcome =
  * Operator repair for a topic stranded in 'claimed' by a job that will never
  * finish (config drift, unreachable blocked job). Returns it to 'candidate' —
  * the base queue state — and unbinds the dead job so the stale binding can
- * never flip it to 'used' later; a premium channel re-approves through the
- * normal gate. BEGIN IMMEDIATE because the guard reads before it writes.
+ * never flip it to 'used' later. BEGIN IMMEDIATE because the guard reads
+ * before it writes.
  */
 export function requeueTopic(db: Database, id: number): RequeueOutcome {
   const attempt = db.transaction((): RequeueOutcome => {
@@ -236,22 +235,12 @@ export function listTopics(
   return rows.map(toTopicRow)
 }
 
-// Volume consumes the whole queue; premium takes operator-approved topics
-// only, unless the channel lifts the gate with auto_premium (design spec §5).
-export function eligibleTopic(
-  db: Database,
-  channel: string,
-  tier: Tier,
-  opts: { autoPremium: boolean },
-): TopicRow | null {
-  const statuses =
-    tier === 'premium' && !opts.autoPremium ? ['approved'] : ['candidate', 'approved']
-  const placeholders = statuses.map(() => '?').join(', ')
+export function eligibleTopic(db: Database, channel: string): TopicRow | null {
   const row = db
     .prepare(
-      `SELECT ${TOPIC_COLUMNS} FROM topics WHERE channel = ? AND status IN (${placeholders}) ` +
+      `SELECT ${TOPIC_COLUMNS} FROM topics WHERE channel = ? AND status IN ('candidate', 'approved') ` +
         'ORDER BY score DESC, created_at ASC, id ASC LIMIT 1',
     )
-    .get(channel, ...statuses) as DbTopicRow | undefined
+    .get(channel) as DbTopicRow | undefined
   return row === undefined ? null : toTopicRow(row)
 }

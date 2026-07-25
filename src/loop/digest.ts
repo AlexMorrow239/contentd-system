@@ -38,7 +38,6 @@ export const FAILED_JOBS_LIMIT = 10
  * the token key hex is needed to attempt a decrypt and is never printed.
  */
 export interface DigestEnv {
-  falKeyPresent: boolean
   ytClientIdPresent: boolean
   ytClientSecretPresent: boolean
   tokenKeyHex: string | undefined
@@ -49,7 +48,6 @@ export interface DigestEnv {
 function resolveDigestEnv(overrides: Partial<DigestEnv>): DigestEnv {
   const tokenKeyHex = process.env.BRAINROT_TOKEN_KEY
   return {
-    falKeyPresent: overrides.falKeyPresent ?? !!process.env.FAL_KEY,
     ytClientIdPresent: overrides.ytClientIdPresent ?? !!process.env.YT_CLIENT_ID,
     ytClientSecretPresent: overrides.ytClientSecretPresent ?? !!process.env.YT_CLIENT_SECRET,
     tokenKeyHex: 'tokenKeyHex' in overrides
@@ -127,18 +125,17 @@ export function buildDigest(
   // toward the total but have no outcome yet.
   const jobRows = db
     .prepare(
-      `SELECT j.channel, j.tier, COUNT(*) AS total,
+      `SELECT j.channel, COUNT(*) AS total,
               SUM(CASE WHEN l.state = 'ready' THEN 1 ELSE 0 END) AS ready,
               SUM(CASE WHEN l.state = 'needs-review' THEN 1 ELSE 0 END) AS needsReview,
               SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) AS failed,
               SUM(CASE WHEN j.status = 'blocked' THEN 1 ELSE 0 END) AS blocked
        FROM jobs j LEFT JOIN library l ON l.job_id = j.id
        WHERE datetime(j.created_at) >= datetime('now', '-1 day')
-       GROUP BY j.channel, j.tier ORDER BY j.channel, j.tier`,
+       GROUP BY j.channel ORDER BY j.channel`,
     )
     .all() as {
     channel: string
-    tier: string
     total: number
     ready: number
     needsReview: number
@@ -148,7 +145,7 @@ export function buildDigest(
   const jobsStart = lines.length
   for (const r of jobRows) {
     lines.push(
-      `  ${r.channel} ${r.tier}: ${r.total} — ${r.ready} ready, ${r.needsReview} needs-review, ${r.failed} failed, ${r.blocked} blocked`,
+      `  ${r.channel}: ${r.total} — ${r.ready} ready, ${r.needsReview} needs-review, ${r.failed} failed, ${r.blocked} blocked`,
     )
   }
   pushNoneIfEmpty(lines, jobsStart, '  none')
@@ -254,12 +251,12 @@ export function buildDigest(
   const failedJobs = (
     db
       .prepare(
-        "SELECT id, channel, tier FROM jobs WHERE status = 'failed' ORDER BY created_at DESC, id DESC LIMIT ?",
+        "SELECT id, channel FROM jobs WHERE status = 'failed' ORDER BY created_at DESC, id DESC LIMIT ?",
       )
-      .all(FAILED_JOBS_LIMIT) as { id: string; channel: string; tier: string }[]
+      .all(FAILED_JOBS_LIMIT) as { id: string; channel: string }[]
   ).reverse()
   for (const j of failedJobs) {
-    lines.push(`  failed job ${j.id} (${j.channel}, ${j.tier}) — resume manually`)
+    lines.push(`  failed job ${j.id} (${j.channel}) — resume manually`)
   }
   if (failedJobCount > failedJobs.length) {
     lines.push(`  and ${failedJobCount - failedJobs.length} older failures`)
@@ -272,18 +269,18 @@ export function buildDigest(
   const zombieCutoff = new Date(Date.now() - ZOMBIE_RUNNING_MS).toISOString()
   const zombies = db
     .prepare(
-      `SELECT j.id AS id, j.channel AS channel, j.tier AS tier,
+      `SELECT j.id AS id, j.channel AS channel,
               COALESCE(MAX(s.started_at), j.created_at) AS lastStart
        FROM jobs j LEFT JOIN job_stages s ON s.job_id = j.id
        WHERE j.status = 'running'
-       GROUP BY j.id, j.channel, j.tier, j.created_at
+       GROUP BY j.id, j.channel, j.created_at
        HAVING lastStart <= ?
        ORDER BY lastStart ASC, j.id ASC`,
     )
-    .all(zombieCutoff) as { id: string; channel: string; tier: string; lastStart: string }[]
+    .all(zombieCutoff) as { id: string; channel: string; lastStart: string }[]
   for (const j of zombies) {
     lines.push(
-      `  running job ${j.id} (${j.channel}, ${j.tier}) running > ${ZOMBIE_RUNNING_MS / 3_600_000}h — probably crashed — resume with --force`,
+      `  running job ${j.id} (${j.channel}) running > ${ZOMBIE_RUNNING_MS / 3_600_000}h — probably crashed — resume with --force`,
     )
   }
   // Same created_at age mechanism as the zombie check (ISO-8601 UTC, so a
@@ -293,24 +290,22 @@ export function buildDigest(
   const strandedCutoff = new Date(Date.now() - STRANDED_QUEUED_MS).toISOString()
   const strandedQueued = db
     .prepare(
-      "SELECT id, channel, tier FROM jobs WHERE status = 'queued' AND created_at <= ? ORDER BY created_at ASC",
+      "SELECT id, channel FROM jobs WHERE status = 'queued' AND created_at <= ? ORDER BY created_at ASC",
     )
-    .all(strandedCutoff) as { id: string; channel: string; tier: string }[]
+    .all(strandedCutoff) as { id: string; channel: string }[]
   for (const j of strandedQueued) {
     lines.push(
-      `  queued job ${j.id} (${j.channel}, ${j.tier}) — stranded before start — resume with brainrot resume ${j.id}`,
+      `  queued job ${j.id} (${j.channel}) — stranded before start — resume with brainrot resume ${j.id}`,
     )
   }
   // Blocked jobs are current-state too, and unlike the counts above they are
-  // NOT 24h-windowed: config drift (channel TOML gone, FAL_KEY unset, the
-  // per-video cap fully spent) excludes a job from the resume pass forever,
-  // and after a day it would otherwise vanish from every operator surface
-  // with its premium spend sunk and its topic still 'claimed'.
+  // NOT 24h-windowed: config drift (channel TOML gone, the per-video cap
+  // fully spent) excludes a job from the resume pass forever, and after a
+  // day it would otherwise vanish from every operator surface with its spend
+  // sunk and its topic still 'claimed'.
   const blockedJobs = db
-    .prepare(
-      "SELECT id, channel, tier FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
-    )
-    .all() as { id: string; channel: string; tier: string }[]
+    .prepare("SELECT id, channel FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC")
+    .all() as { id: string; channel: string }[]
   if (blockedJobs.length > 0) {
     const byName = new Map(channels.map((c) => [c.name, c]))
     // Lifetime spend, mirroring the per-video check in assertBudget: the cap
@@ -334,7 +329,7 @@ export function buildDigest(
         : `, or free its topic with brainrot topics requeue ${topic.id}`
     }
     for (const j of blockedJobs) {
-      const head = `  blocked job ${j.id} (${j.channel}, ${j.tier})`
+      const head = `  blocked job ${j.id} (${j.channel})`
       const channel = byName.get(j.channel)
       if (channel === undefined) {
         lines.push(
@@ -342,24 +337,16 @@ export function buildDigest(
         )
         continue
       }
-      const premium = j.tier === 'premium'
-      if (premium && !digestEnv.falKeyPresent) {
-        lines.push(`${head} — premium resume needs FAL_KEY, which is unset — set it in .env`)
-        continue
-      }
-      const capMicros = premium
-        ? channel.budget.premiumPerVideoUsdMicros
-        : channel.budget.perVideoUsdMicros
-      const label = premium ? 'premium per-video' : 'per-video'
+      const capMicros = channel.budget.perVideoUsdMicros
       const spentMicros = (jobSpent.get(j.id) as { total: number }).total
       if (spentMicros >= capMicros) {
         lines.push(
-          `${head} — ${label} budget spent (${usd(spentMicros)} of ${usd(capMicros)}) — raise the cap in ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
+          `${head} — per-video budget spent (${usd(spentMicros)} of ${usd(capMicros)}) — raise the cap in ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
         )
         continue
       }
       lines.push(
-        `${head} — ${usd(capMicros - spentMicros)} of its ${usd(capMicros)} ${label} budget left — awaiting the resume pass`,
+        `${head} — ${usd(capMicros - spentMicros)} of its ${usd(capMicros)} per-video budget left — awaiting the resume pass`,
       )
     }
   }
@@ -369,7 +356,7 @@ export function buildDigest(
     )
     .all() as { channel: string; n: number }[]
   for (const r of approvedDepth) {
-    lines.push(`  ${r.channel}: ${r.n} approved premium topics queued`)
+    lines.push(`  ${r.channel}: ${r.n} approved topics queued`)
   }
   const candidateDepth = db
     .prepare(

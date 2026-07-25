@@ -7,10 +7,7 @@ import { fileURLToPath } from 'node:url'
 import pino from 'pino'
 import { openDb } from '../db/index.js'
 import { probe } from '../media/ffmpeg.js'
-import { assembleStage, fitClipToWindow } from './assemble.js'
-import { testChannel } from './_testkit.js'
-import type { ScenesManifest } from './visuals-premium.js'
-import type { ShortVideoProps } from '../remotion-types.js'
+import { assembleStage } from './assemble.js'
 import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
 import type { JobContext } from '../jobs/types.js'
@@ -26,13 +23,12 @@ function makeChannel(bgmDir: string): ChannelConfig {
   return {
     name: 'testchan',
     niche: ['space'],
-    tierMix: { volume: 2, premium: 1 },
+    videosPerDay: 2,
     voice: { volume: 'af_heart' },
-    premium: { imageModel: 'fal-ai/flux/dev', videoModel: 'fal-ai/kling-video/v3/standard/image-to-video', sceneConcurrency: 3 },
     captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
     bgDir: [tmp('brainrot-bg-')],
     bgmDir,
-    budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
+    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { ...DEFAULT_SCOUT },
     publish: null,
@@ -44,7 +40,6 @@ function makeCtx(runDir: string, channel: ChannelConfig): JobContext {
     jobId: 'job-assemble',
     db: openDb(':memory:'),
     channel,
-    tier: 'volume',
     topic: 'test topic',
     runDir,
     artifactPath(stage, file) {
@@ -224,183 +219,3 @@ describe('assembleStage bundle robustness', () => {
   })
 })
 
-// ── fitClipToWindow (pure duration-fitting rule) ─────────────────────────────
-
-describe('fitClipToWindow', () => {
-  it('trims at 1x when the window is shorter than the clip', () => {
-    expect(fitClipToWindow(5000, 3000)).toEqual({ playbackRate: 1, durationMs: 3000 })
-  })
-
-  it('plays at 1x when the window exactly equals the clip', () => {
-    expect(fitClipToWindow(5000, 5000)).toEqual({ playbackRate: 1, durationMs: 5000 })
-  })
-
-  it('slows playback proportionally when the window slightly exceeds the clip', () => {
-    const fit = fitClipToWindow(5000, 5500)
-    expect(fit.durationMs).toBe(5500)
-    expect(fit.playbackRate).toBeCloseTo(5000 / 5500, 10)
-  })
-
-  it('clamps the slowdown at 0.75x (clip freezes on its last frame beyond that)', () => {
-    expect(fitClipToWindow(5000, 10000)).toEqual({ playbackRate: 0.75, durationMs: 10000 })
-  })
-})
-
-// ── Premium multi-clip assembly ──────────────────────────────────────────────
-// Two layers: a fast test that mocks @remotion/{bundler,renderer} (same
-// vi.doMock + vi.resetModules + dynamic-import pattern as the bundle-robustness
-// block above — the static `assembleStage` import stays bound to the REAL
-// modules) and asserts the exact props handed to renderMedia; and a real-render
-// integration test that produces an actual final.mp4 from lavfi fixture clips.
-
-function makePremiumCtx(runDir: string, channel: ChannelConfig): JobContext {
-  return {
-    jobId: 'job-assemble-premium',
-    db: openDb(':memory:'),
-    channel,
-    tier: 'premium',
-    topic: 'test topic',
-    runDir,
-    artifactPath(stage, file) {
-      const p = path.join(runDir, stage, file)
-      mkdirSync(path.dirname(p), { recursive: true })
-      return p
-    },
-    log: pino({ level: 'silent' }),
-  }
-}
-
-async function lavfiClip(outPath: string, durationSec: number): Promise<void> {
-  await execa('ffmpeg', [
-    '-f', 'lavfi', '-i', `testsrc2=duration=${durationSec}:size=1080x1920:rate=30`,
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-    outPath, '-y',
-  ])
-}
-
-describe('assembleStage premium (mocked renderer)', () => {
-  afterEach(() => {
-    vi.doUnmock('@remotion/bundler')
-    vi.doUnmock('@remotion/renderer')
-    vi.resetModules()
-  })
-
-  it('derives sceneClips props from scenes.json and passes them to renderMedia', async () => {
-    const bundleDir = tmp('brainrot-fake-bundle-')
-    const captured: { select?: ShortVideoProps; render?: ShortVideoProps } = {}
-    vi.doMock('@remotion/bundler', () => ({
-      bundle: async () => bundleDir,
-    }))
-    vi.doMock('@remotion/renderer', () => ({
-      selectComposition: async (opts: { inputProps: ShortVideoProps }) => {
-        captured.select = opts.inputProps
-        return { id: 'ShortVideo', width: 1080, height: 1920, fps: 30, durationInFrames: 105 }
-      },
-      renderMedia: async (opts: { inputProps: ShortVideoProps; outputLocation: string }) => {
-        captured.render = opts.inputProps
-        writeFileSync(opts.outputLocation, 'stub-video')
-      },
-    }))
-    vi.resetModules()
-    const { assembleStage: mockedStage } = await import('./assemble.js')
-
-    const channel = testChannel({ bgmDir: tmp('brainrot-bgm-') }) // empty bgm dir -> no bgm
-    const ctx = makePremiumCtx(tmp('brainrot-run-'), channel)
-
-    // Clips must be REAL video files: the premium branch ffprobes each one.
-    await lavfiClip(ctx.artifactPath('visuals', 'scene-01.mp4'), 2)
-    await lavfiClip(ctx.artifactPath('visuals', 'scene-02.mp4'), 1)
-    // narration.wav is only copied (never decoded) on the mocked path.
-    writeFileSync(ctx.artifactPath('voice', 'narration.wav'), 'junk-wav-bytes')
-    writeFileSync(
-      ctx.artifactPath('voice', 'voice.json'),
-      JSON.stringify({ provider: 'elevenlabs', voiceId: 'test-voice', durationMs: 3500 }),
-    )
-    writeFileSync(
-      ctx.artifactPath('captions', 'words.json'),
-      JSON.stringify({ words: [{ word: 'hello', startMs: 0, endMs: 400 }] }),
-    )
-    const manifest: ScenesManifest = {
-      method: 'aligned',
-      scenes: [
-        // Scene 1: 1500ms window vs ~2000ms clip -> trim at 1x.
-        // Scene 2: 2000ms window vs ~1000ms clip -> raw rate ~0.5 clamps to
-        // exactly 0.75 regardless of ffprobe's container rounding (+-25ms).
-        { index: 1, startMs: 0, endMs: 1500, keyframe: 'scene-01.png', clip: 'scene-01.mp4', clipDurationSec: 5, imageAttempts: 1, videoAttempts: 1, costUsdMicros: 100_000 },
-        { index: 2, startMs: 1500, endMs: 3500, keyframe: 'scene-02.png', clip: 'scene-02.mp4', clipDurationSec: 5, imageAttempts: 1, videoAttempts: 1, costUsdMicros: 100_000 },
-      ],
-    }
-    writeFileSync(ctx.artifactPath('visuals', 'scenes.json'), JSON.stringify(manifest))
-
-    await mockedStage.run(ctx)
-
-    expect(captured.render).toBeDefined()
-    expect(captured.render).toEqual(captured.select) // same props to select + render
-    expect(captured.render?.backgroundSrc).toBeUndefined()
-    expect(captured.render?.audioSrc).toBe('job-assemble-premium/narration.wav')
-    expect(captured.render?.bgmSrc).toBeUndefined()
-    expect(captured.render?.durationMs).toBe(3500)
-    expect(captured.render?.sceneClips).toEqual([
-      { src: 'job-assemble-premium/scene-01.mp4', durationMs: 1500, playbackRate: 1 },
-      { src: 'job-assemble-premium/scene-02.mp4', durationMs: 2000, playbackRate: 0.75 },
-    ])
-    // final.mp4 landed and the per-job public assets were cleaned up after.
-    expect(existsSync(ctx.artifactPath('assemble', 'final.mp4'))).toBe(true)
-    expect(existsSync(path.join(bundleDir, 'public', ctx.jobId))).toBe(false)
-  }, 60000)
-})
-
-describe('assembleStage premium (real render)', () => {
-  it('renders sequenced scene clips into a final.mp4 matching narration duration', async () => {
-    const channel = testChannel({ bgmDir: tmp('brainrot-bgm-') }) // empty bgm dir -> no bgm
-    const ctx = makePremiumCtx(tmp('brainrot-run-'), channel)
-
-    await lavfiClip(ctx.artifactPath('visuals', 'scene-01.mp4'), 2)
-    await lavfiClip(ctx.artifactPath('visuals', 'scene-02.mp4'), 1)
-    await execa('ffmpeg', [
-      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2.4',
-      ctx.artifactPath('voice', 'narration.wav'), '-y',
-    ])
-    writeFileSync(
-      ctx.artifactPath('voice', 'voice.json'),
-      JSON.stringify({ provider: 'elevenlabs', voiceId: 'test-voice', durationMs: 2400 }),
-    )
-    writeFileSync(
-      ctx.artifactPath('captions', 'words.json'),
-      JSON.stringify({
-        words: [
-          { word: 'scene', startMs: 0, endMs: 500 },
-          { word: 'one', startMs: 500, endMs: 1100 },
-          { word: 'two', startMs: 1300, endMs: 2200 },
-        ],
-      }),
-    )
-    const manifest: ScenesManifest = {
-      method: 'aligned',
-      scenes: [
-        // Scene 2's 1200ms window against a ~1000ms clip exercises the real
-        // slow-down path (rate ~0.83) inside an actual Remotion render.
-        { index: 1, startMs: 0, endMs: 1200, keyframe: 'scene-01.png', clip: 'scene-01.mp4', clipDurationSec: 5, imageAttempts: 1, videoAttempts: 1, costUsdMicros: 100_000 },
-        { index: 2, startMs: 1200, endMs: 2400, keyframe: 'scene-02.png', clip: 'scene-02.mp4', clipDurationSec: 5, imageAttempts: 1, videoAttempts: 1, costUsdMicros: 100_000 },
-      ],
-    }
-    writeFileSync(ctx.artifactPath('visuals', 'scenes.json'), JSON.stringify(manifest))
-
-    await assembleStage.run(ctx)
-
-    const out = ctx.artifactPath('assemble', 'final.mp4')
-    expect(existsSync(out)).toBe(true)
-    const p = await probe(out)
-    expect(p.width).toBe(1080)
-    expect(p.height).toBe(1920)
-    expect(p.fps).toBeGreaterThanOrEqual(29)
-    expect(p.fps).toBeLessThanOrEqual(31)
-    expect(p.hasAudio).toBe(true)
-    // Composition length derives from voice.durationMs (2400ms), +-200ms slack.
-    expect(p.durationMs).toBeGreaterThanOrEqual(2200)
-    expect(p.durationMs).toBeLessThanOrEqual(2600)
-    const c = await codecs(out)
-    expect(c.video).toBe('h264')
-    expect(c.audio).toBe('aac')
-  }, 240000)
-})

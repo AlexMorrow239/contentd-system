@@ -10,12 +10,10 @@
     "build": "tsc --noEmit && tsc -p remotion --noEmit",
     "test": "vitest run",
     "test:contract": "CONTRACT=1 vitest run",
-    "test:contract:premium": "CONTRACT=1 CONTRACT_PREMIUM=1 vitest run",
     "brainrot": "tsx src/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
-    "@fal-ai/client": "^1.10.1",
     "@remotion/bundler": "^4.0.491",
     "@remotion/cli": "^4.0.491",
     "@remotion/renderer": "^4.0.491",

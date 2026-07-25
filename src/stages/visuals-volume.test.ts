@@ -33,13 +33,12 @@ function makeChannel(bgDir: string | string[]): ChannelConfig {
   return {
     name: 'testchan',
     niche: ['space'],
-    tierMix: { volume: 2, premium: 1 },
+    videosPerDay: 2,
     voice: { volume: 'af_heart' },
-    premium: { imageModel: 'fal-ai/flux/dev', videoModel: 'fal-ai/kling-video/v3/standard/image-to-video', sceneConcurrency: 3 },
     captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
     bgDir: Array.isArray(bgDir) ? bgDir : [bgDir],
     bgmDir: tmp('brainrot-bgm-'),
-    budget: { perVideoUsdMicros: 8_000_000, premiumPerVideoUsdMicros: 7_000_000, perDayUsdMicros: 20_000_000 },
+    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { ...DEFAULT_SCOUT },
     publish: null,
@@ -51,7 +50,6 @@ function makeCtx(runDir: string, channel: ChannelConfig): JobContext {
     jobId: 'job-visuals',
     db: openDb(':memory:'),
     channel,
-    tier: 'volume',
     topic: 'test topic',
     runDir,
     artifactPath(stage, file) {

@@ -33,10 +33,7 @@ const CHANNEL_TOML = [
   'niche = ["space facts"]',
   'bg_dir = "assets/bg"',
   'bgm_dir = "assets/bgm"',
-  '',
-  '[tier_mix]',
-  'volume = 2',
-  'premium = 1',
+  'videos_per_day = 2',
   '',
   '[voice]',
   'volume = "af_heart"',
@@ -127,9 +124,8 @@ function failingStages(): StageDef[] {
 }
 
 beforeEach(() => {
-  // Deterministic regardless of the developer's shell or .env: no fal key
-  // (volume path only) and the default $25 global cap.
-  vi.stubEnv('FAL_KEY', '')
+  // Deterministic regardless of the developer's shell or .env: the default
+  // $25 global cap.
   vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '')
 })
 afterEach(() => {
@@ -145,7 +141,6 @@ describe('produceNextTick — produce', () => {
       action: 'produced',
       jobId: expect.any(String),
       topicId,
-      tier: 'volume',
       status: 'ready',
     })
     // topic consumed: claimed → used, bound to the created job
@@ -170,12 +165,12 @@ describe('produceNextTick — resume', () => {
   it('resumes the blocked job through resumeJob before claiming anything', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     // an eligible topic exists too: the resume pass must win over the claim pass
     seedTopic(db)
     const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
-    expect(result).toEqual({ action: 'resumed', jobId, tier: 'volume', status: 'ready' })
+    expect(result).toEqual({ action: 'resumed', jobId, status: 'ready' })
     const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId) as {
       status: string
     }
@@ -286,7 +281,6 @@ describe('produceNextTick — failed produce', () => {
       action: 'produced',
       jobId: expect.any(String),
       topicId,
-      tier: 'volume',
       status: 'failed',
     })
     // claimed + bound to its failed job: the resume path owns recovery, the
@@ -349,7 +343,7 @@ describe('produceNextTick — lost claims', () => {
   it('no-ops with claim-conflict when a manual resume won the blocked job', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(
       new ResumeError(`job ${jobId} was picked up by another process`),
@@ -363,7 +357,7 @@ describe('produceNextTick — lost claims', () => {
   it('still propagates a non-refusal failure from the resume path', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(new Error('disk full'))
     await expect(
@@ -420,7 +414,7 @@ describe('produceNextTick — lease heartbeat', () => {
   it('a resumed job heartbeats the lease too', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget', tier: 'volume' })
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     let observed = ''
     const stages: StageDef[] = [

@@ -14,31 +14,13 @@ import { openDb } from './db/index.js'
 import { listPublishes, markInterruptedDone, retryInterrupted } from './publish/publishes.js'
 import { approveTopics, listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
-import { assertPremiumPreflight, stagesForTier } from './jobs/pipeline.js'
-import type { Tier } from './jobs/types.js'
+import { pipelineStages } from './jobs/pipeline.js'
 import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
 import { runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
 import { youtubeShortsUrl } from './publish/youtube.js'
-
-const TIERS: readonly Tier[] = ['volume', 'premium']
-
-/**
- * Validate a --tier flag value. Throws (naming every valid tier) on anything
- * else, BEFORE any db handle or job row is created, so an unsupported tier
- * fails clean rather than deep in a run. The thrown message is surfaced by
- * the parseAsync .catch below (exit 1).
- */
-export function parseTier(raw: string): Tier {
-  if (!(TIERS as readonly string[]).includes(raw)) {
-    throw new Error(
-      `unsupported --tier "${raw}": valid tiers are ${TIERS.map((t) => `"${t}"`).join(', ')}`,
-    )
-  }
-  return raw as Tier
-}
 
 /**
  * Validate `topics approve/reject` id arguments. Throws naming the FIRST bad
@@ -88,7 +70,7 @@ export function parsePublishDays(raw: string): number {
 // Moved to src/jobs/pipeline.ts so the loop code (resume, produce-next) shares
 // the exact produce wiring; re-exported so in-process importers (cli.test.ts)
 // keep their import path.
-export { stagesForTier, assertPremiumPreflight } from './jobs/pipeline.js'
+export { pipelineStages } from './jobs/pipeline.js'
 
 function resolveDbPath(flagDb?: string): string {
   return flagDb ?? process.env.BRAINROT_DB ?? 'data/brainrot.db'
@@ -101,16 +83,13 @@ program
   .command('produce')
   .requiredOption('--channel <path>', 'path to channel TOML')
   .requiredOption('--topic <text>', 'topic text')
-  .option('--tier <tier>', 'quality tier: volume | premium', 'volume')
   .option('--db <path>', 'sqlite db path')
   .option('--runs-root <path>', 'runs root directory', 'runs')
-  .action(async (opts: { channel: string; topic: string; tier: string; db?: string; runsRoot: string }) => {
-    const tier = parseTier(opts.tier)
-    assertPremiumPreflight(tier)
+  .action(async (opts: { channel: string; topic: string; db?: string; runsRoot: string }) => {
     const channel = loadChannelConfig(opts.channel)
     const db = openDb(resolveDbPath(opts.db))
-    const jobId = createJob(db, channel, { topic: opts.topic, tier })
-    const result = await runJob(db, channel, jobId, stagesForTier(tier), { runsRoot: opts.runsRoot })
+    const jobId = createJob(db, channel, { topic: opts.topic })
+    const result = await runJob(db, channel, jobId, pipelineStages(), { runsRoot: opts.runsRoot })
     // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
     // event loop alive, letting the process drain stdout and exit on its own.
     db.close()
@@ -206,7 +185,7 @@ program
   .action((opts: { db?: string }) => {
     const db = openDb(resolveDbPath(opts.db))
     const rows = db
-      .prepare('SELECT id, channel, tier, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 20')
+      .prepare('SELECT id, channel, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 20')
       .all()
     console.table(rows)
   })
@@ -381,7 +360,6 @@ library
       rows.map((r) => ({
         jobId: r.jobId,
         channel: r.channel,
-        tier: r.tier,
         state: r.state,
         topic: r.topic,
         createdAt: r.createdAt,
@@ -535,7 +513,7 @@ publishes
   .option('--db <path>', 'sqlite db path')
   .option('--days <n>', 'lookback window in days', '7')
   .action((opts: { db?: string; days: string }) => {
-    // Validated BEFORE the db opens, mirroring parseTier/parseTopicIds.
+    // Validated BEFORE the db opens, mirroring parseTopicIds.
     const days = parsePublishDays(opts.days)
     const db = openDb(resolveDbPath(opts.db))
     try {
@@ -554,15 +532,16 @@ publishes
     }
   })
 
-// cli.test.ts imports parseTier/stagesForTier in-process, which must not fire
-// the argv parser. Node (and tsx) set argv[1] to the executed script's resolved
-// path, so this comparison is true exactly when cli.ts IS the entry script.
+// cli.test.ts imports pipelineStages/parseTopicIds in-process, which must not
+// fire the argv parser. Node (and tsx) set argv[1] to the executed script's
+// resolved path, so this comparison is true exactly when cli.ts IS the entry
+// script.
 const isMain =
   process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 
 if (isMain) {
-  // A rejected action (bad --channel path, unsupported --tier, etc.) would otherwise
-  // print a raw unhandled-rejection stack. Surface just the message and exit 1.
+  // A rejected action (bad --channel path, etc.) would otherwise print a raw
+  // unhandled-rejection stack. Surface just the message and exit 1.
   program.parseAsync(process.argv).catch((err) => {
     console.error(err instanceof Error ? err.message : String(err))
     process.exitCode = 1

@@ -5,10 +5,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
-import { assertPremiumPreflight as cliPreflight, stagesForTier as cliStages } from '../cli.js'
+import { pipelineStages as cliStages } from '../cli.js'
 import { STAGE_ORDER } from './types.js'
-import type { JobContext, StageDef, Tier } from './types.js'
-import { assertPremiumPreflight, stagesForTier } from './pipeline.js'
+import type { JobContext, StageDef } from './types.js'
+import { pipelineStages } from './pipeline.js'
 import { claimJobForResume, ResumeError, resumeJob } from './resume.js'
 
 // Real minimal channel TOML (plan-1 shape; [scout] is optional): resumeJob
@@ -18,10 +18,7 @@ const CHANNEL_TOML = [
   'niche = ["space facts"]',
   'bg_dir = "assets/bg"',
   'bgm_dir = "assets/bgm"',
-  '',
-  '[tier_mix]',
-  'volume = 2',
-  'premium = 1',
+  'videos_per_day = 2',
   '',
   '[voice]',
   'volume = "af_heart"',
@@ -39,12 +36,11 @@ const CHANNEL_TOML = [
 ].join('\n')
 
 describe('jobs/pipeline', () => {
-  it('cli.ts re-exports the moved helpers with identical identity', () => {
+  it('cli.ts re-exports the moved helper with identical identity', () => {
     // Re-export, not copy: the loop code and the CLI must share ONE wiring.
-    expect(cliStages).toBe(stagesForTier)
-    expect(cliPreflight).toBe(assertPremiumPreflight)
+    expect(cliStages).toBe(pipelineStages)
     // The move is verbatim: the six-stage produce order is unchanged.
-    expect(stagesForTier('volume').map((s) => s.name)).toEqual([
+    expect(pipelineStages().map((s) => s.name)).toEqual([
       'script',
       'voice',
       'captions',
@@ -75,18 +71,11 @@ describe('resumeJob', () => {
   })
 
   // Mirrors createJob's row shape: one jobs row plus six pending stage rows.
-  function seedJob(
-    status: string,
-    opts: { tier?: Tier; channel?: string; id?: string } = {},
-  ): string {
+  function seedJob(status: string, opts: { channel?: string; id?: string } = {}): string {
     const id = opts.id ?? `job-${status}`
-    db.prepare('INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, ?, ?, ?)').run(
-      id,
-      opts.channel ?? 'resume-test',
-      opts.tier ?? 'volume',
-      'why the moon drifts',
-      status,
-    )
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, ?)",
+    ).run(id, opts.channel ?? 'resume-test', 'why the moon drifts', status)
     for (const stage of STAGE_ORDER) {
       db.prepare('INSERT INTO job_stages (job_id, stage, status) VALUES (?, ?, ?)').run(
         id,
@@ -182,13 +171,12 @@ describe('resumeJob', () => {
         "VALUES ('resume-test', 'T', 'R', 's', 'u', 'h1', 80, 'r', 'claimed', ?)",
     ).run(jobId)
     const calls: string[] = []
-    const stagesFor = vi.fn((_tier: Tier) => fakeStages(calls))
+    const stagesFor = vi.fn(() => fakeStages(calls))
     const result = await resumeJob(db, jobId, { runsRoot, channelsDir, stagesFor })
     expect(result.status).toBe('ready')
     expect(result.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
     expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
-    // the seam receives the job row's tier, not a caller guess
-    expect(stagesFor).toHaveBeenCalledWith('volume')
+    expect(stagesFor).toHaveBeenCalledTimes(1)
     const topic = db.prepare('SELECT status FROM topics WHERE job_id = ?').get(jobId) as {
       status: string
     }
@@ -247,21 +235,6 @@ describe('resumeJob', () => {
     expect(topic.status).toBe('claimed')
   })
 
-  it('premium resume without FAL_KEY refuses before any stage or status change', async () => {
-    vi.stubEnv('FAL_KEY', undefined)
-    const jobId = seedJob('failed', { tier: 'premium' })
-    const calls: string[] = []
-    await expect(
-      resumeJob(db, jobId, { runsRoot, channelsDir, stagesFor: () => fakeStages(calls) }),
-    ).rejects.toThrow('premium tier requires FAL_KEY')
-    expect(calls).toEqual([])
-    // refused before runJob: the job row was never flipped to 'running'
-    const row = db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId) as {
-      status: string
-    }
-    expect(row.status).toBe('failed')
-  })
-
   it('claimJobForResume: the first claim wins and flips to running, the second loses', () => {
     // Two racers (a manual resume and a produce-next tick) both read a
     // 'blocked'/'failed' job; exactly one may run it or they double-spend.
@@ -296,17 +269,6 @@ describe('resumeJob', () => {
 
   it('resumes without a heartbeat (the manual CLI holds no lease)', async () => {
     const jobId = seedJob('blocked')
-    const result = await resumeJob(db, jobId, {
-      runsRoot,
-      channelsDir,
-      stagesFor: () => fakeStages(),
-    })
-    expect(result.status).toBe('ready')
-  })
-
-  it('premium resume proceeds when FAL_KEY is set', async () => {
-    vi.stubEnv('FAL_KEY', 'fal-test-key')
-    const jobId = seedJob('failed', { tier: 'premium' })
     const result = await resumeJob(db, jobId, {
       runsRoot,
       channelsDir,
