@@ -413,6 +413,45 @@ describe('produceNextTick — lease heartbeat', () => {
     expect(Date.parse(observed)).toBeGreaterThan(Date.now())
     db.close()
   })
+
+  // Same guarantee down the resume path, which is where the long renders are:
+  // a blocked premium job resumes with its expensive stages already done, so
+  // the remaining work is exactly what blew the budget (or the clock) before.
+  it('a resumed job heartbeats the lease too', async () => {
+    const { db, runsRoot } = setup()
+    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+    const jobId = createJob(db, channel, { topic: 'parked by budget', tier: 'volume' })
+    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+    let observed = ''
+    const stages: StageDef[] = [
+      {
+        name: 'script',
+        async run() {
+          db.prepare(
+            "UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'",
+          ).run()
+        },
+      },
+      {
+        name: 'qc',
+        async run(ctx: JobContext) {
+          observed = (
+            db.prepare("SELECT expires_at FROM leases WHERE name = 'produce'").get() as {
+              expires_at: string
+            }
+          ).expires_at
+          writeFileSync(
+            ctx.artifactPath('qc', 'qc.json'),
+            JSON.stringify({ passed: true, checks: [] }),
+          )
+        },
+      },
+    ]
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages })
+    expect(result.action).toBe('resumed')
+    expect(Date.parse(observed)).toBeGreaterThan(Date.now())
+    db.close()
+  })
 })
 
 describe('produce-next CLI', () => {

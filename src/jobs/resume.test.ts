@@ -273,6 +273,37 @@ describe('resumeJob', () => {
     expect(claimJobForResume(db, jobId, false)).toBe(false)
   })
 
+  // The produce tick's lease has to survive a resumed render exactly as it
+  // survives a fresh one — a resumed job is the one already known to be slow.
+  it('forwards the heartbeat to runJob: one call per stage actually run', async () => {
+    const jobId = seedJob('blocked')
+    db.prepare(
+      "UPDATE job_stages SET status = 'done' WHERE job_id = ? AND stage IN ('script','voice')",
+    ).run(jobId)
+    const calls: string[] = []
+    const heartbeat = vi.fn()
+    const result = await resumeJob(db, jobId, {
+      runsRoot,
+      channelsDir,
+      stagesFor: () => fakeStages(calls),
+      heartbeat,
+    })
+    expect(result.status).toBe('ready')
+    // progress, not the clock: four stages left to run, four extensions
+    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc'])
+    expect(heartbeat).toHaveBeenCalledTimes(4)
+  })
+
+  it('resumes without a heartbeat (the manual CLI holds no lease)', async () => {
+    const jobId = seedJob('blocked')
+    const result = await resumeJob(db, jobId, {
+      runsRoot,
+      channelsDir,
+      stagesFor: () => fakeStages(),
+    })
+    expect(result.status).toBe('ready')
+  })
+
   it('premium resume proceeds when FAL_KEY is set', async () => {
     vi.stubEnv('FAL_KEY', 'fal-test-key')
     const jobId = seedJob('failed', { tier: 'premium' })

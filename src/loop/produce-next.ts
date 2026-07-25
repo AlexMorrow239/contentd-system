@@ -60,6 +60,15 @@ export async function produceNextTick(
     return { action: 'noop', reason: 'lease-held' }
   }
   try {
+    // A render longer than the lease TTL would otherwise let the next cron
+    // firing start a second tick on top of this one. extendLease matches on
+    // holder, so a lease already taken over is never re-acquired here. BOTH
+    // work paths get this same callback: a resumed render is exactly as long
+    // as a fresh one, and it is the resume path that runs the jobs already
+    // known to be slow.
+    const heartbeat = (): void => {
+      extendLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)
+    }
     // Repair sweep (heals the crash window between runJob committing the library
     // row and markTopicUsedByJob running): a topic left 'claimed' but bound to a
     // job that already landed in the library would stay claimed forever — resume
@@ -83,6 +92,7 @@ export async function produceNextTick(
           runsRoot: opts.runsRoot,
           channelsDir: opts.channelsDir,
           stagesFor,
+          heartbeat,
         })
       } catch (err) {
         // A ResumeError is a refusal, not a crash: an operator's `resume` (or
@@ -127,12 +137,7 @@ export async function produceNextTick(
     }
     const result = await runJob(db, channel, jobId, stagesFor(plan.tier), {
       runsRoot: opts.runsRoot,
-      // A render longer than the lease TTL would otherwise let the next cron
-      // firing start a second tick on top of this one. extendLease matches on
-      // holder, so a lease already taken over is never re-acquired here.
-      heartbeat: () => {
-        extendLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)
-      },
+      heartbeat,
     })
     if (result.status === 'ready' || result.status === 'needs-review') {
       // Library-landed is the only used-flip: a failed/blocked job keeps its

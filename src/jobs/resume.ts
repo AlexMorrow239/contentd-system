@@ -39,6 +39,12 @@ export async function resumeJob(
     channelsDir: string
     force?: boolean
     stagesFor?: (tier: Tier) => StageDef[]
+    // Best-effort keep-alive for a caller's loop lease, fired at each stage
+    // start. A resumed render is exactly as long as a fresh one — the produce
+    // tick passes the same callback down both paths so neither can outlive the
+    // lease and let the next cron firing start a second run on top of it. The
+    // manual `resume` CLI holds no lease and passes nothing.
+    heartbeat?: () => void
   },
 ): Promise<JobResult> {
   const job = db
@@ -81,7 +87,10 @@ export async function resumeJob(
   if (!claimJobForResume(db, jobId, opts.force ?? false)) {
     throw new ResumeError(`job ${jobId} was picked up by another process`)
   }
-  const result = await runJob(db, channel, jobId, stages, { runsRoot: opts.runsRoot })
+  const result = await runJob(db, channel, jobId, stages, {
+    runsRoot: opts.runsRoot,
+    heartbeat: opts.heartbeat,
+  })
   // Library-landed (ready | needs-review) consumes the claimed topic; a
   // manual produce job has no claimed topic and this is a silent no-op.
   if (result.status === 'ready' || result.status === 'needs-review') {
