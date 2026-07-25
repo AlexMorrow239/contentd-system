@@ -25,9 +25,11 @@ export function normalizeTitle(title: string): string {
   return title.replace(/[<>]/g, '').trim().slice(0, TITLE_MAX_CHARS)
 }
 
-// youtubeTarget.upload appends the hashtags to the description it sends
-// (src/publish/youtube.ts), so the 5000-char limit applies to this combined
-// form rather than to the description alone.
+// The exact description youtubeTarget.upload sends: hashtags are appended to
+// the description body, so the 5000-char limit applies to this combined form
+// rather than to the description alone. The adapter composes it by calling
+// here, so the bounded form and the sent form are the same string by
+// construction.
 export function renderDescription(description: string, hashtags: string[]): string {
   return hashtags.length > 0 ? `${description}\n\n${hashtags.join(' ')}` : description
 }

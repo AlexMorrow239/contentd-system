@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { renderDescription } from './platform-meta.js'
 import { PublishError } from './types.js'
 import type { PublishTarget } from './types.js'
 
@@ -152,8 +153,9 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
     platformId: 'youtube',
     async upload(req, accessToken) {
       const { videoPath, meta, publish } = req
-      const description =
-        meta.hashtags.length > 0 ? `${meta.description}\n\n${meta.hashtags.join(' ')}` : meta.description
+      // The same helper resolvePlatformMeta bounds against the 5000-char limit,
+      // so the checked form and the sent form cannot drift apart.
+      const description = renderDescription(meta.description, meta.hashtags)
       const metadataBody = {
         snippet: {
           title: meta.title,
