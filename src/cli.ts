@@ -83,6 +83,21 @@ function resolveDbPath(flagDb?: string): string {
 }
 
 /**
+ * flag > env > default, exactly like resolveDbPath. Exported so cli.test.ts can
+ * assert the precedence in-process, and because the container/host split is
+ * built entirely on the env tier: the compose service sets the production
+ * triple, the host .env sets the dev triple, and neither can be shadowed by a
+ * commander default.
+ */
+export function resolveChannelsDir(flagChannelsDir?: string): string {
+  return flagChannelsDir ?? process.env.BRAINROT_CHANNELS_DIR ?? 'channels'
+}
+
+export function resolveRunsRoot(flagRunsRoot?: string): string {
+  return flagRunsRoot ?? process.env.BRAINROT_RUNS_ROOT ?? 'runs'
+}
+
+/**
  * Sets BRAINROT_DEV_VOICE for the current process when --dev is passed, so
  * voiceStage treats [voice.premium] as absent. Exported so cli.test.ts can
  * assert the wiring in-process instead of spawning a subprocess.
@@ -99,17 +114,18 @@ program
   .requiredOption('--channel <path>', 'path to channel TOML')
   .requiredOption('--topic <text>', 'topic text')
   .option('--db <path>', 'sqlite db path')
-  .option('--runs-root <path>', 'runs root directory', 'runs')
+  .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
   .option(
     '--dev',
     'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
   )
-  .action(async (opts: { channel: string; topic: string; db?: string; runsRoot: string; dev?: boolean }) => {
+  .action(async (opts: { channel: string; topic: string; db?: string; runsRoot?: string; dev?: boolean }) => {
     applyDevFlag(opts.dev)
+    const runsRoot = resolveRunsRoot(opts.runsRoot)
     const channel = loadChannelConfig(opts.channel)
     const db = openDb(resolveDbPath(opts.db))
     const jobId = createJob(db, channel, { topic: opts.topic })
-    const result = await runJob(db, channel, jobId, pipelineStages(), { runsRoot: opts.runsRoot })
+    const result = await runJob(db, channel, jobId, pipelineStages(), { runsRoot })
     // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
     // event loop alive, letting the process drain stdout and exit on its own.
     db.close()
@@ -123,15 +139,16 @@ program
 program
   .command('scout')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
-  .action(async (opts: { db?: string; channelsDir: string }) => {
+  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .action(async (opts: { db?: string; channelsDir?: string }) => {
+    const channelsDir = resolveChannelsDir(opts.channelsDir)
     // Config load precedes the db handle AND the lease, exactly as in
     // produce-next/publish-next: a broken channel TOML blocks the whole run
     // either way, and letting it throw meant exit 1 with NO JSON line every
     // firing — the one shape the cron log's every-tick-prints-a-line contract
     // cannot survive. The message also goes to stderr, since a line grepped
     // only for `action` would otherwise carry the cause silently.
-    const loaded = tryLoadChannelsDir(opts.channelsDir)
+    const loaded = tryLoadChannelsDir(channelsDir)
     if (loaded.error !== undefined) {
       console.error(`scout: ${loaded.error}`)
       process.stdout.write(
@@ -174,8 +191,8 @@ program
   .command('resume')
   .argument('<jobId>', 'job id to resume (failed or blocked; running needs --force)')
   .option('--db <path>', 'sqlite db path')
-  .option('--runs-root <path>', 'runs root directory', 'runs')
-  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
+  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
   .option('--force', 'resume a job stuck in running (asserts no live process holds it)')
   .option(
     '--dev',
@@ -184,14 +201,16 @@ program
   .action(
     async (
       jobId: string,
-      opts: { db?: string; runsRoot: string; channelsDir: string; force?: boolean; dev?: boolean },
+      opts: { db?: string; runsRoot?: string; channelsDir?: string; force?: boolean; dev?: boolean },
     ) => {
       applyDevFlag(opts.dev)
+      const runsRoot = resolveRunsRoot(opts.runsRoot)
+      const channelsDir = resolveChannelsDir(opts.channelsDir)
       const db = openDb(resolveDbPath(opts.db))
       try {
         const result = await resumeJob(db, jobId, {
-          runsRoot: opts.runsRoot,
-          channelsDir: opts.channelsDir,
+          runsRoot,
+          channelsDir,
           force: opts.force,
         })
         process.stdout.write(JSON.stringify(result) + '\n')
@@ -235,14 +254,16 @@ program
 program
   .command('produce-next')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
-  .option('--runs-root <path>', 'runs root directory', 'runs')
-  .action(async (opts: { db?: string; channelsDir: string; runsRoot: string }) => {
+  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
+  .action(async (opts: { db?: string; channelsDir?: string; runsRoot?: string }) => {
+    const channelsDir = resolveChannelsDir(opts.channelsDir)
+    const runsRoot = resolveRunsRoot(opts.runsRoot)
     const db = openDb(resolveDbPath(opts.db))
     try {
       const result = await produceNextTick(db, {
-        channelsDir: opts.channelsDir,
-        runsRoot: opts.runsRoot,
+        channelsDir,
+        runsRoot,
       })
       // One cron-greppable JSON line. Exit mirrors produce: 0 for
       // ready/needs-review and benign no-ops, 1 for failed AND blocked (the
@@ -258,12 +279,13 @@ program
 program
   .command('publish-next')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
+  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
   .option('--dry-run', 'preview the next publish without writing anything')
-  .action(async (opts: { db?: string; channelsDir: string; dryRun?: boolean }) => {
+  .action(async (opts: { db?: string; channelsDir?: string; dryRun?: boolean }) => {
+    const channelsDir = resolveChannelsDir(opts.channelsDir)
     const db = openDb(resolveDbPath(opts.db))
     try {
-      const result = await publishNextTick(db, { channelsDir: opts.channelsDir, dryRun: opts.dryRun })
+      const result = await publishNextTick(db, { channelsDir, dryRun: opts.dryRun })
       // One cron-greppable JSON line. Exit 1 only for a completed-but-failed
       // upload attempt (the video stays 'ready' for the next slot); every
       // noop and dry-run preview is a benign exit 0.
@@ -413,15 +435,16 @@ auth
   .command('youtube')
   .requiredOption('--channel <name>', 'channel name to authorize')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
-  .action(async (opts: { channel: string; db?: string; channelsDir: string }) => {
+  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .action(async (opts: { channel: string; db?: string; channelsDir?: string }) => {
     // Channel + env checks precede any db handle or browser launch, so a typo
     // or missing credential fails clean before Alex is asked to click through
     // a Google consent screen.
-    const channels = loadChannelsDir(opts.channelsDir)
+    const channelsDir = resolveChannelsDir(opts.channelsDir)
+    const channels = loadChannelsDir(channelsDir)
     const channel = channels.find((c) => c.name === opts.channel)
     if (!channel) {
-      throw new Error(`auth youtube: unknown channel "${opts.channel}" (checked ${opts.channelsDir})`)
+      throw new Error(`auth youtube: unknown channel "${opts.channel}" (checked ${channelsDir})`)
     }
     const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
     const clientId = process.env.YT_CLIENT_ID
@@ -447,8 +470,8 @@ auth
 program
   .command('digest')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
-  .action((opts: { db?: string; channelsDir: string }) => {
+  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .action((opts: { db?: string; channelsDir?: string }) => {
     // A report, not a check: nothing here may set a non-zero exit — cron
     // MAILTO should deliver whatever printed, so even a config/db error is
     // reported on stderr and the process still exits 0.
@@ -458,7 +481,7 @@ program
       // the report. Every sqlite-derived section still renders; the config
       // failure becomes the first action item instead. The catch below stays
       // for genuinely unexpected digest failures (a db that will not open).
-      const loaded = tryLoadChannelsDir(opts.channelsDir)
+      const loaded = tryLoadChannelsDir(resolveChannelsDir(opts.channelsDir))
       const db = openDb(resolveDbPath(opts.db))
       try {
         process.stdout.write(buildDigest(db, loaded.channels, {}, { channelsError: loaded.error }) + '\n')

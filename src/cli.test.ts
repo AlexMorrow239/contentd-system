@@ -4,7 +4,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { openDb } from './db/index.js'
-import { applyDevFlag, DEV_VOICE_ENV, parsePublishDays, parseTopicIds, pipelineStages } from './cli.js'
+import {
+  applyDevFlag,
+  DEV_VOICE_ENV,
+  parsePublishDays,
+  parseTopicIds,
+  pipelineStages,
+  resolveChannelsDir,
+  resolveRunsRoot,
+} from './cli.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 
 const cleanup: string[] = []
@@ -526,6 +534,47 @@ describe('brainrot CLI', () => {
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain('invalid --days "garbage"')
   }, 60000)
+
+  describe('path resolvers', () => {
+    // These mirror resolveDbPath's flag > env > default precedence. They are
+    // exported (not just exercised through a subprocess) because the dev/prod
+    // split depends on the env tier existing at all — a literal commander
+    // default would silently shadow it.
+    const saved = { ...process.env }
+    afterEach(() => {
+      process.env = { ...saved }
+    })
+
+    it('resolveChannelsDir prefers the flag over the env var', () => {
+      process.env.BRAINROT_CHANNELS_DIR = 'channels-dev'
+      expect(resolveChannelsDir('channels')).toBe('channels')
+    })
+
+    it('resolveChannelsDir falls back to the env var when no flag is passed', () => {
+      process.env.BRAINROT_CHANNELS_DIR = 'channels-dev'
+      expect(resolveChannelsDir(undefined)).toBe('channels-dev')
+    })
+
+    it('resolveChannelsDir defaults to channels when neither is set', () => {
+      delete process.env.BRAINROT_CHANNELS_DIR
+      expect(resolveChannelsDir(undefined)).toBe('channels')
+    })
+
+    it('resolveRunsRoot prefers the flag over the env var', () => {
+      process.env.BRAINROT_RUNS_ROOT = 'runs-dev'
+      expect(resolveRunsRoot('runs')).toBe('runs')
+    })
+
+    it('resolveRunsRoot falls back to the env var when no flag is passed', () => {
+      process.env.BRAINROT_RUNS_ROOT = 'runs-dev'
+      expect(resolveRunsRoot(undefined)).toBe('runs-dev')
+    })
+
+    it('resolveRunsRoot defaults to runs when neither is set', () => {
+      delete process.env.BRAINROT_RUNS_ROOT
+      expect(resolveRunsRoot(undefined)).toBe('runs')
+    })
+  })
 })
 
 describe('pipelineStages (in-process)', () => {
