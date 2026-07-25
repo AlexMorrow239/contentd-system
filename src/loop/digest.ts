@@ -27,6 +27,14 @@ function usd(micros: number): string {
   return `$${(micros / 1e6).toFixed(2)}`
 }
 
+// Every list section prints its rows or a single placeholder line. Callers
+// pass the placeholder verbatim rather than an indent depth, because the
+// depth is not uniform: Publishing's subsections nest one level deeper than
+// the top-level sections, and the exact strings are pinned by digest.test.ts.
+function pushNoneIfEmpty(lines: string[], sectionStart: number, noneLine: string): void {
+  if (lines.length === sectionStart) lines.push(noneLine)
+}
+
 /**
  * Last-24h operator report, plain multi-line text (NOT JSON), sections in
  * the plan's order: topics, jobs, spend, publishing, action items. Count
@@ -58,12 +66,13 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     approved: number
     rejected: number
   }[]
-  if (topicRows.length === 0) lines.push('  none')
+  const topicsStart = lines.length
   for (const r of topicRows) {
     lines.push(
       `  ${r.channel}: ${r.scouted} scouted — ${r.candidate} candidate, ${r.approved} approved, ${r.rejected} rejected`,
     )
   }
+  pushNoneIfEmpty(lines, topicsStart, '  none')
 
   lines.push('', 'Jobs (last 24h)')
   // 'done' jobs resolve to ready/needs-review through their library row;
@@ -89,12 +98,13 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     failed: number
     blocked: number
   }[]
-  if (jobRows.length === 0) lines.push('  none')
+  const jobsStart = lines.length
   for (const r of jobRows) {
     lines.push(
       `  ${r.channel} ${r.tier}: ${r.total} — ${r.ready} ready, ${r.needsReview} needs-review, ${r.failed} failed, ${r.blocked} blocked`,
     )
   }
+  pushNoneIfEmpty(lines, jobsStart, '  none')
 
   lines.push('', 'Spend today (UTC)')
   for (const channel of channels) {
@@ -128,11 +138,12 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     metadataJson: string
   }[]
   lines.push('  Published:')
-  if (publishedRows.length === 0) lines.push('    none')
+  const publishedStart = lines.length
   for (const r of publishedRows) {
     const meta = resolvePlatformMeta(r.metadataJson, r.platform, r.topic)
     lines.push(`    ${r.channel} ${r.slot} "${meta.title}" — ${r.url}`)
   }
+  pushNoneIfEmpty(lines, publishedStart, '    none')
   const failedPublishRows = db
     .prepare(
       `SELECT channel, slot, error_kind AS errorKind, error
@@ -142,10 +153,11 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     )
     .all() as { channel: string; slot: string; errorKind: string; error: string | null }[]
   lines.push('  Failed:')
-  if (failedPublishRows.length === 0) lines.push('    none')
+  const failedStart = lines.length
   for (const r of failedPublishRows) {
     lines.push(`    ${r.channel} ${r.slot} ${r.errorKind}: ${(r.error ?? '').slice(0, 80)}`)
   }
+  pushNoneIfEmpty(lines, failedStart, '    none')
   // buildDigest is not clock-injected (no call site needs it); this single
   // now() read serves both the ready-backlog age just below and the
   // lapsed-slots 'yesterday' derivation in Action items.
@@ -173,10 +185,10 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     const ageHours = Math.floor((now.getTime() - new Date(r.oldest).getTime()) / 3_600_000)
     lines.push(`    ${r.channel}: ${r.n} ready videos backlogged, oldest ${ageHours}h old`)
   }
-  if (lines.length === backlogStart) lines.push('    none')
+  pushNoneIfEmpty(lines, backlogStart, '    none')
 
   lines.push('', 'Action items')
-  const sectionStart = lines.length
+  const actionItemsStart = lines.length
   // Current state, not last-24h: a failed job awaits manual resume until the
   // operator acts, however old it is.
   const failedJobs = db
@@ -309,7 +321,7 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
       }
     }
   }
-  if (lines.length === sectionStart) lines.push('  none')
+  pushNoneIfEmpty(lines, actionItemsStart, '  none')
 
   return lines.join('\n')
 }
