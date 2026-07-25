@@ -18,6 +18,12 @@ cp .env.example .env          # fill in provider keys (see below)
 docker compose up -d whisperx # caption alignment sidecar
 ```
 
+The working directory this creates is a **development copy**: `.env.example`
+points `BRAINROT_DB`/`BRAINROT_CHANNELS_DIR`/`BRAINROT_RUNS_ROOT` at
+`data/dev.db`, `channels-dev/`, and `runs-dev/`, so a bare `pnpm brainrot ...`
+on the host never touches production state. See Development vs. production
+below for how the container overrides this.
+
 Keys in `.env`:
 
 - `ANTHROPIC_API_KEY` — script generation
@@ -51,7 +57,8 @@ subfolders).
 
 ```bash
 pnpm brainrot produce --channel channels/example.toml --topic "Why is Venus so hot?"
-# options: --db data/brainrot.db  --runs-root runs
+# host defaults (from .env, dev copy): --db data/dev.db  --runs-root runs-dev
+# production equivalents, used only inside the container: --db data/brainrot.db --runs-root runs
 ```
 
 Prints the `JobResult` as one JSON line; exit code `0` on `ready`/`needs-review`,
@@ -74,11 +81,17 @@ channel.
 
 ## Where outputs land
 
+Paths below are the **container's** (production) defaults. A host command
+writes into the development copy instead — `runs-dev/` and `data/dev.db` —
+unless you override `--db`/`--runs-root`/`BRAINROT_DB`/`BRAINROT_RUNS_ROOT`.
+See Development vs. production below.
+
 - Per-job artifacts: `runs/<jobId>/<stage>/` (`script.json`, `narration.wav`,
-  `words.json`, `background.mp4`, `final.mp4`, `qc.json`)
-- Finished video: `runs/<jobId>/assemble/final.mp4`
+  `words.json`, `background.mp4`, `final.mp4`, `qc.json`) — `runs-dev/...` on
+  the host
+- Finished video: `runs/<jobId>/assemble/final.mp4` — `runs-dev/...` on the host
 - State + library + cost ledger: SQLite at `data/brainrot.db` (override with
-  `--db` or `BRAINROT_DB`)
+  `--db` or `BRAINROT_DB`) — `data/dev.db` on the host
 
 ## Inspect
 
@@ -184,10 +197,15 @@ low.
 ### Start
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
-brings up both services: `whisperx` (the caption-alignment sidecar) and
+Use `--build`, not a bare `up -d`: Compose will happily start a stale local
+`project-brainrot-brainrot:latest` image instead of rebuilding it, which
+means "start" can silently run old code. `--build` makes it always build (or
+confirm current) first.
+
+This brings up both services: `whisperx` (the caption-alignment sidecar) and
 `brainrot` (supercronic running the schedule below), which waits on
 `whisperx`'s healthcheck before its own ticks begin. There is one log
 stream for everything the loop does:
@@ -249,29 +267,35 @@ the ledger the production budget caps read.
 
 ### Promotion
 
-Once a channel developed under `channels-dev/` is ready to go live:
+Once a channel developed under `channels-dev/` is ready to go live, stop the
+loop first — `publish-next` reads `oauth_tokens` from inside the container
+every 15 minutes, and this writes that table from the host:
 
 ```bash
+docker compose stop brainrot
+
 cp channels-dev/<name>.toml channels/<name>.toml   # edit as needed
 
 BRAINROT_DB=data/brainrot.db BRAINROT_CHANNELS_DIR=channels \
   pnpm brainrot auth youtube --channel <name>
+
+docker compose start brainrot
 ```
 
 `auth youtube` is the one command that still runs on the host instead of
-through `docker compose exec`, and the explicit `BRAINROT_DB`/
-`BRAINROT_CHANNELS_DIR` above is what points it at production rather than
-the host's own dev defaults. Two things force it out of the container:
-`src/publish/oauth-flow.ts:14` shells out to macOS `open` to launch the
-consent screen, which does not exist in the Debian image, and the flow binds
-an ephemeral loopback port that Compose has no way to publish in advance
-(the port isn't chosen until the flow starts). Because `data/` is a bind
-mount shared with the container, the AES-256-GCM-encrypted refresh token
-still lands in the production DB regardless of which side wrote it. Running
-on the host costs nothing in validation: `auth youtube` still calls
-`loadChannelsDir()` against the directory it's pointed at, which enforces
-the basename-equals-`name` invariant and rejects duplicate declared names —
-a malformed promotion fails at promotion time, not at the next tick.
+through a container, and the explicit `BRAINROT_DB`/`BRAINROT_CHANNELS_DIR`
+above is what points it at production rather than the host's own dev
+defaults. Two things force it out of the container: `src/publish/oauth-flow.ts:14`
+shells out to macOS `open` to launch the consent screen, which does not exist
+in the Debian image, and the flow binds an ephemeral loopback port that
+Compose has no way to publish in advance (the port isn't chosen until the
+flow starts). Because `data/` is a bind mount shared with the container, the
+AES-256-GCM-encrypted refresh token still lands in the production DB
+regardless of which side wrote it. Running on the host costs nothing in
+validation: `auth youtube` still calls `loadChannelsDir()` against the
+directory it's pointed at, which enforces the basename-equals-`name`
+invariant and rejects duplicate declared names — a malformed promotion fails
+at promotion time, not at the next tick.
 
 ### Recovery
 
@@ -281,18 +305,24 @@ Manual commands take no lease of their own, so a hand-run invocation can
 execute concurrently with a live tick and both may act on the same
 job/topic — `produce-next` holds a `produce` lease and `publish-next` holds
 its own separate `publish` lease, but neither one covers a manual command.
-Stop the loop first:
+Stop the loop first, then run the command as a one-shot container:
+`docker compose exec` requires a running service, and `stop` just took it
+down, so recovery commands use `docker compose run --rm --no-deps` instead —
+it starts a fresh container from the same image, with the same env and
+mounts, and `--no-deps` keeps it from pulling `whisperx` back up as a side
+effect.
 
 ```bash
 docker compose stop brainrot
-docker compose exec brainrot pnpm brainrot resume <jobId>
-docker compose exec brainrot pnpm brainrot library approve <jobIds...>
-docker compose exec brainrot pnpm brainrot publish retry <jobId>
+docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId>
+docker compose run --rm --no-deps brainrot pnpm brainrot library approve <jobIds...>
+docker compose run --rm --no-deps brainrot pnpm brainrot publish retry <jobId>
 docker compose start brainrot
 ```
 
 The same pattern covers `produce`, `library reject`, and `publish
-mark-done`.
+mark-done`. Restart the loop (`docker compose start brainrot`) once recovery
+is done — ticks stay paused until you do.
 
 - **A stranded topic can be returned to the queue.** A topic stays `claimed`
   for as long as its job might still run, so a job abandoned for good leaves
@@ -302,6 +332,25 @@ mark-done`.
   requeued — that job sits out the resume pass until an operator repairs the
   config behind it, and unbinding is safe because a later resume of that job
   keys its `used` flip on `job_id`, which by then matches nothing.
+
+- **A stranded `running` job is now a per-deploy event, not just a crash
+  scenario.** There is no SIGTERM handling in `src/` and no
+  `stop_grace_period` in `docker-compose.yml`, so Docker's 10-second default
+  grace period applies: `docker compose stop`/`restart`/`down` — and every
+  rebuild-deploy, since that's a stop-then-recreate — can kill a render
+  mid-stage. That leaves `jobs.status='running'`, the current stage
+  `running`, and the topic still `claimed`, and nothing auto-recovers it:
+  `planTick` only resumes `blocked` jobs, the repair sweep only heals topics
+  whose job already reached `library`, `topics requeue` refuses while a
+  `running` job holds the topic, and plain `resume` refuses a `running` job.
+  Recover it explicitly, after confirming no container is actually still
+  rendering it:
+
+  ```bash
+  docker compose stop brainrot
+  docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId> --force
+  docker compose start brainrot
+  ```
 
 ### Operational caveats
 
@@ -313,6 +362,14 @@ mark-done`.
 - **Docker Desktop must be set to start at login**, or nothing runs after a
   reboot and there is no alarm that fires — the failure looks identical to an
   idle day.
+- **`depends_on: service_healthy` only gates a `compose up`.** It does not
+  survive a Docker Desktop restart: on reboot the engine starts every
+  `restart: unless-stopped` container independently of the dependency graph,
+  so `brainrot` can start ticking, including a `produce-next` that needs
+  captions, before `whisperx`'s healthcheck reports healthy. Nothing crashes
+  — the affected job just fails or blocks at the captions stage and is
+  recoverable the normal way — but it means a reboot is not guaranteed to
+  reproduce the startup ordering `docker compose up -d` gives you.
 
 ### Timezones: two different clocks
 
@@ -323,7 +380,9 @@ mark-done`.
   UTC — 7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern —
   not at local midnight. Expect a fresh quota slot and budget headroom in the
   early evening. Publish slots and the YouTube per-day upload counter are the
-  opposite: they key off the machine's local wall-clock day, so they roll
+  opposite: they key off the **container's** local wall-clock day (`TZ` is
+  pinned to `America/Chicago` in `docker-compose.yml`'s `environment:` block
+  regardless of the host Mac's own timezone), so they roll
   over at local midnight, not UTC midnight.
   A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
   render from the previous firing is still running — `scout` takes a lease of
