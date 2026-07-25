@@ -99,7 +99,6 @@ export function buildDigest(
     .prepare(
       `SELECT channel, COUNT(*) AS scouted,
               SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END) AS candidate,
-              SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) AS approved,
               SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected
        FROM topics WHERE datetime(created_at) >= datetime('now', '-1 day')
        GROUP BY channel ORDER BY channel`,
@@ -108,14 +107,11 @@ export function buildDigest(
     channel: string
     scouted: number
     candidate: number
-    approved: number
     rejected: number
   }[]
   const topicsStart = lines.length
   for (const r of topicRows) {
-    lines.push(
-      `  ${r.channel}: ${r.scouted} scouted — ${r.candidate} candidate, ${r.approved} approved, ${r.rejected} rejected`,
-    )
+    lines.push(`  ${r.channel}: ${r.scouted} scouted — ${r.candidate} candidate, ${r.rejected} rejected`)
   }
   pushNoneIfEmpty(lines, topicsStart, '  none')
 
@@ -349,22 +345,6 @@ export function buildDigest(
         `${head} — ${usd(capMicros - spentMicros)} of its ${usd(capMicros)} per-video budget left — awaiting the resume pass`,
       )
     }
-  }
-  const approvedDepth = db
-    .prepare(
-      "SELECT channel, COUNT(*) AS n FROM topics WHERE status = 'approved' GROUP BY channel ORDER BY channel",
-    )
-    .all() as { channel: string; n: number }[]
-  for (const r of approvedDepth) {
-    lines.push(`  ${r.channel}: ${r.n} approved topics queued`)
-  }
-  const candidateDepth = db
-    .prepare(
-      "SELECT channel, COUNT(*) AS n FROM topics WHERE status = 'candidate' GROUP BY channel ORDER BY channel",
-    )
-    .all() as { channel: string; n: number }[]
-  for (const r of candidateDepth) {
-    lines.push(`  ${r.channel}: ${r.n} candidate topics awaiting approval`)
   }
   // Auth failures are channel-wide (the grant, not the video) — one hint
   // per channel rather than one per failed row, so a bad afternoon doesn't

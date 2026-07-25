@@ -120,7 +120,7 @@ function seedTopic(
   opts: {
     dedupeHash: string
     channel?: string
-    status?: 'candidate' | 'approved' | 'claimed' | 'used' | 'rejected'
+    status?: 'candidate' | 'claimed' | 'used' | 'rejected'
     createdAt?: string
     jobId?: string
   },
@@ -199,15 +199,15 @@ describe('buildDigest — topics section', () => {
     const db = openDb(':memory:')
     seedTopic(db, { dedupeHash: 'h1', status: 'candidate' })
     seedTopic(db, { dedupeHash: 'h2', status: 'candidate' })
-    seedTopic(db, { dedupeHash: 'h3', status: 'approved' })
+    seedTopic(db, { dedupeHash: 'h3', status: 'claimed', jobId: 'job-1' })
     seedTopic(db, { dedupeHash: 'h4', status: 'rejected' })
     // 3 days old — outside every reading of the 24h window
     seedTopic(db, { dedupeHash: 'h5', createdAt: isoAgo(3 * DAY_MS) })
     seedTopic(db, { channel: 'chan-b', dedupeHash: 'h6', status: 'rejected' })
     const digest = buildDigest(db, [])
     expect(digest).toContain('Topics (last 24h)')
-    expect(digest).toContain('  chan-a: 4 scouted — 2 candidate, 1 approved, 1 rejected')
-    expect(digest).toContain('  chan-b: 1 scouted — 0 candidate, 0 approved, 1 rejected')
+    expect(digest).toContain('  chan-a: 4 scouted — 2 candidate, 1 rejected')
+    expect(digest).toContain('  chan-b: 1 scouted — 0 candidate, 1 rejected')
     db.close()
   })
 
@@ -308,21 +308,6 @@ describe('buildDigest — action items', () => {
       '  queued job j-stranded (chan-a) — stranded before start — resume with brainrot resume j-stranded',
     )
     expect(digest).not.toContain('j-fresh')
-    db.close()
-  })
-
-  it('reports approved and candidate queue depths per channel', () => {
-    const db = openDb(':memory:')
-    seedTopic(db, { dedupeHash: 'h1', status: 'approved' })
-    seedTopic(db, { dedupeHash: 'h2', status: 'approved' })
-    seedTopic(db, { dedupeHash: 'h3', status: 'candidate' })
-    seedTopic(db, { channel: 'chan-b', dedupeHash: 'h4', status: 'candidate' })
-    // claimed/used topics are neither queued nor awaiting approval
-    seedTopic(db, { dedupeHash: 'h5', status: 'used' })
-    const digest = buildDigest(db, [])
-    expect(digest).toContain('  chan-a: 2 approved topics queued')
-    expect(digest).toContain('  chan-a: 1 candidate topics awaiting approval')
-    expect(digest).toContain('  chan-b: 1 candidate topics awaiting approval')
     db.close()
   })
 
