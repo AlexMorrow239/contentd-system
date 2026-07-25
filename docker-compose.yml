@@ -1,6 +1,11 @@
 services:
   whisperx:
     build: ./sidecar/whisperx
+    # Load-bearing for any channel without [voice.premium]: kokoro/edge-tts
+    # return no word timings, so captions always falls through to this
+    # sidecar. Without a restart policy the container does not come back
+    # after a reboot and every job then hard-fails at the captions stage.
+    restart: unless-stopped
     ports:
       - "8585:8585"
     environment:

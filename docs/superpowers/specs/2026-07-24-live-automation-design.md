@@ -57,7 +57,7 @@ premium = 1
 volume = "af_heart"
 
 [scout]
-subreddits = ["space", "astronomy", "askscience", "cosmology"]
+subreddits = ["space", "astronomy", "cosmology"]
 rss = [
   "https://phys.org/rss-feed/space-news/",
   "https://earthsky.org/feed/",
@@ -194,9 +194,14 @@ Ordered; each step gates the next.
 2. `docker compose up -d whisperx`; confirm the container reports a restart
    policy and responds on `http://localhost:8585`.
 3. `pnpm brainrot scout` once by hand (~$0.02). Confirm `sourceErrors` is empty
-   and `pnpm brainrot topics list` shows candidates. **The feed URLs above are
-   unverified** — no network check was performed while designing this, so this
-   step is where they are proven.
+   and `pnpm brainrot topics list` shows candidates.
+
+   Source URLs were reachability-checked on 2026-07-24: `r/space`,
+   `r/astronomy`, `r/cosmology` and both RSS feeds returned 200. `r/askscience`
+   was dropped from the original draft — it covers all sciences, so with
+   `per_source_limit = 25` most of its slots would be off-niche candidates
+   burning Haiku scoring spend. Reachability is not the same as usable content;
+   this step is still where the sources prove themselves.
 4. **One manual premium produce, end-to-end** (~$3-5):
    `pnpm brainrot produce --channel channels/test.toml --topic "<a scouted topic>" --tier premium`
    This is the critical step: no premium job has ever completed in this
