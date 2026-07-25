@@ -7,6 +7,17 @@ logs
 .git
 .env
 sandbox
+# `superpowers` does not match the dot-prefixed directory — both are needed.
 superpowers
+.superpowers
+.claude
+# The Python sidecar is a separate service with its own build context
+# (./sidecar/whisperx), so it reads its own .dockerignore, not this one.
+# Nothing in this Node image uses that tree — including its 47MB .venv.
+sidecar
+tests-fixtures
+docker-compose.yml
+pyrightconfig.json
+*.md
 **/__pycache__
 **/.pytest_cache
