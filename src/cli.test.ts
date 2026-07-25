@@ -218,15 +218,15 @@ describe('brainrot CLI', () => {
     expect(leases).toEqual({ n: 0 })
   }, 60000)
 
-  it('`topics --help` lists the list/approve/reject/requeue subcommands', async () => {
+  it('`topics --help` lists the list/reject/requeue subcommands', async () => {
     const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'topics', '--help'], {
       reject: false,
     })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('list')
-    expect(result.stdout).toContain('approve')
     expect(result.stdout).toContain('reject')
     expect(result.stdout).toContain('requeue')
+    expect(result.stdout).not.toContain('approve')
   }, 60000)
 
   // Claimed topic + (optionally) the job holding it — the state `topics

@@ -12,7 +12,7 @@ import { publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
 import { openDb } from './db/index.js'
 import { listPublishes, markInterruptedDone, retryInterrupted } from './publish/publishes.js'
-import { approveTopics, listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
+import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { pipelineStages } from './jobs/pipeline.js'
 import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
@@ -23,7 +23,7 @@ import { upsertToken } from './publish/tokens.js'
 import { youtubeShortsUrl } from './publish/youtube.js'
 
 /**
- * Validate `topics approve/reject` id arguments. Throws naming the FIRST bad
+ * Validate `topics reject`/`requeue` id arguments. Throws naming the FIRST bad
  * token, BEFORE any db handle exists, so one typo means exit 1 with no writes.
  * Canonical positive decimal integers only — "0", "-3", "12abc" all reject.
  * Exported so cli.test.ts can assert it in-process.
@@ -279,26 +279,13 @@ topics
   })
 
 topics
-  .command('approve <ids...>')
-  .option('--db <path>', 'sqlite db path')
-  .action((rawIds: string[], opts: { db?: string }) => {
-    // Ids parse BEFORE the db opens: a bad token throws to the parseAsync
-    // .catch (message on stderr, exit 1) with no writes.
-    const ids = parseTopicIds(rawIds)
-    const db = openDb(resolveDbPath(opts.db))
-    const changed = approveTopics(db, ids)
-    // changed < ids.length flags ids that were not in 'candidate' state.
-    console.log(`approved ${changed} of ${ids.length}`)
-  })
-
-topics
   .command('reject <ids...>')
   .option('--db <path>', 'sqlite db path')
   .action((rawIds: string[], opts: { db?: string }) => {
     const ids = parseTopicIds(rawIds)
     const db = openDb(resolveDbPath(opts.db))
     const changed = rejectTopics(db, ids)
-    // reject takes candidate AND approved; claimed/used rows are skipped.
+    // reject takes candidate only; claimed/used rows are skipped.
     console.log(`rejected ${changed} of ${ids.length}`)
   })
 
@@ -306,7 +293,7 @@ topics
   .command('requeue <id>')
   .option('--db <path>', 'sqlite db path')
   .action((rawId: string, opts: { db?: string }) => {
-    // Same pre-db id validation as approve/reject: a bad token throws to the
+    // Same pre-db id validation as reject: a bad token throws to the
     // parseAsync .catch (message on stderr, exit 1) with no writes.
     const [id] = parseTopicIds([rawId])
     const db = openDb(resolveDbPath(opts.db))

@@ -26,7 +26,7 @@ pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one 
 pnpm brainrot produce --channel channels/<name>.toml --topic "..."
 pnpm brainrot scout | produce-next | publish-next | digest
 pnpm brainrot jobs | costs
-pnpm brainrot topics list|approve|reject <ids...>
+pnpm brainrot topics list|reject <ids...>
 pnpm brainrot topics requeue <id>   # orphaned 'claimed' topic -> 'candidate'; refuses while a live job holds it
 pnpm brainrot library list|approve|reject <jobIds...>
 pnpm brainrot publish retry|mark-done <jobId>
