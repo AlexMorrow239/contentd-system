@@ -1,0 +1,10 @@
+{
+  "include": ["sidecar/whisperx"],
+  "venvPath": "sidecar/whisperx",
+  "venv": ".venv",
+  "executionEnvironments": [
+    {
+      "root": "sidecar/whisperx"
+    }
+  ]
+}
