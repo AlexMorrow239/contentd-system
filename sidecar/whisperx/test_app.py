@@ -170,6 +170,9 @@ def test_health_returns_ok_without_loading_the_align_model(monkeypatch):
         raise AssertionError("/health must not load the align model")
 
     monkeypatch.setattr(app_module.whisperx, "load_align_model", explode)
+    # Reset the cache so the trap is live; prior tests may have left the model
+    # populated, which would short-circuit get_align_model() and miss the trap.
+    app_module._align["model"] = None
 
     client = TestClient(app_module.app)
     response = client.get("/health")
