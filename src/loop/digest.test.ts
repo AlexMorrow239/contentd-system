@@ -1,12 +1,32 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { localDay } from '../publish/slots.js'
+import { upsertToken } from '../publish/tokens.js'
 import { testChannel } from '../stages/_testkit.js'
 import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from './digest.js'
 
 const HOUR_MS = 3_600_000
 const DAY_MS = 24 * HOUR_MS
+
+// Same filler-key idiom as tokens.test.ts: AES-256 sized, never a real
+// secret, and only ever handed to encrypt/decrypt round-trips here.
+const TEST_KEY = Buffer.alloc(32, 0x42)
+const TEST_KEY_HEX = TEST_KEY.toString('hex')
+const OTHER_KEY_HEX = Buffer.alloc(32, 0x11).toString('hex')
+
+// The env-dependent digest checks (blocked-job reasons, token health) read
+// process.env by default; tests pass explicit presence flags so a developer's
+// own .env can never flip an assertion.
+const ENV_OK = {
+  falKeyPresent: true,
+  ytClientIdPresent: true,
+  ytClientSecretPresent: true,
+  tokenKeyHex: TEST_KEY_HEX,
+}
 
 // Explicit timestamps in the schema default's own format ('...T...Z' with
 // millis) keep string comparisons against created_at meaningful.
@@ -114,6 +134,48 @@ function seedTopic(
     opts.status ?? 'candidate',
     opts.createdAt ?? isoAgo(HOUR_MS),
   )
+}
+
+// The runner stamps started_at when a stage begins; the zombie check ages a
+// running job by the latest such stamp, so tests control it directly.
+function seedStage(db: Database, jobId: string, stage: string, startedAt: string): void {
+  db.prepare(
+    "INSERT INTO job_stages (job_id, stage, status, started_at) VALUES (?, ?, 'running', ?)",
+  ).run(jobId, stage, startedAt)
+}
+
+function seedCost(db: Database, jobId: string, usdMicros: number): void {
+  db.prepare(
+    "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES (?, 'fal', 'video', ?)",
+  ).run(jobId, usdMicros)
+}
+
+function publishChannel(name: string, overrides: { slots?: string[] } = {}) {
+  return testChannel({
+    name,
+    publish: {
+      slots: overrides.slots ?? ['10:00'],
+      platforms: ['youtube'],
+      privacy: 'public',
+      categoryId: 24,
+      madeForKids: false,
+    },
+  })
+}
+
+// A real on-disk file for the ready-video pre-flight check: the digest calls
+// existsSync, so only an actual path proves the negative case.
+function writeTempVideo(): string {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'digest-video-'))
+  const file = path.join(dir, 'out.mp4')
+  writeFileSync(file, 'not really a video')
+  return file
+}
+
+function seedLibraryPath(db: Database, jobId: string, videoPath: string): void {
+  db.prepare(
+    "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, '{}', 'ready')",
+  ).run(jobId, videoPath)
 }
 
 afterEach(() => {
@@ -466,6 +528,222 @@ describe('buildDigest — lapsed-slots action item', () => {
     const chB = testChannel({ name: 'chan-b', publish: null })
     const digest = buildDigest(db, [chB])
     expect(digest).not.toContain('lapsed unfilled yesterday')
+    db.close()
+  })
+})
+
+describe('buildDigest — zombie age comes from the latest stage start', () => {
+  it('does not flag an old job whose latest stage started minutes ago', () => {
+    const db = openDb(':memory:')
+    // Created yesterday, blocked, auto-resumed 5 minutes ago: aging by
+    // created_at alone would print "resume with --force" over a live render.
+    seedJob(db, { id: 'j-resumed', status: 'running', createdAt: isoAgo(10 * HOUR_MS) })
+    seedStage(db, 'j-resumed', 'script', isoAgo(10 * HOUR_MS))
+    seedStage(db, 'j-resumed', 'visuals', isoAgo(5 * 60_000))
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).not.toContain('j-resumed')
+    db.close()
+  })
+
+  it('flags a running job whose latest stage started before the zombie threshold', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-stuck', status: 'running', createdAt: isoAgo(10 * HOUR_MS) })
+    seedStage(db, 'j-stuck', 'script', isoAgo(4 * HOUR_MS))
+    seedStage(db, 'j-stuck', 'visuals', isoAgo(3 * HOUR_MS))
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).toContain(
+      '  running job j-stuck (chan-a, volume) running > 2h — probably crashed — resume with --force',
+    )
+    db.close()
+  })
+
+  it('still ages a stageless running job by created_at', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-nostage', status: 'running', createdAt: isoAgo(3 * HOUR_MS) })
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).toContain('  running job j-nostage (chan-a, volume) running > 2h')
+    db.close()
+  })
+})
+
+describe('buildDigest — failed-job list cap', () => {
+  it('lists the 10 most recent failures and counts the rest in one line', () => {
+    const db = openDb(':memory:')
+    for (let i = 0; i < 13; i++) {
+      // i = 0 is the oldest; the three oldest fall past the cap.
+      seedJob(db, { id: `j-f${i}`, status: 'failed', createdAt: isoAgo((13 - i) * HOUR_MS) })
+    }
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).toContain('  failed job j-f12 (chan-a, volume) — resume manually')
+    expect(digest).toContain('  failed job j-f3 (chan-a, volume) — resume manually')
+    expect(digest).not.toContain('j-f2 ')
+    expect(digest).not.toContain('j-f0 ')
+    expect(digest).toContain('  and 3 older failures')
+    // Oldest-first within the kept window, unchanged from the uncapped list.
+    expect(digest.indexOf('j-f3')).toBeLessThan(digest.indexOf('j-f12'))
+    db.close()
+  })
+
+  it('adds no truncation line at or below the cap', () => {
+    const db = openDb(':memory:')
+    for (let i = 0; i < 10; i++) {
+      seedJob(db, { id: `j-f${i}`, status: 'failed', createdAt: isoAgo((10 - i) * HOUR_MS) })
+    }
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).toContain('  failed job j-f0 (chan-a, volume) — resume manually')
+    expect(digest).not.toContain('older failures')
+    db.close()
+  })
+})
+
+describe('buildDigest — blocked jobs that cannot resume', () => {
+  it('names a blocked job whose channel config left the channels dir', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-orphan', channel: 'gone', status: 'blocked' })
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).toContain(
+      '  blocked job j-orphan (gone, volume) — no channel config named gone in the channels dir — restore gone.toml or reject the job',
+    )
+    db.close()
+  })
+
+  it('names FAL_KEY as the reason a blocked premium job cannot resume', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-prem', channel: 'chan-a', tier: 'premium', status: 'blocked' })
+    const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], {
+      ...ENV_OK,
+      falKeyPresent: false,
+    })
+    expect(digest).toContain(
+      '  blocked job j-prem (chan-a, premium) — premium resume needs FAL_KEY, which is unset — set it in .env',
+    )
+    db.close()
+  })
+
+  it('names an exhausted per-video cap, measured against the tier cap', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-spent', channel: 'chan-a', tier: 'premium', status: 'blocked' })
+    // testChannel's premium per-video cap is $7.00.
+    seedCost(db, 'j-spent', 7_000_000)
+    const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], ENV_OK)
+    expect(digest).toContain(
+      '  blocked job j-spent (chan-a, premium) — premium per-video budget spent ($7.00 of $7.00) — raise the cap or reject the job',
+    )
+    db.close()
+  })
+
+  it('reports remaining headroom for a blocked job that can still resume', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-wait', channel: 'chan-a', status: 'blocked' })
+    seedCost(db, 'j-wait', 2_000_000)
+    const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], ENV_OK)
+    // volume per-video cap is $8.00 in testChannel.
+    expect(digest).toContain(
+      '  blocked job j-wait (chan-a, volume) — $6.00 of its $8.00 per-video budget left — awaiting the resume pass',
+    )
+    db.close()
+  })
+})
+
+describe('buildDigest — publish token health', () => {
+  it('tells the operator to authorize a publish-enabled channel with no stored token', () => {
+    const db = openDb(':memory:')
+    const digest = buildDigest(db, [publishChannel('chan-a')], ENV_OK)
+    expect(digest).toContain(
+      '  chan-a youtube: no stored token — run brainrot auth youtube --channel chan-a',
+    )
+    db.close()
+  })
+
+  it('names the key rotation when a stored token no longer decrypts', () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    const db = openDb(':memory:')
+    upsertToken(db, 'youtube', 'chan-a', 'rt-test-token', 'scope', TEST_KEY)
+    const digest = buildDigest(db, [publishChannel('chan-a')], {
+      ...ENV_OK,
+      tokenKeyHex: OTHER_KEY_HEX,
+    })
+    expect(digest).toContain(
+      '  chan-a youtube: the stored token does not decrypt with the current BRAINROT_TOKEN_KEY — run brainrot auth youtube --channel chan-a',
+    )
+    db.close()
+    stderr.mockRestore()
+  })
+
+  it('says nothing about tokens when the grant is healthy', () => {
+    const db = openDb(':memory:')
+    upsertToken(db, 'youtube', 'chan-a', 'rt-test-token', 'scope', TEST_KEY)
+    const digest = buildDigest(db, [publishChannel('chan-a')], ENV_OK)
+    expect(digest).not.toContain('chan-a youtube: no stored token')
+    expect(digest).not.toContain('does not decrypt')
+    db.close()
+  })
+
+  it('lists the unset publish env vars once, by name', () => {
+    const db = openDb(':memory:')
+    upsertToken(db, 'youtube', 'chan-a', 'rt-test-token', 'scope', TEST_KEY)
+    const digest = buildDigest(db, [publishChannel('chan-a'), publishChannel('chan-b')], {
+      falKeyPresent: true,
+      ytClientIdPresent: false,
+      ytClientSecretPresent: true,
+      tokenKeyHex: undefined,
+    })
+    expect(digest).toContain(
+      '  publishing is not configured: YT_CLIENT_ID, BRAINROT_TOKEN_KEY unset — every publish tick noops with reason no-auth',
+    )
+    // One line for the whole run, not one per channel.
+    expect(digest.split('publishing is not configured').length).toBe(2)
+    db.close()
+  })
+
+  it('flags a BRAINROT_TOKEN_KEY that is set but malformed without echoing it', () => {
+    const db = openDb(':memory:')
+    const digest = buildDigest(db, [publishChannel('chan-a')], { ...ENV_OK, tokenKeyHex: 'nothex' })
+    expect(digest).toContain(
+      '  BRAINROT_TOKEN_KEY is set but is not 64 hex characters — stored tokens cannot be decrypted',
+    )
+    expect(digest).not.toContain('nothex')
+    db.close()
+  })
+
+  it('checks no tokens for a channel without a publish config', () => {
+    const db = openDb(':memory:')
+    const digest = buildDigest(db, [testChannel({ name: 'chan-b', publish: null })], ENV_OK)
+    expect(digest).not.toContain('no stored token')
+    expect(digest).not.toContain('publishing is not configured')
+    db.close()
+  })
+})
+
+describe('buildDigest — ready videos whose file is gone', () => {
+  it('flags a ready library row whose video_path no longer exists', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-gone', channel: 'chan-a' })
+    seedLibraryPath(db, 'j-gone', '/nonexistent/runs/j-gone/final.mp4')
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).toContain(
+      '  ready job j-gone (chan-a) has no video file at /nonexistent/runs/j-gone/final.mp4 — run brainrot library reject j-gone',
+    )
+    db.close()
+  })
+
+  it('leaves a ready row alone while its file is on disk', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-here', channel: 'chan-a' })
+    seedLibraryPath(db, 'j-here', writeTempVideo())
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).not.toContain('j-here')
+    db.close()
+  })
+
+  it('ignores non-ready library rows with missing files', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-published', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-published', '/nonexistent/final.mp4', '{}', 'published')",
+    ).run()
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).not.toContain('j-published')
     db.close()
   })
 })

@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
 import {
@@ -5,8 +6,10 @@ import {
   globalDailyCapMicros,
   globalDaySpentMicros,
 } from '../jobs/costs.js'
+import { parseTokenKey } from '../publish/crypto.js'
 import { consumedSlots, MAX_PUBLISH_ATTEMPTS } from '../publish/publishes.js'
 import { localDay } from '../publish/slots.js'
+import { loadRefreshToken } from '../publish/tokens.js'
 import { resolvePlatformMeta } from '../publish/types.js'
 import type { Platform } from '../publish/types.js'
 
@@ -21,6 +24,39 @@ export const ZOMBIE_RUNNING_MS = 7_200_000 // 2 h
 // auto-surfaces them (planTick only acts on 'blocked'), so the digest is the
 // only place the strand becomes visible. Real runs flip off 'queued' in ms.
 export const STRANDED_QUEUED_MS = 3_600_000 // 1 h
+
+// Failures are listed newest-first-window, oldest-first-printed: past this
+// many, fresh failures would be buried under a wall of history the operator
+// has already seen. The remainder is still counted, never silently dropped.
+export const FAILED_JOBS_LIMIT = 10
+
+/**
+ * Environment facts the digest reports on. Read from process.env by default
+ * (the cli passes nothing) so the digest can name a missing key as the reason
+ * work is stuck; tests override each field explicitly rather than depending on
+ * the developer's own .env. Only presence is ever carried for the secrets —
+ * the token key hex is needed to attempt a decrypt and is never printed.
+ */
+export interface DigestEnv {
+  falKeyPresent: boolean
+  ytClientIdPresent: boolean
+  ytClientSecretPresent: boolean
+  tokenKeyHex: string | undefined
+}
+
+// `in` rather than `??` for tokenKeyHex: a test passing an explicit undefined
+// means "unset", which `??` would quietly replace with the real environment.
+function resolveDigestEnv(overrides: Partial<DigestEnv>): DigestEnv {
+  const tokenKeyHex = process.env.BRAINROT_TOKEN_KEY
+  return {
+    falKeyPresent: overrides.falKeyPresent ?? !!process.env.FAL_KEY,
+    ytClientIdPresent: overrides.ytClientIdPresent ?? !!process.env.YT_CLIENT_ID,
+    ytClientSecretPresent: overrides.ytClientSecretPresent ?? !!process.env.YT_CLIENT_SECRET,
+    tokenKeyHex: 'tokenKeyHex' in overrides
+      ? overrides.tokenKeyHex
+      : tokenKeyHex === undefined || tokenKeyHex === '' ? undefined : tokenKeyHex,
+  }
+}
 
 // Display-only conversion — everything upstream stays integer micro-USD.
 function usd(micros: number): string {
@@ -45,8 +81,15 @@ function pushNoneIfEmpty(lines: string[], sectionStart: number, noneLine: string
  * table. datetime(created_at) normalizes the stored ISO-8601 'T'/'Z' format
  * to sqlite's own datetime() format — a raw string compare against
  * datetime('now','-1 day') would widen the window to the whole boundary day.
+ * `env` exists for tests only — production callers pass nothing and the
+ * environment is read here.
  */
-export function buildDigest(db: Database, channels: ChannelConfig[]): string {
+export function buildDigest(
+  db: Database,
+  channels: ChannelConfig[],
+  env: Partial<DigestEnv> = {},
+): string {
+  const digestEnv = resolveDigestEnv(env)
   const lines: string[] = []
 
   lines.push('Topics (last 24h)')
@@ -190,21 +233,42 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
   lines.push('', 'Action items')
   const actionItemsStart = lines.length
   // Current state, not last-24h: a failed job awaits manual resume until the
-  // operator acts, however old it is.
-  const failedJobs = db
-    .prepare("SELECT id, channel, tier FROM jobs WHERE status = 'failed' ORDER BY created_at ASC")
-    .all() as { id: string; channel: string; tier: string }[]
+  // operator acts, however old it is. Only the newest FAILED_JOBS_LIMIT are
+  // listed (selected newest-first, then reversed back to the oldest-first
+  // print order the uncapped list used), with the remainder counted below.
+  const failedJobCount = (
+    db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'failed'").get() as { n: number }
+  ).n
+  const failedJobs = (
+    db
+      .prepare(
+        "SELECT id, channel, tier FROM jobs WHERE status = 'failed' ORDER BY created_at DESC, id DESC LIMIT ?",
+      )
+      .all(FAILED_JOBS_LIMIT) as { id: string; channel: string; tier: string }[]
+  ).reverse()
   for (const j of failedJobs) {
     lines.push(`  failed job ${j.id} (${j.channel}, ${j.tier}) — resume manually`)
   }
-  // Both sides are ISO-8601 UTC with millisecond 'Z' (schema default shape),
-  // so a lexicographic compare is a time compare.
+  if (failedJobCount > failedJobs.length) {
+    lines.push(`  and ${failedJobCount - failedJobs.length} older failures`)
+  }
+  // Age from the latest stage start, falling back to created_at for a job
+  // that never reached its first stage: a job created yesterday and resumed
+  // minutes ago is live, and telling the operator to resume it with --force
+  // would double-run the render. Both sides are ISO-8601 UTC with millisecond
+  // 'Z' (schema default shape), so a lexicographic compare is a time compare.
   const zombieCutoff = new Date(Date.now() - ZOMBIE_RUNNING_MS).toISOString()
   const zombies = db
     .prepare(
-      "SELECT id, channel, tier FROM jobs WHERE status = 'running' AND created_at <= ? ORDER BY created_at ASC",
+      `SELECT j.id AS id, j.channel AS channel, j.tier AS tier,
+              COALESCE(MAX(s.started_at), j.created_at) AS lastStart
+       FROM jobs j LEFT JOIN job_stages s ON s.job_id = j.id
+       WHERE j.status = 'running'
+       GROUP BY j.id, j.channel, j.tier, j.created_at
+       HAVING lastStart <= ?
+       ORDER BY lastStart ASC, j.id ASC`,
     )
-    .all(zombieCutoff) as { id: string; channel: string; tier: string }[]
+    .all(zombieCutoff) as { id: string; channel: string; tier: string; lastStart: string }[]
   for (const j of zombies) {
     lines.push(
       `  running job ${j.id} (${j.channel}, ${j.tier}) running > ${ZOMBIE_RUNNING_MS / 3_600_000}h — probably crashed — resume with --force`,
@@ -224,6 +288,53 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
     lines.push(
       `  queued job ${j.id} (${j.channel}, ${j.tier}) — stranded before start — resume with brainrot resume ${j.id}`,
     )
+  }
+  // Blocked jobs are current-state too, and unlike the counts above they are
+  // NOT 24h-windowed: config drift (channel TOML gone, FAL_KEY unset, the
+  // per-video cap fully spent) excludes a job from the resume pass forever,
+  // and after a day it would otherwise vanish from every operator surface
+  // with its premium spend sunk and its topic still 'claimed'.
+  const blockedJobs = db
+    .prepare(
+      "SELECT id, channel, tier FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
+    )
+    .all() as { id: string; channel: string; tier: string }[]
+  if (blockedJobs.length > 0) {
+    const byName = new Map(channels.map((c) => [c.name, c]))
+    // Lifetime spend, mirroring the per-video check in assertBudget: the cap
+    // is never reset by a day boundary, so a spent-out job never self-heals.
+    const jobSpent = db.prepare(
+      'SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?',
+    )
+    for (const j of blockedJobs) {
+      const head = `  blocked job ${j.id} (${j.channel}, ${j.tier})`
+      const channel = byName.get(j.channel)
+      if (channel === undefined) {
+        lines.push(
+          `${head} — no channel config named ${j.channel} in the channels dir — restore ${j.channel}.toml or reject the job`,
+        )
+        continue
+      }
+      const premium = j.tier === 'premium'
+      if (premium && !digestEnv.falKeyPresent) {
+        lines.push(`${head} — premium resume needs FAL_KEY, which is unset — set it in .env`)
+        continue
+      }
+      const capMicros = premium
+        ? channel.budget.premiumPerVideoUsdMicros
+        : channel.budget.perVideoUsdMicros
+      const label = premium ? 'premium per-video' : 'per-video'
+      const spentMicros = (jobSpent.get(j.id) as { total: number }).total
+      if (spentMicros >= capMicros) {
+        lines.push(
+          `${head} — ${label} budget spent (${usd(spentMicros)} of ${usd(capMicros)}) — raise the cap or reject the job`,
+        )
+        continue
+      }
+      lines.push(
+        `${head} — ${usd(capMicros - spentMicros)} of its ${usd(capMicros)} ${label} budget left — awaiting the resume pass`,
+      )
+    }
   }
   const approvedDepth = db
     .prepare(
@@ -273,6 +384,57 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
       `  ${r.channel}: ${r.n} quota failures in the last 24h — YouTube refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the project's real quota`,
     )
   }
+  // Token health per publish-enabled channel. A missing grant, a rotated
+  // BRAINROT_TOKEN_KEY, or unset client credentials all make every publish
+  // tick a `no-auth` noop that writes no publishes row — so the auth hint
+  // above (which counts failed rows) can never fire, and the only other
+  // signal is a lapsed slot a full day later with no cause named. Names
+  // only: neither key nor token bytes are ever read into a line here.
+  if (channels.some((c) => c.publish !== null)) {
+    const unsetVars: string[] = []
+    if (!digestEnv.ytClientIdPresent) unsetVars.push('YT_CLIENT_ID')
+    if (!digestEnv.ytClientSecretPresent) unsetVars.push('YT_CLIENT_SECRET')
+    if (digestEnv.tokenKeyHex === undefined) unsetVars.push('BRAINROT_TOKEN_KEY')
+    if (unsetVars.length > 0) {
+      lines.push(
+        `  publishing is not configured: ${unsetVars.join(', ')} unset — every publish tick noops with reason no-auth`,
+      )
+    }
+    // A set-but-malformed key is its own failure mode: the rows exist and
+    // look fine, nothing can open them. parseTokenKey's message names no
+    // value, and neither does this line.
+    let tokenKey: Buffer | undefined
+    if (digestEnv.tokenKeyHex !== undefined) {
+      try {
+        tokenKey = parseTokenKey(digestEnv.tokenKeyHex)
+      } catch {
+        lines.push(
+          '  BRAINROT_TOKEN_KEY is set but is not 64 hex characters — stored tokens cannot be decrypted',
+        )
+      }
+    }
+    const tokenRow = db.prepare(
+      'SELECT 1 AS present FROM oauth_tokens WHERE platform = ? AND channel = ?',
+    )
+    for (const channel of channels) {
+      if (channel.publish === null) continue
+      for (const platform of channel.publish.platforms) {
+        const remedy = `run brainrot auth ${platform} --channel ${channel.name}`
+        if (tokenRow.get(platform, channel.name) === undefined) {
+          lines.push(`  ${channel.name} ${platform}: no stored token — ${remedy}`)
+          continue
+        }
+        // With no usable key the decrypt cannot be attempted; the unset /
+        // malformed line above already names that cause.
+        if (tokenKey === undefined) continue
+        if (loadRefreshToken(db, platform, channel.name, tokenKey) === null) {
+          lines.push(
+            `  ${channel.name} ${platform}: the stored token does not decrypt with the current BRAINROT_TOKEN_KEY — ${remedy}`,
+          )
+        }
+      }
+    }
+  }
   // Current state, not last-24h (mirrors the failedJobs block above): an
   // interrupted upload sits until the operator checks Studio, however old.
   const interruptedRows = db
@@ -301,6 +463,23 @@ export function buildDigest(db: Database, channels: ChannelConfig[]): string {
   for (const r of attemptCapped) {
     lines.push(
       `  job ${r.jobId} (${r.channel}) hit the publish attempt cap (${r.n} rejected) — run brainrot library reject ${r.jobId}`,
+    )
+  }
+  // A ready row whose file was pruned from runs/ can never publish: the tick
+  // skips it, and without this line the operator sees only a backlog that
+  // never drains. Pure read — existsSync on the path the publish tick would
+  // open — so the digest stays side-effect free.
+  const readyVideos = db
+    .prepare(
+      `SELECT l.job_id AS jobId, j.channel AS channel, l.video_path AS videoPath
+       FROM library l JOIN jobs j ON j.id = l.job_id
+       WHERE l.state = 'ready' ORDER BY l.job_id`,
+    )
+    .all() as { jobId: string; channel: string; videoPath: string }[]
+  for (const r of readyVideos) {
+    if (existsSync(r.videoPath)) continue
+    lines.push(
+      `  ready job ${r.jobId} (${r.channel}) has no video file at ${r.videoPath} — run brainrot library reject ${r.jobId}`,
     )
   }
   // Local-time slot bookkeeping (decision 13): "yesterday" is the local
