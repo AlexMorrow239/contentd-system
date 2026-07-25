@@ -1,4 +1,4 @@
-name = "example"
+name = "test"
 niche = ["space facts", "astronomy"]
 script_model = "claude-sonnet-5"
 bg_dir = "assets/bg"
@@ -33,3 +33,10 @@ stroke_px = 8
 per_video_usd = 8.0    # volume per-video cap; loader converts to usdMicros
 premium_per_video_usd = 7.0
 per_day_usd = 20.0
+
+[publish]
+slots = ["10:00", "14:00", "19:00"]
+platforms = ["youtube"]
+privacy = "private"
+category_id = 24
+made_for_kids = false
