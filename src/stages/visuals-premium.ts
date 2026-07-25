@@ -165,6 +165,30 @@ export const visualsPremiumStage: StageDef = {
       }
     }
 
+    // Every paid provider call in this stage ledgers under the same rule: on
+    // success record the actual cost the response reports, on failure record
+    // whatever the error says was already billed (a fal call billed before its
+    // download failed, a paid vision response that failed schema validation)
+    // and rethrow untouched, so a failing scene never loses its spend. The
+    // cost is read through `costOf` because the shapes differ — fal returns
+    // { costUsdMicros }, visionJudgment returns { data, cost }.
+    async function ledgered<T>(
+      provider: string,
+      operation: string,
+      costOf: (result: T) => number,
+      call: () => Promise<T>,
+    ): Promise<T> {
+      try {
+        const result = await call();
+        recordCost(ctx.db, ctx.jobId, provider, operation, costOf(result));
+        return result;
+      } catch (err) {
+        const paid = errorCostUsdMicros(err);
+        if (paid !== undefined) recordCost(ctx.db, ctx.jobId, provider, operation, paid);
+        throw err;
+      }
+    }
+
     const perScene = async (scene: ScenesOutput['scenes'][number], i: number): Promise<SceneManifestEntry> => {
       const nn = String(i + 1).padStart(2, '0');
       const keyframeName = `scene-${nn}.png`;
@@ -218,43 +242,28 @@ export const visualsPremiumStage: StageDef = {
             ? ''
             : `\n\nA previous attempt at this image was rejected for this reason; fix it: ${critique}`);
         // Gate + reserve, then generate + ledger inside the reservation window.
-        // If the fal call was billed but its download failed, the error carries
-        // the table cost — ledger that paid attempt before rethrowing so the
-        // spend is never lost (the scene then fails per the existing semantics,
-        // images are not retried on a hard throw).
-        const image = await withBudget(estimateImageCostMicros(imageModel), async () => {
-          try {
-            const result = await generateImage({ model: imageModel, prompt, outPath: keyframePath });
-            recordCost(ctx.db, ctx.jobId, 'fal', 'image', result.costUsdMicros);
-            return result;
-          } catch (err) {
-            const paid = errorCostUsdMicros(err);
-            if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'fal', 'image', paid);
-            throw err;
-          }
-        });
+        // A billed-but-failed attempt is ledgered by `ledgered` and the scene
+        // then fails per the existing semantics — images are not retried on a
+        // hard throw.
+        const image = await withBudget(estimateImageCostMicros(imageModel), () =>
+          ledgered('fal', 'image', (r) => r.costUsdMicros, () =>
+            generateImage({ model: imageModel, prompt, outPath: keyframePath }),
+          ),
+        );
         imageAttempts += 1;
         costUsdMicros += image.costUsdMicros;
 
-        const judgment = await withBudget(ESTIMATED_VISION_COST_MICROS, async () => {
-          try {
-            const result = await visionJudgment({
+        const judgment = await withBudget(ESTIMATED_VISION_COST_MICROS, () =>
+          ledgered('anthropic', 'keyframe-check', (r) => r.cost.usdMicros, () =>
+            visionJudgment({
               model: ctx.channel.scriptModel,
               system: KEYFRAME_JUDGE_SYSTEM,
               prompt: buildJudgePrompt(script.styleBlock, scene.visualPrompt),
               imagePaths: [keyframePath],
               schema: KeyframeJudgmentSchema,
-            });
-            recordCost(ctx.db, ctx.jobId, 'anthropic', 'keyframe-check', result.cost.usdMicros);
-            return result;
-          } catch (err) {
-            // A schema-invalid but paid vision response still cost money — ledger
-            // it before rethrowing so the failing scene still records the spend.
-            const paid = errorCostUsdMicros(err);
-            if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'keyframe-check', paid);
-            throw err;
-          }
-        });
+            }),
+          ),
+        );
         costUsdMicros += judgment.cost.usdMicros;
 
         if (judgment.data.pass) {
@@ -272,26 +281,20 @@ export const visualsPremiumStage: StageDef = {
       let animated = false;
       while (!animated) {
         try {
-          const video = await withBudget(estimateVideoCostMicros(videoModel, clipDurationSec), async () => {
-            try {
-              const result = await animateImage({
+          // `ledgered` records a billed-but-failed attempt before the retry
+          // logic below decides whether to try again, so a download-failed
+          // attempt is never lost.
+          const video = await withBudget(estimateVideoCostMicros(videoModel, clipDurationSec), () =>
+            ledgered('fal', 'video', (r) => r.costUsdMicros, () =>
+              animateImage({
                 model: videoModel,
                 imagePath: keyframePath,
                 motionPrompt: scene.motionPrompt,
                 durationSec: clipDurationSec,
                 outPath: clipPath,
-              });
-              recordCost(ctx.db, ctx.jobId, 'fal', 'video', result.costUsdMicros);
-              return result;
-            } catch (err) {
-              // subscribe may have been billed before the download failed; ledger
-              // that paid attempt before the retry logic below decides whether to
-              // try again, so a download-failed attempt is never lost.
-              const paid = errorCostUsdMicros(err);
-              if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'fal', 'video', paid);
-              throw err;
-            }
-          });
+              }),
+            ),
+          );
           videoAttempts += 1;
           costUsdMicros += video.costUsdMicros;
           animated = true;
