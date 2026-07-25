@@ -245,6 +245,30 @@ the loop leases and can race a live tick:
 | Library row `needs-review` | Inspect, then `pnpm brainrot library approve <jobId>` |
 | Publish row `interrupted` | `pnpm brainrot publish retry <jobId>` |
 
+## Observed in production
+
+**2026-07-25 — `ProcessType = Background` silently suppressed ~10h of ticks.**
+The first night live, `publish-next` fired 2 times instead of ~41 and
+`produce-next` 1 time instead of ~24, on a machine that never slept
+(`pmset -g log`: zero Sleep/Wake events after 18:36; uptime 50 days). Log
+mtimes place both runs at 08:02/08:07 — nothing fired between 21:52 and
+~07:52. `ProcessType = Background` opts a job into the system's idle-time
+throttling class, which defers its timers once the GUI session goes idle.
+Removed in `fcb41c2`; absent means `Standard`, which is what a periodic agent
+wants.
+
+Cost: the first premium video missed its entire publish day. There is no
+cross-midnight backfill, so a suppressed tick is a *lost* day, not a delayed
+one.
+
+**Not yet confirmed resolved.** Agents in `gui/<uid>` can be deferred along
+with the session regardless of `ProcessType`. If run counters still fall short
+of `elapsed / interval` once the display sleeps, escalate to a `LaunchDaemon`
+in the system domain or a `pmset` scheduled wake. Diagnose by comparing
+`launchctl print <label> | grep runs` against the expected count — and confirm
+sleep innocence with `pmset -g log | awk '$4=="Sleep"||$4=="Wake"'` rather
+than inferring it from the run count, which was the mistake made here first.
+
 ## Accepted risks
 
 Explicitly chosen, not overlooked:
