@@ -43,7 +43,7 @@ export async function runJob(
   channel: ChannelConfig,
   jobId: string,
   stages: StageDef[],
-  options: { runsRoot?: string } = {},
+  options: { runsRoot?: string; heartbeat?: () => void } = {},
 ): Promise<JobResult> {
   // Guard against path traversal: jobId is interpolated straight into runDir, so a
   // non-canonical id (e.g. '../outside') would escape runsRoot. nanoid ids only ever
@@ -100,6 +100,17 @@ export async function runJob(
     const existing = stageStatus.get(jobId, stage.name) as { status: string } | undefined
     if (existing?.status === 'done') {
       continue
+    }
+    // Progress, not the clock, keeps the caller's loop lease alive: each stage
+    // start says "still working". Best-effort — a failed extension only risks
+    // the takeover that would have happened anyway, so it must not kill a
+    // render that is already minutes deep.
+    if (options.heartbeat !== undefined) {
+      try {
+        options.heartbeat()
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err) }, 'lease heartbeat failed')
+      }
     }
     markStageRunning.run('running', nowIso(), jobId, stage.name)
     try {

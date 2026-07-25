@@ -206,6 +206,66 @@ describe('resume pass skip conditions', () => {
   })
 })
 
+describe('resume pass per-video headroom', () => {
+  it('skips a blocked job at its per-video cap so the claim pass still runs', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'job-capped', status: 'blocked' })
+    // The whole $8 volume per-video cap is already spent: resuming could only
+    // re-block at the first checkpoint, and the job keeps its place at the
+    // head of the oldest-first queue — every channel starves forever.
+    recordCost(db, 'job-capped', 'fal', 'video', 8_000_000)
+    const topicId = seedTopic(db)
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+      kind: 'produce',
+      topicId,
+      tier: 'volume',
+    })
+    db.close()
+  })
+
+  it('reads the premium cap for a premium job', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'job-prem', tier: 'premium', status: 'blocked' })
+    // $6.90 spent: under the premium $7 cap's minimum step, while the $8
+    // volume cap would still look resumable — the tier must pick the cap.
+    recordCost(db, 'job-prem', 'fal', 'video', 6_900_000)
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toEqual(NOOP)
+    db.close()
+  })
+
+  it('resumes while a full minimum step of per-video headroom remains', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'job-parked', status: 'blocked' })
+    // $8 cap − $6 spent = exactly the $2 step: the guard is strictly-less, so
+    // this job is still worth resuming.
+    recordCost(db, 'job-parked', 'fal', 'video', 6_000_000)
+    expect(planTick(db, [testChannel()], { falKeyPresent: true })).toMatchObject({
+      kind: 'resume',
+      jobId: 'job-parked',
+    })
+    db.close()
+  })
+
+  it('scales the floor down for a channel whose whole daily budget is under $2', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'job-parked', status: 'blocked' })
+    // A $1.50/day channel can never clear the absolute $2 floor, so a flat
+    // floor would lock its blocked jobs out permanently — even at zero spend.
+    const ch = testChannel({
+      budget: {
+        perVideoUsdMicros: 1_000_000,
+        premiumPerVideoUsdMicros: 1_000_000,
+        perDayUsdMicros: 1_500_000,
+      },
+    })
+    expect(planTick(db, [ch], { falKeyPresent: true })).toMatchObject({
+      kind: 'resume',
+      jobId: 'job-parked',
+    })
+    db.close()
+  })
+})
+
 describe('claim pass', () => {
   it('claims the best eligible volume topic', () => {
     const db = openDb(':memory:')

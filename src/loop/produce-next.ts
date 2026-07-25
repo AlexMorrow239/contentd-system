@@ -1,22 +1,26 @@
 import type { Database } from 'better-sqlite3'
 import { loadChannelsDir } from '../config/channel.js'
 import { stagesForTier } from '../jobs/pipeline.js'
-import { resumeJob } from '../jobs/resume.js'
+import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef, Tier } from '../jobs/types.js'
 import { claimTopic, markTopicUsedByJob } from '../scout/topics.js'
-import { acquireLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
+import { acquireLease, extendLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
 import { planTick } from './plan-tick.js'
 
 export interface TickResult {
   action: 'resumed' | 'produced' | 'noop'
-  reason?: 'lease-held' | 'no-eligible-work' | 'no-fal-key'
+  reason?: 'lease-held' | 'no-eligible-work' | 'no-fal-key' | 'claim-conflict'
   jobId?: string
   topicId?: number
   tier?: Tier
   status?: JobResult['status']
 }
+
+// The topic slipped away between planning and claiming. Its own class so the
+// claim transaction's rollback throw stays distinguishable from a real crash.
+class ClaimConflictError extends Error {}
 
 /**
  * One unit of work per invocation: resume the planner's blocked job, or claim
@@ -59,11 +63,23 @@ export async function produceNextTick(
     if (plan.kind === 'resume') {
       // planTick only surfaces blocked jobs, so force stays unset: taking
       // over a 'running' job is an operator decision, never the loop's.
-      const result = await resumeJob(db, plan.jobId, {
-        runsRoot: opts.runsRoot,
-        channelsDir: opts.channelsDir,
-        stagesFor,
-      })
+      let result: JobResult
+      try {
+        result = await resumeJob(db, plan.jobId, {
+          runsRoot: opts.runsRoot,
+          channelsDir: opts.channelsDir,
+          stagesFor,
+        })
+      } catch (err) {
+        // A ResumeError is a refusal, not a crash: an operator's `resume` (or
+        // `topics reject`) won the job between planning and claiming it. Report
+        // the benign, self-healing race the way publish-next does — one JSON
+        // line, exit 0 — instead of a stack trace every cron firing.
+        if (err instanceof ResumeError) {
+          return { action: 'noop', reason: 'claim-conflict' }
+        }
+        throw err
+      }
       return { action: 'resumed', jobId: plan.jobId, tier: plan.tier, status: result.status }
     }
 
@@ -76,15 +92,33 @@ export async function produceNextTick(
     // claim (invariant breach — planTick selected this topic under this very
     // lease) rolls the job row back via the throw. better-sqlite3 nests
     // createJob's internal transaction as a savepoint, so the wrap is safe.
-    const jobId = db.transaction(() => {
-      const id = createJob(db, channel, { topic: plan.topic, tier: plan.tier })
-      if (!claimTopic(db, plan.topicId, id)) {
-        throw new Error(`topic ${plan.topicId} is no longer claimable (status changed since planning)`)
+    let jobId: string
+    try {
+      jobId = db.transaction(() => {
+        const id = createJob(db, channel, { topic: plan.topic, tier: plan.tier })
+        if (!claimTopic(db, plan.topicId, id)) {
+          throw new ClaimConflictError(
+            `topic ${plan.topicId} is no longer claimable (status changed since planning)`,
+          )
+        }
+        return id
+      })()
+    } catch (err) {
+      // `topics reject` landing inside the plan→claim window: the job row rolled
+      // back with the throw and the next tick simply plans again.
+      if (err instanceof ClaimConflictError) {
+        return { action: 'noop', reason: 'claim-conflict' }
       }
-      return id
-    })()
+      throw err
+    }
     const result = await runJob(db, channel, jobId, stagesFor(plan.tier), {
       runsRoot: opts.runsRoot,
+      // A render longer than the lease TTL would otherwise let the next cron
+      // firing start a second tick on top of this one. extendLease matches on
+      // holder, so a lease already taken over is never re-acquired here.
+      heartbeat: () => {
+        extendLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)
+      },
     })
     if (result.status === 'ready' || result.status === 'needs-review') {
       // Library-landed is the only used-flip: a failed/blocked job keeps its

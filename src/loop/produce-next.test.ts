@@ -6,10 +6,24 @@ import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../config/channel.js'
 import { openDb } from '../db/index.js'
+import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob } from '../jobs/runner.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
+import { claimTopic } from '../scout/topics.js'
 import { produceNextTick } from './produce-next.js'
 import { acquireLease, PRODUCE_LEASE_TTL_MS } from './lease.js'
+
+// Both lost-claim races are single-instant windows between planning and
+// executing that no in-process seeding can open, so the two losing calls are
+// spied through to their real implementations and forced to lose once.
+vi.mock('../scout/topics.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../scout/topics.js')>()
+  return { ...actual, claimTopic: vi.fn(actual.claimTopic) }
+})
+vi.mock('../jobs/resume.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../jobs/resume.js')>()
+  return { ...actual, resumeJob: vi.fn(actual.resumeJob) }
+})
 
 // Plan-1-shape channel TOML (no [scout] table needed — the loop reads topics,
 // not sources). The filename must match `name`: resumeJob resolves the channel
@@ -263,6 +277,86 @@ describe('produceNextTick — repair sweep', () => {
       .prepare("SELECT status FROM topics WHERE dedupe_hash = 'h-repair'")
       .get() as { status: string }
     expect(topic.status).toBe('used')
+    db.close()
+  })
+})
+
+describe('produceNextTick — lost claims', () => {
+  it('no-ops with claim-conflict when the topic was taken since planning', async () => {
+    const { db, runsRoot } = setup()
+    seedTopic(db)
+    // `topics reject` landing between planTick's SELECT and this claim.
+    vi.mocked(claimTopic).mockReturnValueOnce(false)
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
+    // the job row rolled back with the failed claim, and the lease is free
+    expect((db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }).n).toBe(0)
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+
+  it('no-ops with claim-conflict when a manual resume won the blocked job', async () => {
+    const { db, runsRoot } = setup()
+    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+    const jobId = createJob(db, channel, { topic: 'parked by budget', tier: 'volume' })
+    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+    vi.mocked(resumeJob).mockRejectedValueOnce(
+      new ResumeError(`job ${jobId} was picked up by another process`),
+    )
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+
+  it('still propagates a non-refusal failure from the resume path', async () => {
+    const { db, runsRoot } = setup()
+    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+    const jobId = createJob(db, channel, { topic: 'parked by budget', tier: 'volume' })
+    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+    vi.mocked(resumeJob).mockRejectedValueOnce(new Error('disk full'))
+    await expect(
+      produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages }),
+    ).rejects.toThrow('disk full')
+    db.close()
+  })
+})
+
+describe('produceNextTick — lease heartbeat', () => {
+  it('a stage start pushes the produce lease expiry back into the future', async () => {
+    const { db, runsRoot } = setup()
+    seedTopic(db)
+    let observed = ''
+    // Stage one drifts the expiry into the past (standing in for a render
+    // longer than the 90-min TTL); stage two reads what its own heartbeat left
+    // behind, before the finally-release deletes the row.
+    const stages: StageDef[] = [
+      {
+        name: 'script',
+        async run() {
+          db.prepare(
+            "UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'",
+          ).run()
+        },
+      },
+      {
+        name: 'qc',
+        async run(ctx: JobContext) {
+          observed = (
+            db.prepare("SELECT expires_at FROM leases WHERE name = 'produce'").get() as {
+              expires_at: string
+            }
+          ).expires_at
+          writeFileSync(
+            ctx.artifactPath('qc', 'qc.json'),
+            JSON.stringify({ passed: true, checks: [] }),
+          )
+        },
+      },
+    ]
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages })
+    expect(result.status).toBe('ready')
+    expect(Date.parse(observed)).toBeGreaterThan(Date.now())
     db.close()
   })
 })

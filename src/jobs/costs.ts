@@ -56,6 +56,17 @@ export function channelDaySpentMicros(db: Database, channel: string): number {
   return row.total
 }
 
+// One job's LIFETIME spend — the quantity the per-video caps are measured
+// against (assertBudget uses the same SUM inline). No day filter: a job's
+// per-video budget never resets, so a job parked overnight resumes against
+// everything it already spent.
+export function jobSpentMicros(db: Database, jobId: string): number {
+  const row = db
+    .prepare('SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?')
+    .get(jobId) as { total: number }
+  return row.total
+}
+
 // Today's UTC spend across ALL costs rows — deliberately no jobs JOIN, so
 // sentinel scout rows count toward the global cap.
 export function globalDaySpentMicros(db: Database): number {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -227,6 +227,39 @@ describe('runJob', () => {
         jobId,
       ).metadata_json,
     ).toBe('{}')
+  })
+
+  it('heartbeat fires once per stage actually run, never for skipped ones', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    db.prepare(
+      "UPDATE job_stages SET status = 'done' WHERE job_id = ? AND stage IN ('script','voice')",
+    ).run(jobId)
+
+    const calls: StageName[] = []
+    const heartbeat = vi.fn()
+    await runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat })
+
+    // The produce lease is kept alive by work, not by the clock: four stages
+    // ran, so four extensions.
+    expect(heartbeat).toHaveBeenCalledTimes(4)
+  })
+
+  it('a throwing heartbeat never kills the job', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space', tier: 'volume' })
+    const calls: StageName[] = []
+    const heartbeat = vi.fn(() => {
+      throw new Error('database is locked')
+    })
+    const result = await runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat })
+
+    // Best-effort keep-alive: a failed extension risks a lease takeover, which
+    // is exactly the pre-heartbeat behavior — not worth losing a live render.
+    expect(result.status).toBe('ready')
+    expect(calls).toEqual([...STAGE_ORDER])
   })
 
   it('artifactPath creates each stage directory on demand', async () => {

@@ -4,6 +4,7 @@ import {
   channelDaySpentMicros,
   globalDailyCapMicros,
   globalDaySpentMicros,
+  jobSpentMicros,
 } from '../jobs/costs.js'
 import type { Tier } from '../jobs/types.js'
 import { eligibleTopic } from '../scout/topics.js'
@@ -11,6 +12,15 @@ import { eligibleTopic } from '../scout/topics.js'
 // Resuming under this headroom would only re-park the job 'blocked' at the
 // next budget checkpoint — the tick is better spent on new work (spec §6).
 export const RESUME_MIN_HEADROOM_USD_MICROS = 2_000_000
+
+// The same minimum step against a cap that may be smaller than $2 (a per-video
+// cap always is; a modest channel's daily cap can be). A flat floor would lock
+// such a cap's jobs out of resume permanently, even at zero spend — so take a
+// quarter of the cap whenever that is the smaller number. The global cap is
+// operator-scale, so it keeps the absolute floor.
+function resumeFloorMicros(capMicros: number): number {
+  return Math.min(RESUME_MIN_HEADROOM_USD_MICROS, Math.floor(capMicros / 4))
+}
 
 export type TickPlan =
   | { kind: 'resume'; jobId: string; channel: string; tier: Tier }
@@ -45,9 +55,18 @@ export function planTick(
       skippedForKey = true
       continue
     }
+    // Per-video first, and unlike the day caps it never resets: a job parked
+    // at its own cap can ONLY re-block, and — same created_at, oldest first —
+    // it would head the queue every tick forever, starving every channel.
+    const perVideoCapMicros =
+      job.tier === 'premium'
+        ? channel.budget.premiumPerVideoUsdMicros
+        : channel.budget.perVideoUsdMicros
+    const perVideoRemainingMicros = perVideoCapMicros - jobSpentMicros(db, job.id)
+    if (perVideoRemainingMicros < resumeFloorMicros(perVideoCapMicros)) continue
     const channelRemainingMicros =
       channel.budget.perDayUsdMicros - channelDaySpentMicros(db, job.channel)
-    if (channelRemainingMicros < RESUME_MIN_HEADROOM_USD_MICROS) continue
+    if (channelRemainingMicros < resumeFloorMicros(channel.budget.perDayUsdMicros)) continue
     if (globalRemainingMicros < RESUME_MIN_HEADROOM_USD_MICROS) continue
     return { kind: 'resume', jobId: job.id, channel: job.channel, tier: job.tier }
   }

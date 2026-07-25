@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openDb } from '../db/index.js'
-import { acquireLease, PRODUCE_LEASE_TTL_MS, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
+import {
+  acquireLease,
+  extendLease,
+  PRODUCE_LEASE_TTL_MS,
+  PUBLISH_LEASE_TTL_MS,
+  releaseLease,
+} from './lease.js'
 
 // Only the boundary test fakes the clock; restoring here keeps a failing
 // assertion inside it from leaking a frozen clock into the rest of the file.
@@ -120,6 +126,43 @@ describe('releaseLease', () => {
       holder: string
     }
     expect(row.holder).toBe('pid:new')
+    db.close()
+  })
+})
+
+describe('extendLease', () => {
+  it('pushes the expiry a fresh ttl ahead for the holding process', () => {
+    const db = openDb(':memory:')
+    acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)
+    // A drifted expiry stands in for a render that outlived its lease.
+    db.prepare("UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'").run()
+    const before = Date.now()
+    expect(extendLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    const row = db
+      .prepare("SELECT holder, expires_at FROM leases WHERE name = 'produce'")
+      .get() as { holder: string; expires_at: string }
+    expect(row.holder).toBe('pid:100')
+    expect(Date.parse(row.expires_at)).toBeGreaterThanOrEqual(before + PRODUCE_LEASE_TTL_MS)
+    db.close()
+  })
+
+  it('refuses when the holder differs — a lost lease is never re-acquired', () => {
+    const db = openDb(':memory:')
+    acquireLease(db, 'produce', 'pid:new', PRODUCE_LEASE_TTL_MS)
+    // The evicted holder's heartbeat fires late: it must neither extend nor
+    // steal back the lease the takeover process now owns.
+    expect(extendLease(db, 'produce', 'pid:dead', PRODUCE_LEASE_TTL_MS)).toBe(false)
+    const row = db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get() as {
+      holder: string
+    }
+    expect(row.holder).toBe('pid:new')
+    db.close()
+  })
+
+  it('refuses when the lease row is gone', () => {
+    const db = openDb(':memory:')
+    expect(extendLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(false)
+    expect(db.prepare("SELECT COUNT(*) AS n FROM leases").get()).toEqual({ n: 0 })
     db.close()
   })
 })

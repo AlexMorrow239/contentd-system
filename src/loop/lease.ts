@@ -29,6 +29,18 @@ export function acquireLease(db: Database, name: string, holder: string, ttlMs: 
   return attempt.immediate()
 }
 
+// Heartbeat for work that outlives the TTL (a long render): pushes the expiry
+// a fresh ttl ahead, but ONLY while this holder still owns the lease. A holder
+// already evicted by a takeover gets `false` and stays evicted — re-acquiring
+// here would hand one lease to two live processes.
+export function extendLease(db: Database, name: string, holder: string, ttlMs: number): boolean {
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString()
+  const info = db
+    .prepare('UPDATE leases SET expires_at = ? WHERE name = ? AND holder = ?')
+    .run(expiresAt, name, holder)
+  return info.changes === 1
+}
+
 // Deletes only the caller's own lease: after an expiry takeover the evicted
 // holder's finally-release must not free the new holder's lease.
 export function releaseLease(db: Database, name: string, holder: string): void {
