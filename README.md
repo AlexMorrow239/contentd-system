@@ -240,8 +240,9 @@ MAILTO=you@example.com
   was pruned from `runs/`), `no-auth`, `claim-conflict`, `bad-env` (a
   malformed `BRAINROT_TOKEN_KEY` or `BRAINROT_YT_UPLOADS_PER_DAY`), or
   `config-error` (the channels dir would not load — the message also goes to
-  stderr). All of those exit `0`. Exit `1` means real work failed:
-  a `failed`/`blocked` produce, or a `publish-failed` upload attempt.
+  stderr); `scout` with `lease-held` or that same `config-error`. All of those
+  exit `0`. Exit `1` means real work failed: a `failed`/`blocked` produce, a
+  `publish-failed` upload attempt, or a scout run whose every channel died.
 - **A stranded topic can be returned to the queue.** A topic stays `claimed`
   for as long as its job might still run, so a job abandoned for good leaves
   its topic bound forever. `pnpm brainrot topics requeue <id>` returns it to

@@ -210,6 +210,34 @@ describe('brainrot CLI', () => {
     expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
   }, 60000)
 
+  // The same G14 symptom the two loops already fixed: a broken channels dir
+  // used to exit 1 with an empty stdout, punching a hole in the cron log of
+  // JSON lines every scout firing until someone noticed.
+  it('`scout` over a broken channels dir still prints one JSON line and exits 0', async () => {
+    const dbPath = tmpDbPath()
+    const brokenDir = mkdtempSync(path.join(tmpdir(), 'brainrot-scout-broken-'))
+    cleanup.push(brokenDir)
+    writeFileSync(path.join(brokenDir, 'broken.toml'), 'this is not toml [')
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'scout', '--db', dbPath, '--channels-dir', brokenDir],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout.trim().split('\n')).toHaveLength(1)
+    const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
+    expect(line.action).toBe('noop')
+    expect(line.reason).toBe('config-error')
+    expect(line.error).toContain('broken.toml')
+    // stderr keeps the cause visible where the JSON line is only grepped
+    expect(result.stderr).toContain('broken.toml')
+    // The failure precedes the lease: nothing was leased on a config's behalf.
+    const after = openDb(dbPath)
+    const leases = after.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
+    after.close()
+    expect(leases).toEqual({ n: 0 })
+  }, 60000)
+
   it('`scout` no-ops under a held lease, and releases its own lease on a clean run', async () => {
     const dbPath = tmpDbPath()
     const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-scout-lease-'))

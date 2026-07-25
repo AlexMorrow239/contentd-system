@@ -126,8 +126,21 @@ program
   .option('--db <path>', 'sqlite db path')
   .option('--channels-dir <dir>', 'channel TOML directory', 'channels')
   .action(async (opts: { db?: string; channelsDir: string }) => {
-    // Config load precedes the db handle so a bad channels dir fails clean.
-    const channels = loadChannelsDir(opts.channelsDir)
+    // Config load precedes the db handle AND the lease, exactly as in
+    // produce-next/publish-next: a broken channel TOML blocks the whole run
+    // either way, and letting it throw meant exit 1 with NO JSON line every
+    // firing — the one shape the cron log's every-tick-prints-a-line contract
+    // cannot survive. The message also goes to stderr, since a line grepped
+    // only for `action` would otherwise carry the cause silently.
+    const loaded = tryLoadChannelsDir(opts.channelsDir)
+    if (loaded.error !== undefined) {
+      console.error(`scout: ${loaded.error}`)
+      process.stdout.write(
+        JSON.stringify({ action: 'noop', reason: 'config-error', error: loaded.error }) + '\n',
+      )
+      return
+    }
+    const channels = loaded.channels
     const db = openDb(resolveDbPath(opts.db))
     // Same lease discipline as the produce/publish loops: two overlapping scout
     // runs would race the global-budget check and double-spend. A held lease is
