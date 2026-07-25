@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.brainrot.scout</string>
+
+  <!-- Three times a day, staggered 5 minutes off the hour so it never
+       co-fires with a produce tick. scout takes its own 30-min lease, so a
+       co-fire would only noop, but the DB is one SQLite file shared by both
+       processes and staggering is cheap defense in depth. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>7</integer>
+      <key>Minute</key><integer>5</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>12</integer>
+      <key>Minute</key><integer>5</integer>
+    </dict>
+    <dict>
+      <key>Hour</key><integer>17</integer>
+      <key>Minute</key><integer>5</integer>
+    </dict>
+  </array>
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/pnpm</string>
+    <string>brainrot</string>
+    <string>scout</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alex/code/project-brainrot</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/alex/code/project-brainrot/logs/scout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alex/code/project-brainrot/logs/scout.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

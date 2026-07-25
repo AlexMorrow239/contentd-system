@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.brainrot.publish-next</string>
+
+  <!-- One upload attempt per tick. 15 minutes keeps a due slot filling
+       within ~15 min of its configured local time. A slot missed while the
+       Mac slept stays due for the rest of the LOCAL day, so waking at any
+       point before local midnight still publishes. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/pnpm</string>
+    <string>brainrot</string>
+    <string>publish-next</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alex/code/project-brainrot</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/alex/code/project-brainrot/logs/publish-next.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alex/code/project-brainrot/logs/publish-next.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

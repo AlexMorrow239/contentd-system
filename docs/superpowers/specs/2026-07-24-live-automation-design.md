@@ -144,7 +144,13 @@ re-run `docker compose up -d whisperx` once so the policy takes effect.
 
 ### 4. launchd agents
 
-Four agents in `~/Library/LaunchAgents/`, plus `mkdir -p logs` in the repo.
+Four agents, version-controlled in `deploy/launchd/` and symlinked into
+`~/Library/LaunchAgents/` by `deploy/launchd/agents.sh`
+(`install` | `uninstall` | `status` | `kick <name>`). Symlinked rather than
+copied so the repo stays the single source of truth; launchd reads a plist at
+bootstrap time, so editing one requires `uninstall && install` to take effect.
+All four set `RunAtLoad = false`, so installing never kicks off an immediate
+render.
 
 | Label | Trigger | Command |
 |---|---|---|
@@ -176,15 +182,21 @@ three slots are free insurance against a lid closed at 10:00.
 The system is deliberately split and `README.md:224` describes it wrongly:
 
 - **UTC** — budget caps (`costs.ts:46-57`) and the `tier_mix` quota
-  (`plan-tick.ts:76-82`, via `strftime('%Y-%m-%d','now')`). Rolls over at
-  8pm EDT / 7pm EST.
+  (`plan-tick.ts:76-82`, via `strftime('%Y-%m-%d','now')`).
 - **Local** — publish slots (`slots.ts:6-20`, explicitly commented "never
   toISOString()") and the YouTube per-day upload counter
   (`publish-next.ts:132` uses `localDay`).
 
-Practical consequence for this configuration: the day's premium job is created
-shortly after 8pm EDT when the UTC quota resets, renders that evening, and
-publishes the following morning at the 10:00 local slot.
+**This machine is on Central time** (`date +%Z` → CDT, UTC-5), not the Eastern
+the README assumes. So the UTC quota/budget day rolls over at **19:00 local**
+in summer and 18:00 in winter — which in summer coincides exactly with the
+19:00 publish slot.
+
+Practical consequence: the day's premium job is created shortly after 19:00
+local when the UTC quota resets, renders that evening, and publishes the
+following morning at the 10:00 local slot. The 19:00 slot will therefore
+almost always find nothing `ready` and noop; it earns its keep only as a
+catch-up slot for a day whose 10:00 and 14:00 were slept through.
 
 ## Validation sequence
 
@@ -222,9 +234,9 @@ Ordered; each step gates the next.
 Daily: read the digest. The pipeline is silent on failure, so this is the only
 routine that catches a stall.
 
-Recovery commands, all of which require stopping the relevant agent first
-(`launchctl bootout gui/$UID/com.brainrot.<name>`) because manual commands run
-outside the loop leases:
+Recovery commands, all of which require stopping the agents first
+(`./deploy/launchd/agents.sh uninstall`) because manual commands run outside
+the loop leases and can race a live tick:
 
 | Symptom | Action |
 |---|---|
