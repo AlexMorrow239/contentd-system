@@ -90,7 +90,7 @@ pnpm brainrot costs   # per-day USD totals, last 7 days
 ## Publishing (YouTube)
 
 `ready` library videos upload to YouTube Shorts automatically via the
-`publish-next` cron tick (see Automation below), on a per-channel schedule
+`publish-next` tick (see Automation below), on a per-channel schedule
 of local-time slots.
 
 ### One-time setup (per Google Cloud project, not per channel)
