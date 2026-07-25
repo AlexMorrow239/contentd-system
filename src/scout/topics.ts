@@ -164,6 +164,45 @@ export function claimTopic(db: Database, topicId: number, jobId: string): boolea
   return info.changes === 1
 }
 
+// A job in one of these states still owns its topic: requeueing it would let a
+// second job claim the same topic while the first is live or resumable. Every
+// other jobs.status ('failed', 'done') is terminal, as is a missing job row.
+const ACTIVE_JOB_STATUSES: readonly string[] = ['queued', 'running', 'blocked']
+
+export type RequeueOutcome =
+  | { ok: true }
+  | { ok: false; reason: 'unknown' }
+  | { ok: false; reason: 'not-claimed'; status: TopicStatus }
+  | { ok: false; reason: 'job-active'; jobId: string; jobStatus: string }
+
+/**
+ * Operator repair for a topic stranded in 'claimed' by a job that will never
+ * finish (config drift, unreachable blocked job). Returns it to 'candidate' —
+ * the base queue state — and unbinds the dead job so the stale binding can
+ * never flip it to 'used' later; a premium channel re-approves through the
+ * normal gate. BEGIN IMMEDIATE because the guard reads before it writes.
+ */
+export function requeueTopic(db: Database, id: number): RequeueOutcome {
+  const attempt = db.transaction((): RequeueOutcome => {
+    const topic = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as
+      | { status: TopicStatus; job_id: string | null }
+      | undefined
+    if (topic === undefined) return { ok: false, reason: 'unknown' }
+    if (topic.status !== 'claimed') return { ok: false, reason: 'not-claimed', status: topic.status }
+    if (topic.job_id !== null) {
+      const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(topic.job_id) as
+        | { status: string }
+        | undefined
+      if (job !== undefined && ACTIVE_JOB_STATUSES.includes(job.status)) {
+        return { ok: false, reason: 'job-active', jobId: topic.job_id, jobStatus: job.status }
+      }
+    }
+    db.prepare("UPDATE topics SET status = 'candidate', job_id = NULL WHERE id = ?").run(id)
+    return { ok: true }
+  })
+  return attempt.immediate()
+}
+
 // Called when a job lands in the library; a job with no claimed topic
 // (manual `produce`) is a silent no-op.
 export function markTopicUsedByJob(db: Database, jobId: string): void {

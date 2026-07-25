@@ -12,6 +12,7 @@ import {
   RECENT_TITLES_LIMIT,
   recentTopicTitles,
   rejectTopics,
+  requeueTopic,
 } from './topics.js'
 
 // Raw-insert seed: the DAO only ever writes status/job_id transitions, so
@@ -268,6 +269,74 @@ describe('claimTopic / markTopicUsedByJob', () => {
     ])
     // manual `produce` jobs have no claimed topic: silent no-op
     expect(() => markTopicUsedByJob(db, 'job-unknown')).not.toThrow()
+    db.close()
+  })
+})
+
+describe('requeueTopic', () => {
+  // A job row the topic can point at; requeue's guard reads its status.
+  function seedJob(db: Database, id: string, status: string): void {
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'chan-a', 'volume', 'T', ?)",
+    ).run(id, status)
+  }
+
+  it('returns an orphaned claimed topic to the queue and unbinds its job', () => {
+    const db = openDb(':memory:')
+    const id = seedTopic(db, { status: 'claimed', jobId: 'job-dead' })
+    seedJob(db, 'job-dead', 'failed')
+    expect(requeueTopic(db, id)).toEqual({ ok: true })
+    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+      status: string
+      job_id: string | null
+    }
+    expect(row).toEqual({ status: 'candidate', job_id: null })
+    db.close()
+  })
+
+  it('requeues a topic whose job row is gone entirely', () => {
+    const db = openDb(':memory:')
+    const id = seedTopic(db, { status: 'claimed', jobId: 'job-vanished' })
+    expect(requeueTopic(db, id)).toEqual({ ok: true })
+    expect(
+      (db.prepare('SELECT status FROM topics WHERE id = ?').get(id) as { status: string }).status,
+    ).toBe('candidate')
+    db.close()
+  })
+
+  it('refuses while a queued, running, or blocked job still holds the topic', () => {
+    const db = openDb(':memory:')
+    for (const status of ['queued', 'running', 'blocked'] as const) {
+      const jobId = `job-${status}`
+      const id = seedTopic(db, { status: 'claimed', jobId })
+      seedJob(db, jobId, status)
+      expect(requeueTopic(db, id)).toEqual({
+        ok: false,
+        reason: 'job-active',
+        jobId,
+        jobStatus: status,
+      })
+      // the topic is untouched — the live job still owns it
+      const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+        status: string
+        job_id: string | null
+      }
+      expect(row).toEqual({ status: 'claimed', job_id: jobId })
+    }
+    db.close()
+  })
+
+  it('refuses an unknown id and a topic that is not claimed', () => {
+    const db = openDb(':memory:')
+    expect(requeueTopic(db, 9999)).toEqual({ ok: false, reason: 'unknown' })
+    const used = seedTopic(db, { status: 'used', jobId: 'job-old' })
+    expect(requeueTopic(db, used)).toEqual({ ok: false, reason: 'not-claimed', status: 'used' })
+    const candidate = seedTopic(db)
+    expect(requeueTopic(db, candidate)).toEqual({
+      ok: false,
+      reason: 'not-claimed',
+      status: 'candidate',
+    })
     db.close()
   })
 })

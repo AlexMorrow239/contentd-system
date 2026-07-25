@@ -7,7 +7,7 @@ import type { ChannelConfig, ScoutConfig } from '../config/channel.js'
 import { testChannel } from '../stages/_testkit.js'
 import type { FetchLike } from './sources/types.js'
 import { listTopics } from './topics.js'
-import { AllSourcesFailedError, scoutAll, scoutChannel } from './scout.js'
+import { AllChannelsScoringFailedError, AllSourcesFailedError, scoutAll, scoutChannel } from './scout.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {
@@ -215,6 +215,27 @@ describe('scoutChannel', () => {
     expect(listTopics(db)).toHaveLength(0)
     db.close()
   })
+
+  it('rolls the ledger row back when the topic insert fails (one transaction)', async () => {
+    const db = openDb(':memory:')
+    const channel = scoutedChannel()
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+    })
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 70, topic: 'Moon escape', reason: 'ok' }]),
+    )
+    // Fail the batch insert the way a disk-full or locked db would, AFTER the
+    // scoring call was billed. A surviving cost row with no dedupe hashes means
+    // the next run re-pays Haiku for the very same items.
+    db.exec(
+      "CREATE TRIGGER fail_topic_insert BEFORE INSERT ON topics BEGIN SELECT RAISE(ABORT, 'insert blocked'); END",
+    )
+    await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow(/insert blocked/)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM costs').get()).toEqual({ n: 0 })
+    expect(listTopics(db)).toHaveLength(0)
+    db.close()
+  })
 })
 
 describe('scoutAll', () => {
@@ -279,6 +300,63 @@ describe('scoutAll', () => {
     expect(results).toHaveLength(2)
     expect(results[0].sourceErrors).toHaveLength(1)
     expect(results[1].queued).toBe(1)
+    db.close()
+  })
+
+  it('throws AllChannelsScoringFailedError when sources are fine but every channel failed scoring', async () => {
+    const db = openDb(':memory:')
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const a = scoutedChannel({ subreddits: ['one'] }, 'a')
+    const b = scoutedChannel({ subreddits: ['two'] }, 'b')
+    const fetchImpl = fetchStub({
+      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
+      '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]),
+    })
+    // Every scoring call is paid-but-invalid (the shape an expired key or a
+    // provider outage produces): sourceErrors stays empty, so nothing else
+    // would flag this run as anything but healthy.
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    })
+    const err = await scoutAll(db, [a, b], { client, fetchImpl }).then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(AllChannelsScoringFailedError)
+    // the error carries every channel's result so the CLI still prints its JSON line
+    expect((err as AllChannelsScoringFailedError).results.map((r) => r.channel)).toEqual(['a', 'b'])
+    expect((err as AllChannelsScoringFailedError).results.every((r) => r.scoringError !== undefined)).toBe(true)
+    stderrSpy.mockRestore()
+    db.close()
+  })
+
+  it('stays healthy when a run genuinely finds nothing new (every item already known)', async () => {
+    const db = openDb(':memory:')
+    const a = scoutedChannel({ subreddits: ['one'] }, 'a')
+    const fetchImpl = fetchStub({
+      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
+    })
+    const { client, create } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 70, topic: 'A topic', reason: 'ok' }]),
+    )
+    await scoutAll(db, [a], { client, fetchImpl })
+    // second pass: the hash filter empties the batch before scoring — zero
+    // topics, zero spend, and NOT a failure
+    const results = await scoutAll(db, [a], { client, fetchImpl })
+    expect(results).toEqual([
+      {
+        channel: 'a',
+        fetched: 1,
+        alreadyKnown: 1,
+        scored: 0,
+        queued: 0,
+        rejected: 0,
+        sourceErrors: [],
+        costUsdMicros: 0,
+      },
+    ])
+    expect(create).toHaveBeenCalledTimes(1)
     db.close()
   })
 })

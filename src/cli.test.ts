@@ -210,7 +210,41 @@ describe('brainrot CLI', () => {
     expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
   }, 60000)
 
-  it('`topics --help` lists the list/approve/reject subcommands', async () => {
+  it('`scout` no-ops under a held lease, and releases its own lease on a clean run', async () => {
+    const dbPath = tmpDbPath()
+    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-scout-lease-'))
+    cleanup.push(channelsDir)
+    writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
+    const seeded = openDb(dbPath)
+    seeded
+      .prepare('INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)')
+      .run('scout', 'pid:999999', new Date(Date.now() + 600_000).toISOString())
+    seeded.close()
+
+    const args = ['exec', 'tsx', 'src/cli.ts', 'scout', '--db', dbPath, '--channels-dir', channelsDir]
+    const held = await execa('pnpm', args, { reject: false })
+    // A held lease is the normal overlap case: benign one-line noop, exit 0.
+    expect(held.exitCode).toBe(0)
+    expect(JSON.parse(held.stdout)).toEqual({ action: 'noop', reason: 'lease-held' })
+    const afterNoop = openDb(dbPath)
+    const foreign = afterNoop.prepare("SELECT holder FROM leases WHERE name = 'scout'").get() as {
+      holder: string
+    }
+    // the other holder's lease is untouched
+    expect(foreign.holder).toBe('pid:999999')
+    afterNoop.prepare("DELETE FROM leases WHERE name = 'scout'").run()
+    afterNoop.close()
+
+    const free = await execa('pnpm', args, { reject: false })
+    expect(free.exitCode).toBe(0)
+    expect(JSON.parse(free.stdout)).toEqual({ channels: [] })
+    const afterRun = openDb(dbPath)
+    const leases = afterRun.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
+    afterRun.close()
+    expect(leases).toEqual({ n: 0 })
+  }, 60000)
+
+  it('`topics --help` lists the list/approve/reject/requeue subcommands', async () => {
     const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'topics', '--help'], {
       reject: false,
     })
@@ -218,6 +252,98 @@ describe('brainrot CLI', () => {
     expect(result.stdout).toContain('list')
     expect(result.stdout).toContain('approve')
     expect(result.stdout).toContain('reject')
+    expect(result.stdout).toContain('requeue')
+  }, 60000)
+
+  // Claimed topic + (optionally) the job holding it — the state `topics
+  // requeue` exists to repair.
+  function seedClaimedTopic(dbPath: string, opts: { jobId: string; jobStatus?: string }): number {
+    const db = openDb(dbPath)
+    if (opts.jobStatus !== undefined) {
+      db.prepare(
+        "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'demo', 'volume', 'venus', ?)",
+      ).run(opts.jobId, opts.jobStatus)
+    }
+    const res = db
+      .prepare(
+        "INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) " +
+          "VALUES ('demo', 'T', 'R', 'reddit:r/space', 'https://example.com/1', 'h1', 80, 'seeded', 'claimed', ?)",
+      )
+      .run(opts.jobId)
+    db.close()
+    return Number(res.lastInsertRowid)
+  }
+
+  it('`topics requeue` returns an orphaned claimed topic to the queue', async () => {
+    const dbPath = tmpDbPath()
+    const id = seedClaimedTopic(dbPath, { jobId: 'job-stranded', jobStatus: 'failed' })
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'topics', 'requeue', String(id), '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(0)
+    expect(JSON.parse(result.stdout)).toEqual({ action: 'requeued', topicId: id })
+    const db = openDb(dbPath)
+    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+      status: string
+      job_id: string | null
+    }
+    db.close()
+    expect(row).toEqual({ status: 'candidate', job_id: null })
+  }, 60000)
+
+  it('`topics requeue` refuses while a live job holds the topic, naming the job', async () => {
+    const dbPath = tmpDbPath()
+    const id = seedClaimedTopic(dbPath, { jobId: 'job-live', jobStatus: 'running' })
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'topics', 'requeue', String(id), '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(JSON.parse(result.stdout)).toEqual({
+      action: 'refused',
+      topicId: id,
+      reason: 'job-active',
+      jobId: 'job-live',
+      jobStatus: 'running',
+    })
+    expect(result.stderr).toContain('job-live')
+    const db = openDb(dbPath)
+    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+      status: string
+      job_id: string | null
+    }
+    db.close()
+    expect(row).toEqual({ status: 'claimed', job_id: 'job-live' })
+  }, 60000)
+
+  it('`topics requeue` on an unknown id exits 1 with one JSON line and no stack', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'topics', 'requeue', '9999', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(JSON.parse(result.stdout)).toEqual({
+      action: 'refused',
+      topicId: 9999,
+      reason: 'unknown',
+    })
+    expect(result.stderr).not.toMatch(/\n\s+at /)
+  }, 60000)
+
+  it('`topics requeue` rejects a non-integer id before opening the db', async () => {
+    const dbPath = tmpDbPath()
+    const result = await execa(
+      'pnpm',
+      ['exec', 'tsx', 'src/cli.ts', 'topics', 'requeue', 'abc', '--db', dbPath],
+      { reject: false },
+    )
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('invalid topic id "abc"')
   }, 60000)
 
   it('`digest --help` prints usage with --db/--channels-dir', async () => {

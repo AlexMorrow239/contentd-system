@@ -150,9 +150,6 @@ export async function scoutChannel(
   result.scored = fresh.length
   const scored = await scoreWithLedger(db, channel, fresh, result, opts.client)
   result.costUsdMicros = scored.costUsdMicros
-  // Sentinel job id: FKs are off by design, and the global-day query sums ALL
-  // costs rows, so scout spend counts toward the operator ceiling.
-  recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', scored.costUsdMicros)
 
   const rows: NewTopic[] = scored.scored.map((s) => {
     const { candidate, hash } = fresh[s.candidateIndex]
@@ -172,18 +169,51 @@ export async function scoutChannel(
   })
   result.queued = rows.filter((r) => r.status === 'candidate').length
   result.rejected = rows.length - result.queued
-  insertTopics(db, rows)
+  // Ledger row and dedupe hashes commit together: a kill between them would
+  // keep the charge and lose the hashes, so the next run re-pays Haiku for the
+  // very same items. better-sqlite3 nests insertTopics' own transaction as a
+  // savepoint, so the wrap is safe.
+  db.transaction(() => {
+    // Sentinel job id: FKs are off by design, and the global-day query sums ALL
+    // costs rows, so scout spend counts toward the operator ceiling.
+    recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', scored.costUsdMicros)
+    insertTopics(db, rows)
+  })()
   return result
 }
 
-export class AllSourcesFailedError extends Error {
-  // Carries the per-channel results so the CLI can still print its one JSON
-  // line (Global Constraints: JSON even on failure outcomes) before exit 1.
+// Systemic scout failures: the run produced nothing for a reason no single
+// channel's isolation can absorb. Both carry the per-channel results so the CLI
+// can still print its one JSON line (Global Constraints: JSON even on failure
+// outcomes) before exit 1.
+export class ScoutRunFailedError extends Error {
   constructor(message: string, public results: ScoutChannelResult[]) {
     super(message)
+    this.name = 'ScoutRunFailedError'
+  }
+}
+
+export class AllSourcesFailedError extends ScoutRunFailedError {
+  constructor(message: string, results: ScoutChannelResult[]) {
+    super(message, results)
     this.name = 'AllSourcesFailedError'
   }
 }
+
+// Sources fetched fine but nothing could be scored anywhere (expired API key,
+// provider outage, global-day cap): sourceErrors stays empty, so without this
+// the run would look healthy while the queue quietly drains.
+export class AllChannelsScoringFailedError extends ScoutRunFailedError {
+  constructor(message: string, results: ScoutChannelResult[]) {
+    super(message, results)
+    this.name = 'AllChannelsScoringFailedError'
+  }
+}
+
+// One scout pass per invocation, matching the other two loops. Generously above
+// a full multi-channel fetch + Haiku scoring pass; a crashed holder self-heals
+// by expiry rather than wedging the loop.
+export const SCOUT_LEASE_TTL_MS = 1_800_000 // 30 min
 
 export async function scoutAll(
   db: Database,
@@ -225,6 +255,15 @@ export async function scoutAll(
   if (totalSources > 0 && failedSources === totalSources) {
     throw new AllSourcesFailedError(
       `all ${totalSources} trend source(s) across ${results.length} channel(s) failed`,
+      results,
+    )
+  }
+  // Sources were fine (checked first) yet every scouted channel died in
+  // scoring: nothing was inserted anywhere, which is a failed run — not the
+  // zero-topic healthy run a channel with no fresh candidates produces.
+  if (results.length > 0 && results.every((r) => r.scoringError !== undefined)) {
+    throw new AllChannelsScoringFailedError(
+      `all ${results.length} scouted channel(s) failed in scoring`,
       results,
     )
   }

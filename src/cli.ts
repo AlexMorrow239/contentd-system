@@ -5,13 +5,14 @@ import { Command } from 'commander'
 import { createJob, runJob } from './jobs/runner.js'
 import { resumeJob } from './jobs/resume.js'
 import { loadChannelConfig, loadChannelsDir } from './config/channel.js'
-import { AllSourcesFailedError, scoutAll } from './scout/scout.js'
+import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from './scout/scout.js'
+import { acquireLease, releaseLease } from './loop/lease.js'
 import { produceNextTick } from './loop/produce-next.js'
 import { publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
 import { openDb } from './db/index.js'
 import { listPublishes, markInterruptedDone, retryInterrupted } from './publish/publishes.js'
-import { approveTopics, listTopics, rejectTopics } from './scout/topics.js'
+import { approveTopics, listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { assertPremiumPreflight, stagesForTier } from './jobs/pipeline.js'
 import type { Tier } from './jobs/types.js'
@@ -128,19 +129,31 @@ program
     // Config load precedes the db handle so a bad channels dir fails clean.
     const channels = loadChannelsDir(opts.channelsDir)
     const db = openDb(resolveDbPath(opts.db))
+    // Same lease discipline as the produce/publish loops: two overlapping scout
+    // runs would race the global-budget check and double-spend. A held lease is
+    // a benign no-op, exit 0. The pid-tagged holder means an expiry takeover can
+    // never be released by the evicted process (releaseLease matches on holder).
+    const holder = `pid:${process.pid}`
+    if (!acquireLease(db, 'scout', holder, SCOUT_LEASE_TTL_MS)) {
+      process.stdout.write(JSON.stringify({ action: 'noop', reason: 'lease-held' }) + '\n')
+      db.close()
+      return
+    }
     try {
       const results = await scoutAll(db, channels)
       // One cron-greppable JSON line; diagnostics went to stderr.
       process.stdout.write(JSON.stringify({ channels: results }) + '\n')
     } catch (err) {
-      if (!(err instanceof AllSourcesFailedError)) throw err
-      // Total source failure is systemic (network down, Reddit blocking):
-      // still one JSON line — the contract holds on failure outcomes — then
-      // exit 1 so cron flags the run.
+      if (!(err instanceof ScoutRunFailedError)) throw err
+      // A systemic run failure — every source dead (network down, Reddit
+      // blocking) or every channel dead in scoring (expired key, provider
+      // outage). Still one JSON line — the contract holds on failure outcomes —
+      // then exit 1 so cron flags the run.
       process.stdout.write(JSON.stringify({ channels: err.results }) + '\n')
       console.error(err.message)
       process.exitCode = 1
     } finally {
+      releaseLease(db, 'scout', holder)
       db.close()
     }
   })
@@ -295,6 +308,43 @@ topics
     const changed = rejectTopics(db, ids)
     // reject takes candidate AND approved; claimed/used rows are skipped.
     console.log(`rejected ${changed} of ${ids.length}`)
+  })
+
+topics
+  .command('requeue <id>')
+  .option('--db <path>', 'sqlite db path')
+  .action((rawId: string, opts: { db?: string }) => {
+    // Same pre-db id validation as approve/reject: a bad token throws to the
+    // parseAsync .catch (message on stderr, exit 1) with no writes.
+    const [id] = parseTopicIds([rawId])
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      const outcome = requeueTopic(db, id)
+      if (outcome.ok) {
+        process.stdout.write(JSON.stringify({ action: 'requeued', topicId: id }) + '\n')
+        return
+      }
+      // Refusals keep the one-JSON-line contract (the guard's details live in
+      // the line) and add the human sentence on stderr, mirroring `scout`.
+      const refused = { action: 'refused' as const, topicId: id, reason: outcome.reason }
+      if (outcome.reason === 'job-active') {
+        process.stdout.write(
+          JSON.stringify({ ...refused, jobId: outcome.jobId, jobStatus: outcome.jobStatus }) + '\n',
+        )
+        console.error(
+          `topic ${id} is still held by job ${outcome.jobId} (${outcome.jobStatus}) — resolve that job first`,
+        )
+      } else if (outcome.reason === 'not-claimed') {
+        process.stdout.write(JSON.stringify({ ...refused, status: outcome.status }) + '\n')
+        console.error(`topic ${id} is "${outcome.status}", not "claimed" — nothing to requeue`)
+      } else {
+        process.stdout.write(JSON.stringify(refused) + '\n')
+        console.error(`unknown topic id ${id}`)
+      }
+      process.exitCode = 1
+    } finally {
+      db.close()
+    }
   })
 
 // Operator gate over the produced-video library. Actions are thin: id
