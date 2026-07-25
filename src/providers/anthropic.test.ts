@@ -88,6 +88,17 @@ describe('structuredCompletion', () => {
     await expect(structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client })).rejects.toThrow(/no emit tool_use/);
   });
 
+  it('attaches the already-billed cost to a missing-tool_use failure so callers can ledger it', async () => {
+    // A billed response that came back without the forced tool block is still
+    // billed: the spend must ride on the error like a schema failure's does.
+    const { client } = fakeClient({
+      content: [{ type: 'text', text: 'nope' }],
+      usage: { input_tokens: 100, output_tokens: 200 },
+    });
+    const err = await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client }).catch((e) => e);
+    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15); // 3300
+  });
+
   it('rejects an unpriced model at zero spend, before the API is called', async () => {
     const { client, create } = fakeClient({
       content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],

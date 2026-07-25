@@ -38,10 +38,20 @@ export async function alignTranscript(opts: {
     throw new Error(`alignTranscript: whisperx responded ${res.status}: ${raw}`);
   }
 
-  const body = (await res.json()) as { words: { word: string; start: number; end: number }[] };
-  return body.words.map((w) => ({
-    word: w.word,
-    startMs: Math.round(w.start * 1000),
-    endMs: Math.round(w.end * 1000),
-  }));
+  // The 200 body is sidecar output, not a local invariant: casting it blind
+  // turned an unexpected shape into "Cannot read properties of undefined
+  // (reading 'map')" stored verbatim as the stage error — indistinguishable from
+  // a bug in this repo. Name the endpoint instead, and drop any word whose
+  // timings are not finite rather than emitting NaN (or silently 0) ms.
+  const body = (await res.json()) as { words?: { word: string; start: number; end: number }[] };
+  if (!Array.isArray(body.words)) {
+    throw new Error(`alignTranscript: malformed response from ${opts.baseUrl}/align`);
+  }
+  return body.words
+    .filter((w) => Number.isFinite(w?.start) && Number.isFinite(w?.end))
+    .map((w) => ({
+      word: w.word,
+      startMs: Math.round(w.start * 1000),
+      endMs: Math.round(w.end * 1000),
+    }));
 }

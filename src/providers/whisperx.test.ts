@@ -54,6 +54,35 @@ describe('alignTranscript', () => {
     await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(/500/);
   });
 
+  it('throws naming the endpoint when a 200 body has no words array', async () => {
+    const wavPath = await tmpWav();
+    // A 200 of an unexpected shape used to surface as "Cannot read properties of
+    // undefined (reading 'map')", indistinguishable from a bug in this repo.
+    responder = () => ({ status: 200, body: JSON.stringify({ detail: 'model still loading' }) });
+    await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(
+      new RegExp(`malformed response from ${baseUrl}/align`),
+    );
+  });
+
+  it('drops words whose timings are not finite rather than emitting NaN ms', async () => {
+    const wavPath = await tmpWav();
+    responder = () => ({
+      status: 200,
+      body: JSON.stringify({
+        words: [
+          { word: 'hi', start: 0.12, end: 0.34 },
+          { word: 'gone', start: null, end: 0.5 },
+          { word: 'there', start: 0.4, end: 0.6 },
+        ],
+      }),
+    });
+    const words = await alignTranscript({ baseUrl, wavPath, transcript: 'hi gone there' });
+    expect(words).toEqual([
+      { word: 'hi', startMs: 120, endMs: 340 },
+      { word: 'there', startMs: 400, endMs: 600 },
+    ]);
+  });
+
   it('times out against a sidecar that never responds', async () => {
     const wavPath = await tmpWav();
     // A server that accepts the request but never sends a response.

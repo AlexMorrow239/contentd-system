@@ -307,6 +307,35 @@ describe('voiceStage premium (elevenlabs)', () => {
     expect(n).toBe(0);
   });
 
+  it('fails the stage instead of falling back when a local write throws after paid audio arrived', async () => {
+    const ctx = await premiumCtx();
+    vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult());
+    const generate = vi.fn(async (t: string) => chunkAudio(t));
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never);
+    // Everything after the provider call sits outside the fallback catch, so a
+    // disk failure on the wav write surfaces as a stage error.
+    const realWriteFile = fs.writeFile.bind(fs);
+    const writeFile = vi.spyOn(fs, 'writeFile').mockImplementation((async (file: unknown, data: unknown) => {
+      if (String(file).endsWith('narration.wav')) throw new Error('ENOSPC: no space left on device');
+      return realWriteFile(file as string, data as string);
+    }) as never);
+
+    try {
+      await expect(voiceStage.run(ctx)).rejects.toThrow(/ENOSPC/);
+    } finally {
+      writeFile.mockRestore();
+    }
+
+    // The provider delivered audio, so the charge is real: it belongs on the
+    // ledger even though the stage went on to fail.
+    const costs = ctx.db
+      .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
+      .all(ctx.jobId);
+    expect(costs).toEqual([{ provider: 'elevenlabs', operation: 'tts', usd_micros: 42_000 }]);
+    // No silent downgrade: the volume chain must not have run.
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it('removes a stale timings.json from a prior attempt when falling back', async () => {
     const ctx = await premiumCtx();
     await fs.writeFile(ctx.artifactPath('voice', 'timings.json'), JSON.stringify({ words: ELEVEN_WORDS }));

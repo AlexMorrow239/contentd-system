@@ -5,6 +5,10 @@ services:
       - "8585:8585"
     environment:
       WHISPERX_DEVICE: cpu
+      # The sidecar reads this at import to size its upload cap; compose
+      # interpolates it from .env so the value there actually reaches the
+      # container. Default matches the sidecar's own (app.py).
+      WHISPERX_MAX_UPLOAD_MB: ${WHISPERX_MAX_UPLOAD_MB:-64}
     volumes:
       - whisperx-cache:/root/.cache   # persist downloaded alignment models
 

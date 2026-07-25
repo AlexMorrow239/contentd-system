@@ -32,6 +32,19 @@ interface WithTimestampsResponse {
   } | null;
 }
 
+// The alignment is third-party data, not a local invariant: a partial one
+// indexed positionally yields `undefined` timings, hence NaN milliseconds, which
+// collapse every scene window to 0ms and fail the job blaming "empty or
+// too-short narration" long after the paid call. Require the three arrays to
+// agree in length and every timing to be a finite number before trusting any of
+// them.
+function alignmentIsUsable(alignment: NonNullable<WithTimestampsResponse['alignment']>): boolean {
+  const { characters, character_start_times_seconds: starts, character_end_times_seconds: ends } = alignment;
+  if (!Array.isArray(characters) || !Array.isArray(starts) || !Array.isArray(ends)) return false;
+  if (starts.length !== characters.length || ends.length !== characters.length) return false;
+  return starts.every((t) => Number.isFinite(t)) && ends.every((t) => Number.isFinite(t));
+}
+
 // Group character-level timings into words: every maximal run of non-whitespace
 // characters is one word (punctuation stays attached — the same token style
 // WhisperX emits, so captions and scene-window matching treat both sources alike).
@@ -101,12 +114,25 @@ export async function synthWithTimestamps(opts: {
   }
 
   const body = (await res.json()) as WithTimestampsResponse;
+  // A 200 without audio has nothing for the voice stage to fall back to, so it
+  // is a hard failure — named so the log says which provider produced it.
+  if (typeof body.audio_base64 !== 'string' || body.audio_base64.length === 0) {
+    throw new Error('synthWithTimestamps: elevenlabs response carried no audio_base64');
+  }
   const pcm = Buffer.from(body.audio_base64, 'base64');
   const wavBytes = encodePcmWav([pcm], PCM_SAMPLE_RATE, PCM_CHANNELS);
   const durationMs = parseWavDurationMs(wavBytes);
-  // No alignment → empty words. The voice stage (Task 11) still writes
-  // timings.json; captions treats words.length === 0 as "no provider timings"
-  // and falls through to WhisperX, so the paid audio is never wasted.
-  const words = body.alignment ? groupCharactersIntoWords(body.alignment) : [];
+  // No alignment, or one we cannot trust → empty words. The voice stage (Task
+  // 11) still writes timings.json; captions treats words.length === 0 as "no
+  // provider timings" and falls through to WhisperX, so the paid audio is never
+  // wasted — a downgrade worth one stderr line, not a failed job.
+  let words: WordTiming[] = [];
+  if (body.alignment) {
+    if (alignmentIsUsable(body.alignment)) {
+      words = groupCharactersIntoWords(body.alignment);
+    } else {
+      console.error('synthWithTimestamps: elevenlabs alignment is malformed; falling back to WhisperX timings');
+    }
+  }
   return { wavBytes, durationMs, words, costUsdMicros };
 }

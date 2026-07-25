@@ -3,7 +3,7 @@ import { KokoroTTS, type GenerateOptions } from 'kokoro-js';
 import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts';
 import type { StageDef, JobContext } from '../jobs/types.js';
 import type { ScriptArtifact } from './script.js';
-import { assertBudget, BudgetExceededError, recordCost } from '../jobs/costs.js';
+import { assertBudget, recordCost } from '../jobs/costs.js';
 import { estimateTtsCostMicros, synthWithTimestamps } from '../providers/elevenlabs.js';
 import type { WordTiming } from '../providers/whisperx.js';
 import { narrationText, countWords, minPlausibleNarrationMs, MAX_PLAUSIBLE_WORDS_PER_SEC } from './narration-text.js';
@@ -182,32 +182,42 @@ export const voiceStage: StageDef = {
       if (!premiumVoice) {
         ctx.log.warn('premium tier requested but channel has no [voice.premium] config; using volume voice chain');
       } else {
+        // Paid call: reserve the character-based estimate against the premium
+        // per-video cap before dialing out. This sits OUTSIDE the fallback catch
+        // on purpose — a budget breach is enforcement, not a provider fault, so
+        // BudgetExceededError propagates and the runner parks the job 'blocked'
+        // instead of silently downgrading the voice and spending on visuals.
+        assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(narration), ctx.tier);
+
+        // ONLY the provider call is fallback-eligible: while nothing has been
+        // delivered, a failure legitimately means "use the volume chain".
+        let synth: Awaited<ReturnType<typeof synthWithTimestamps>> | undefined;
         try {
-          // Paid call: reserve the character-based estimate against the premium
-          // per-video cap before dialing out; record the actual cost after.
-          assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(narration), ctx.tier);
-          const synth = await synthWithTimestamps({
+          synth = await synthWithTimestamps({
             voiceId: premiumVoice.voiceId,
             modelId: premiumVoice.modelId,
             text: narration,
           });
-          await fs.writeFile(wavPath, synth.wavBytes);
-          recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros);
-          provider = 'elevenlabs';
-          voiceId = premiumVoice.voiceId;
-          // timings.json is NOT written here: it becomes visible to captions
-          // only after the shared duration guard below has accepted the audio.
-          premiumWords = synth.words;
         } catch (err) {
-          // A budget breach is enforcement, not a provider fault: rethrow so the
-          // runner parks the job 'blocked' instead of silently downgrading the
-          // voice and continuing to spend on visuals.
-          if (err instanceof BudgetExceededError) throw err;
           // The timings write is deferred past the duration guard, so this
           // attempt cannot have created timings.json — the rm is defense in
           // depth against the write ever drifting back into the try.
           await fs.rm(timingsPath, { force: true });
           ctx.log.warn({ err }, 'elevenlabs TTS failed; falling back to volume voice chain');
+        }
+
+        if (synth) {
+          // Paid audio is in hand, so the spend is real: ledger it BEFORE any
+          // fallible local write. A failure below is a local fault, not a
+          // provider one — it surfaces as a stage error rather than a silent
+          // downgrade that would strand this charge unrecorded.
+          recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros);
+          await fs.writeFile(wavPath, synth.wavBytes);
+          provider = 'elevenlabs';
+          voiceId = premiumVoice.voiceId;
+          // timings.json is NOT written here: it becomes visible to captions
+          // only after the shared duration guard below has accepted the audio.
+          premiumWords = synth.words;
         }
       }
     }

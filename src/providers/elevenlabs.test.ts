@@ -84,6 +84,54 @@ describe('synthWithTimestamps', () => {
     expect(res.durationMs).toBe(100);
   });
 
+  it('discards an alignment whose timing arrays disagree in length (paid audio still returned)', async () => {
+    // A partial alignment indexed positionally yields undefined timings and NaN
+    // milliseconds; empty words instead routes the paid audio to WhisperX.
+    const { impl } = fakeFetch(200, {
+      audio_base64: Buffer.alloc(4800).toString('base64'),
+      alignment: {
+        characters: ['H', 'i', '!'],
+        character_start_times_seconds: [0, 0.1],
+        character_end_times_seconds: [0.1, 0.2],
+      },
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await synthWithTimestamps({ voiceId: 'v', modelId: 'm', text: 'Hi!', apiKey: 'k', fetchImpl: impl });
+      expect(res.words).toEqual([]);
+      expect(res.durationMs).toBe(100);
+      expect(err).toHaveBeenCalledTimes(1);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('discards an alignment carrying non-finite timings (paid audio still returned)', async () => {
+    const { impl } = fakeFetch(200, {
+      audio_base64: Buffer.alloc(4800).toString('base64'),
+      alignment: {
+        characters: ['H', 'i'],
+        character_start_times_seconds: [0, null],
+        character_end_times_seconds: [0.1, 0.2],
+      },
+    });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const res = await synthWithTimestamps({ voiceId: 'v', modelId: 'm', text: 'Hi', apiKey: 'k', fetchImpl: impl });
+      expect(res.words).toEqual([]);
+      expect(err).toHaveBeenCalledTimes(1);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it('throws naming the provider when the response carries no audio', async () => {
+    const { impl } = fakeFetch(200, { alignment: null });
+    await expect(
+      synthWithTimestamps({ voiceId: 'v', modelId: 'm', text: 'x', apiKey: 'k', fetchImpl: impl }),
+    ).rejects.toThrow(/elevenlabs response carried no audio/);
+  });
+
   it('throws before any network call when no API key is available', async () => {
     vi.stubEnv('ELEVENLABS_API_KEY', '');
     const { impl, calls } = fakeFetch(200, FIXTURE);

@@ -123,16 +123,24 @@ async function forcedToolCompletion<T>(opts: {
     tool_choice: { type: 'tool', name: 'emit' },
   });
 
+  // Cost is fixed by the usage the paid call already reported. Compute it BEFORE
+  // any inspection of the response so EVERY failure below can carry the spend to
+  // the caller's ledger instead of vanishing — the messages.create call is
+  // billed whether or not its content is usable.
+  const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
+
+  // Attach the already-billed cost to a thrown error so the caller can ledger
+  // this paid-but-unusable response before rethrowing, without changing the
+  // error's identity (callers and tests still match on `instanceof z.ZodError`).
+  const withCost = <E>(err: E): E => {
+    (err as E & { costUsdMicros?: number }).costUsdMicros = cost.usdMicros;
+    return err;
+  };
+
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit',
   );
-  if (!toolUse) throw new Error(`${opts.label}: no emit tool_use block in response`);
-
-  // Cost is fixed by the usage the paid call already reported. Compute it BEFORE
-  // validation so a schema failure can still carry the spend to the caller's
-  // ledger instead of vanishing — the messages.create call is billed whether or
-  // not the tool output validates.
-  const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
+  if (!toolUse) throw withCost(new Error(`${opts.label}: no emit tool_use block in response`));
 
   // Anthropic's tool_choice does not guarantee schema-conformant output (no
   // `strict` mode in this SDK version): models occasionally stringify a
@@ -147,13 +155,8 @@ async function forcedToolCompletion<T>(opts: {
     const retry = opts.schema.safeParse(coerceJsonStrings(toolUse.input));
     if (!retry.success) {
       // Report the original error: it describes what the model actually sent,
-      // not the rewritten value the coercion produced. Attach the already-billed
-      // cost so the caller can ledger this paid-but-invalid response before
-      // rethrowing, without changing the error's `instanceof z.ZodError`
-      // identity (callers and tests still match on ZodError).
-      const failure = firstAttempt.error as z.ZodError & { costUsdMicros?: number };
-      failure.costUsdMicros = cost.usdMicros;
-      throw failure;
+      // not the rewritten value the coercion produced.
+      throw withCost(firstAttempt.error);
     }
     data = retry.data;
   }
