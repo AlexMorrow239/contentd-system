@@ -44,40 +44,11 @@ const PLAN1_LINES = [
 ]
 
 describe('loadChannelConfig', () => {
-  it('parses channels/example.toml into a ChannelConfig', () => {
-    const cfg = loadChannelConfig('channels/example.toml')
-    expect(cfg.name).toBe('example')
-    expect(cfg.niche).toEqual(['space facts', 'astronomy'])
-    expect(cfg.scriptModel).toBe('claude-sonnet-5')
-    expect(cfg.tierMix).toEqual({ volume: 2, premium: 1 })
-    expect(cfg.voice).toEqual({
-      volume: 'af_heart',
-      premium: {
-        provider: 'elevenlabs',
-        voiceId: 'EXAVITQu4vr4xnSDxMaL',
-        modelId: 'eleven_multilingual_v2',
-      },
-    })
-    expect(cfg.premium).toEqual({
-      imageModel: 'fal-ai/flux/dev',
-      videoModel: 'fal-ai/kling-video/v3/standard/image-to-video',
-      stylePrefix: 'vivid digital illustration, cinematic lighting',
-      sceneConcurrency: 3,
-    })
-    expect(cfg.captionStyle).toEqual({
-      font: 'Inter',
-      fontSizePx: 72,
-      activeColor: '#FFD700',
-      inactiveColor: '#FFFFFF',
-      strokePx: 8,
-    })
-    expect(cfg.bgDir).toBe('assets/bg')
-    expect(cfg.bgmDir).toBe('assets/bgm')
-    expect(cfg.budget).toEqual({
-      perVideoUsdMicros: 8_000_000,
-      premiumPerVideoUsdMicros: 7_000_000,
-      perDayUsdMicros: 20_000_000,
-    })
+  // The live files under channels/ are the operator's real configs and change
+  // freely; this only guards that whatever is checked in stays loadable, never
+  // pinning content (content contracts are covered by the fixtures below).
+  it('every checked-in channels/*.toml loads', () => {
+    expect(() => loadChannelsDir('channels')).not.toThrow()
   })
 
   it('parses a Plan-1-era TOML: voice.premium undefined, premium defaults applied', () => {
