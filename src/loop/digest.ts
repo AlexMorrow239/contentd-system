@@ -111,7 +111,9 @@ export function buildDigest(
   }[]
   const topicsStart = lines.length
   for (const r of topicRows) {
-    lines.push(`  ${r.channel}: ${r.scouted} scouted — ${r.candidate} candidate, ${r.rejected} rejected`)
+    lines.push(
+      `  ${r.channel}: ${r.scouted} scouted — of which ${r.candidate} candidate, ${r.rejected} rejected`,
+    )
   }
   pushNoneIfEmpty(lines, topicsStart, '  none')
 

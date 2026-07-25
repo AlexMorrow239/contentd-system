@@ -247,6 +247,10 @@ Exit codes mirror `produce`.
 - action items: `failed` jobs awaiting manual resume; zombie `running` jobs (>2 h);
   `approved` premium queue depth; `candidate` topics awaiting approval
 
+  *(Note, 2026-07-25: the digest no longer reports `approved` queue depth or
+  candidate-awaiting-approval — that gate never actually existed in the
+  pipeline. See `docs/superpowers/specs/2026-07-25-retire-topic-approval-design.md`.)*
+
 Always exits 0 — it is a report, not a check. Delivery is the operator's wiring
 (cron `MAILTO`, pipe to a notifier, etc.).
 

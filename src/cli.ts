@@ -249,8 +249,9 @@ program
     }
   })
 
-// Operator gate over the scouted topic queue. Actions are thin: id validation
-// lives in parseTopicIds, state transitions in the topics DAO.
+// Operator veto (reject) and repair (requeue) over the scouted topic queue.
+// Actions are thin: id validation lives in parseTopicIds, state transitions
+// in the topics DAO.
 const topics = program.command('topics')
 
 topics

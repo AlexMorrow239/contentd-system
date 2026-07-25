@@ -206,8 +206,8 @@ describe('buildDigest — topics section', () => {
     seedTopic(db, { channel: 'chan-b', dedupeHash: 'h6', status: 'rejected' })
     const digest = buildDigest(db, [])
     expect(digest).toContain('Topics (last 24h)')
-    expect(digest).toContain('  chan-a: 4 scouted — 2 candidate, 1 rejected')
-    expect(digest).toContain('  chan-b: 1 scouted — 0 candidate, 1 rejected')
+    expect(digest).toContain('  chan-a: 4 scouted — of which 2 candidate, 1 rejected')
+    expect(digest).toContain('  chan-b: 1 scouted — of which 0 candidate, 1 rejected')
     db.close()
   })
 

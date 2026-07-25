@@ -8128,7 +8128,11 @@ Run every command from the repo root `/Users/alex/code/project-brainrot`.
   - **Premium stays gated.** `produce-next` only claims premium topics you
     have approved (`pnpm brainrot topics approve <id>`) unless the channel
     TOML sets `auto_premium = true` under `[scout]`; volume flows unattended.
-    A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
+  - **Note (2026-07-25):** `pnpm brainrot topics approve` was removed — the
+    'approved' topic status never actually gated production even before this
+    doc's premium/volume tier was itself removed. See
+    `docs/superpowers/specs/2026-07-25-retire-topic-approval-design.md`.
+  - A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
     render from the previous firing is still running.
   - **Manual runs take no lease.** `produce` and `resume` run outside the
     produce-next lease, so a hand-run invocation can execute concurrently with a
