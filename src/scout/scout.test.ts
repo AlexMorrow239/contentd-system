@@ -331,6 +331,63 @@ describe('scoutAll', () => {
     db.close()
   })
 
+  // The global day cap is GLOBAL, so once it is reached every channel fails
+  // the same gate — and the cap working is not a failed run. Treating it as
+  // one meant every scout firing exited 1 for the rest of the UTC day.
+  it('stays healthy when every channel is blocked by the global day budget', async () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    const db = openDb(':memory:')
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const a = scoutedChannel({ subreddits: ['one'] }, 'a')
+    const b = scoutedChannel({ subreddits: ['two'] }, 'b')
+    const fetchImpl = fetchStub({
+      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
+      '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]),
+    })
+    const { client } = fakeClient(emitScores([]))
+    const results = await scoutAll(db, [a, b], { client, fetchImpl })
+    // Still reported per channel — the operator sees why nothing was scored.
+    expect(results.map((r) => r.channel)).toEqual(['a', 'b'])
+    expect(results.every((r) => r.scoringError?.includes('global-day'))).toBe(true)
+    stderrSpy.mockRestore()
+    db.close()
+  })
+
+  // The mixed case still fails: one channel out of budget does not excuse the
+  // other dying on an expired key.
+  it('still throws when a real scoring failure sits alongside a budget-blocked channel', async () => {
+    const db = openDb(':memory:')
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const a = scoutedChannel({ subreddits: ['one'] }, 'a')
+    const b = scoutedChannel({ subreddits: ['two'] }, 'b')
+    const fetchImpl = fetchStub({
+      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
+      '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]),
+    })
+    // Cap set to exactly one scout reservation ($0.02): channel "a" clears the
+    // gate and then dies on a paid-but-invalid response, whose ledgered spend
+    // leaves "b" short of a reservation and blocked on the global-day budget.
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0.02')
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    })
+    const err = await scoutAll(db, [a, b], { client, fetchImpl }).then(
+      () => null,
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(AllChannelsScoringFailedError)
+    const failed = err as AllChannelsScoringFailedError
+    expect(failed.results.map((r) => r.channel)).toEqual(['a', 'b'])
+    // "a" died on the response, "b" never got to spend — and the message
+    // counts only the channel that hit a real error.
+    expect(failed.results[0].scoringError).not.toContain('global-day')
+    expect(failed.results[1].scoringError).toContain('global-day')
+    expect(failed.message).toBe('all 1 scouted channel(s) failed in scoring (1 more budget-blocked)')
+    stderrSpy.mockRestore()
+    db.close()
+  })
+
   it('stays healthy when a run genuinely finds nothing new (every item already known)', async () => {
     const db = openDb(':memory:')
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')

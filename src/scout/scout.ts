@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ChannelConfig } from '../config/channel.js'
-import { assertGlobalDayBudget, recordCost } from '../jobs/costs.js'
+import { assertGlobalDayBudget, BudgetExceededError, recordCost } from '../jobs/costs.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
 import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
@@ -221,6 +221,13 @@ export async function scoutAll(
   opts: { client?: Anthropic; fetchImpl?: FetchLike } = {},
 ): Promise<ScoutChannelResult[]> {
   const results: ScoutChannelResult[] = []
+  // Channels that failed the budget gate rather than scoring itself. The
+  // global day cap is GLOBAL, so once it is reached EVERY channel fails
+  // identically — and a cap doing its job is a healthy outcome, not a failed
+  // run. Counting these as failures made every scout firing exit 1 for the
+  // rest of the UTC day. Names are unique (loadChannelsDir keys the file to
+  // the channel name), so a Set of them indexes results exactly.
+  const budgetBlocked = new Set<string>()
   let totalSources = 0
   let failedSources = 0
   for (const channel of channels) {
@@ -236,6 +243,7 @@ export async function scoutAll(
       // Per-channel isolation: one channel's scoring failure (including the
       // global-day budget gate) must not starve the others.
       const message = err instanceof Error ? err.message : String(err)
+      if (err instanceof BudgetExceededError) budgetBlocked.add(channel.name)
       console.error(`scout: channel "${channel.name}" scoring failed: ${message}`)
       const partial = readPartial(err) ?? {
         channel: channel.name,
@@ -261,9 +269,17 @@ export async function scoutAll(
   // Sources were fine (checked first) yet every scouted channel died in
   // scoring: nothing was inserted anywhere, which is a failed run — not the
   // zero-topic healthy run a channel with no fresh candidates produces.
-  if (results.length > 0 && results.every((r) => r.scoringError !== undefined)) {
+  // Budget-blocked channels sit outside this test entirely: with all of them
+  // blocked the set is empty and the run is healthy, while a real scoring
+  // failure alongside one still fails the run.
+  const spendable = results.filter((r) => !budgetBlocked.has(r.channel))
+  if (spendable.length > 0 && spendable.every((r) => r.scoringError !== undefined)) {
+    // The count is of the channels the test actually ranged over, with any
+    // budget-blocked ones named separately rather than folded into a total
+    // that would overstate how many hit a real error.
+    const note = budgetBlocked.size > 0 ? ` (${budgetBlocked.size} more budget-blocked)` : ''
     throw new AllChannelsScoringFailedError(
-      `all ${results.length} scouted channel(s) failed in scoring`,
+      `all ${spendable.length} scouted channel(s) failed in scoring${note}`,
       results,
     )
   }
