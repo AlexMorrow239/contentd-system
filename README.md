@@ -245,8 +245,11 @@ MAILTO=you@example.com
 - **A stranded topic can be returned to the queue.** A topic stays `claimed`
   for as long as its job might still run, so a job abandoned for good leaves
   its topic bound forever. `pnpm brainrot topics requeue <id>` returns it to
-  `candidate` and unbinds the dead job; it refuses while a `queued`,
-  `running`, or `blocked` job still holds the topic.
+  `candidate` and unbinds the dead job; it refuses only while a `queued` or
+  `running` job still holds the topic. A `blocked` job's topic can be
+  requeued — that job sits out the resume pass until an operator repairs the
+  config behind it, and unbinding is safe because a later resume of that job
+  keys its `used` flip on `job_id`, which by then matches nothing.
 - **Manual runs take no lease.** `produce` and `resume` run outside the
   produce-next lease, so a hand-run invocation can execute concurrently with a
   live tick and both may act on the same job/topic. Stop the produce-next cron

@@ -165,9 +165,15 @@ export function claimTopic(db: Database, topicId: number, jobId: string): boolea
 }
 
 // A job in one of these states still owns its topic: requeueing it would let a
-// second job claim the same topic while the first is live or resumable. Every
-// other jobs.status ('failed', 'done') is terminal, as is a missing job row.
-const ACTIVE_JOB_STATUSES: readonly string[] = ['queued', 'running', 'blocked']
+// second job claim the same topic while the first is live. 'blocked' is
+// deliberately NOT here — a blocked job sits out the resume pass until an
+// operator repairs the config behind it, which is precisely the strand this
+// command exists to break, and refusing it left the digest's blocked-job
+// advice with no command to name. Releasing it is safe because requeue also
+// clears job_id, and markTopicUsedByJob keys on job_id: the old job resuming
+// to completion later matches nothing. Every other jobs.status ('failed',
+// 'done') is terminal, as is a missing job row.
+const ACTIVE_JOB_STATUSES: readonly string[] = ['queued', 'running']
 
 export type RequeueOutcome =
   | { ok: true }

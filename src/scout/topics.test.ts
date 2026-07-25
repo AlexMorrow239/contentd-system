@@ -304,9 +304,42 @@ describe('requeueTopic', () => {
     db.close()
   })
 
-  it('refuses while a queued, running, or blocked job still holds the topic', () => {
+  // A blocked job is exactly the strand requeue exists for: it is excluded
+  // from the resume pass until an operator fixes the config, and until then
+  // its topic is frozen out of the queue.
+  it('requeues a topic held by a blocked job', () => {
     const db = openDb(':memory:')
-    for (const status of ['queued', 'running', 'blocked'] as const) {
+    const id = seedTopic(db, { status: 'claimed', jobId: 'job-blocked' })
+    seedJob(db, 'job-blocked', 'blocked')
+    expect(requeueTopic(db, id)).toEqual({ ok: true })
+    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+      status: string
+      job_id: string | null
+    }
+    expect(row).toEqual({ status: 'candidate', job_id: null })
+    db.close()
+  })
+
+  // Why releasing a blocked job's topic is safe: requeue unbinds job_id, and
+  // markTopicUsedByJob keys on it, so the old job later resuming to completion
+  // matches nothing rather than yanking the requeued topic to 'used'.
+  it('leaves the requeued topic alone when its old job later completes', () => {
+    const db = openDb(':memory:')
+    const id = seedTopic(db, { status: 'claimed', jobId: 'job-blocked' })
+    seedJob(db, 'job-blocked', 'blocked')
+    expect(requeueTopic(db, id)).toEqual({ ok: true })
+    markTopicUsedByJob(db, 'job-blocked')
+    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+      status: string
+      job_id: string | null
+    }
+    expect(row).toEqual({ status: 'candidate', job_id: null })
+    db.close()
+  })
+
+  it('refuses while a queued or running job still holds the topic', () => {
+    const db = openDb(':memory:')
+    for (const status of ['queued', 'running'] as const) {
       const jobId = `job-${status}`
       const id = seedTopic(db, { status: 'claimed', jobId })
       seedJob(db, jobId, status)

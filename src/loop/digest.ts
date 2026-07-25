@@ -318,12 +318,27 @@ export function buildDigest(
     const jobSpent = db.prepare(
       'SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?',
     )
+    // The other half of every dead-end remedy below: a blocked job usually
+    // still holds the topic it claimed, and `topics requeue` (which now
+    // accepts a blocked job's topic) puts that trend back in the queue for a
+    // healthy job. Named with the concrete topic id, since the command takes
+    // one and the operator only has the job id from this line. Omitted when
+    // the job holds no claimed topic — a hand-run `produce` never claims one.
+    const claimedTopic = db.prepare(
+      "SELECT id FROM topics WHERE job_id = ? AND status = 'claimed' ORDER BY id ASC",
+    )
+    const orAbandon = (jobId: string): string => {
+      const topic = claimedTopic.get(jobId) as { id: number } | undefined
+      return topic === undefined
+        ? ''
+        : `, or free its topic with brainrot topics requeue ${topic.id}`
+    }
     for (const j of blockedJobs) {
       const head = `  blocked job ${j.id} (${j.channel}, ${j.tier})`
       const channel = byName.get(j.channel)
       if (channel === undefined) {
         lines.push(
-          `${head} — no channel config named ${j.channel} in the channels dir — restore ${j.channel}.toml or reject the job`,
+          `${head} — no channel config named ${j.channel} in the channels dir — restore ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
         )
         continue
       }
@@ -339,7 +354,7 @@ export function buildDigest(
       const spentMicros = (jobSpent.get(j.id) as { total: number }).total
       if (spentMicros >= capMicros) {
         lines.push(
-          `${head} — ${label} budget spent (${usd(spentMicros)} of ${usd(capMicros)}) — raise the cap or reject the job`,
+          `${head} — ${label} budget spent (${usd(spentMicros)} of ${usd(capMicros)}) — raise the cap in ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
         )
         continue
       }

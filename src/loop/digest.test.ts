@@ -116,6 +116,8 @@ function seedPublish(
   )
 }
 
+// Returns the new topic id: the blocked-job remedy lines name the topic a
+// blocked job still holds, so those tests need the id the row got.
 function seedTopic(
   db: Database,
   opts: {
@@ -123,17 +125,22 @@ function seedTopic(
     channel?: string
     status?: 'candidate' | 'approved' | 'claimed' | 'used' | 'rejected'
     createdAt?: string
+    jobId?: string
   },
-): void {
-  db.prepare(
-    'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, created_at) ' +
-      "VALUES (?, 'digest topic', 'raw', 'reddit:r/space', 'https://example.com', ?, 70, 'test', ?, ?)",
-  ).run(
-    opts.channel ?? 'chan-a',
-    opts.dedupeHash,
-    opts.status ?? 'candidate',
-    opts.createdAt ?? isoAgo(HOUR_MS),
-  )
+): number {
+  const info = db
+    .prepare(
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, created_at, job_id) ' +
+        "VALUES (?, 'digest topic', 'raw', 'reddit:r/space', 'https://example.com', ?, 70, 'test', ?, ?, ?)",
+    )
+    .run(
+      opts.channel ?? 'chan-a',
+      opts.dedupeHash,
+      opts.status ?? 'candidate',
+      opts.createdAt ?? isoAgo(HOUR_MS),
+      opts.jobId ?? null,
+    )
+  return Number(info.lastInsertRowid)
 }
 
 // The runner stamps started_at when a stage begins; the zombie check ages a
@@ -619,12 +626,29 @@ describe('buildDigest — failed-job list cap', () => {
 })
 
 describe('buildDigest — blocked jobs that cannot resume', () => {
+  // Remedies must name commands that exist: there is no way to "reject" a
+  // blocked job (library reject only touches library rows, which a blocked
+  // job never has), so these lines name `resume` and, when the job still
+  // holds a topic, `topics requeue`.
   it('names a blocked job whose channel config left the channels dir', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'j-orphan', channel: 'gone', status: 'blocked' })
     const digest = buildDigest(db, [], ENV_OK)
     expect(digest).toContain(
-      '  blocked job j-orphan (gone, volume) — no channel config named gone in the channels dir — restore gone.toml or reject the job',
+      '  blocked job j-orphan (gone, volume) — no channel config named gone in the channels dir — restore gone.toml then brainrot resume j-orphan',
+    )
+    // No claimed topic behind this job, so no requeue clause is offered.
+    expect(digest).not.toContain('topics requeue')
+    db.close()
+  })
+
+  it('points at the concrete topic a blocked job still holds', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-orphan', channel: 'gone', status: 'blocked' })
+    const topicId = seedTopic(db, { dedupeHash: 'h-held', channel: 'gone', status: 'claimed', jobId: 'j-orphan' })
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).toContain(
+      `restore gone.toml then brainrot resume j-orphan, or free its topic with brainrot topics requeue ${topicId}`,
     )
     db.close()
   })
@@ -649,7 +673,7 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     seedCost(db, 'j-spent', 7_000_000)
     const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], ENV_OK)
     expect(digest).toContain(
-      '  blocked job j-spent (chan-a, premium) — premium per-video budget spent ($7.00 of $7.00) — raise the cap or reject the job',
+      '  blocked job j-spent (chan-a, premium) — premium per-video budget spent ($7.00 of $7.00) — raise the cap in chan-a.toml then brainrot resume j-spent',
     )
     db.close()
   })
