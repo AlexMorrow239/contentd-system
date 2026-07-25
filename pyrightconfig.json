@@ -2,6 +2,7 @@
   "include": ["sidecar/whisperx"],
   "venvPath": "sidecar/whisperx",
   "venv": ".venv",
+  "useLibraryCodeForTypes": false,
   "executionEnvironments": [
     {
       "root": "sidecar/whisperx"
