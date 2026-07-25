@@ -18,3 +18,9 @@ sandbox/
 
 logs/
 superpowers/
+
+# Local development copies: dev channel TOMLs and their render artifacts. The
+# container never mounts these — production reads channels/ and runs/.
+channels-dev/*
+!channels-dev/.gitkeep
+runs-dev/
