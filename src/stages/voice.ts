@@ -22,7 +22,7 @@ export interface VoiceMeta {
   durationMs: number;
 }
 
-const KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+export const KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 const EDGE_VOICE = 'en-US-AriaNeural';
 // The Edge TTS backend supports "riff-24khz-16bit-mono-pcm" (a RIFF/WAV PCM
 // container), but msedge-tts ships that OUTPUT_FORMAT member commented out, so

@@ -1,0 +1,12 @@
+node_modules
+assets
+runs
+runs-dev
+data
+logs
+.git
+.env
+sandbox
+superpowers
+**/__pycache__
+**/.pytest_cache
