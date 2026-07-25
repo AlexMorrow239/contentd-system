@@ -117,6 +117,28 @@ describe('loadChannelConfig', () => {
   it('throws when the file does not exist', () => {
     expect(() => loadChannelConfig('channels/does-not-exist.toml')).toThrow()
   })
+
+  // A zero cap is never a real intent, and it read as one: plan-tick's resume
+  // floor became 0, `0 < 0` is false, and the job livelocked instead of being
+  // parked. Rejecting it at config load is the loud failure it deserves.
+  it('rejects a zero or negative budget cap, naming the field', () => {
+    const withBudget = (line: string): string[] =>
+      PLAN1_LINES.map((l) => (l.startsWith(line.split(' ')[0] + ' ') ? line : l))
+    expect(() => loadChannelConfig(writeToml(withBudget('per_video_usd = 0')))).toThrow(
+      /per_video_usd must be greater than 0/,
+    )
+    expect(() => loadChannelConfig(writeToml(withBudget('per_day_usd = 0')))).toThrow(
+      /per_day_usd must be greater than 0/,
+    )
+    // premium_per_video_usd is absent from PLAN1_LINES; a bare appended key
+    // lands in [budget], the last table.
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, 'premium_per_video_usd = 0'])),
+    ).toThrow(/premium_per_video_usd must be greater than 0/)
+    expect(() => loadChannelConfig(writeToml(withBudget('per_video_usd = -1')))).toThrow(
+      /per_video_usd must be greater than 0/,
+    )
+  })
 })
 
 describe('[scout] config', () => {

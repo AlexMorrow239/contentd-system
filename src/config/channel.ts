@@ -140,10 +140,17 @@ const rawSchema = z.object({
     inactive_color: z.string(),
     stroke_px: z.number(),
   }),
+  // Every cap must be strictly positive. A zero cap is a misconfiguration that
+  // reads as a legitimate one everywhere downstream — plan-tick's resume floor
+  // becomes 0, `0 < 0` is false, and the job livelocks instead of parking —
+  // so it fails loudly here rather than quietly at 3am.
   budget: z.object({
-    per_video_usd: z.number(),
-    premium_per_video_usd: z.number().default(DEFAULT_PREMIUM_PER_VIDEO_USD),
-    per_day_usd: z.number(),
+    per_video_usd: z.number().positive('per_video_usd must be greater than 0'),
+    premium_per_video_usd: z
+      .number()
+      .positive('premium_per_video_usd must be greater than 0')
+      .default(DEFAULT_PREMIUM_PER_VIDEO_USD),
+    per_day_usd: z.number().positive('per_day_usd must be greater than 0'),
   }),
   bg_dir: z.string(),
   bgm_dir: z.string(),
