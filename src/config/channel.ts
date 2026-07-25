@@ -30,7 +30,7 @@ export interface ChannelConfig {
   name: string
   niche: string[]
   videosPerDay: number
-  voice: { volume: string; premium?: PremiumVoiceConfig }
+  voice: { volume: string; premium?: PremiumVoiceConfig; dev?: boolean }
   captionStyle: CaptionStyle
   bgDir: string[]
   bgmDir: string
@@ -74,6 +74,7 @@ const rawSchema = z.object({
         model: z.string().default(DEFAULT_ELEVENLABS_MODEL_ID),
       })
       .optional(),
+    dev: z.boolean().default(false),
   }),
   scout: z
     .object({
@@ -132,6 +133,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
     videosPerDay: raw.videos_per_day,
     voice: {
       volume: raw.voice.volume,
+      dev: raw.voice.dev,
       premium: raw.voice.premium
         ? {
             provider: raw.voice.premium.provider,
