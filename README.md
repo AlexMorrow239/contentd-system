@@ -165,13 +165,10 @@ job or produce one video), `publish-next` uploads one `ready` video per tick
 into its channel's next due slot (see Publishing (YouTube) above), and
 `digest` prints a daily report.
 
-No API keys are needed for scouting: reddit subreddits are read through their
-public `.rss` feeds and RSS sources through their own. Reddit's Data API is an
-optional upgrade — if you get a script app approved under its Responsible
-Builder Policy, set `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` in `.env` and
-the scout switches to app-only OAuth (richer JSON, mod stickies filtered out,
-100 requests/min). Without them the feed path applies, where stickied posts
-are indistinguishable from real ones and simply score low.
+No API keys are needed for scouting: reddit subreddits and RSS sources are
+both read through their public feeds. Reddit's feed carries no `stickied`
+flag, so mod stickies are indistinguishable from real posts and simply score
+low.
 
 Paste into `crontab -e`, adjusting the paths:
 

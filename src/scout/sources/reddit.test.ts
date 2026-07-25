@@ -1,15 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
-import { REDDIT_USER_AGENT, redditSource, resetRedditTokenCache } from './reddit.js'
-
-beforeEach(() => {
-  // The default contract for every test in this file is the unauthenticated
-  // public endpoint: clear any real creds the runner env carries, and reset
-  // the module-level token cache so OAuth tests never leak into each other.
-  vi.stubEnv('REDDIT_CLIENT_ID', undefined)
-  vi.stubEnv('REDDIT_CLIENT_SECRET', undefined)
-  resetRedditTokenCache()
-})
+import { REDDIT_USER_AGENT, redditSource } from './reddit.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -39,46 +30,9 @@ describe('SOURCE_FETCH_TIMEOUT_MS', () => {
   })
 })
 
-// Trimmed oauth.reddit.com hot listing (the authenticated JSON path): one
-// stickied mod post, two real posts.
-const HOT_FIXTURE = {
-  kind: 'Listing',
-  data: {
-    children: [
-      {
-        kind: 't3',
-        data: {
-          name: 't3_sticky',
-          title: 'Monthly launch discussion thread',
-          permalink: '/r/space/comments/sticky/monthly/',
-          stickied: true,
-        },
-      },
-      {
-        kind: 't3',
-        data: {
-          name: 't3_abc',
-          title: 'JWST finds water ice in a protoplanetary disk',
-          permalink: '/r/space/comments/abc/jwst_finds_water_ice/',
-          stickied: false,
-        },
-      },
-      {
-        kind: 't3',
-        data: {
-          name: 't3_def',
-          title: 'Starship booster catch, third attempt',
-          permalink: '/r/space/comments/def/starship_booster_catch/',
-          stickied: false,
-        },
-      },
-    ],
-  },
-}
-
 // Trimmed /r/space/.rss — the shape reddit actually serves (verified live
 // 2026-07-22): Atom entries whose <id> is the t3_ fullname the JSON API
-// reports as data.name, so externalId matches across both paths.
+// reports as data.name.
 const RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
   <id>/r/space/.rss</id>
@@ -102,7 +56,7 @@ const RSS_FIXTURE = `<?xml version="1.0" encoding="UTF-8"?>
 </feed>`
 
 // Injectable fetch for the keyless feed path: captures every call, answers
-// with one canned XML body. The OAuth path uses routedFetch (JSON) below.
+// with one canned XML body.
 function fakeTextFetch(status: number, body: string) {
   const calls: { url: string; init: RequestInit | undefined }[] = []
   const impl: typeof fetch = async (input, init) => {
@@ -206,128 +160,5 @@ describe('redditSource', () => {
       Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
     const source = redditSource('space', impl)
     await expect(source.fetch({ limit: 25, timeoutMs: 10 })).rejects.toThrow(/timeout/i)
-  })
-})
-
-describe('redditSource app-only OAuth', () => {
-  // Multi-endpoint stub: routes by URL prefix so one impl serves the token
-  // POST and the oauth listing GET in order.
-  function routedFetch(routes: Record<string, { status: number; body: unknown }>) {
-    const calls: { url: string; init: RequestInit | undefined }[] = []
-    const impl: typeof fetch = async (input, init) => {
-      calls.push({ url: String(input), init })
-      const route = Object.entries(routes).find(([prefix]) => String(input).startsWith(prefix))
-      if (!route) throw new Error(`unrouted fetch: ${String(input)}`)
-      return new Response(JSON.stringify(route[1].body), {
-        status: route[1].status,
-        headers: { 'content-type': 'application/json' },
-      })
-    }
-    return { impl, calls }
-  }
-
-  it('skips stickied and malformed children in the oauth JSON listing', async () => {
-    vi.stubEnv('REDDIT_CLIENT_ID', 'test-id')
-    vi.stubEnv('REDDIT_CLIENT_SECRET', 'test-secret')
-    const { impl } = routedFetch({
-      'https://www.reddit.com/api/v1/access_token': {
-        status: 200,
-        body: { access_token: 'tok-1', expires_in: 3600 },
-      },
-      'https://oauth.reddit.com/': {
-        status: 200,
-        body: {
-          data: {
-            children: [
-              { kind: 't3' }, // no data object at all
-              {
-                kind: 't3',
-                data: { name: 't3_x1', permalink: '/r/space/comments/x1/a/', stickied: false },
-              }, // no title
-              {
-                kind: 't3',
-                data: {
-                  name: 't3_sticky',
-                  title: 'Monthly thread',
-                  permalink: '/r/space/comments/s/m/',
-                  stickied: true,
-                },
-              },
-              {
-                kind: 't3',
-                data: {
-                  name: 't3_ok',
-                  title: 'Intact post',
-                  permalink: '/r/space/comments/ok/c/',
-                  stickied: false,
-                },
-              },
-            ],
-          },
-        },
-      },
-    })
-    expect(await redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 })).toEqual([
-      {
-        title: 'Intact post',
-        url: 'https://www.reddit.com/r/space/comments/ok/c/',
-        sourceId: 'reddit:r/space',
-        externalId: 't3_ok',
-      },
-    ])
-  })
-
-  it('tokens up once and queries oauth.reddit.com with the bearer', async () => {
-    vi.stubEnv('REDDIT_CLIENT_ID', 'test-id')
-    vi.stubEnv('REDDIT_CLIENT_SECRET', 'test-secret')
-    const { impl, calls } = routedFetch({
-      'https://www.reddit.com/api/v1/access_token': {
-        status: 200,
-        body: { access_token: 'tok-1', expires_in: 3600 },
-      },
-      'https://oauth.reddit.com/': { status: 200, body: HOT_FIXTURE },
-    })
-    const source = redditSource('space', impl)
-    const first = await source.fetch({ limit: 25, timeoutMs: 10_000 })
-    expect(first.map((c) => c.externalId)).toEqual(['t3_abc', 't3_def'])
-
-    const tokenCall = calls[0]
-    expect(tokenCall.url).toBe('https://www.reddit.com/api/v1/access_token')
-    expect(tokenCall.init?.method).toBe('POST')
-    const tokenHeaders = tokenCall.init?.headers as Record<string, string>
-    expect(tokenHeaders.Authorization).toBe(
-      `Basic ${Buffer.from('test-id:test-secret').toString('base64')}`,
-    )
-    expect(tokenHeaders['User-Agent']).toBe(REDDIT_USER_AGENT)
-    expect(tokenCall.init?.body).toBe('grant_type=client_credentials')
-
-    const listingCall = calls[1]
-    expect(listingCall.url).toBe('https://oauth.reddit.com/r/space/hot?limit=25&raw_json=1')
-    const listingHeaders = listingCall.init?.headers as Record<string, string>
-    expect(listingHeaders.Authorization).toBe('Bearer tok-1')
-    expect(listingHeaders['User-Agent']).toBe(REDDIT_USER_AGENT)
-
-    // cached: a second fetch reuses the token — still exactly one token call
-    await source.fetch({ limit: 25, timeoutMs: 10_000 })
-    expect(calls.filter((c) => c.url.includes('access_token'))).toHaveLength(1)
-  })
-
-  it('a failing token endpoint rejects with its status', async () => {
-    vi.stubEnv('REDDIT_CLIENT_ID', 'test-id')
-    vi.stubEnv('REDDIT_CLIENT_SECRET', 'test-secret')
-    const { impl } = routedFetch({
-      'https://www.reddit.com/api/v1/access_token': { status: 401, body: {} },
-    })
-    const source = redditSource('space', impl)
-    await expect(source.fetch({ limit: 25, timeoutMs: 10_000 })).rejects.toThrow(
-      /token endpoint responded 401/,
-    )
-  })
-
-  it('without creds no token call is made and the public feed is used', async () => {
-    const { impl, calls } = fakeTextFetch(200, RSS_FIXTURE)
-    await redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 })
-    expect(calls).toHaveLength(1)
-    expect(calls[0].url).toBe('https://www.reddit.com/r/space/.rss')
   })
 })
