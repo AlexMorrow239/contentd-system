@@ -23,3 +23,21 @@ export function openDb(dbPath: string): Database {
   db.exec(readFileSync(schemaPath, 'utf8'))
   return db
 }
+
+/**
+ * Read-only handle for viewers (the dashboard). Deliberately NOT openDb:
+ * openDb mkdirs its parent and execs schema.sql, and both are writes a
+ * readonly connection cannot perform. Skipping schema creation is also the
+ * correct behavior for a viewer — pointed at a path that does not exist it
+ * must report a missing database, not create an empty one and render zeroes.
+ *
+ * fileMustExist is redundant with readonly in better-sqlite3 today; it is set
+ * explicitly so the guarantee survives a library default changing.
+ */
+export function openDbReadonly(dbPath: string): Database {
+  const db = new BetterSqlite3(dbPath, { readonly: true, fileMustExist: true })
+  // Matches openDb: a cron tick holds its write lock for milliseconds, so a
+  // reader waits it out rather than throwing SQLITE_BUSY mid-page-render.
+  db.pragma('busy_timeout = 5000')
+  return db
+}

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { openDb } from './index.js'
+import { openDb, openDbReadonly } from './index.js'
 
 function tempDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), 'brainrot-db-'))
@@ -49,6 +49,47 @@ describe('openDb', () => {
     // (crontab co-fires them 3x/day); without this an overlapping write window
     // throws SQLITE_BUSY and crashes a run mid-flight.
     const db = openDb(tempDbPath())
+    expect(db.pragma('busy_timeout', { simple: true })).toBe(5000)
+    db.close()
+  })
+})
+
+describe('openDbReadonly', () => {
+  it('reads an existing database', () => {
+    const path = tempDbPath()
+    const writable = openDb(path)
+    writable.prepare("INSERT INTO jobs (id, channel, tier, topic) VALUES ('j1','c','volume','t')").run()
+    writable.close()
+
+    const db = openDbReadonly(path)
+    const rows = db.prepare('SELECT id FROM jobs').all() as { id: string }[]
+    expect(rows).toEqual([{ id: 'j1' }])
+    db.close()
+  })
+
+  it('rejects writes', () => {
+    const path = tempDbPath()
+    openDb(path).close()
+
+    const db = openDbReadonly(path)
+    expect(() =>
+      db.prepare("INSERT INTO jobs (id, channel, tier, topic) VALUES ('x','c','volume','t')").run(),
+    ).toThrow(/readonly/i)
+    db.close()
+  })
+
+  it('throws on a missing file instead of creating one', () => {
+    // A viewer that conjures the database it failed to find reports zeroes
+    // instead of "missing", which is worse than an error.
+    const path = join(mkdtempSync(join(tmpdir(), 'brainrot-ro-')), 'absent.db')
+    expect(() => openDbReadonly(path)).toThrow()
+    expect(existsSync(path)).toBe(false)
+  })
+
+  it('sets a 5s busy_timeout so a cron tick write is waited out, not thrown on', () => {
+    const path = tempDbPath()
+    openDb(path).close()
+    const db = openDbReadonly(path)
     expect(db.pragma('busy_timeout', { simple: true })).toBe(5000)
     db.close()
   })
