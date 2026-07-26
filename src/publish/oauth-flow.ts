@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { execa } from 'execa'
-import { YT_UPLOAD_SCOPE } from './youtube.js'
+import { YT_UPLOAD_SCOPE } from './platforms/youtube.js'
 
 // Alex sits through this once per channel; 5 minutes covers a slow account
 // picker or a 2FA prompt without leaving the loopback listener open forever.

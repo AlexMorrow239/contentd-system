@@ -20,7 +20,7 @@ import type { LibraryState } from './jobs/library.js'
 import { runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
-import { youtubeShortsUrl } from './publish/youtube.js'
+import { youtubeShortsUrl } from './publish/platforms/youtube.js'
 import { DEV_VOICE_ENV } from './stages/voice.js'
 
 /**

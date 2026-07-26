@@ -1,7 +1,7 @@
 import http from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AUTH_FLOW_TIMEOUT_MS, runYoutubeAuthFlow } from './oauth-flow.js'
-import { YT_UPLOAD_SCOPE } from './youtube.js'
+import { YT_UPLOAD_SCOPE } from './platforms/youtube.js'
 
 describe('AUTH_FLOW_TIMEOUT_MS', () => {
   it('is 5 minutes', () => {

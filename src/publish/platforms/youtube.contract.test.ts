@@ -2,11 +2,11 @@ import 'dotenv/config'
 import { describe, it, expect } from 'vitest'
 import type { TestContext } from 'vitest'
 import { fileURLToPath } from 'node:url'
-import { openDb } from '../db/index.js'
-import { parseTokenKey } from './crypto.js'
-import { loadRefreshToken } from './tokens.js'
+import { openDb } from '../../db/index.js'
+import { parseTokenKey } from '../crypto.js'
+import { loadToken } from '../tokens.js'
+import type { PublishChannelConfig } from '../types.js'
 import { mintAccessToken, youtubeTarget } from './youtube.js'
-import type { PublishChannelConfig } from './types.js'
 
 // Runs only via `pnpm test:contract` (CONTRACT=1; excluded from default
 // `pnpm test`). Makes ONE real YouTube upload — private, ~5KB fixture —
@@ -38,8 +38,8 @@ describe('youtube adapter (contract)', () => {
     try {
       const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
       const channel = process.env.CONTRACT_YT_CHANNEL!
-      const refreshToken = loadRefreshToken(db, 'youtube', channel, key)
-      if (refreshToken === null) {
+      const stored = loadToken(db, 'youtube', channel, key)
+      if (stored === null) {
         ctx.skip(
           `no stored youtube refresh token for channel "${channel}" — run ` +
             `\`pnpm brainrot auth youtube --channel ${channel}\` against BRAINROT_DB first`,
@@ -47,17 +47,29 @@ describe('youtube adapter (contract)', () => {
       }
 
       const accessToken = await mintAccessToken({
-        refreshToken,
+        refreshToken: stored!.token,
         clientId: process.env.YT_CLIENT_ID!,
         clientSecret: process.env.YT_CLIENT_SECRET!,
       })
 
+      // PublishChannelConfig moved from a flat per-channel shape to a list of
+      // per-platform targets (Task 2/5) — this fixture constructs a single
+      // youtube target carrying the same placeholder values the old flat
+      // fixture intended (private/category 24/not made for kids), then
+      // narrows it back to its youtube variant to read a properly-typed
+      // YoutubeOptions for youtubeTarget().upload() below.
       const publish: PublishChannelConfig = {
-        slots: ['00:00'],
-        platforms: ['youtube'],
-        privacy: 'private',
-        categoryId: 24,
-        madeForKids: false,
+        targets: [
+          {
+            platform: 'youtube',
+            slots: ['00:00'],
+            options: { privacy: 'private', categoryId: 24, madeForKids: false },
+          },
+        ],
+      }
+      const target = publish.targets[0]
+      if (target.platform !== 'youtube') {
+        throw new Error('unreachable: fixture only declares a youtube target')
       }
       const { postId, url } = await youtubeTarget().upload(
         {
@@ -67,7 +79,7 @@ describe('youtube adapter (contract)', () => {
             description: '',
             hashtags: [],
           },
-          publish,
+          options: target.options,
         },
         accessToken,
       )

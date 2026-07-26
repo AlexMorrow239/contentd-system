@@ -21,7 +21,7 @@ import {
   PublishOutcomeUnknownError,
   youtubeTarget,
   ytUploadsPerDayCap,
-} from '../publish/youtube.js'
+} from '../publish/platforms/youtube.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
 
 export interface PublishTickResult {

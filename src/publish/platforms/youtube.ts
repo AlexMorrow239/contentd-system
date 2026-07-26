@@ -1,7 +1,15 @@
 import { readFileSync } from 'node:fs'
-import { renderDescription, renderTags } from './platform-meta.js'
-import { PublishError } from './types.js'
-import type { PublishTarget } from './types.js'
+import type { Database } from 'better-sqlite3'
+import { renderDescription, renderTags } from '../platform-meta.js'
+import { loadToken } from '../tokens.js'
+import { PublishError, PublishOutcomeUnknownError } from '../types.js'
+import type { PublishAdapter } from '../types.js'
+import type { YoutubeOptions } from './options.js'
+
+// Re-exported for import-site compatibility (src/loop/publish-next.ts,
+// src/loop/publish-next.test.ts) — the canonical definition now lives in
+// types.ts (Task 2), shared with every adapter.
+export { PublishOutcomeUnknownError } from '../types.js'
 
 // Least-privilege scope: upload-only, no read/manage access to the channel
 // (design spec §4.2).
@@ -33,19 +41,6 @@ export function ytUploadsPerDayCap(): number {
     )
   }
   return n
-}
-
-// The platform ACCEPTED the upload — the video exists on YouTube — but its
-// outcome is unreadable (broken success body, no video id). Deliberately NOT
-// a PublishError: no failure kind fits, and marking the row failed would make
-// the same video eligible again at the next slot, publishing it twice. The
-// tick leaves the row 'claimed' so the repair sweep heals it to 'interrupted'
-// — the designed "uploaded but DB state unknown" operator path.
-export class PublishOutcomeUnknownError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'PublishOutcomeUnknownError'
-  }
 }
 
 // The public watch URL for an uploaded Short. Built here rather than at each
@@ -156,11 +151,21 @@ async function mapUploadHttpError(op: string, res: Response): Promise<PublishErr
   return new PublishError(`${op}: ${res.status} rejected: ${raw}`, 'rejected')
 }
 
-export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
+// PublishTarget (the pre-Task-2 return type here) was folded into the more
+// general PublishAdapter (types.ts) and no longer exists as its own type —
+// this Pick is the two members youtubeTarget still furnishes on its own
+// (upload mechanics), with the rest (quota, credential resolution) added by
+// youtubeAdapter below. The req shape changes from the old ad-hoc `publish:
+// PublishChannelConfig` to `options: YoutubeOptions` accordingly — same
+// three fields (privacy/categoryId/madeForKids), just under the name the
+// adapter contract now uses.
+export function youtubeTarget(
+  fetchImpl: typeof fetch = fetch,
+): Pick<PublishAdapter<YoutubeOptions>, 'platformId' | 'upload'> {
   return {
     platformId: 'youtube',
     async upload(req, accessToken) {
-      const { videoPath, meta, publish } = req
+      const { videoPath, meta, options } = req
       // The same helper resolvePlatformMeta bounds against the 5000-char limit,
       // so the checked form and the sent form cannot drift apart.
       const description = renderDescription(meta.description, meta.hashtags)
@@ -169,11 +174,11 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
           title: meta.title,
           description,
           tags: renderTags(meta.hashtags),
-          categoryId: String(publish.categoryId),
+          categoryId: String(options.categoryId),
         },
         status: {
-          privacyStatus: publish.privacy,
-          selfDeclaredMadeForKids: publish.madeForKids,
+          privacyStatus: options.privacy,
+          selfDeclaredMadeForKids: options.madeForKids,
           containsSyntheticMedia: true,
         },
       }
@@ -258,5 +263,35 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
       }
       return { postId: body.id, url: youtubeShortsUrl(body.id) }
     },
+  }
+}
+
+// Wraps youtubeTarget/mintAccessToken/ytUploadsPerDayCap (unchanged above)
+// behind the PublishAdapter seam the tick drives generically (design spec
+// §5). hasCredential mirrors exactly what the pre-adapter tick checked
+// inline: client env presence, then a decryptable stored token — both cheap,
+// no network, safe to run per-candidate before any claim.
+export function youtubeAdapter(fetchImpl: typeof fetch = fetch): PublishAdapter<YoutubeOptions> {
+  const target = youtubeTarget(fetchImpl)
+  return {
+    platformId: 'youtube',
+    quota: { scope: 'global', envVar: 'BRAINROT_YT_UPLOADS_PER_DAY', cap: ytUploadsPerDayCap },
+    hasCredential(db: Database, channel: string, key: Buffer): boolean {
+      if (!process.env.YT_CLIENT_ID || !process.env.YT_CLIENT_SECRET) return false
+      return loadToken(db, 'youtube', channel, key) !== null
+    },
+    async resolveCredential(db: Database, channel: string, key: Buffer): Promise<string> {
+      const stored = loadToken(db, 'youtube', channel, key)
+      if (stored === null) {
+        throw new PublishError('youtubeAdapter: no stored token for this channel', 'auth')
+      }
+      const clientId = process.env.YT_CLIENT_ID
+      const clientSecret = process.env.YT_CLIENT_SECRET
+      if (!clientId || !clientSecret) {
+        throw new PublishError('youtubeAdapter: YT_CLIENT_ID/YT_CLIENT_SECRET not set', 'auth')
+      }
+      return mintAccessToken({ refreshToken: stored.token, clientId, clientSecret, fetchImpl })
+    },
+    upload: target.upload,
   }
 }

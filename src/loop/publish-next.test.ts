@@ -9,7 +9,7 @@ import { claimPublish, markPublishDone } from '../publish/publishes.js'
 import { upsertToken } from '../publish/tokens.js'
 import { runCli } from '../testing/run-cli.js'
 import type { Platform, PublishTarget } from '../publish/types.js'
-import { PublishOutcomeUnknownError, YT_UPLOAD_SCOPE } from '../publish/youtube.js'
+import { PublishOutcomeUnknownError, YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
 import { publishNextTick } from './publish-next.js'
 

@@ -2,17 +2,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { PlatformMeta, PublishChannelConfig } from './types.js'
-import { PublishError } from './types.js'
+import { openDb } from '../../db/index.js'
+import { upsertToken } from '../tokens.js'
+import type { PlatformMeta } from '../types.js'
+import { PublishError } from '../types.js'
+import type { YoutubeOptions } from './options.js'
 import {
   DEFAULT_YT_UPLOADS_PER_DAY,
   PublishOutcomeUnknownError,
   UPLOAD_TIMEOUT_MS,
   YT_UPLOAD_SCOPE,
   mintAccessToken,
+  youtubeAdapter,
   youtubeTarget,
   ytUploadsPerDayCap,
 } from './youtube.js'
+
+const TEST_KEY = Buffer.alloc(32, 0x42)
 
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -154,9 +160,7 @@ const META_NO_HASHTAGS: PlatformMeta = {
   description: 'Watch this.',
   hashtags: [],
 }
-const PUBLISH_CFG: PublishChannelConfig = {
-  slots: ['10:00'],
-  platforms: ['youtube'],
+const YOUTUBE_OPTS: YoutubeOptions = {
   privacy: 'public',
   categoryId: 24,
   madeForKids: false,
@@ -171,7 +175,7 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
     ])
     const target = youtubeTarget(impl)
     const res = await target.upload(
-      { videoPath, meta: META, publish: PUBLISH_CFG },
+      { videoPath, meta: META, options: YOUTUBE_OPTS },
       'access-token-x',
     )
 
@@ -226,7 +230,7 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
     ])
     const target = youtubeTarget(impl)
     await target.upload(
-      { videoPath, meta: META_NO_HASHTAGS, publish: PUBLISH_CFG },
+      { videoPath, meta: META_NO_HASHTAGS, options: YOUTUBE_OPTS },
       'access-token-x',
     )
     const body = JSON.parse(calls[0].init!.body as string)
@@ -242,7 +246,7 @@ describe('youtubeTarget upload — error mapping', () => {
       const { impl } = fakeFetch([{ status: 403, body: { error: { errors: [{ reason }] } } }])
       const target = youtubeTarget(impl)
       const err = await target
-        .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
+        .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
         .catch((e: unknown) => e)
       expect(err).toBeInstanceOf(PublishError)
       expect((err as PublishError).kind).toBe('quota')
@@ -255,7 +259,7 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
+      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('auth')
@@ -267,7 +271,7 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
+      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('rejected')
@@ -279,7 +283,7 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
+      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('transient')
@@ -293,7 +297,7 @@ describe('youtubeTarget upload — error mapping', () => {
     }
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
+      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('transient')
@@ -309,7 +313,7 @@ describe('youtubeTarget upload — error mapping', () => {
         {
           videoPath: '/nonexistent/brainrot-yt-missing/video.mp4',
           meta: META,
-          publish: PUBLISH_CFG,
+          options: YOUTUBE_OPTS,
         },
         'tok',
       )
@@ -343,7 +347,7 @@ describe('youtubeTarget upload — error mapping', () => {
     }
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath, meta: META, publish: PUBLISH_CFG }, 'tok')
+      .upload({ videoPath, meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishOutcomeUnknownError)
     expect(err).not.toBeInstanceOf(PublishError)
@@ -358,9 +362,80 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath, meta: META, publish: PUBLISH_CFG }, 'tok')
+      .upload({ videoPath, meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishOutcomeUnknownError)
     expect((err as Error).message).toMatch(/no video id/)
+  })
+})
+
+describe('youtubeAdapter', () => {
+  it('exposes a global-scope quota keyed to BRAINROT_YT_UPLOADS_PER_DAY', () => {
+    const adapter = youtubeAdapter()
+    expect(adapter.platformId).toBe('youtube')
+    expect(adapter.quota.scope).toBe('global')
+    expect(adapter.quota.envVar).toBe('BRAINROT_YT_UPLOADS_PER_DAY')
+    expect(adapter.quota.cap()).toBe(DEFAULT_YT_UPLOADS_PER_DAY)
+  })
+
+  it('hasCredential is false when YT_CLIENT_ID is unset, even with a stored token', () => {
+    vi.stubEnv('YT_CLIENT_ID', undefined)
+    vi.stubEnv('YT_CLIENT_SECRET', 'secret')
+    const db = openDb(':memory:')
+    upsertToken(db, 'youtube', 'chan', 'rt', 'scope', TEST_KEY)
+    expect(youtubeAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(false)
+  })
+
+  it('hasCredential is false with no stored token, even with env set', () => {
+    vi.stubEnv('YT_CLIENT_ID', 'id')
+    vi.stubEnv('YT_CLIENT_SECRET', 'secret')
+    const db = openDb(':memory:')
+    expect(youtubeAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(false)
+  })
+
+  it('hasCredential is true with both env and a stored token', () => {
+    vi.stubEnv('YT_CLIENT_ID', 'id')
+    vi.stubEnv('YT_CLIENT_SECRET', 'secret')
+    const db = openDb(':memory:')
+    upsertToken(db, 'youtube', 'chan', 'rt', 'scope', TEST_KEY)
+    expect(youtubeAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(true)
+  })
+
+  it('resolveCredential mints an access token from the stored refresh token', async () => {
+    vi.stubEnv('YT_CLIENT_ID', 'id')
+    vi.stubEnv('YT_CLIENT_SECRET', 'secret')
+    const db = openDb(':memory:')
+    upsertToken(db, 'youtube', 'chan', 'rt-stored', 'scope', TEST_KEY)
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify({ access_token: 'at-minted' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    const credential = await youtubeAdapter(fetchImpl).resolveCredential(
+      db,
+      'chan',
+      TEST_KEY,
+      new Date(),
+    )
+    expect(credential).toBe('at-minted')
+  })
+
+  it('resolveCredential throws PublishError(auth) with no stored token', async () => {
+    vi.stubEnv('YT_CLIENT_ID', 'id')
+    vi.stubEnv('YT_CLIENT_SECRET', 'secret')
+    const db = openDb(':memory:')
+    await expect(
+      youtubeAdapter().resolveCredential(db, 'chan', TEST_KEY, new Date()),
+    ).rejects.toMatchObject({ kind: 'auth' })
+  })
+
+  it('resolveCredential throws PublishError(auth) when YT_CLIENT_ID/SECRET are unset, even with a stored token', async () => {
+    vi.stubEnv('YT_CLIENT_ID', undefined)
+    vi.stubEnv('YT_CLIENT_SECRET', undefined)
+    const db = openDb(':memory:')
+    upsertToken(db, 'youtube', 'chan', 'rt-stored', 'scope', TEST_KEY)
+    await expect(
+      youtubeAdapter().resolveCredential(db, 'chan', TEST_KEY, new Date()),
+    ).rejects.toMatchObject({ kind: 'auth' })
   })
 })
