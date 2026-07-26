@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -68,11 +68,27 @@ describe('createApp', () => {
 })
 
 describe('/publishes', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
   it('renders with a warning rather than 500-ing when the channels dir is unreadable', async () => {
     const config = seededConfig() // channelsDir points at a directory that does not exist
     const res = await createApp({ config }).request('/publishes')
     expect(res.status).toBe(200)
     expect(await res.text()).toContain('channel config error')
+  })
+
+  it('reports the enforced quota cap, not a hardcoded default', async () => {
+    // Proves the dashboard reads the same resolver the publish loop enforces
+    // against (ytUploadsPerDayCap), rather than a mirrored copy that could
+    // silently drift from it.
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '3')
+    const config = seededConfig()
+    const res = await createApp({ config }).request('/publishes')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('0 / 3 uploads used today')
   })
 })
 

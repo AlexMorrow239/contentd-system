@@ -8,6 +8,7 @@ import type { LibraryState } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { uploadsUsedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/slots.js'
+import { ytUploadsPerDayCap } from '../publish/youtube.js'
 import type { DashboardConfig, DbChoice } from './config.js'
 import { resolveDbChoice } from './config.js'
 import { html } from './html.js'
@@ -36,17 +37,6 @@ const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url)
 
 const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
 const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
-
-// youtube.ts's own default, mirrored rather than imported so the dashboard
-// does not pull the upload client (and its googleapis surface) into a viewer.
-const DEFAULT_YT_UPLOADS_PER_DAY = 6
-
-function ytUploadCap(): number {
-  const raw = process.env.BRAINROT_YT_UPLOADS_PER_DAY
-  if (raw === undefined || raw.trim() === '') return DEFAULT_YT_UPLOADS_PER_DAY
-  const parsed = Number(raw)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_YT_UPLOADS_PER_DAY
-}
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
   const app = new Hono<{ Variables: DashboardVars }>()
@@ -222,7 +212,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           grids: buildPublishGrids(db, channels, days, now),
           days,
           quotaUsed: uploadsUsedToday(db, 'youtube', localDay(now)),
-          quotaCap: ytUploadCap(),
+          quotaCap: ytUploadsPerDayCap(),
           dbChoice,
           configError: error,
         }),
