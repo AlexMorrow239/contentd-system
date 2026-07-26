@@ -1,5 +1,7 @@
 import tseslint from 'typescript-eslint'
 import globals from 'globals'
+import react from 'eslint-plugin-react'
+import reactHooks from 'eslint-plugin-react-hooks'
 
 export default tseslint.config(
   {
@@ -23,6 +25,39 @@ export default tseslint.config(
         tsconfigRootDir: import.meta.dirname,
       },
       globals: globals.node,
+    },
+  },
+  {
+    files: ['remotion/**/*.tsx'],
+    extends: [
+      ...tseslint.configs.recommendedTypeChecked,
+      react.configs.flat.recommended,
+      react.configs.flat['jsx-runtime'],
+    ],
+    plugins: {
+      'react-hooks': reactHooks,
+    },
+    rules: {
+      // Classic hooks-of-hooks/deps rules only — not the full v7 "recommended"
+      // set, which is oriented at React Compiler adoption (immutability,
+      // purity, gating, etc.) and doesn't apply here.
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+      // TypeScript validates props at compile time; the `prop-types` package
+      // isn't even a dependency here.
+      'react/prop-types': 'off',
+    },
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+      globals: globals.browser,
+    },
+    settings: {
+      react: {
+        version: 'detect',
+      },
     },
   },
   {
