@@ -194,6 +194,36 @@ export function uploadsUsedToday(
   return row.n
 }
 
+/**
+ * Videos — not rows — this channel attempted today. A fan-out writes one row
+ * per platform for the SAME video, and `videos_per_day` counts videos, so
+ * this counts DISTINCT job_id.
+ *
+ * Rows of ANY status count. An attempt consumes its place in the day exactly
+ * as a slot used to be consumed: a channel with a broken credential burns one
+ * attempt per min-gap instead of racing through its whole library in an hour.
+ */
+export function videosPublishedToday(db: Database, channel: string, day: string): number {
+  const row = db
+    .prepare('SELECT COUNT(DISTINCT job_id) AS n FROM publishes WHERE channel = ? AND day = ?')
+    .get(channel, day) as { n: number }
+  return row.n
+}
+
+/**
+ * When this channel last attempted a publish, for the min-gap check — or null
+ * when it never has. Deliberately NOT filtered by day: a day-scoped read
+ * returns null at 00:00 and would let a channel publish immediately after a
+ * 23:55 attempt. created_at is stored as UTC ISO-8601 with a 'Z' suffix, so
+ * `new Date` parses it unambiguously.
+ */
+export function lastAttemptAt(db: Database, channel: string): Date | null {
+  const row = db
+    .prepare('SELECT MAX(created_at) AS at FROM publishes WHERE channel = ?')
+    .get(channel) as { at: string | null }
+  return row.at === null ? null : new Date(row.at)
+}
+
 // One row of the publish pool: the video the tick will hand an adapter, plus
 // the metadata it needs to render the post. `objectKey` is null for library
 // rows produced before object storage existed (see ../jobs/backfill-store.ts),

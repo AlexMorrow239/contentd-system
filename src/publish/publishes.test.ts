@@ -5,6 +5,7 @@ import {
   claimPublish,
   consumedSlots,
   eligibleVideo,
+  lastAttemptAt,
   listPublishes,
   markInterruptedDone,
   markPublishDone,
@@ -13,6 +14,7 @@ import {
   retryInterrupted,
   sweepInterrupted,
   uploadsUsedToday,
+  videosPublishedToday,
 } from './publishes.js'
 
 // Raw-insert seed: publishes.job_id references jobs(id) (FKs are OFF, but
@@ -819,6 +821,84 @@ describe('listPublishes', () => {
 
     expect(listPublishes(db)).toHaveLength(0)
     expect(listPublishes(db, { sinceDays: 10 })).toHaveLength(1)
+    db.close()
+  })
+})
+
+describe('videosPublishedToday', () => {
+  it('is 0 for a channel with no rows', () => {
+    const db = openDb(':memory:')
+    expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(0)
+    db.close()
+  })
+
+  it('counts a fan-out of one video to two platforms as ONE video', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
+    claimPublish(db, { jobId: 'job-1', platform: 'instagram', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
+    expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(1)
+    db.close()
+  })
+
+  it('counts two distinct videos as two', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-a' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
+    claimPublish(db, { jobId: 'job-2', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '14:00' })
+    expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(2)
+    db.close()
+  })
+
+  it('counts a failed attempt — an attempt consumes its place in the day', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    const claim = claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
+    markPublishFailed(db, claim!, 'boom', 'transient', new Date())
+    expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(1)
+    db.close()
+  })
+
+  it('ignores other channels and other days', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-b' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-21', slot: '10:00' })
+    claimPublish(db, { jobId: 'job-2', platform: 'youtube', channel: 'chan-b', day: '2026-07-22', slot: '10:00' })
+    expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(0)
+    db.close()
+  })
+})
+
+describe('lastAttemptAt', () => {
+  it('is null for a channel with no rows', () => {
+    const db = openDb(':memory:')
+    expect(lastAttemptAt(db, 'chan-a')).toBeNull()
+    db.close()
+  })
+
+  it('returns the newest created_at across every day, not just today', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
+        "VALUES ('job-1','youtube','chan-a','2026-07-21','20:50','done',1,'2026-07-21T20:50:00.000Z')",
+    ).run()
+    db.prepare(
+      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
+        "VALUES ('job-2','youtube','chan-a','2026-07-22','10:00','done',1,'2026-07-22T10:00:00.000Z')",
+    ).run()
+    expect(lastAttemptAt(db, 'chan-a')?.toISOString()).toBe('2026-07-22T10:00:00.000Z')
+    db.close()
+  })
+
+  it('ignores other channels', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-b' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-b', day: '2026-07-22', slot: '10:00' })
+    expect(lastAttemptAt(db, 'chan-a')).toBeNull()
     db.close()
   })
 })
