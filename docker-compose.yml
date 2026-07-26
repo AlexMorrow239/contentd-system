@@ -37,11 +37,14 @@ services:
     # explicitly for local work:
     #   docker compose --profile dev up -d minio
     profiles: [dev]
-    command: server /data --console-address ":9101"
+    command: server /data --console-address ":9001"
     restart: unless-stopped
     ports:
-      - '9000:9000' # S3 API
-      - '9101:9101' # web console (9001 is already in use on this host)
+      # Host ports moved off MinIO's defaults: an unrelated `minio` container
+      # for another project already holds BOTH 9000 and 9001 on this machine.
+      # Container-internal ports are unchanged.
+      - '9100:9000' # S3 API
+      - '9101:9001' # web console
     environment:
       MINIO_ROOT_USER: brainrotdev
       MINIO_ROOT_PASSWORD: brainrotdev
