@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
 import type { ChannelConfig } from '../../config/channel.js'
+import type { PublishTargetConfig } from '../../publish/types.js'
 import { buildPublishGrids, cellKey } from './publishes.js'
 
-function channel(name: string, slots: string[]): ChannelConfig {
+function channelWithTargets(name: string, targets: PublishTargetConfig[]): ChannelConfig {
   return {
     name,
     niche: [],
-    videosPerDay: slots.length,
+    videosPerDay: targets.reduce((sum, t) => sum + t.slots.length, 0),
     voice: { volume: 'af_heart' },
     captionStyle: {
       font: 'Inter',
@@ -22,14 +23,18 @@ function channel(name: string, slots: string[]): ChannelConfig {
     budget: { perVideoUsdMicros: 500_000, perDayUsdMicros: 2_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { subreddits: [], rss: [], minScore: 60, perSourceLimit: 25 },
-    publish: {
-      slots,
-      platforms: ['youtube'],
-      privacy: 'public',
-      categoryId: 27,
-      madeForKids: false,
-    },
+    publish: { targets },
   }
+}
+
+function channel(name: string, slots: string[]): ChannelConfig {
+  return channelWithTargets(name, [
+    {
+      platform: 'youtube',
+      slots,
+      options: { privacy: 'public', categoryId: 27, madeForKids: false },
+    },
+  ])
 }
 
 function seed(): Database {
@@ -89,6 +94,25 @@ describe('buildPublishGrids', () => {
     ).run()
     const [grid] = buildPublishGrids(db, [channel('space', ['09:00'])], 2, now)
     expect(grid?.cells.size).toBe(0)
+    db.close()
+  })
+
+  it('unions slots across targets, deduped and sorted, when platforms declare different times', () => {
+    const db = seed()
+    const multi = channelWithTargets('space', [
+      {
+        platform: 'youtube',
+        slots: ['10:00', '14:00', '19:00'],
+        options: { privacy: 'public', categoryId: 27, madeForKids: false },
+      },
+      {
+        platform: 'instagram',
+        slots: ['11:00', '14:00'],
+        options: { igUserId: 'ig1', shareToFeed: true },
+      },
+    ])
+    const [grid] = buildPublishGrids(db, [multi], 1, now)
+    expect(grid?.slots).toEqual(['10:00', '11:00', '14:00', '19:00'])
     db.close()
   })
 

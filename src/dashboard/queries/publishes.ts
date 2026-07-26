@@ -6,6 +6,13 @@ import { localDay } from '../../publish/slots.js'
 
 export interface ChannelGrid {
   channel: string
+  /**
+   * Row headers for the grid: the deduped, sorted union of every declared
+   * target's slots. Targets can each have their own slot list (e.g. youtube
+   * at 10:00/14:00/19:00, instagram at 11:00/18:00) — the grid still renders
+   * one row per distinct time-of-day, and a slot only one platform declares
+   * is simply empty in the other platform's cells.
+   */
   slots: string[]
   /** Newest day first. */
   days: string[]
@@ -96,9 +103,15 @@ export function buildPublishGrids(
       for (const row of rows) {
         cells.set(cellKey(row.day, row.slot), toPublishRow(row))
       }
+      // Union across targets rather than one target's list: a channel with
+      // both youtube and instagram declared can have different slot times
+      // per platform, and the grid needs a row for every distinct time any
+      // target fills, not just the first target's.
+      const slots = [...new Set(channel.publish?.targets.flatMap((t) => t.slots) ?? [])].sort()
+
       return {
         channel: channel.name,
-        slots: channel.publish?.slots ?? [],
+        slots,
         days: dayList,
         cells,
       }
