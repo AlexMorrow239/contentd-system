@@ -6,7 +6,7 @@ import { s3Store, type S3Config } from './s3.js'
 //   docker compose --profile dev up -d minio
 const CONFIG: S3Config = {
   endpoint: process.env.BRAINROT_S3_ENDPOINT ?? 'http://localhost:9100',
-  bucket: process.env.BRAINROT_S3_BUCKET ?? 'brainrot-test',
+  bucket: process.env.BRAINROT_S3_BUCKET ?? 'brainrot-videos',
   accessKeyId: process.env.BRAINROT_S3_ACCESS_KEY_ID ?? 'brainrotdev',
   secretAccessKey: process.env.BRAINROT_S3_SECRET_ACCESS_KEY ?? 'brainrotdev',
   region: 'auto',

@@ -2,11 +2,11 @@ import { mkdirSync, mkdtempSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import pino from 'pino'
+import type { ChannelConfig } from '../config/channel.js'
+import { DEFAULT_SCOUT } from '../config/channel.js'
 import { openDb } from '../db/index.js'
 import { createJob } from '../jobs/runner.js'
 import type { JobContext } from '../jobs/types.js'
-import { DEFAULT_SCOUT } from '../config/channel.js'
-import type { ChannelConfig } from '../config/channel.js'
 import type { ScriptOutput } from './script.js'
 
 const PLATFORM_META = {
@@ -66,7 +66,7 @@ export function makeCtx(
 ): JobContext {
   const db = openDb(':memory:')
   const jobId = createJob(db, channel, { topic })
-  const runDir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-test-'))
+  const runDir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-videos-'))
   return {
     jobId,
     db,

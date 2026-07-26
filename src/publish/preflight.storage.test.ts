@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db/index.js'
-import { runCli } from '../testing/run-cli.js'
 import { s3Store, type S3Config } from '../storage/s3.js'
+import { runCli } from '../testing/run-cli.js'
 
 const CONFIG: S3Config = {
   endpoint: 'http://localhost:9100',
-  bucket: 'brainrot-test',
+  bucket: 'brainrot-videos',
   accessKeyId: 'brainrotdev',
   secretAccessKey: 'brainrotdev',
   region: 'auto',

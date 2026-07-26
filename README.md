@@ -148,7 +148,7 @@ port 9100. Point `.env` at it:
 
 ```
 BRAINROT_S3_ENDPOINT=http://localhost:9100
-BRAINROT_S3_BUCKET=brainrot-test
+BRAINROT_S3_BUCKET=brainrot-videos
 BRAINROT_S3_ACCESS_KEY_ID=brainrotdev
 BRAINROT_S3_SECRET_ACCESS_KEY=brainrotdev
 ```
