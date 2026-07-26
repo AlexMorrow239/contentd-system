@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { execa } from 'execa'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { parseLibraryJobIds } from '../cli.js'
 import { approveLibrary, listLibrary, rejectLibrary } from './library.js'
 import type { LibraryState } from './library.js'
+import { runCli } from '../testing/run-cli.js'
 
 // Raw-insert seed: the DAO only ever writes library.state, so tests control
 // every other column — the owning jobs row included — directly.
@@ -175,10 +175,8 @@ describe('parseLibraryJobIds (in-process)', () => {
 })
 
 describe('library CLI', () => {
-  it('`library --help` lists the list/approve/reject subcommands', async () => {
-    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'library', '--help'], {
-      reject: false,
-    })
+  it.concurrent('`library --help` lists the list/approve/reject subcommands', async () => {
+    const result = await runCli(['library', '--help'])
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('list')
     expect(result.stdout).toContain('approve')

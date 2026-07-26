@@ -1,5 +1,4 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { execa } from 'execa'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,6 +9,7 @@ import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef } from './types.js'
 import { pipelineStages } from './pipeline.js'
 import { claimJobForResume, ResumeError, resumeJob } from './resume.js'
+import { runCli } from '../testing/run-cli.js'
 
 // Real minimal channel TOML (plan-1 shape; [scout] is optional): resumeJob
 // loads the channel from disk, so the fixture must round-trip loadChannelConfig.
@@ -289,10 +289,8 @@ describe('brainrot resume CLI', () => {
     for (const d of cleanup) rmSync(d, { recursive: true, force: true })
   })
 
-  it('`resume --help` prints usage with --db/--runs-root/--channels-dir/--force', async () => {
-    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'resume', '--help'], {
-      reject: false,
-    })
+  it.concurrent('`resume --help` prints usage with --db/--runs-root/--channels-dir/--force', async () => {
+    const result = await runCli(['resume', '--help'])
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('--db')
     expect(result.stdout).toContain('--runs-root')
@@ -300,14 +298,10 @@ describe('brainrot resume CLI', () => {
     expect(result.stdout).toContain('--force')
   }, 60000)
 
-  it('a refusal prints the reason to stderr and exits 1 with no JSON on stdout', async () => {
+  it.concurrent('a refusal prints the reason to stderr and exits 1 with no JSON on stdout', async () => {
     const dbPath = join(tmpDir('brainrot-resume-db-'), 'brainrot.db')
     openDb(dbPath).close() // create the schema
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'resume', 'no-such-job', '--db', dbPath],
-      { reject: false },
-    )
+    const result = await runCli(['resume', 'no-such-job', '--db', dbPath])
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain('job not found: no-such-job')
     // just the message — no raw unhandled-rejection stack frames
@@ -315,7 +309,7 @@ describe('brainrot resume CLI', () => {
     expect(result.stdout).toBe('')
   }, 60000)
 
-  it('resumes a final-gate-crashed job end to end, printing the JobResult JSON line and exiting 0', async () => {
+  it.concurrent('resumes a final-gate-crashed job end to end, printing the JobResult JSON line and exiting 0', async () => {
     const root = tmpDir('brainrot-resume-e2e-')
     const dbPath = join(root, 'brainrot.db')
     const runsRootDir = join(root, 'runs')
@@ -343,12 +337,10 @@ describe('brainrot resume CLI', () => {
     mkdirSync(assembleDir, { recursive: true })
     writeFileSync(join(assembleDir, 'final.mp4'), 'FAKEMP4')
 
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'resume', 'e2e-job',
-        '--db', dbPath, '--runs-root', runsRootDir, '--channels-dir', channelsDirPath],
-      { reject: false },
-    )
+    const result = await runCli([
+      'resume', 'e2e-job',
+      '--db', dbPath, '--runs-root', runsRootDir, '--channels-dir', channelsDirPath,
+    ])
     expect(result.exitCode).toBe(0)
     const line = JSON.parse(result.stdout) as { jobId: string; status: string; videoPath?: string }
     expect(line.jobId).toBe('e2e-job')

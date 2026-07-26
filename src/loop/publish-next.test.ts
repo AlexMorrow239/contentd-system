@@ -1,5 +1,4 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { execa } from 'execa'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +7,7 @@ import { openDb } from '../db/index.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { claimPublish, markPublishDone } from '../publish/publishes.js'
 import { upsertToken } from '../publish/tokens.js'
+import { runCli } from '../testing/run-cli.js'
 import type { Platform, PublishTarget } from '../publish/types.js'
 import { PublishOutcomeUnknownError, YT_UPLOAD_SCOPE } from '../publish/youtube.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
@@ -725,42 +725,34 @@ describe('publishNextTick — config errors', () => {
 })
 
 describe('publish-next CLI', () => {
-  it('`publish-next --help` prints usage with --db/--channels-dir/--dry-run', async () => {
-    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'publish-next', '--help'], {
-      reject: false,
-    })
+  it.concurrent('`publish-next --help` prints usage with --db/--channels-dir/--dry-run', async () => {
+    const result = await runCli(['publish-next', '--help'])
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('--db')
     expect(result.stdout).toContain('--channels-dir')
     expect(result.stdout).toContain('--dry-run')
   }, 60000)
 
-  it('`publish-next` with no due slot prints one noop JSON line and exits 0', async () => {
+  it.concurrent('`publish-next` with no due slot prints one noop JSON line and exits 0', async () => {
     const root = tmpDir('brainrot-publish-cli-')
     const channelsDir = tmpDir('brainrot-publish-cli-channels-')
     writeChannel(channelsDir, { name: 'chan-a' })
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'publish-next', '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir],
-      { reject: false },
-    )
+    const result = await runCli([
+      'publish-next', '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir,
+    ])
     expect(result.exitCode).toBe(0)
     expect(result.stdout.trim().split('\n')).toHaveLength(1)
     expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-due-slot' })
   }, 60000)
 
-  it('`publish-next --dry-run` with no due slot prints one dry-run JSON line and exits 0', async () => {
+  it.concurrent('`publish-next --dry-run` with no due slot prints one dry-run JSON line and exits 0', async () => {
     const root = tmpDir('brainrot-publish-cli-dry-')
     const channelsDir = tmpDir('brainrot-publish-cli-dry-channels-')
     writeChannel(channelsDir, { name: 'chan-a' })
-    const result = await execa(
-      'pnpm',
-      [
-        'exec', 'tsx', 'src/cli.ts', 'publish-next',
-        '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir, '--dry-run',
-      ],
-      { reject: false },
-    )
+    const result = await runCli([
+      'publish-next',
+      '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir, '--dry-run',
+    ])
     expect(result.exitCode).toBe(0)
     expect(result.stdout.trim().split('\n')).toHaveLength(1)
     expect(JSON.parse(result.stdout)).toEqual({ action: 'dry-run', wouldPublish: null, reason: 'no-due-slot' })

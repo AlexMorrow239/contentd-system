@@ -1,5 +1,4 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { execa } from 'execa'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +7,7 @@ import { loadChannelConfig } from '../config/channel.js'
 import { openDb } from '../db/index.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob } from '../jobs/runner.js'
+import { runCli } from '../testing/run-cli.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import { claimTopic } from '../scout/topics.js'
 import { produceNextTick } from './produce-next.js'
@@ -449,24 +449,20 @@ describe('produceNextTick — lease heartbeat', () => {
 })
 
 describe('produce-next CLI', () => {
-  it('`produce-next --help` prints usage with --db/--channels-dir/--runs-root', async () => {
-    const result = await execa('pnpm', ['exec', 'tsx', 'src/cli.ts', 'produce-next', '--help'], {
-      reject: false,
-    })
+  it.concurrent('`produce-next --help` prints usage with --db/--channels-dir/--runs-root', async () => {
+    const result = await runCli(['produce-next', '--help'])
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain('--db')
     expect(result.stdout).toContain('--channels-dir')
     expect(result.stdout).toContain('--runs-root')
   }, 60000)
 
-  it('`produce-next` with no eligible work prints one noop JSON line and exits 0', async () => {
+  it.concurrent('`produce-next` with no eligible work prints one noop JSON line and exits 0', async () => {
     const root = tmpDir('brainrot-loop-cli-')
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'produce-next',
-        '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir, '--runs-root', join(root, 'runs')],
-      { reject: false },
-    )
+    const result = await runCli([
+      'produce-next',
+      '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir, '--runs-root', join(root, 'runs'),
+    ])
     expect(result.exitCode).toBe(0)
     // exactly one cron-greppable JSON line
     expect(result.stdout.trim().split('\n')).toHaveLength(1)
@@ -475,16 +471,14 @@ describe('produce-next CLI', () => {
 
   // The G14 symptom end to end: this used to exit 1 with an empty stdout, so a
   // cron log of JSON lines simply had a hole in it every 25 minutes.
-  it('`produce-next` over a broken channels dir still prints one JSON line and exits 0', async () => {
+  it.concurrent('`produce-next` over a broken channels dir still prints one JSON line and exits 0', async () => {
     const root = tmpDir('brainrot-loop-cli-broken-')
     const brokenDir = tmpDir('brainrot-loop-cli-broken-channels-')
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
-    const result = await execa(
-      'pnpm',
-      ['exec', 'tsx', 'src/cli.ts', 'produce-next',
-        '--db', join(root, 'brainrot.db'), '--channels-dir', brokenDir, '--runs-root', join(root, 'runs')],
-      { reject: false },
-    )
+    const result = await runCli([
+      'produce-next',
+      '--db', join(root, 'brainrot.db'), '--channels-dir', brokenDir, '--runs-root', join(root, 'runs'),
+    ])
     expect(result.exitCode).toBe(0)
     expect(result.stdout.trim().split('\n')).toHaveLength(1)
     const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
