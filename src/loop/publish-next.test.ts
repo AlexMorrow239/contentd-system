@@ -1022,8 +1022,12 @@ describe('publishNextTick — media resolved from object storage', () => {
   // s3ConfigFromEnv() throws when object storage is unconfigured (design:
   // no silent local fallback). A YouTube-only deployment must keep working;
   // an Instagram upload that actually needs the store must fail the one
-  // video legibly (rejected) rather than crash the whole tick.
-  it('degrades to a legible rejected failure, not a crash, when no store is configured or injected', async () => {
+  // video legibly rather than crash the whole tick. The failure is
+  // 'transient', not 'rejected': a deploy that drops or breaks BRAINROT_S3_*
+  // is a misconfiguration of the environment, not a defect in the video, and
+  // 'rejected' counts toward rejectedCount's un-undoable 3-attempt retirement
+  // cap (src/publish/publishes.ts eligibleVideo).
+  it('degrades to a legible transient failure, not a crash, when no store is configured or injected', async () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-store-unconfigured-')
@@ -1054,7 +1058,7 @@ describe('publishNextTick — media resolved from object storage', () => {
       status: string
       error_kind: string
     }
-    expect(row).toEqual({ status: 'failed', error_kind: 'rejected' })
+    expect(row).toEqual({ status: 'failed', error_kind: 'transient' })
     db.close()
   })
 

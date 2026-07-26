@@ -11,6 +11,11 @@ import type { ObjectStore } from '../storage/types.js'
  * Operator command, run outside the publish lease like the others. Rows whose
  * local file has already been reclaimed are unrecoverable and reported as
  * skipped rather than failing the whole run.
+ *
+ * `library reject` deletes both the R2 object and the `library_objects` row,
+ * which would otherwise look identical to a pre-storage row missing its
+ * upload. The `state != 'blocked'` guard keeps this command from resurrecting
+ * a video an operator deliberately deleted.
  */
 export async function backfillStore(opts: {
   db: Database
@@ -22,7 +27,7 @@ export async function backfillStore(opts: {
        FROM library l
        JOIN jobs j ON j.id = l.job_id
        LEFT JOIN library_objects lo ON lo.job_id = l.job_id
-       WHERE lo.job_id IS NULL
+       WHERE lo.job_id IS NULL AND l.state != 'blocked'
        ORDER BY l.job_id`,
     )
     .all() as { jobId: string; videoPath: string; channel: string }[]

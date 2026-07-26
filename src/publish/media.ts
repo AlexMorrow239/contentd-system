@@ -9,8 +9,14 @@ import { PublishError, type PublishMedia } from './types.js'
  * one, so a recent job avoids paying a download. `url()` requires an object
  * key — there is no way to give Meta a local path.
  *
- * Every unavailability here is 'rejected', not 'transient': no amount of
- * retrying will make a video that exists in neither place appear.
+ * Unavailability that is genuinely about the video (no local file and no
+ * stored object; a legacy row with no object key at all) is 'rejected': no
+ * amount of retrying will make it appear. Unavailability that is about the
+ * environment instead — no object store configured, or an unexpected
+ * (non-StorageError, or non-'not-found') failure reading the store — is
+ * 'transient', since fixing the environment recovers the video and
+ * 'rejected' counts toward rejectedCount's retirement cap (eligibleVideo,
+ * src/publish/publishes.ts) with no way to undo it.
  */
 export function publishMedia(opts: {
   objectKey: string | null
@@ -31,9 +37,11 @@ export function publishMedia(opts: {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           // Only a genuinely absent object is unretryable; an outage or a bad
-          // credential is the next tick's problem, not this video's fault.
+          // credential — including a non-StorageError throw, which is always
+          // unexpected rather than a confirmed absence — is the next tick's
+          // problem, not this video's fault.
           const kind =
-            err instanceof StorageError && err.kind !== 'not-found' ? 'transient' : 'rejected'
+            err instanceof StorageError && err.kind === 'not-found' ? 'rejected' : 'transient'
           throw new PublishError(
             `publishMedia: object ${opts.objectKey} could not be read: ${message}`,
             kind,
@@ -42,11 +50,12 @@ export function publishMedia(opts: {
       }
       if (opts.objectKey !== null && opts.store === null) {
         // An object key exists — the video isn't actually missing — but there
-        // is no store configured to fetch it. A misconfiguration, not the same
-        // "no video available" case handled below.
+        // is no store configured to fetch it. A misconfiguration (e.g. a
+        // deploy that dropped or broke BRAINROT_S3_* keys), not a defect in
+        // the video itself, so it must not count toward rejectedCount.
         throw new PublishError(
           `publishMedia: object ${opts.objectKey} is recorded but no object store is configured to fetch it`,
-          'rejected',
+          'transient',
         )
       }
       throw new PublishError(
@@ -63,7 +72,10 @@ export function publishMedia(opts: {
         )
       }
       if (opts.store === null) {
-        throw new PublishError('publishMedia: no object store configured', 'rejected')
+        // Same misconfiguration as the bytes() store-is-null branch above —
+        // the environment's fault, not the video's, so it must stay
+        // retryable rather than counting toward rejectedCount.
+        throw new PublishError('publishMedia: no object store configured', 'transient')
       }
       try {
         return await opts.store.presignGet(opts.objectKey, ttlSeconds)

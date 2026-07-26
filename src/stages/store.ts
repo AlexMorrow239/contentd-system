@@ -35,10 +35,14 @@ export function storeStage(store?: ObjectStore): StageDef {
       let bytes: Buffer
       try {
         bytes = readFileSync(finalPath)
-      } catch {
+      } catch (err) {
         // assemble did not produce what it claimed. Uploading nothing is not a
-        // recoverable interpretation of that.
-        throw new Error(`store: no rendered video at ${finalPath}`)
+        // recoverable interpretation of that — but the underlying error still
+        // matters: an EACCES/EIO reading a bind-mounted runs/ inside Docker is
+        // a different first-hour failure than a genuinely missing file, and
+        // should not send the operator hunting for a render bug.
+        const message = err instanceof Error ? err.message : String(err)
+        throw new Error(`store: no rendered video at ${finalPath}: ${message}`)
       }
 
       const objectKey = objectKeyFor(ctx.channel.name, ctx.jobId)

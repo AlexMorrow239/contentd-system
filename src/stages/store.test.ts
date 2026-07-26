@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import pino from 'pino'
@@ -77,6 +77,27 @@ describe('storeStage', () => {
 
   it('fails when assemble produced no final.mp4', async () => {
     await expect(storeStage(store).run(makeCtx())).rejects.toThrow(/no rendered video/)
+  })
+
+  // Regression test: a permissions error reading a bind-mounted runs/ inside
+  // Docker (EACCES/EIO) is a plausible first-hour failure and previously got
+  // the exact same message as a genuinely missing file, sending the operator
+  // hunting for a render bug instead of a filesystem/permissions issue.
+  it('includes the underlying error message when the file exists but cannot be read', async () => {
+    const dir = path.join(runDir, 'assemble')
+    mkdirSync(dir, { recursive: true })
+    const finalPath = path.join(dir, 'final.mp4')
+    writeFileSync(finalPath, VIDEO)
+    // Make the file unreadable to force an EACCES from readFileSync rather
+    // than an ENOENT, without needing a real permissions-restricted mount.
+    chmodSync(finalPath, 0o000)
+    try {
+      await expect(storeStage(store).run(makeCtx())).rejects.toThrow(
+        /no rendered video at.+EACCES/s,
+      )
+    } finally {
+      chmodSync(finalPath, 0o644)
+    }
   })
 
   // Guards the truncated-upload case: without it, a short write surfaces as an
