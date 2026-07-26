@@ -24,9 +24,16 @@ function rank(spec: TestSpecification): number {
 
 export class SlowFilesFirstSequencer extends BaseSequencer {
   async sort(files: TestSpecification[]): Promise<TestSpecification[]> {
-    // Array.prototype.sort is stable, so files not in SLOW_FIRST keep the
-    // ordering BaseSequencer chose for them.
     const base = await super.sort(files)
-    return base.sort((a, b) => rank(a) - rank(b))
+    // Partition instead of a flat re-sort: resorting the whole array by rank
+    // would let any pair of non-SLOW_FIRST files swap across each other,
+    // discarding whatever ordering BaseSequencer chose for them (project
+    // sequencing, isolated-suites-first, etc). Pulling the slow files to the
+    // front and leaving everyone else in BaseSequencer's exact relative order
+    // gets the same effect without that risk.
+    const slow = base.filter((f) => rank(f) < SLOW_FIRST.length)
+    const rest = base.filter((f) => rank(f) === SLOW_FIRST.length)
+    slow.sort((a, b) => rank(a) - rank(b))
+    return [...slow, ...rest]
   }
 }
