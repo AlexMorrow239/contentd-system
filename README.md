@@ -243,6 +243,34 @@ schedule itself is `deploy/docker/crontab`, baked into the image — changing
 it means editing that file and running `docker compose build brainrot`,
 same as any other source change. There is no hot reload.
 
+### Dashboard
+
+A read-only web view of the production database, served by the `dashboard`
+compose service:
+
+```bash
+docker compose up -d dashboard
+open http://127.0.0.1:8787
+```
+
+Five views: an overview (job health, spend against all three budget caps,
+held leases, YouTube quota), jobs with a per-stage timeline and the raw error
+text, the library with inline video playback, the publish schedule as a
+day-by-slot grid including unfilled slots, and the scout topic queue.
+
+Every page takes `?db=dev` to view `data/dev.db` instead of the production
+database; the header says which one you are looking at and dev shows a banner.
+
+The dashboard **never writes**. Its connection opens read-only, so
+`library approve/reject`, `topics requeue/reject` and `publish retry/mark-done`
+remain CLI-only — those race a live cron tick, and a button is not the right
+affordance for that. The `./data` mount is read-write on purpose: SQLite must
+create the `-shm` file to read a WAL database, so the read-only guarantee lives
+in the connection flag rather than the mount.
+
+The port is bound to `127.0.0.1` and there is no authentication. Do not
+republish it on `0.0.0.0`.
+
 ### Development vs. production
 
 |          | Production (container) | Development (host)             |

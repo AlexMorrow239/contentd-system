@@ -155,6 +155,23 @@ a channel's local-time schedule, and `publishes.ts` is the DAO for the
 tokens and other credential material must never reach logs or stdout —
 CLI commands print only confirmations.
 
+### The dashboard is read-only, and structurally so
+
+`src/dashboard/` serves a localhost web view of the database (compose service
+`dashboard`, port 8787, loopback-bound). It opens SQLite through
+`openDbReadonly` — a sibling of `openDb` that skips the `mkdirSync` and the
+`schema.sql` exec, both of which are writes — so no route can mutate state.
+Operator mutations stay on the CLI, where the lease-race caveats are
+documented.
+
+The module splits SQL from HTML and enforces it by structure: `queries/*` are
+`(db, params) -> typed data` and emit no markup, `views/*` are
+`(data) -> SafeHtml` and issue no SQL. Interpolation goes through `html.ts`,
+which escapes by default — topic titles come from scraped sources, so this is
+a live path. `queries/jobs.ts` hardcodes `DASHBOARD_STAGE_ORDER` rather than
+calling `pipelineStages()`, which would drag remotion and kokoro into a
+viewer; a test asserts the two lists match so they cannot drift.
+
 ### Remotion rendering
 
 `remotion/` is the actual video composition (React components rendered to

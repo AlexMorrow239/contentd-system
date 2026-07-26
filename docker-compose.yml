@@ -35,6 +35,9 @@ services:
     build:
       context: .
       dockerfile: deploy/docker/Dockerfile
+    # Named so the dashboard service can reuse this exact image rather than
+    # building a second copy of a ~2 GB layer stack.
+    image: brainrot:latest
     restart: unless-stopped
     depends_on:
       whisperx:
@@ -90,6 +93,51 @@ services:
       options:
         max-size: 10m
         max-file: '5'
+
+  dashboard:
+    # Same build context and image name as `brainrot`: compose builds the
+    # image once and both services run it. Declaring only `image:` here would
+    # make `docker compose up -d` try to PULL brainrot:latest from a registry
+    # on a machine that has not built it yet.
+    build:
+      context: .
+      dockerfile: deploy/docker/Dockerfile
+    image: brainrot:latest
+    command: pnpm exec tsx src/dashboard/server.ts
+    restart: unless-stopped
+    # Deliberately no depends_on: whisperx. The dashboard reads a file and
+    # serves HTML; coupling it to sidecar health would hide the dashboard you
+    # would use to diagnose an unhealthy sidecar.
+    env_file: .env
+    environment:
+      BRAINROT_DB: data/brainrot.db
+      BRAINROT_DEV_DB: data/dev.db
+      BRAINROT_CHANNELS_DIR: channels
+      BRAINROT_RUNS_ROOT: runs
+      BRAINROT_DASHBOARD_PORT: "8787"
+      # Read for the quota panel only; must match the brainrot service so the
+      # dashboard reports the cap that is actually enforced.
+      BRAINROT_YT_UPLOADS_PER_DAY: "6"
+      # Read for the spend panel; same reasoning.
+      BRAINROT_GLOBAL_DAILY_USD: "12"
+      TZ: America/Chicago
+    ports:
+      # Loopback-bound on the HOST: unreachable from the network. There is no
+      # auth layer, and this binding is what makes that acceptable.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      # READ-WRITE mount with a READ-ONLY connection. SQLite must create the
+      # -shm file to read a WAL database, so a :ro mount breaks the dashboard
+      # outright; the read-only guarantee lives in openDbReadonly's connection
+      # flag, where better-sqlite3 hard-errors on any write.
+      - ./data:/app/data
+      - ./runs:/app/runs:ro       # video playback only
+      - ./channels:/app/channels:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
 
 volumes:
   whisperx-cache:
