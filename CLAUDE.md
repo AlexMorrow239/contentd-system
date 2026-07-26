@@ -187,7 +187,8 @@ Remotion entry path is correct by construction but unexercised.
 
 ## Design docs
 
-`docs/superpowers/specs/` and `docs/superpowers/plans/` contain the original
-design specs and implementation plans (walking-skeleton volume pipeline,
-premium tier, trend-scout loop, publishing loop) — check these for the
-reasoning behind a behavior before assuming it's incidental.
+`superpowers/specs/` and `superpowers/plans/` contain the original design specs
+and implementation plans (walking-skeleton volume pipeline, premium tier,
+trend-scout loop, publishing loop) — check these for the reasoning behind a
+behavior before assuming it's incidental. The `superpowers/` tree is gitignored
+by design: it is local working documentation, not a tracked deliverable.
