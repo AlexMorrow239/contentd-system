@@ -573,8 +573,17 @@ describe('final gate: library_objects', () => {
     await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
     // Second call: every stage is already 'done', so this re-enters only the
     // final gate.
-    await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
+    const second = await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
 
+    // The row count alone can't distinguish a correct upsert from a broken
+    // INSERT that hits the job_id PRIMARY KEY and rolls back: both leave
+    // exactly one row (the first run's). Assert the second call's own outcome
+    // too — it only stays 'ready' (and the job only stays 'done') when the
+    // ON CONFLICT upsert actually ran.
+    expect(second.status).toBe('ready')
+    expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({
+      status: 'done',
+    })
     expect(
       row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library_objects WHERE job_id = ?', jobId),
     ).toEqual({ n: 1 })
