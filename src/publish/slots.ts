@@ -1,4 +1,4 @@
-import type { Platform, PublishChannelConfig } from './types.js'
+import type { Platform } from './types.js'
 
 // 'YYYY-MM-DD' in the MACHINE's local time zone — never toISOString() (that
 // renders UTC). Slot bookkeeping is deliberately local (design spec §13): a
@@ -21,15 +21,11 @@ export function localHHMM(now: Date): string {
 
 // Slots whose time has arrived — slot <= now, so a slot exactly matching the
 // current minute counts as due (design spec §6 step 3) — and that have not
-// already consumed a publishes row today. cfg.slots is already sorted
-// ascending by the config loader (Task 5); filtering alone preserves order.
-export function dueSlotsForChannel(
-  cfg: PublishChannelConfig,
-  consumed: Set<string>,
-  now: Date,
-): string[] {
+// already consumed a publishes row today. `slots` is a target's resolved
+// per-platform list, already sorted ascending by the config loader.
+export function dueSlotsForChannel(slots: string[], consumed: Set<string>, now: Date): string[] {
   const nowHHMM = localHHMM(now)
-  return cfg.slots.filter((slot) => slot <= nowHHMM && !consumed.has(slot))
+  return slots.filter((slot) => slot <= nowHHMM && !consumed.has(slot))
 }
 
 export interface SlotCandidate {

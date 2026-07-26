@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import type { PublishChannelConfig } from './types.js'
 import { dueSlotsForChannel, localDay, localHHMM, orderCandidates } from './slots.js'
 import type { SlotCandidate } from './slots.js'
 
@@ -23,37 +22,26 @@ describe('localHHMM', () => {
   })
 })
 
-// slots already sorted ascending, exactly as the config loader (Task 5) leaves them.
-function channelWithSlots(slots: string[]): PublishChannelConfig {
-  return {
-    slots,
-    platforms: ['youtube'],
-    privacy: 'public',
-    categoryId: 24,
-    madeForKids: false,
-  }
-}
-
 describe('dueSlotsForChannel', () => {
-  const cfg = channelWithSlots(['10:00', '14:00', '19:00'])
+  const slots = ['10:00', '14:00', '19:00']
 
   it('is empty before the first slot', () => {
-    expect(dueSlotsForChannel(cfg, new Set(), new Date(2026, 6, 22, 9, 59))).toEqual([])
+    expect(dueSlotsForChannel(slots, new Set(), new Date(2026, 6, 22, 9, 59))).toEqual([])
   })
 
   it('includes a slot exactly at its boundary (slot == now counts as due)', () => {
-    expect(dueSlotsForChannel(cfg, new Set(), new Date(2026, 6, 22, 10, 0))).toEqual(['10:00'])
+    expect(dueSlotsForChannel(slots, new Set(), new Date(2026, 6, 22, 10, 0))).toEqual(['10:00'])
   })
 
   it('includes only slots at-or-before now, preserving ascending order', () => {
-    expect(dueSlotsForChannel(cfg, new Set(), new Date(2026, 6, 22, 14, 30))).toEqual([
+    expect(dueSlotsForChannel(slots, new Set(), new Date(2026, 6, 22, 14, 30))).toEqual([
       '10:00',
       '14:00',
     ])
   })
 
   it('includes every slot once the day is done, with an empty consumed set', () => {
-    expect(dueSlotsForChannel(cfg, new Set(), new Date(2026, 6, 22, 23, 0))).toEqual([
+    expect(dueSlotsForChannel(slots, new Set(), new Date(2026, 6, 22, 23, 0))).toEqual([
       '10:00',
       '14:00',
       '19:00',
@@ -62,12 +50,12 @@ describe('dueSlotsForChannel', () => {
 
   it('is empty once every slot for the day is consumed', () => {
     const consumed = new Set(['10:00', '14:00', '19:00'])
-    expect(dueSlotsForChannel(cfg, consumed, new Date(2026, 6, 22, 23, 0))).toEqual([])
+    expect(dueSlotsForChannel(slots, consumed, new Date(2026, 6, 22, 23, 0))).toEqual([])
   })
 
   it('skips only the consumed slots, preserving order for the rest', () => {
     const consumed = new Set(['14:00'])
-    expect(dueSlotsForChannel(cfg, consumed, new Date(2026, 6, 22, 23, 0))).toEqual([
+    expect(dueSlotsForChannel(slots, consumed, new Date(2026, 6, 22, 23, 0))).toEqual([
       '10:00',
       '19:00',
     ])
