@@ -259,7 +259,7 @@ describe('instagramUploadTarget', () => {
 describe('refreshLongLivedToken', () => {
   it('exchanges the current token for a fresh one and computes expiresAt', async () => {
     const fetchImpl: typeof fetch = async (input) => {
-      const url = new URL(String(input))
+      const url = new URL(input instanceof Request ? input.url : String(input))
       expect(url.searchParams.get('grant_type')).toBe('ig_refresh_token')
       expect(url.searchParams.get('access_token')).toBe('old-token')
       return new Response(JSON.stringify({ access_token: 'new-token', expires_in: 5_184_000 }), {
@@ -309,7 +309,12 @@ describe('instagramAdapter', () => {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
-    const credential = await instagramAdapter(fetchImpl).resolveCredential(db, 'chan', TEST_KEY, new Date())
+    const credential = await instagramAdapter(fetchImpl).resolveCredential(
+      db,
+      'chan',
+      TEST_KEY,
+      new Date(),
+    )
     expect(credential).toBe('tok-new')
     expect(loadToken(db, 'instagram', 'chan', TEST_KEY)?.token).toBe('tok-new')
   })

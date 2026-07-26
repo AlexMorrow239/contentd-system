@@ -170,7 +170,7 @@ and `publishes.ts` is the DAO for the `publishes` table's
 claim/done/failed/interrupted state machine, keyed per (channel, platform).
 The two platforms' credential-resolution shapes differ: YouTube mints a
 fresh access token from its stored refresh token on every tick, while
-Instagram's stored token *is* the access token and is refreshed in place by
+Instagram's stored token _is_ the access token and is refreshed in place by
 its adapter only when within its expiry window (`IG_TOKEN_REFRESH_WINDOW_MS`)
 — there is no per-tick mint step. Refresh tokens, access tokens, and other
 credential material must never reach logs or stdout — CLI commands print

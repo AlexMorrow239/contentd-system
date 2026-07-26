@@ -248,7 +248,9 @@ export function loadChannelConfig(path: string): ChannelConfig {
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
     publish: raw.publish
-      ? (Object.freeze({ targets: Object.freeze(buildTargets(raw.publish)) }) as PublishChannelConfig)
+      ? (Object.freeze({
+          targets: Object.freeze(buildTargets(raw.publish)),
+        }) as PublishChannelConfig)
       : null,
   }
 }

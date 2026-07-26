@@ -19,35 +19,31 @@ const VIDEO_PATH = process.env.CONTRACT_IG_VIDEO_PATH
 // describe.skipIf (not a thrown error) is what lets `CONTRACT=1 pnpm test`
 // exit 0 when these three are unset, instead of failing or hanging.
 describe.skipIf(!CHANNEL || !IG_USER_ID || !VIDEO_PATH)('instagram adapter (contract)', () => {
-  it(
-    'publishes a real Reel through the full container flow',
-    async () => {
-      const db = openDb(process.env.BRAINROT_DB ?? 'data/brainrot.db')
-      try {
-        const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
-        const adapter = instagramAdapter()
-        expect(adapter.hasCredential(db, CHANNEL!, key)).toBe(true)
-        const credential = await adapter.resolveCredential(db, CHANNEL!, key, new Date())
-        const result = await adapter.upload(
-          {
-            videoPath: VIDEO_PATH!,
-            meta: {
-              title: 'Contract test',
-              description: 'Automated contract test — safe to delete.',
-              hashtags: [],
-            },
-            options: { igUserId: IG_USER_ID!, shareToFeed: false },
+  it('publishes a real Reel through the full container flow', async () => {
+    const db = openDb(process.env.BRAINROT_DB ?? 'data/brainrot.db')
+    try {
+      const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
+      const adapter = instagramAdapter()
+      expect(adapter.hasCredential(db, CHANNEL!, key)).toBe(true)
+      const credential = await adapter.resolveCredential(db, CHANNEL!, key, new Date())
+      const result = await adapter.upload(
+        {
+          videoPath: VIDEO_PATH!,
+          meta: {
+            title: 'Contract test',
+            description: 'Automated contract test — safe to delete.',
+            hashtags: [],
           },
-          credential,
-        )
-        expect(result.postId).toBeTruthy()
-        console.log(
-          `contract test posted ${result.postId} (${result.url}) — delete it from Instagram manually`,
-        )
-      } finally {
-        db.close()
-      }
-    },
-    120_000,
-  )
+          options: { igUserId: IG_USER_ID!, shareToFeed: false },
+        },
+        credential,
+      )
+      expect(result.postId).toBeTruthy()
+      console.log(
+        `contract test posted ${result.postId} (${result.url}) — delete it from Instagram manually`,
+      )
+    } finally {
+      db.close()
+    }
+  }, 120_000)
 })

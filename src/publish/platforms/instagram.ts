@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3'
 import { renderCaption } from '../platform-meta.js'
 import { loadToken, upsertToken } from '../tokens.js'
 import { PublishError, PublishOutcomeUnknownError } from '../types.js'
-import type { PlatformMeta, PublishAdapter } from '../types.js'
+import type { PublishAdapter } from '../types.js'
 import type { InstagramOptions } from './options.js'
 
 export const IG_GRAPH_VERSION = 'v21.0'
@@ -253,13 +253,7 @@ async function fetchPermalink(opts: {
 export function instagramUploadTarget(
   fetchImpl: typeof fetch = fetch,
   nowMs: () => number = () => Date.now(),
-): {
-  platformId: 'instagram'
-  upload(
-    req: { videoPath: string; meta: PlatformMeta; options: InstagramOptions },
-    token: string,
-  ): Promise<{ postId: string; url: string }>
-} {
+): Pick<PublishAdapter<InstagramOptions>, 'platformId' | 'upload'> {
   return {
     platformId: 'instagram',
     async upload(req, token) {
@@ -312,7 +306,9 @@ export async function refreshLongLivedToken(opts: {
   const url = new URL(`https://graph.facebook.com/${IG_GRAPH_VERSION}/refresh_access_token`)
   url.searchParams.set('grant_type', 'ig_refresh_token')
   url.searchParams.set('access_token', opts.token)
-  const res = await opts.fetchImpl(url.toString(), { signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS) })
+  const res = await opts.fetchImpl(url.toString(), {
+    signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
+  })
   if (!res.ok) {
     const raw = await res.text().catch(() => '')
     throw new Error(`refresh_access_token responded ${res.status}: ${raw}`)
@@ -331,7 +327,9 @@ export async function refreshLongLivedToken(opts: {
 // resolution is the piece unique to Instagram's token model: a long-lived
 // token that IS the access token (no separate mint step), refreshed in place
 // when within IG_TOKEN_REFRESH_WINDOW_MS of expiring (design spec decision 5).
-export function instagramAdapter(fetchImpl: typeof fetch = fetch): PublishAdapter<InstagramOptions> {
+export function instagramAdapter(
+  fetchImpl: typeof fetch = fetch,
+): PublishAdapter<InstagramOptions> {
   const target = instagramUploadTarget(fetchImpl)
   return {
     platformId: 'instagram',
@@ -339,7 +337,12 @@ export function instagramAdapter(fetchImpl: typeof fetch = fetch): PublishAdapte
     hasCredential(db: Database, channel: string, key: Buffer): boolean {
       return loadToken(db, 'instagram', channel, key) !== null
     },
-    async resolveCredential(db: Database, channel: string, key: Buffer, now: Date): Promise<string> {
+    async resolveCredential(
+      db: Database,
+      channel: string,
+      key: Buffer,
+      now: Date,
+    ): Promise<string> {
       const stored = loadToken(db, 'instagram', channel, key)
       if (stored === null) {
         throw new PublishError('instagramAdapter: no stored token for this channel', 'auth')
@@ -354,7 +357,15 @@ export function instagramAdapter(fetchImpl: typeof fetch = fetch): PublishAdapte
             const message = err instanceof Error ? err.message : String(err)
             throw new PublishError(`instagramAdapter: token refresh failed: ${message}`, 'auth')
           }
-          upsertToken(db, 'instagram', channel, refreshed.token, 'instagram_content_publish', key, refreshed.expiresAt)
+          upsertToken(
+            db,
+            'instagram',
+            channel,
+            refreshed.token,
+            'instagram_content_publish',
+            key,
+            refreshed.expiresAt,
+          )
           return refreshed.token
         }
       }

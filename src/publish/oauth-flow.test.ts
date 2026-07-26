@@ -188,7 +188,7 @@ describe('runInstagramAuthFlow', () => {
   it('drives consent -> redirect -> two-step token exchange and returns a long-lived token', async () => {
     let callIndex = 0
     const fetchImpl: typeof fetch = async (url) => {
-      const parsed = new URL(String(url))
+      const parsed = new URL(url instanceof Request ? url.url : String(url))
       callIndex++
       if (callIndex === 1) {
         // short-lived code exchange

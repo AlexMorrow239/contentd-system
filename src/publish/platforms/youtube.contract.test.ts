@@ -47,7 +47,7 @@ describe('youtube adapter (contract)', () => {
       }
 
       const accessToken = await mintAccessToken({
-        refreshToken: stored!.token,
+        refreshToken: stored.token,
         clientId: process.env.YT_CLIENT_ID!,
         clientSecret: process.env.YT_CLIENT_SECRET!,
       })

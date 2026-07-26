@@ -14,7 +14,12 @@ import {
 } from '../publish/publishes.js'
 import { dueSlotsForChannel, localDay, orderCandidates } from '../publish/slots.js'
 import type { SlotCandidate } from '../publish/slots.js'
-import { PUBLISH_PLATFORMS, PublishError, PublishOutcomeUnknownError, resolvePlatformMeta } from '../publish/types.js'
+import {
+  PUBLISH_PLATFORMS,
+  PublishError,
+  PublishOutcomeUnknownError,
+  resolvePlatformMeta,
+} from '../publish/types.js'
 import type { Platform, PublishAdapter } from '../publish/types.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
 
@@ -166,7 +171,12 @@ export async function publishNextTick(
       const key = adapter.quota.scope === 'global' ? c.platform : `${c.platform}:${c.channel}`
       let used = usageCache.get(key)
       if (used === undefined) {
-        used = uploadsUsedToday(db, c.platform, day, adapter.quota.scope === 'channel' ? c.channel : undefined)
+        used = uploadsUsedToday(
+          db,
+          c.platform,
+          day,
+          adapter.quota.scope === 'channel' ? c.channel : undefined,
+        )
         usageCache.set(key, used)
       }
       return used < adapter.quota.cap()
@@ -216,7 +226,10 @@ export async function publishNextTick(
       }
       // hasCredential is a cheap, non-network check (env presence, a
       // decryptable stored token) — safe to run per-candidate before any claim.
-      if (tokenKey === undefined || !adapters[candidate.platform].hasCredential(db, candidate.channel, tokenKey)) {
+      if (
+        tokenKey === undefined ||
+        !adapters[candidate.platform].hasCredential(db, candidate.channel, tokenKey)
+      ) {
         if (firstReason === undefined) firstReason = 'no-auth'
         continue
       }

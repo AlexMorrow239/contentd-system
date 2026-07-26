@@ -355,9 +355,7 @@ describe('[publish] — per-platform targets', () => {
 
   it('throws when a platform has no slots and [publish] has no shared slots', () => {
     expect(() =>
-      loadChannelConfig(
-        writeToml([...PLAN1_LINES, '[publish.youtube]', 'privacy = "public"', '']),
-      ),
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish.youtube]', 'privacy = "public"', ''])),
     ).toThrow(/no slots/)
   })
 
@@ -380,14 +378,7 @@ describe('[publish] — per-platform targets', () => {
   it('throws on an unknown platform sub-table', () => {
     expect(() =>
       loadChannelConfig(
-        writeToml([
-          ...PLAN1_LINES,
-          '[publish]',
-          'slots = ["10:00"]',
-          '',
-          '[publish.tiktok]',
-          '',
-        ]),
+        writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', '', '[publish.tiktok]', '']),
       ),
     ).toThrow()
   })
