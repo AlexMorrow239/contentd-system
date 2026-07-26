@@ -11,7 +11,12 @@ import { produceNextTick } from './loop/produce-next.js'
 import { publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
 import { openDb } from './db/index.js'
-import { listPublishes, markInterruptedDone, retryInterrupted } from './publish/publishes.js'
+import {
+  interruptedPlatform,
+  listPublishes,
+  markInterruptedDone,
+  retryInterrupted,
+} from './publish/publishes.js'
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { pipelineStages } from './jobs/pipeline.js'
@@ -20,7 +25,8 @@ import type { LibraryState } from './jobs/library.js'
 import { runInstagramAuthFlow, runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
-import { youtubeShortsUrl } from './publish/platforms/youtube.js'
+import { ADAPTERS } from './publish/platforms/index.js'
+import type { Platform } from './publish/types.js'
 import { DEV_VOICE_ENV } from './stages/voice.js'
 
 /**
@@ -453,94 +459,88 @@ library
   })
 
 // Interactive per-channel OAuth grant (design spec §4.2). Thin glue: all flow
-// logic and error taxonomy live in runYoutubeAuthFlow; this action only
-// resolves the channel/env inputs around it and persists the result.
+// logic and error taxonomy live in the run*AuthFlow functions; this action
+// only resolves the channel/env inputs around one and persists the result.
 const auth = program.command('auth')
 
-auth
-  .command('youtube')
-  .requiredOption('--channel <name>', 'channel name to authorize')
-  .option('--db <path>', 'sqlite db path')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
-  .action(async (opts: { channel: string; db?: string; channelsDir?: string }) => {
-    // Channel + env checks precede any db handle or browser launch, so a typo
-    // or missing credential fails clean before Alex is asked to click through
-    // a Google consent screen.
-    const channelsDir = resolveChannelsDir(opts.channelsDir)
-    const channels = loadChannelsDir(channelsDir)
-    const channel = channels.find((c) => c.name === opts.channel)
-    if (!channel) {
-      throw new Error(`auth youtube: unknown channel "${opts.channel}" (checked ${channelsDir})`)
-    }
-    const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
-    const clientId = process.env.YT_CLIENT_ID
-    if (!clientId) {
-      throw new Error('auth youtube: YT_CLIENT_ID is not set (add it to .env)')
-    }
-    const clientSecret = process.env.YT_CLIENT_SECRET
-    if (!clientSecret) {
-      throw new Error('auth youtube: YT_CLIENT_SECRET is not set (add it to .env)')
-    }
-    const granted = await runYoutubeAuthFlow({ clientId, clientSecret })
-    const db = openDb(resolveDbPath(opts.db))
-    try {
-      upsertToken(db, 'youtube', channel.name, granted.refreshToken, granted.scopes, key, null)
-    } finally {
-      db.close()
-    }
-    // Confirmation only — never the refresh token itself (house rule: token
-    // material never touches logs or stdout).
-    console.log(`authorized youtube for channel "${channel.name}" — scopes: ${granted.scopes}`)
-  })
-
-auth
-  .command('instagram')
-  .requiredOption('--channel <name>', 'channel name to authorize')
-  .option('--db <path>', 'sqlite db path')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
-  .action(async (opts: { channel: string; db?: string; channelsDir?: string }) => {
-    const channelsDir = resolveChannelsDir(opts.channelsDir)
-    const channels = loadChannelsDir(channelsDir)
-    const channel = channels.find((c) => c.name === opts.channel)
-    if (!channel) {
-      throw new Error(`auth instagram: unknown channel "${opts.channel}" (checked ${channelsDir})`)
-    }
-    const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
-    const appId = process.env.IG_APP_ID
-    if (!appId) {
-      throw new Error('auth instagram: IG_APP_ID is not set (add it to .env)')
-    }
-    const appSecret = process.env.IG_APP_SECRET
-    if (!appSecret) {
-      throw new Error('auth instagram: IG_APP_SECRET is not set (add it to .env)')
-    }
-    const granted = await runInstagramAuthFlow({ appId, appSecret })
-    const db = openDb(resolveDbPath(opts.db))
-    try {
-      upsertToken(
-        db,
-        'instagram',
-        channel.name,
-        granted.token,
-        granted.scopes,
-        key,
-        granted.expiresAt,
-      )
-    } finally {
-      db.close()
-    }
-    // Confirmation only — never the access token itself (house rule: token
-    // material never touches logs or stdout).
-    console.log(
-      `authorized instagram for channel "${channel.name}" — scopes: ${granted.scopes}, expires ${granted.expiresAt}`,
+/**
+ * Registers `auth <platform>`. Every platform's grant has the same shape —
+ * resolve the channel, require its credential env vars, run the flow, store
+ * the token encrypted — so only the flow itself and which env vars it needs
+ * vary. `run` receives the env values in `envVars` order.
+ */
+function registerAuthCommand(spec: {
+  platform: Platform
+  envVars: string[]
+  run(values: string[]): Promise<{ token: string; scopes: string; expiresAt: string | null }>
+}): void {
+  auth
+    .command(spec.platform)
+    .requiredOption('--channel <name>', 'channel name to authorize')
+    .option('--db <path>', 'sqlite db path')
+    .option(
+      '--channels-dir <dir>',
+      'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
     )
-  })
+    .action(async (opts: { channel: string; db?: string; channelsDir?: string }) => {
+      // Channel + env checks precede any db handle or browser launch, so a
+      // typo or missing credential fails clean before Alex is asked to click
+      // through a consent screen.
+      const channelsDir = resolveChannelsDir(opts.channelsDir)
+      const channels = loadChannelsDir(channelsDir)
+      const channel = channels.find((c) => c.name === opts.channel)
+      if (!channel) {
+        throw new Error(
+          `auth ${spec.platform}: unknown channel "${opts.channel}" (checked ${channelsDir})`,
+        )
+      }
+      const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
+      const values = spec.envVars.map((name) => {
+        const value = process.env[name]
+        if (!value) {
+          throw new Error(`auth ${spec.platform}: ${name} is not set (add it to .env)`)
+        }
+        return value
+      })
+      const granted = await spec.run(values)
+      const db = openDb(resolveDbPath(opts.db))
+      try {
+        upsertToken(
+          db,
+          spec.platform,
+          channel.name,
+          granted.token,
+          granted.scopes,
+          key,
+          granted.expiresAt,
+        )
+      } finally {
+        db.close()
+      }
+      // Confirmation only — never the token itself (house rule: token
+      // material never touches logs or stdout).
+      const expiry = granted.expiresAt === null ? '' : `, expires ${granted.expiresAt}`
+      console.log(
+        `authorized ${spec.platform} for channel "${channel.name}" — scopes: ${granted.scopes}${expiry}`,
+      )
+    })
+}
+
+registerAuthCommand({
+  platform: 'youtube',
+  envVars: ['YT_CLIENT_ID', 'YT_CLIENT_SECRET'],
+  // A refresh token does not expire, hence the null expiry.
+  run: async ([clientId, clientSecret]) => {
+    const granted = await runYoutubeAuthFlow({ clientId, clientSecret })
+    return { token: granted.refreshToken, scopes: granted.scopes, expiresAt: null }
+  },
+})
+
+registerAuthCommand({
+  platform: 'instagram',
+  envVars: ['IG_APP_ID', 'IG_APP_SECRET'],
+  run: ([appId, appSecret]) => runInstagramAuthFlow({ appId, appSecret }),
+})
 
 program
   .command('digest')
@@ -606,19 +606,20 @@ publish
   .action((jobId: string, postId: string, opts: { db?: string }) => {
     const db = openDb(resolveDbPath(opts.db))
     try {
-      // v1 platform assumption: PUBLISH_PLATFORMS is exactly ['youtube'], so
-      // every interrupted row this command will ever see is a YouTube
-      // upload — the Shorts URL is built from the adapter's own helper rather
-      // than threading a --platform flag through for what is currently a
-      // single-member enum.
-      const url = youtubeShortsUrl(postId)
-      const ok = markInterruptedDone(db, jobId, postId, url, new Date())
+      // The interrupted row names its own platform, so the URL comes from
+      // that platform's adapter — no --platform flag, and no chance of
+      // recording a Shorts URL against an Instagram media id. A platform
+      // whose post URL is not derivable from the id alone (Instagram) records
+      // no URL rather than a fabricated one.
+      const platform = interruptedPlatform(db, jobId)
+      const url = platform === null ? null : ADAPTERS[platform]().postUrl(postId)
+      const ok = platform !== null && markInterruptedDone(db, jobId, postId, url, new Date())
       if (!ok) {
         console.error(`no interrupted publish for job ${jobId}`)
         process.exitCode = 1
         return
       }
-      console.log(`job ${jobId}: marked done — ${url}`)
+      console.log(`job ${jobId}: marked done — ${url ?? postId}`)
     } finally {
       db.close()
     }

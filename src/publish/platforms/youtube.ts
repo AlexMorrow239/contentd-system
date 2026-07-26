@@ -2,14 +2,10 @@ import { readFileSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { renderDescription, renderTags } from '../platform-meta.js'
 import { loadToken } from '../tokens.js'
-import { PublishError, PublishOutcomeUnknownError } from '../types.js'
+import { networkError, PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { PublishAdapter } from '../types.js'
 import type { YoutubeOptions } from './options.js'
-
-// Re-exported for import-site compatibility (src/loop/publish-next.ts,
-// src/loop/publish-next.test.ts) — the canonical definition now lives in
-// types.ts (Task 2), shared with every adapter.
-export { PublishOutcomeUnknownError } from '../types.js'
+import { PLATFORM_QUOTAS } from './quota.js'
 
 // Least-privilege scope: upload-only, no read/manage access to the channel
 // (design spec §4.2).
@@ -19,30 +15,6 @@ export const YT_UPLOAD_SCOPE = 'https://www.googleapis.com/auth/youtube.upload'
 // the file bytes) — not to the upload as a whole.
 export const UPLOAD_TIMEOUT_MS = 300_000 // 5 min
 
-// YouTube quota is per Google Cloud project (~10k units/day, 1600/upload),
-// not per channel — this is the hard pre-upload gate counted across every
-// channel (design spec decision 10).
-export const DEFAULT_YT_UPLOADS_PER_DAY = 6
-
-// Parsed at call time (not module load) so tests and long-lived processes see
-// env changes without a re-import — same convention as costs.ts's
-// globalDailyCapMicros.
-export function ytUploadsPerDayCap(): number {
-  const raw = process.env.BRAINROT_YT_UPLOADS_PER_DAY
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_YT_UPLOADS_PER_DAY
-  }
-  const n = Number(raw)
-  // Integer-only: the tick gates on `used >= cap`, so a fractional 1.5 would
-  // permit 2 uploads — a cap that silently rounds itself up.
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(
-      `invalid BRAINROT_YT_UPLOADS_PER_DAY: ${JSON.stringify(raw)} (expected a positive integer number of uploads)`,
-    )
-  }
-  return n
-}
-
 // The public watch URL for an uploaded Short. Built here rather than at each
 // call site so the upload path and the manual `publish mark-done` path can
 // never record two different URLs for the same video.
@@ -51,19 +23,6 @@ export function youtubeShortsUrl(postId: string): string {
 }
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token'
-
-// A thrown fetch (network failure, or an aborted/timed-out request) always
-// maps to 'transient' — the tick's next slot is the retry (design spec
-// decision 7). Shared by mintAccessToken and youtubeTarget.upload below.
-function networkError(op: string, err: unknown): PublishError {
-  if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-    return new PublishError(`${op}: request timed out after ${UPLOAD_TIMEOUT_MS}ms`, 'transient')
-  }
-  return new PublishError(
-    `${op}: request failed: ${err instanceof Error ? err.message : String(err)}`,
-    'transient',
-  )
-}
 
 export async function mintAccessToken(opts: {
   refreshToken: string
@@ -86,7 +45,7 @@ export async function mintAccessToken(opts: {
       signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     })
   } catch (err) {
-    throw networkError('mintAccessToken', err)
+    throw networkError('mintAccessToken', UPLOAD_TIMEOUT_MS, err)
   }
   if (!res.ok) {
     const raw = await res.text().catch(() => '')
@@ -214,7 +173,7 @@ export function youtubeTarget(
           signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
         })
       } catch (err) {
-        throw networkError('youtubeTarget', err)
+        throw networkError('youtubeTarget', UPLOAD_TIMEOUT_MS, err)
       }
       if (!initiateRes.ok) {
         throw await mapUploadHttpError('youtubeTarget', initiateRes)
@@ -239,7 +198,7 @@ export function youtubeTarget(
           signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
         })
       } catch (err) {
-        throw networkError('youtubeTarget', err)
+        throw networkError('youtubeTarget', UPLOAD_TIMEOUT_MS, err)
       }
       if (!uploadRes.ok) {
         throw await mapUploadHttpError('youtubeTarget', uploadRes)
@@ -266,8 +225,9 @@ export function youtubeTarget(
   }
 }
 
-// Wraps youtubeTarget/mintAccessToken/ytUploadsPerDayCap (unchanged above)
-// behind the PublishAdapter seam the tick drives generically (design spec
+// Wraps youtubeTarget/mintAccessToken (unchanged above) and the shared
+// quota descriptor behind the PublishAdapter seam the tick drives
+// generically (design spec
 // §5). hasCredential mirrors exactly what the pre-adapter tick checked
 // inline: client env presence, then a decryptable stored token — both cheap,
 // no network, safe to run per-candidate before any claim.
@@ -275,7 +235,8 @@ export function youtubeAdapter(fetchImpl: typeof fetch = fetch): PublishAdapter<
   const target = youtubeTarget(fetchImpl)
   return {
     platformId: 'youtube',
-    quota: { scope: 'global', envVar: 'BRAINROT_YT_UPLOADS_PER_DAY', cap: ytUploadsPerDayCap },
+    quota: PLATFORM_QUOTAS.youtube,
+    postUrl: youtubeShortsUrl,
     hasCredential(db: Database, channel: string, key: Buffer): boolean {
       if (!process.env.YT_CLIENT_ID || !process.env.YT_CLIENT_SECRET) return false
       return loadToken(db, 'youtube', channel, key) !== null

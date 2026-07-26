@@ -1,50 +1,18 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { IG_CONTENT_PUBLISH_SCOPE } from '../oauth-flow.js'
 import { renderCaption } from '../platform-meta.js'
 import { loadToken, upsertToken } from '../tokens.js'
-import { PublishError, PublishOutcomeUnknownError } from '../types.js'
+import { networkError, PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { PublishAdapter } from '../types.js'
 import type { InstagramOptions } from './options.js'
+import { PLATFORM_QUOTAS } from './quota.js'
 
 export const IG_GRAPH_VERSION = 'v21.0'
 export const IG_UPLOAD_TIMEOUT_MS = 300_000 // 5 min, per HTTP call
 export const IG_POLL_TIMEOUT_MS = 300_000 // 5 min total, well inside the 30-min publish lease
 export const IG_POLL_INTERVAL_MS = 5_000
-export const DEFAULT_IG_UPLOADS_PER_DAY = 25
 export const IG_TOKEN_REFRESH_WINDOW_MS = 10 * 24 * 60 * 60 * 1000 // 10 days (design spec decision 5)
-
-// Same shape and validation rule as youtube.ts's ytUploadsPerDayCap — parsed
-// at call time, not module load, so tests and long-lived processes see env
-// changes without a re-import.
-export function igUploadsPerDayCap(): number {
-  const raw = process.env.BRAINROT_IG_UPLOADS_PER_DAY
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_IG_UPLOADS_PER_DAY
-  }
-  const n = Number(raw)
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(
-      `invalid BRAINROT_IG_UPLOADS_PER_DAY: ${JSON.stringify(raw)} (expected a positive integer number of uploads)`,
-    )
-  }
-  return n
-}
-
-// A thrown fetch (network failure, timeout) always maps to 'transient' — the
-// tick's next slot is the retry. Small and local rather than shared with
-// youtube.ts's identically-shaped helper: each carries its own timeout
-// constant in its message, and the two platforms' HTTP call sites are not
-// otherwise related.
-function networkError(op: string, err: unknown): PublishError {
-  if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-    return new PublishError(`${op}: request timed out after ${IG_UPLOAD_TIMEOUT_MS}ms`, 'transient')
-  }
-  return new PublishError(
-    `${op}: request failed: ${err instanceof Error ? err.message : String(err)}`,
-    'transient',
-  )
-}
 
 interface IgErrorBody {
   error?: { code?: number; message?: string }
@@ -99,7 +67,7 @@ async function createContainer(opts: {
       signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
     })
   } catch (err) {
-    throw networkError('instagramTarget: createContainer', err)
+    throw networkError('instagramTarget: createContainer', IG_UPLOAD_TIMEOUT_MS, err)
   }
   if (!res.ok) throw await mapIgHttpError('instagramTarget: createContainer', res)
   let body: { id?: string }
@@ -120,12 +88,18 @@ async function createContainer(opts: {
   return body.id
 }
 
+// The file is read HERE rather than by the caller so the multi-MB buffer
+// becomes collectable the moment this returns, instead of staying pinned
+// through the up-to-5-minute poll loop that follows. Buffer<ArrayBuffer>, not
+// the bare `Buffer` alias: an unparameterized annotation widens the generic to
+// Buffer<ArrayBufferLike>, which fetch's BodyInit rejects.
 async function uploadBytes(opts: {
   containerId: string
-  bytes: Buffer<ArrayBuffer>
+  videoPath: string
   token: string
   fetchImpl: typeof fetch
 }): Promise<void> {
+  const bytes: Buffer<ArrayBuffer> = readFileSync(opts.videoPath)
   const url = `https://rupload.facebook.com/ig-api-upload/${IG_GRAPH_VERSION}/${opts.containerId}`
   let res: Response
   try {
@@ -134,13 +108,13 @@ async function uploadBytes(opts: {
       headers: {
         Authorization: `OAuth ${opts.token}`,
         offset: '0',
-        file_size: String(opts.bytes.length),
+        file_size: String(bytes.length),
       },
-      body: opts.bytes,
+      body: bytes,
       signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
     })
   } catch (err) {
-    throw networkError('instagramTarget: uploadBytes', err)
+    throw networkError('instagramTarget: uploadBytes', IG_UPLOAD_TIMEOUT_MS, err)
   }
   if (!res.ok) throw await mapIgHttpError('instagramTarget: uploadBytes', res)
 }
@@ -162,7 +136,7 @@ async function pollUntilFinished(opts: {
         signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
       })
     } catch (err) {
-      throw networkError('instagramTarget: pollUntilFinished', err)
+      throw networkError('instagramTarget: pollUntilFinished', IG_UPLOAD_TIMEOUT_MS, err)
     }
     if (!res.ok) throw await mapIgHttpError('instagramTarget: pollUntilFinished', res)
     const body = (await res.json()) as { status_code?: string }
@@ -201,7 +175,7 @@ async function publishContainer(opts: {
       signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
     })
   } catch (err) {
-    throw networkError('instagramTarget: publishContainer', err)
+    throw networkError('instagramTarget: publishContainer', IG_UPLOAD_TIMEOUT_MS, err)
   }
   // Past this point the post is live whatever the body says — same
   // "irreversible point" rule as youtubeTarget (design spec §6.1).
@@ -258,11 +232,12 @@ export function instagramUploadTarget(
   return {
     platformId: 'instagram',
     async upload(req, token) {
-      // Read the file before any network call: a missing file must fail
-      // before a container is created that would just sit and expire.
-      let bytes: Buffer<ArrayBuffer>
+      // Stat the file before any network call: a missing file must fail
+      // before a container is created that would just sit and expire. Only
+      // the existence check happens here — uploadBytes reads the bytes
+      // themselves, so nothing multi-MB outlives the call that sends it.
       try {
-        bytes = readFileSync(req.videoPath)
+        statSync(req.videoPath)
       } catch (err) {
         if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
           throw new PublishError(
@@ -280,7 +255,7 @@ export function instagramUploadTarget(
         token,
         fetchImpl,
       })
-      await uploadBytes({ containerId, bytes, token, fetchImpl })
+      await uploadBytes({ containerId, videoPath: req.videoPath, token, fetchImpl })
       await pollUntilFinished({ containerId, token, fetchImpl, nowMs })
       const mediaId = await publishContainer({
         igUserId: req.options.igUserId,
@@ -338,7 +313,11 @@ export function instagramAdapter(
   const target = instagramUploadTarget(fetchImpl)
   return {
     platformId: 'instagram',
-    quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: igUploadsPerDayCap },
+    quota: PLATFORM_QUOTAS.instagram,
+    // A Reel's permalink is keyed by an opaque shortcode the media id does
+    // not contain, so there is nothing to build here — upload's own
+    // best-effort fetchPermalink is the only source of an Instagram URL.
+    postUrl: () => null,
     hasCredential(db: Database, channel: string, key: Buffer): boolean {
       return loadToken(db, 'instagram', channel, key) !== null
     },

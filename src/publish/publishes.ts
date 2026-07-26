@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Platform, PublishErrorKind } from './types.js'
+import { PUBLISHABLE_LIBRARY_STATES } from '../jobs/library.js'
 
 export type PublishStatus = 'claimed' | 'done' | 'failed' | 'interrupted'
 
@@ -87,7 +88,7 @@ function finishPublish(
   db: Database,
   target: PublishTargetRow,
   postId: string,
-  url: string,
+  url: string | null,
   now: Date,
 ): number {
   // Fixed literals, chosen by the target shape — never caller-supplied SQL.
@@ -238,7 +239,7 @@ export function eligibleVideo(
          WHERE platform = ?
          GROUP BY job_id
        ) p ON p.job_id = l.job_id
-       WHERE l.state IN ('ready', 'published')
+       WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES})
          AND j.channel = ?
          AND COALESCE(p.blockingCount, 0) = 0
          AND COALESCE(p.rejectedCount, 0) < ?
@@ -284,10 +285,25 @@ export function markInterruptedDone(
   db: Database,
   jobId: string,
   postId: string,
-  url: string,
+  url: string | null,
   now: Date,
 ): boolean {
   return finishPublish(db, { jobId, status: 'interrupted' }, postId, url, now) >= 1
+}
+
+// Which platform a job's interrupted upload landed on — the row itself is the
+// authority, so `publish mark-done` needs no --platform flag and can never
+// record one platform's URL shape against another's post. Null when the job
+// has no interrupted row (the same condition markInterruptedDone reports as
+// false). At most one such row per (job, platform) by eligibleVideo's
+// invariant; the ORDER BY only makes the multi-platform pick deterministic.
+export function interruptedPlatform(db: Database, jobId: string): Platform | null {
+  const row = db
+    .prepare(
+      "SELECT platform FROM publishes WHERE job_id = ? AND status = 'interrupted' ORDER BY id ASC",
+    )
+    .get(jobId) as { platform: Platform } | undefined
+  return row?.platform ?? null
 }
 
 const PUBLISH_COLUMNS =

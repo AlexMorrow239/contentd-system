@@ -30,40 +30,36 @@ const PUBLISHES_COLUMNS =
  * constraint, and ADD COLUMN is not part of schema.sql's declarative form.
  * Every step inspects state before acting, so re-running is a no-op. Called
  * by openDb only — never by openDbReadonly, which must stay write-free.
+ *
+ * `schemaSql` is the same schema.sql text openDb just exec'd. The rebuild
+ * below replays it rather than carrying its own copy of the publishes DDL:
+ * schema.sql is the single source of truth for table shape, and a second
+ * hand-written copy here would silently drift from it the first time a
+ * column is added — producing differently-shaped tables on migrated versus
+ * freshly-created databases.
  */
-export function migrate(db: Database): void {
+export function migrate(db: Database, schemaSql: string): void {
   if (!hasColumn(db, 'oauth_tokens', 'expires_at')) {
     db.exec('ALTER TABLE oauth_tokens ADD COLUMN expires_at TEXT')
   }
   if (publishesHasOldCheck(db)) {
     // Table rebuild: SQLite cannot drop or widen a CHECK constraint in place.
+    // Renaming the old table out of the way lets schema.sql's own CREATE
+    // TABLE IF NOT EXISTS rebuild `publishes` at its current shape; every
+    // other statement in the file is a no-op against the tables already here.
+    //
     // AUTOINCREMENT's id-reuse guarantee survives this — SQLite tracks the
     // largest ROWID ever inserted into a table (sqlite_sequence), not just
     // the largest auto-generated one, so copying explicit `id` values via
     // INSERT...SELECT still advances it correctly (verified by the
     // never-reuses-an-id test).
-    db.exec(`
-      BEGIN IMMEDIATE;
-      CREATE TABLE publishes_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        job_id TEXT NOT NULL REFERENCES jobs(id),
-        platform TEXT NOT NULL,
-        channel TEXT NOT NULL,
-        day TEXT NOT NULL,
-        slot TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
-        post_id TEXT, url TEXT, error TEXT,
-        error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),
-        attempt INTEGER NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-        finished_at TEXT,
-        UNIQUE (channel, platform, day, slot)
-      );
-      INSERT INTO publishes_new (${PUBLISHES_COLUMNS})
-        SELECT ${PUBLISHES_COLUMNS} FROM publishes;
-      DROP TABLE publishes;
-      ALTER TABLE publishes_new RENAME TO publishes;
-      COMMIT;
-    `)
+    db.transaction(() => {
+      db.exec('ALTER TABLE publishes RENAME TO publishes_old')
+      db.exec(schemaSql)
+      db.exec(
+        `INSERT INTO publishes (${PUBLISHES_COLUMNS}) SELECT ${PUBLISHES_COLUMNS} FROM publishes_old`,
+      )
+      db.exec('DROP TABLE publishes_old')
+    }).immediate()
   }
 }

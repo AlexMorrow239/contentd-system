@@ -285,6 +285,7 @@ describe('golden-path loop e2e', () => {
     const fakeAdapter: PublishAdapter = {
       platformId: 'youtube',
       quota: { scope: 'global', envVar: 'BRAINROT_YT_UPLOADS_PER_DAY', cap: () => 6 },
+      postUrl: (postId) => `https://youtube.com/shorts/${postId}`,
       hasCredential: () => true,
       resolveCredential: async () => 'fake-access-token',
       async upload(req) {

@@ -8,6 +8,7 @@ import {
   normalizeYoutubeOptions,
   youtubeOptionsSchema,
 } from '../publish/platforms/options.js'
+import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import type { Platform, PublishChannelConfig, PublishTargetConfig } from '../publish/types.js'
 
 export interface CaptionStyle {
@@ -98,7 +99,7 @@ const publishSchema = z
   })
   .strict()
   .superRefine((val, ctx) => {
-    const declared = (['youtube', 'instagram'] as const).filter((p) => val[p] !== undefined)
+    const declared = PUBLISH_PLATFORMS.filter((p) => val[p] !== undefined)
     if (declared.length === 0) {
       ctx.addIssue({
         code: 'custom',

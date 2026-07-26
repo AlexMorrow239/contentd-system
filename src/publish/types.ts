@@ -24,6 +24,21 @@ export class PublishError extends Error {
   }
 }
 
+// A thrown fetch (network failure, or an aborted/timed-out request) always
+// maps to 'transient' — the tick's next slot is the retry (design spec
+// decision 7). Shared by every adapter's HTTP call sites; `timeoutMs` is the
+// caller's own per-call timeout so the message names the constant that
+// actually fired.
+export function networkError(op: string, timeoutMs: number, err: unknown): PublishError {
+  if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+    return new PublishError(`${op}: request timed out after ${timeoutMs}ms`, 'transient')
+  }
+  return new PublishError(
+    `${op}: request failed: ${err instanceof Error ? err.message : String(err)}`,
+    'transient',
+  )
+}
+
 // The platform ACCEPTED the post — it exists on the platform — but its
 // outcome is unreadable (broken success body, no post id). Never a
 // PublishError: no failure kind fits, and marking the row failed would make
@@ -58,6 +73,12 @@ export interface PublishAdapter<O = unknown> {
   readonly quota: PlatformQuota
   hasCredential(db: Database, channel: string, key: Buffer): boolean
   resolveCredential(db: Database, channel: string, key: Buffer, now: Date): Promise<string>
+  // The public post URL derivable from a post id alone, or null when the
+  // platform has none (Instagram's permalink is fetched from the media id,
+  // not built from it). The manual `publish mark-done` path reads this off
+  // the recovered row's own platform, so it can never record one platform's
+  // URL shape against another's post.
+  postUrl(postId: string): string | null
   upload(
     req: { videoPath: string; meta: PlatformMeta; options: O },
     credential: string,

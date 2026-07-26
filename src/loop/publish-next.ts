@@ -3,6 +3,7 @@ import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { ADAPTERS } from '../publish/platforms/index.js'
+import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import {
   claimPublish,
   consumedSlots,
@@ -54,7 +55,7 @@ export interface PublishTickResult {
 // Checks BRAINROT_TOKEN_KEY and every registered platform's quota env var —
 // whose malformed values would otherwise throw from deep inside the tick
 // (exit 1, no JSON line, every firing, no DB trace). Never names a platform
-// literal: it iterates PUBLISH_PLATFORMS/ADAPTERS generically, so a third
+// literal: it iterates the quota descriptors generically, so a third
 // platform's own env var is covered for free.
 function badEnvMessage(): string | undefined {
   const tokenKeyHex = process.env.BRAINROT_TOKEN_KEY
@@ -65,12 +66,11 @@ function badEnvMessage(): string | undefined {
       return 'BRAINROT_TOKEN_KEY is malformed (expected 64 hex characters)'
     }
   }
-  for (const platform of PUBLISH_PLATFORMS) {
-    const adapter = ADAPTERS[platform]()
+  for (const quota of Object.values(PLATFORM_QUOTAS)) {
     try {
-      adapter.quota.cap()
+      quota.cap()
     } catch {
-      return `${adapter.quota.envVar} is malformed (expected a positive integer number of uploads)`
+      return `${quota.envVar} is malformed (expected a positive integer number of uploads)`
     }
   }
   return undefined

@@ -16,15 +16,18 @@ import { dbHref } from './layout.js'
 // per-channel breakdown instead. An empty perChannel array (rather than
 // omitting the platform) is what lets the panel say so explicitly instead of
 // silently having nothing to show.
-export interface PlatformQuotaView {
-  platform: Platform
-  scope: 'global' | 'channel'
-  cap: number
-  /** scope: 'global' only. */
-  used?: number
-  /** scope: 'channel' only — one entry per channel with this platform configured. */
-  perChannel?: { channel: string; used: number }[]
-}
+// A union rather than one shape with two optional fields: which figure exists
+// is fully determined by the quota's scope, so the type says so and the
+// renderer needs no defensive fallback for a combination that cannot occur.
+export type PlatformQuotaView =
+  | { platform: Platform; scope: 'global'; cap: number; used: number }
+  | {
+      platform: Platform
+      scope: 'channel'
+      cap: number
+      /** One entry per channel with this platform configured. */
+      perChannel: { channel: string; used: number }[]
+    }
 
 export interface PublishesPageData {
   grids: ChannelGrid[]
@@ -76,10 +79,10 @@ function renderGrid(grid: ChannelGrid, dbChoice: DbChoice): SafeHtml {
 function renderQuota(q: PlatformQuotaView): SafeHtml {
   if (q.scope === 'global') {
     return html`<p>
-      ${q.platform}: ${String(q.used ?? 0)} / ${String(q.cap)} uploads used today (all channels)
+      ${q.platform}: ${String(q.used)} / ${String(q.cap)} uploads used today (all channels)
     </p>`
   }
-  if (q.perChannel === undefined || q.perChannel.length === 0) {
+  if (q.perChannel.length === 0) {
     return html`<p>${q.platform}: no channel has a [publish.${q.platform}] target configured</p>`
   }
   const rows = q.perChannel.map(

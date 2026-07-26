@@ -10,7 +10,8 @@ import { upsertToken } from '../publish/tokens.js'
 import { runCli } from '../testing/run-cli.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import type { Platform, PublishAdapter } from '../publish/types.js'
-import { PublishOutcomeUnknownError, YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
+import { YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
+import { PublishOutcomeUnknownError } from '../publish/types.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
 import { publishNextTick } from './publish-next.js'
 
@@ -163,6 +164,7 @@ function fakeAdapter(upload: PublishAdapter['upload']): PublishAdapter {
   return {
     platformId: 'youtube',
     quota: { scope: 'global', envVar: 'BRAINROT_YT_UPLOADS_PER_DAY', cap: () => 6 },
+    postUrl: (postId) => `https://youtube.com/shorts/${postId}`,
     hasCredential: () => true,
     resolveCredential: async () => 'fake-access-token',
     upload,
@@ -885,6 +887,7 @@ describe('quota pre-filter', () => {
     const igAdapter: PublishAdapter = {
       platformId: 'instagram',
       quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: () => 25 },
+      postUrl: () => null,
       hasCredential: () => true,
       resolveCredential: async () => 'ig-token',
       upload: instagramTarget.upload,

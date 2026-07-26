@@ -2,7 +2,9 @@ import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
 import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } from '../jobs/costs.js'
+import { PUBLISHABLE_LIBRARY_STATES } from '../jobs/library.js'
 import { parseTokenKey } from '../publish/crypto.js'
+import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { consumedSlots, MAX_PUBLISH_ATTEMPTS } from '../publish/publishes.js'
 import { localDay } from '../publish/slots.js'
 import { loadToken } from '../publish/tokens.js'
@@ -366,10 +368,6 @@ export function buildDigest(
   // Quota failures mean the per-platform daily-cap env estimate and the
   // platform's real quota disagree (spec §5: "cap vs reality drift") — a
   // distinct line per channel+platform, mirroring the auth hint.
-  const QUOTA_CAP_ENV: Record<Platform, string> = {
-    youtube: 'BRAINROT_YT_UPLOADS_PER_DAY',
-    instagram: 'BRAINROT_IG_UPLOADS_PER_DAY',
-  }
   const quotaFailures = db
     .prepare(
       `SELECT channel, platform, COUNT(*) AS n FROM publishes
@@ -380,7 +378,7 @@ export function buildDigest(
     .all() as { channel: string; platform: Platform; n: number }[]
   for (const r of quotaFailures) {
     lines.push(
-      `  ${r.channel} ${r.platform}: ${r.n} quota failures in the last 24h — the platform refused the upload; check ${QUOTA_CAP_ENV[r.platform]} against the real quota`,
+      `  ${r.channel} ${r.platform}: ${r.n} quota failures in the last 24h — the platform refused the upload; check ${PLATFORM_QUOTAS[r.platform].envVar} against the real quota`,
     )
   }
   // Token health per publish-enabled channel. A missing grant, a rotated
@@ -472,7 +470,7 @@ export function buildDigest(
     .prepare(
       `SELECT p.job_id AS jobId, p.channel AS channel, COUNT(*) AS n
        FROM publishes p JOIN library l ON l.job_id = p.job_id
-       WHERE p.status = 'failed' AND p.error_kind = 'rejected' AND l.state IN ('ready', 'published')
+       WHERE p.status = 'failed' AND p.error_kind = 'rejected' AND l.state IN (${PUBLISHABLE_LIBRARY_STATES})
        GROUP BY p.job_id, p.channel
        HAVING COUNT(*) >= ?
        ORDER BY p.job_id`,
@@ -491,7 +489,7 @@ export function buildDigest(
     .prepare(
       `SELECT l.job_id AS jobId, j.channel AS channel, l.video_path AS videoPath
        FROM library l JOIN jobs j ON j.id = l.job_id
-       WHERE l.state IN ('ready', 'published') ORDER BY l.job_id`,
+       WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) ORDER BY l.job_id`,
     )
     .all() as { jobId: string; channel: string; videoPath: string }[]
   for (const r of readyVideos) {

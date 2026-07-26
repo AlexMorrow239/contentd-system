@@ -10,8 +10,7 @@ import type { ChannelConfig } from '../config/channel.js'
 import { uploadsUsedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/slots.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
-import { ADAPTERS } from '../publish/platforms/index.js'
-import { ytUploadsPerDayCap } from '../publish/platforms/youtube.js'
+import { PLATFORM_QUOTAS, ytUploadsPerDayCap } from '../publish/platforms/quota.js'
 import type { DashboardConfig, DbChoice } from './config.js'
 import { resolveDbChoice } from './config.js'
 import { html } from './html.js'
@@ -333,10 +332,13 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 }
 
 /**
- * Reuses the same adapter quota descriptors the publish loop enforces
- * against (ADAPTERS[platform]().quota — publish-next.ts's own quota gate
- * reads this identical `{scope, envVar, cap()}` shape) rather than a
- * mirrored copy that could silently drift. 'global' (YouTube: one shared
+ * Reuses the same quota descriptors the publish loop enforces against
+ * (PLATFORM_QUOTAS — which is exactly what each adapter exposes as
+ * `adapter.quota`, and what publish-next.ts's own quota gate reads) rather
+ * than a mirrored copy that could silently drift. Imported from the leaf
+ * quota module, not through ADAPTERS: a read-only viewer has no business
+ * pulling upload mechanics and credential code into its process to read
+ * three static fields. 'global' (YouTube: one shared
  * Google Cloud project quota) reports one all-channels figure; 'channel'
  * (Instagram: one IG account per channel) has no single meaningful "used"
  * total to sum against the single per-channel `cap`, so it reports a
@@ -350,7 +352,7 @@ function buildPlatformQuotas(
   day: string,
 ): PlatformQuotaView[] {
   return PUBLISH_PLATFORMS.map((platform) => {
-    const { quota } = ADAPTERS[platform]()
+    const quota = PLATFORM_QUOTAS[platform]
     if (quota.scope === 'global') {
       return {
         platform,

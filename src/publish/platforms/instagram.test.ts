@@ -5,12 +5,11 @@ import { join } from 'node:path'
 import { openDb } from '../../db/index.js'
 import { loadToken, upsertToken } from '../tokens.js'
 import { PublishError, PublishOutcomeUnknownError } from '../types.js'
+import { DEFAULT_IG_UPLOADS_PER_DAY, igUploadsPerDayCap } from './quota.js'
 import {
-  DEFAULT_IG_UPLOADS_PER_DAY,
   IG_GRAPH_VERSION,
   IG_POLL_INTERVAL_MS,
   IG_POLL_TIMEOUT_MS,
-  igUploadsPerDayCap,
   instagramAdapter,
   instagramUploadTarget,
   refreshLongLivedToken,

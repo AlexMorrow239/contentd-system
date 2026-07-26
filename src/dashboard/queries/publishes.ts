@@ -98,42 +98,35 @@ export function buildPublishGrids(
       'WHERE channel = ? AND day >= ? AND day <= ? ORDER BY id ASC',
   )
 
-  return channels
-    .filter((channel) => channel.publish !== null)
-    .map((channel) => {
-      const dbRows = statement.all(channel.name, oldest, dayList[0]) as DbPublishRow[]
-      const cells = new Map<string, PublishRow>()
-      // ORDER BY id ASC plus overwrite means the newest attempt for a cell
-      // wins, which is what the UNIQUE(channel,platform,day,slot) constraint
-      // makes near-certain anyway.
-      for (const row of dbRows) {
-        cells.set(cellKey(row.day, row.slot, row.platform), toPublishRow(row))
-      }
-      // One row per (platform, slot) pair rather than per distinct time: two
-      // platforms declaring the identical slot time (the natural shared
-      // `[publish] slots = [...]` configuration) must not collapse into one
-      // row, or one platform's attempts would be indistinguishable from the
-      // other's in the grid.
-      const rowKeys = new Set<string>()
-      const rows: GridRow[] = []
-      for (const target of channel.publish?.targets ?? []) {
-        for (const slot of target.slots) {
-          const key = `${target.platform} ${slot}`
-          if (rowKeys.has(key)) continue
-          rowKeys.add(key)
-          rows.push({ platform: target.platform, slot })
-        }
-      }
-      rows.sort((a, b) => {
-        if (a.slot !== b.slot) return a.slot < b.slot ? -1 : 1
-        return a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0
-      })
-
-      return {
-        channel: channel.name,
-        rows,
-        days: dayList,
-        cells,
-      }
+  // flatMap rather than filter-then-map: it drops the unpublished channels
+  // AND narrows `publish` away from null in one step, so the targets below
+  // need no second null check the filter already ruled out.
+  return channels.flatMap((channel): ChannelGrid[] => {
+    const publish = channel.publish
+    if (publish === null) return []
+    const dbRows = statement.all(channel.name, oldest, dayList[0]) as DbPublishRow[]
+    const cells = new Map<string, PublishRow>()
+    // ORDER BY id ASC plus overwrite means the newest attempt for a cell
+    // wins, which is what the UNIQUE(channel,platform,day,slot) constraint
+    // makes near-certain anyway.
+    for (const row of dbRows) {
+      cells.set(cellKey(row.day, row.slot, row.platform), toPublishRow(row))
+    }
+    // One row per (platform, slot) pair rather than per distinct time: two
+    // platforms declaring the identical slot time (the natural shared
+    // `[publish] slots = [...]` configuration) must not collapse into one
+    // row, or one platform's attempts would be indistinguishable from the
+    // other's in the grid. The pairs are unique by construction —
+    // buildTargets emits at most one target per platform, and
+    // slotsFieldSchema rejects duplicate slots within one — so no dedupe.
+    const rows: GridRow[] = publish.targets.flatMap((target) =>
+      target.slots.map((slot) => ({ platform: target.platform, slot })),
+    )
+    rows.sort((a, b) => {
+      if (a.slot !== b.slot) return a.slot < b.slot ? -1 : 1
+      return a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0
     })
+
+    return [{ channel: channel.name, rows, days: dayList, cells }]
+  })
 }

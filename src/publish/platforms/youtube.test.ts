@@ -5,17 +5,15 @@ import { join } from 'node:path'
 import { openDb } from '../../db/index.js'
 import { upsertToken } from '../tokens.js'
 import type { PlatformMeta } from '../types.js'
-import { PublishError } from '../types.js'
+import { PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { YoutubeOptions } from './options.js'
+import { DEFAULT_YT_UPLOADS_PER_DAY, ytUploadsPerDayCap } from './quota.js'
 import {
-  DEFAULT_YT_UPLOADS_PER_DAY,
-  PublishOutcomeUnknownError,
   UPLOAD_TIMEOUT_MS,
   YT_UPLOAD_SCOPE,
   mintAccessToken,
   youtubeAdapter,
   youtubeTarget,
-  ytUploadsPerDayCap,
 } from './youtube.js'
 
 const TEST_KEY = Buffer.alloc(32, 0x42)

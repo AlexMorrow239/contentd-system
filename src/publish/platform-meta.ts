@@ -68,15 +68,18 @@ export function tagsPayloadLength(tags: string[]): number {
 // construction rule as renderDescription: the bounded form (below) and the
 // sent form are one string by construction.
 export function renderCaption(meta: PlatformMeta): string {
-  const parts = [meta.title, meta.description]
-  if (meta.hashtags.length > 0) parts.push(meta.hashtags.join(' '))
-  return parts.join('\n\n')
+  return `${meta.title}\n\n${renderDescription(meta.description, meta.hashtags)}`
+}
+
+// A hashtag with whitespace inside is two tags glued together (or a stray
+// fragment) — it renders as garbage in a description or caption and as a
+// bogus tag. Every platform drops those before applying its own bounds.
+function sanitizeHashtags(hashtags: string[]): string[] {
+  return hashtags.filter((h) => h !== '' && !/\s/.test(h))
 }
 
 function normalizeForYoutube(meta: PlatformMeta): PlatformMeta {
-  // A hashtag with whitespace inside is two tags glued together (or a stray
-  // fragment) — it renders as garbage in the description and as a bogus tag.
-  const hashtags = meta.hashtags.filter((h) => h !== '' && !/\s/.test(h))
+  const hashtags = sanitizeHashtags(meta.hashtags)
   // Tags budget first: the tighter of the two, and drops from the same tail
   // a set that fits here can still need description trimming below.
   while (hashtags.length > 0 && tagsPayloadLength(renderTags(hashtags)) > TAGS_MAX_CHARS) {
@@ -99,9 +102,7 @@ function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
   // overestimate the composed length and drop hashtags that fit once the
   // title is actually normalized.
   const title = normalizeTitle(meta.title)
-  const hashtags = meta.hashtags
-    .filter((h) => h !== '' && !/\s/.test(h))
-    .slice(0, INSTAGRAM_MAX_HASHTAGS)
+  const hashtags = sanitizeHashtags(meta.hashtags).slice(0, INSTAGRAM_MAX_HASHTAGS)
   // Mirror the YouTube trim order: the description is the least load-bearing
   // part and gets trimmed first (below, via `room`), not the hashtags. This
   // loop only pops hashtags from the tail when the hashtag block ALONE —
@@ -126,6 +127,14 @@ function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
  * malformed parts are rewritten. An emptied title is the caller's cue to fall
  * back to a topic-derived one.
  */
+// An exhaustive map, not a ternary with a YouTube default: adding a platform
+// to PUBLISH_PLATFORMS without giving it bounds here is a compile error
+// rather than a silent inheritance of YouTube's limits.
+const NORMALIZERS: Record<Platform, (meta: PlatformMeta) => PlatformMeta> = {
+  youtube: normalizeForYoutube,
+  instagram: normalizeForInstagram,
+}
+
 export function normalizePlatformMeta(meta: PlatformMeta, platform: Platform): PlatformMeta {
-  return platform === 'instagram' ? normalizeForInstagram(meta) : normalizeForYoutube(meta)
+  return NORMALIZERS[platform](meta)
 }

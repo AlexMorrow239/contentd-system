@@ -1,10 +1,15 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Database } from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import { migrate } from './migrate.js'
+
+// The CURRENT canonical schema — the same text openDb hands migrate(). Read
+// from disk rather than copied so the rebuild is exercised against whatever
+// shape schema.sql actually declares today.
+const SCHEMA_SQL = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8')
 
 // The exact OLD schema.sql shape (platform CHECK present, no expires_at) —
 // this is what every database created before this plan actually looks like.
@@ -57,7 +62,7 @@ describe('migrate', () => {
   it('adds oauth_tokens.expires_at when absent', () => {
     const { db, dir } = oldShapeDb()
     cleanupDirs.push(dir)
-    migrate(db)
+    migrate(db, SCHEMA_SQL)
     const cols = db.prepare('PRAGMA table_info(oauth_tokens)').all() as { name: string }[]
     expect(cols.map((c) => c.name)).toContain('expires_at')
   })
@@ -73,7 +78,7 @@ describe('migrate', () => {
         "VALUES ('job-1', 'youtube', 'test', '2026-07-25', '10:00', 'done', 1)",
     ).run()
 
-    migrate(db)
+    migrate(db, SCHEMA_SQL)
 
     // The CHECK is gone: an 'instagram' row now inserts without throwing.
     expect(() =>
@@ -106,7 +111,7 @@ describe('migrate', () => {
       .run()
     const oldId = Number(info.lastInsertRowid)
 
-    migrate(db)
+    migrate(db, SCHEMA_SQL)
 
     const newInfo = db
       .prepare(
@@ -120,8 +125,8 @@ describe('migrate', () => {
   it('is idempotent: running twice does nothing the second time', () => {
     const { db, dir } = oldShapeDb()
     cleanupDirs.push(dir)
-    migrate(db)
-    expect(() => migrate(db)).not.toThrow()
+    migrate(db, SCHEMA_SQL)
+    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
     const cols = db.prepare('PRAGMA table_info(oauth_tokens)').all() as { name: string }[]
     expect(cols.filter((c) => c.name === 'expires_at')).toHaveLength(1)
   })
@@ -151,6 +156,6 @@ describe('migrate', () => {
         PRIMARY KEY (platform, channel)
       );
     `)
-    expect(() => migrate(db)).not.toThrow()
+    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
   })
 })

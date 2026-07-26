@@ -21,8 +21,11 @@ export function openDb(dbPath: string): Database {
   // FK enforcement OFF by design (schema documents relationships, app code
   // owns integrity; tests insert child rows standalone).
   db.pragma('foreign_keys = OFF')
-  db.exec(readFileSync(schemaPath, 'utf8'))
-  migrate(db)
+  const schemaSql = readFileSync(schemaPath, 'utf8')
+  db.exec(schemaSql)
+  // Passed the schema text rather than re-reading it: migrate's table rebuild
+  // replays schema.sql so the canonical DDL is never hand-copied.
+  migrate(db, schemaSql)
   return db
 }
 

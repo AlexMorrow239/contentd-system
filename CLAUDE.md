@@ -209,8 +209,20 @@ progress), `library` (finished videos awaiting review/publish), `topics`
 (scout queue), `costs` (spend ledger), `leases`, `publishes`, `oauth_tokens`.
 Per-job filesystem artifacts live under `runs/<jobId>/<stage>/`. Schema lives
 in `src/db/schema.sql`, applied via `db.exec` on every `openDb` call (plain
-`CREATE TABLE IF NOT EXISTS`, no migration framework — additive schema
-changes only).
+`CREATE TABLE IF NOT EXISTS`) — so schema.sql alone is the declarative shape
+of a _fresh_ database, and additive changes still need nothing else.
+
+Changes `CREATE TABLE IF NOT EXISTS` cannot express against an **existing**
+database go in `src/db/migrate.ts`, which `openDb` calls right after the
+schema exec (and `openDbReadonly` never calls, since it must stay
+write-free). This is deliberately not a migration framework: there is no
+version ledger and no ordered list of numbered steps. Each step instead
+**probes for its own precondition** (`PRAGMA table_info` for an added column,
+a `sqlite_master.sql` substring for a CHECK that cannot be ALTERed) and is a
+no-op when already applied, so it is idempotent and self-healing on a fresh
+database. A step that has to rebuild a table renames the old one aside and
+replays `schema.sql` rather than carrying its own copy of the DDL — schema.sql
+stays the single source of truth for table shape.
 
 ### Test-only build
 

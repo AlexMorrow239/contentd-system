@@ -2,6 +2,17 @@ import type { Database } from 'better-sqlite3'
 
 export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
 
+/**
+ * The library states a video can still be published FROM, as a SQL list ready
+ * to interpolate into an `IN (...)`. 'published' belongs here because a row
+ * flips to it on the FIRST platform that takes the video, while the channel's
+ * other declared platforms have yet to publish it — so "already published
+ * somewhere" must not remove it from the pool. Interpolated from one
+ * definition rather than spelled out at each query, so adding a state cannot
+ * update some call sites and miss others.
+ */
+export const PUBLISHABLE_LIBRARY_STATES = "'ready', 'published'"
+
 export interface LibraryRow {
   jobId: string
   channel: string
