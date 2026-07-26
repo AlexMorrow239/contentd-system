@@ -120,6 +120,7 @@ describe('renderJobDetailPage', () => {
     ],
     libraryState: null,
     videoPath: null,
+    archived: false,
   }
 
   it('renders the stage timeline with durations and the raw error', () => {
@@ -143,6 +144,19 @@ describe('renderJobDetailPage', () => {
       videoPath: 'runs/j1/assemble/final.mp4',
     }
     expect(renderJobDetailPage(withVideo, 'prod').value).toContain('/library/j1/video')
+  })
+
+  it('says the video is archived instead of rendering a dead player', () => {
+    const archived: JobDetail = {
+      ...detail,
+      libraryState: 'ready',
+      videoPath: 'runs/j1/assemble/final.mp4',
+      archived: true,
+    }
+    const out = renderJobDetailPage(archived, 'prod').value
+    expect(out).not.toContain('/library/j1/video')
+    expect(out).not.toContain('<video')
+    expect(out).toContain('archived to object storage — not available locally')
   })
 
   it('escapes an error message containing markup', () => {

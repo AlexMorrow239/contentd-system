@@ -1,6 +1,3 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
@@ -167,15 +164,6 @@ function publishChannel(name: string, overrides: { slots?: string[] } = {}) {
       ],
     },
   })
-}
-
-// A real on-disk file for the ready-video pre-flight check: the digest calls
-// existsSync, so only an actual path proves the negative case.
-function writeTempVideo(): string {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'digest-video-'))
-  const file = path.join(dir, 'out.mp4')
-  writeFileSync(file, 'not really a video')
-  return file
 }
 
 function seedLibraryPath(db: Database, jobId: string, videoPath: string): void {
@@ -867,28 +855,31 @@ describe('buildDigest — token expiry warning', () => {
   })
 })
 
-describe('buildDigest — ready videos whose file is gone', () => {
-  it('flags a ready library row whose video_path no longer exists', () => {
+describe('buildDigest — library rows with no stored object', () => {
+  it('flags a ready library row that has no library_objects row', () => {
     const db = openDb(':memory:')
-    seedJob(db, { id: 'j-gone', channel: 'chan-a' })
-    seedLibraryPath(db, 'j-gone', '/nonexistent/runs/j-gone/final.mp4')
+    seedJob(db, { id: 'j-unstored', channel: 'chan-a' })
+    seedLibrary(db, 'j-unstored', 'ready')
     const digest = buildDigest(db, [], ENV_OK)
     expect(digest).toContain(
-      '  job j-gone (chan-a) has no video file at /nonexistent/runs/j-gone/final.mp4 — run brainrot library reject j-gone',
+      '  job j-unstored (chan-a) has no stored object — run brainrot library backfill-store',
     )
     db.close()
   })
 
-  it('leaves a ready row alone while its file is on disk', () => {
+  it('does not flag a row whose local file is gone but is stored', () => {
     const db = openDb(':memory:')
-    seedJob(db, { id: 'j-here', channel: 'chan-a' })
-    seedLibraryPath(db, 'j-here', writeTempVideo())
+    seedJob(db, { id: 'j-stored', channel: 'chan-a' })
+    seedLibraryPath(db, 'j-stored', '/nonexistent/runs/j-stored/final.mp4')
+    db.prepare(
+      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j-stored','k',1,'e')",
+    ).run()
     const digest = buildDigest(db, [], ENV_OK)
-    expect(digest).not.toContain('j-here')
+    expect(digest).not.toContain('j-stored')
     db.close()
   })
 
-  it('ignores needs-review library rows with missing files', () => {
+  it('ignores needs-review library rows with no stored object', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'j-review', channel: 'chan-a' })
     db.prepare(
@@ -900,9 +891,9 @@ describe('buildDigest — ready videos whose file is gone', () => {
   })
 
   // A row already 'published' on one target can still be eligible for
-  // another target (multi-platform publishing) — its file has to exist
-  // just as much as a plain 'ready' row's does.
-  it('flags a published library row whose video_path no longer exists', () => {
+  // another target (multi-platform publishing) — it still needs an object
+  // in the bucket just as much as a plain 'ready' row does.
+  it('flags a published library row with no stored object', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'j-published', channel: 'chan-a' })
     db.prepare(
@@ -910,7 +901,7 @@ describe('buildDigest — ready videos whose file is gone', () => {
     ).run()
     const digest = buildDigest(db, [], ENV_OK)
     expect(digest).toContain(
-      '  job j-published (chan-a) has no video file at /nonexistent/final.mp4 — run brainrot library reject j-published',
+      '  job j-published (chan-a) has no stored object — run brainrot library backfill-store',
     )
     db.close()
   })

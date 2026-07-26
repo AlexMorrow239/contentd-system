@@ -115,12 +115,17 @@ export function renderJobDetailPage(detail: JobDetail, dbChoice: DbChoice): Safe
   const { job } = detail
 
   const video =
-    detail.videoPath === null
-      ? html``
-      : html`<div class="panel">
+    detail.videoPath !== null && !detail.archived
+      ? html`<div class="panel">
           <h2>video</h2>
           <video controls preload="metadata" src="${dbHref(`/library/${job.id}/video`, dbChoice)}"></video>
         </div>`
+      : detail.archived
+        ? html`<div class="panel">
+            <h2>video</h2>
+            <p class="muted">archived to object storage — not available locally</p>
+          </div>`
+        : html``
 
   const costs =
     detail.costs.length === 0

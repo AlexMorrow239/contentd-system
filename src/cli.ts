@@ -20,7 +20,7 @@ import {
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { pipelineStages } from './jobs/pipeline.js'
-import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
+import { approveLibrary, libraryObjectKeys, listLibrary, rejectLibrary } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
 import { backfillStore } from './jobs/backfill-store.js'
 import { runInstagramAuthFlow, runYoutubeAuthFlow } from './publish/oauth-flow.js'
@@ -30,6 +30,7 @@ import { ADAPTERS } from './publish/platforms/index.js'
 import { preflight } from './publish/preflight.js'
 import { PUBLISH_PLATFORMS, type Platform } from './publish/types.js'
 import { s3ConfigFromEnv, s3Store } from './storage/s3.js'
+import type { ObjectStore } from './storage/types.js'
 import { DEV_VOICE_ENV } from './stages/voice.js'
 
 /**
@@ -453,12 +454,43 @@ library
 library
   .command('reject <jobIds...>')
   .option('--db <path>', 'sqlite db path')
-  .action((rawIds: string[], opts: { db?: string }) => {
+  .action(async (rawIds: string[], opts: { db?: string }) => {
     const jobIds = parseLibraryJobIds(rawIds)
     const db = openDb(resolveDbPath(opts.db))
+    // Read the keys before the state change: rejecting is the operator's
+    // explicit statement that the video is worthless, and it is the one
+    // deletion that is unambiguously safe.
+    const objects = libraryObjectKeys(db, jobIds)
     const changed = rejectLibrary(db, jobIds)
     // reject takes needs-review AND ready; published rows are skipped.
     console.log(`rejected ${changed} of ${jobIds.length}`)
+
+    // Best-effort: the reject itself must not depend on network reachability.
+    // A failure here leaves an orphaned object, which this warning line — not
+    // an ObjectStore.list() sweep — is how you find.
+    if (objects.length > 0) {
+      let store: ObjectStore | null = null
+      try {
+        store = s3Store(s3ConfigFromEnv())
+      } catch (err) {
+        console.warn(
+          `object storage unavailable, ${objects.length} object(s) left in place: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+      if (store !== null) {
+        const deleteStmt = db.prepare('DELETE FROM library_objects WHERE job_id = ?')
+        for (const o of objects) {
+          try {
+            await store.delete(o.objectKey)
+            deleteStmt.run(o.jobId)
+          } catch (err) {
+            console.warn(
+              `could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${err instanceof Error ? err.message : String(err)}`,
+            )
+          }
+        }
+      }
+    }
   })
 
 library

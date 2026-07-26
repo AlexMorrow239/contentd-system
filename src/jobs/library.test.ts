@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { parseLibraryJobIds } from '../cli.js'
-import { approveLibrary, listLibrary, rejectLibrary } from './library.js'
+import { approveLibrary, libraryObjectKeys, listLibrary, rejectLibrary } from './library.js'
 import type { LibraryState } from './library.js'
 import { runCli } from '../testing/run-cli.js'
 
@@ -168,6 +168,27 @@ describe('rejectLibrary', () => {
       state: string
     }
     expect(row.state).toBe('blocked')
+    db.close()
+  })
+})
+
+describe('libraryObjectKeys', () => {
+  it('returns the keys for the given job ids, skipping ids with no object row', () => {
+    const db = openDb(':memory:')
+    const jobId = seedJob(db, { id: 'job-1' })
+    seedLibrary(db, jobId, { state: 'ready' })
+    db.prepare(
+      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('job-1','videos/example/job-1.mp4',1,'e')",
+    ).run()
+    expect(libraryObjectKeys(db, ['job-1', 'job-missing'])).toEqual([
+      { jobId: 'job-1', objectKey: 'videos/example/job-1.mp4' },
+    ])
+    db.close()
+  })
+
+  it('returns an empty array for no ids', () => {
+    const db = openDb(':memory:')
+    expect(libraryObjectKeys(db, [])).toEqual([])
     db.close()
   })
 })

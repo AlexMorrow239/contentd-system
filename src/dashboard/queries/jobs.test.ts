@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
@@ -149,6 +152,46 @@ describe('getJobDetail', () => {
     const detail = getJobDetail(db, 'j1')
     expect(detail?.libraryState).toBeNull()
     expect(detail?.videoPath).toBeNull()
+    expect(detail?.archived).toBe(false)
+    db.close()
+  })
+
+  it('is not archived when the local file still exists on disk', () => {
+    const db = seed()
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'dashboard-video-'))
+    const file = path.join(dir, 'out.mp4')
+    writeFileSync(file, 'not really a video')
+    db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
+        "VALUES ('j2', ?, '{}', 'ready')",
+    ).run(file)
+    db.prepare(
+      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j2','videos/ocean/j2.mp4',1,'e')",
+    ).run()
+    expect(getJobDetail(db, 'j2')?.archived).toBe(false)
+    db.close()
+  })
+
+  it('is not archived when there is no stored object, even if the local file is gone', () => {
+    const db = seed()
+    db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
+        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
+    ).run()
+    expect(getJobDetail(db, 'j2')?.archived).toBe(false)
+    db.close()
+  })
+
+  it('is archived when a stored object exists and the local file is gone', () => {
+    const db = seed()
+    db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
+        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
+    ).run()
+    db.prepare(
+      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j2','videos/ocean/j2.mp4',1,'e')",
+    ).run()
+    expect(getJobDetail(db, 'j2')?.archived).toBe(true)
     db.close()
   })
 })

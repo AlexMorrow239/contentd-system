@@ -101,3 +101,20 @@ export function rejectLibrary(db: Database, jobIds: string[]): number {
     )
     .run(...jobIds).changes
 }
+
+// Reject deletes the stored object too (design spec decision 7), so the CLI
+// needs the keys BEFORE the rows are touched. Returns only jobs that actually
+// have an object — an id with no row simply does not appear.
+export function libraryObjectKeys(
+  db: Database,
+  jobIds: string[],
+): { jobId: string; objectKey: string }[] {
+  if (jobIds.length === 0) return []
+  const placeholders = jobIds.map(() => '?').join(', ')
+  return db
+    .prepare(
+      `SELECT job_id AS jobId, object_key AS objectKey FROM library_objects
+       WHERE job_id IN (${placeholders}) ORDER BY job_id`,
+    )
+    .all(...jobIds) as { jobId: string; objectKey: string }[]
+}

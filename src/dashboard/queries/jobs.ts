@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 
 export type JobStatus = 'queued' | 'running' | 'failed' | 'done' | 'blocked'
@@ -131,6 +132,13 @@ export interface JobDetail {
   costs: JobCostRow[]
   libraryState: string | null
   videoPath: string | null
+  /**
+   * True when the video exists in object storage but its local copy has
+   * been reclaimed from runs/. The dashboard deliberately holds no bucket
+   * credentials (design spec decision 9), so this is detected from the db
+   * (a library_objects row) plus existsSync, never fetched or presigned.
+   */
+  archived: boolean
 }
 
 export function getJobDetail(db: Database, jobId: string): JobDetail | null {
@@ -184,8 +192,14 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
     createdAt: c.created_at,
   }))
 
-  const lib = db.prepare('SELECT state, video_path FROM library WHERE job_id = ?').get(jobId) as
-    { state: string; video_path: string } | undefined
+  const lib = db
+    .prepare(
+      `SELECT l.state AS state, l.video_path AS video_path,
+              CASE WHEN lo.job_id IS NULL THEN 0 ELSE 1 END AS stored
+       FROM library l LEFT JOIN library_objects lo ON lo.job_id = l.job_id
+       WHERE l.job_id = ?`,
+    )
+    .get(jobId) as { state: string; video_path: string; stored: number } | undefined
 
   return {
     job: toJobRow(row),
@@ -193,5 +207,9 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
     costs,
     libraryState: lib?.state ?? null,
     videoPath: lib?.video_path ?? null,
+    // The video exists in object storage but its local copy has been
+    // reclaimed. The dashboard deliberately holds no bucket credentials
+    // (design spec decision 9), so it can say so but not play it.
+    archived: lib !== undefined && lib.stored === 1 && !existsSync(lib.video_path),
   }
 }

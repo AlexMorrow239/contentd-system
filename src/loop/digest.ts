@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
 import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } from '../jobs/costs.js'
@@ -481,21 +480,23 @@ export function buildDigest(
       `  job ${r.jobId} (${r.channel}) hit the publish attempt cap (${r.n} rejected) — run brainrot library reject ${r.jobId}`,
     )
   }
-  // A ready row whose file was pruned from runs/ can never publish: the tick
-  // skips it, and without this line the operator sees only a backlog that
-  // never drains. Pure read — existsSync on the path the publish tick would
-  // open — so the digest stays side-effect free.
-  const readyVideos = db
+  // A publishable library row with no stored object cannot reach Instagram:
+  // publishMedia.url() has nothing to presign. The old check here was
+  // existsSync on the local path, which is now NORMAL — runs/ is a disposable
+  // cache and the bucket is the durable copy — and would fire constantly.
+  const unstored = db
     .prepare(
-      `SELECT l.job_id AS jobId, j.channel AS channel, l.video_path AS videoPath
-       FROM library l JOIN jobs j ON j.id = l.job_id
-       WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) ORDER BY l.job_id`,
+      `SELECT l.job_id AS jobId, j.channel AS channel
+       FROM library l
+       JOIN jobs j ON j.id = l.job_id
+       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
+       WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) AND lo.job_id IS NULL
+       ORDER BY l.job_id`,
     )
-    .all() as { jobId: string; channel: string; videoPath: string }[]
-  for (const r of readyVideos) {
-    if (existsSync(r.videoPath)) continue
+    .all() as { jobId: string; channel: string }[]
+  for (const r of unstored) {
     lines.push(
-      `  job ${r.jobId} (${r.channel}) has no video file at ${r.videoPath} — run brainrot library reject ${r.jobId}`,
+      `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,
     )
   }
   // Local-time slot bookkeeping (decision 13): "yesterday" is the local
