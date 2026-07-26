@@ -7,12 +7,14 @@ import {
   DEFAULT_IG_UPLOADS_PER_DAY,
   IG_GRAPH_VERSION,
   IG_POLL_INTERVAL_MS,
+  IG_POLL_TIMEOUT_MS,
   igUploadsPerDayCap,
   instagramUploadTarget,
 } from './instagram.js'
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.useRealTimers()
 })
 
 describe('igUploadsPerDayCap', () => {
@@ -107,8 +109,18 @@ describe('instagramUploadTarget', () => {
       { status: 200, body: { id: 'media-1' } },
       { status: 200, body: { permalink: '' } },
     ])
-    const target = instagramUploadTarget(impl, () => 0)
-    await target.upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
+    const videoPath = tmpVideoFile()
+    vi.useFakeTimers()
+    try {
+      const result = instagramUploadTarget(impl).upload({ videoPath, meta, options }, 'ig-token')
+      // The real IG_POLL_INTERVAL_MS wait between poll 1 and poll 2 is the
+      // only real timer this run schedules — advancing past it lets the
+      // rest of the chain (all plain promise microtasks) settle on its own.
+      await vi.advanceTimersByTimeAsync(IG_POLL_INTERVAL_MS)
+      await result
+    } finally {
+      vi.useRealTimers()
+    }
     expect(polls).toBe(2)
   })
 
@@ -131,14 +143,22 @@ describe('instagramUploadTarget', () => {
       { status: 200, body: {} },
       () => ({ status: 200, body: { status_code: 'IN_PROGRESS' } }),
     ])
-    let clock = 0
-    const advancingNow = () => {
-      clock += IG_POLL_INTERVAL_MS
-      return clock
+    const videoPath = tmpVideoFile()
+    vi.useFakeTimers()
+    let err: unknown
+    try {
+      const pending = instagramUploadTarget(impl)
+        .upload({ videoPath, meta, options }, 'ig-token')
+        .catch((e: unknown) => e)
+      // Fake timers fake Date alongside setTimeout, so the default nowMs
+      // (Date.now) advances in lockstep with this one call — it cascades
+      // through every IG_POLL_INTERVAL_MS wait the loop schedules along the
+      // way, well past IG_POLL_TIMEOUT_MS, without any real wall-clock wait.
+      await vi.advanceTimersByTimeAsync(IG_POLL_TIMEOUT_MS + IG_POLL_INTERVAL_MS)
+      err = await pending
+    } finally {
+      vi.useRealTimers()
     }
-    const err = await instagramUploadTarget(impl, advancingNow)
-      .upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
-      .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('transient')
   })

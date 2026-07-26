@@ -176,16 +176,7 @@ async function pollUntilFinished(opts: {
         'transient',
       )
     }
-    // Real pacing delay applies only under the real wall clock (the
-    // production default, the bare `Date.now` reference below). A caller-
-    // injected clock already models elapsed time deterministically on its
-    // own -- sleeping for real on top of it would make a legitimate ~60-poll
-    // timeout scenario take five real minutes of wall-clock time in a test
-    // for no reason. Compared by reference, not by value, so only the
-    // literal default (not a wrapper that merely calls it) skips the delay.
-    if (opts.nowMs === Date.now) {
-      await new Promise((resolve) => setTimeout(resolve, IG_POLL_INTERVAL_MS))
-    }
+    await new Promise((resolve) => setTimeout(resolve, IG_POLL_INTERVAL_MS))
   }
 }
 
@@ -259,7 +250,7 @@ async function fetchPermalink(opts: {
  */
 export function instagramUploadTarget(
   fetchImpl: typeof fetch = fetch,
-  nowMs: () => number = Date.now,
+  nowMs: () => number = () => Date.now(),
 ): {
   platformId: 'instagram'
   upload(
