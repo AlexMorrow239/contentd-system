@@ -12,6 +12,10 @@ export const IG_UPLOAD_TIMEOUT_MS = 300_000 // 5 min, per HTTP call
 export const IG_POLL_TIMEOUT_MS = 300_000 // 5 min total, well inside the 30-min publish lease
 export const IG_POLL_INTERVAL_MS = 5_000
 export const IG_TOKEN_REFRESH_WINDOW_MS = 10 * 24 * 60 * 60 * 1000 // 10 days (design spec decision 5)
+// Meta fetches video_url during container processing, already bounded at
+// IG_POLL_TIMEOUT_MS (5 min). Two hours is headroom for Meta-side retries
+// while keeping the signed URL's lifetime bounded.
+export const IG_PRESIGN_TTL_SECONDS = 7200
 
 interface IgErrorBody {
   error?: { code?: number; message?: string }
@@ -48,6 +52,7 @@ async function mapIgHttpError(op: string, res: Response): Promise<PublishError> 
 
 async function createContainer(opts: {
   igUserId: string
+  videoUrl: string
   caption: string
   shareToFeed: boolean
   token: string
@@ -55,7 +60,11 @@ async function createContainer(opts: {
 }): Promise<string> {
   const url = new URL(`https://graph.instagram.com/${IG_GRAPH_VERSION}/${opts.igUserId}/media`)
   url.searchParams.set('media_type', 'REELS')
-  url.searchParams.set('upload_type', 'resumable')
+  // graph.instagram.com (Instagram API with Instagram Login) does NOT honor
+  // upload_type=resumable — it answers 400 "The parameter video_url is
+  // required". Meta's servers fetch the video from this URL themselves, which
+  // is why finished videos have to live somewhere publicly reachable.
+  url.searchParams.set('video_url', opts.videoUrl)
   url.searchParams.set('caption', opts.caption)
   url.searchParams.set('share_to_feed', String(opts.shareToFeed))
   url.searchParams.set('access_token', opts.token)
@@ -87,34 +96,6 @@ async function createContainer(opts: {
   return body.id
 }
 
-// Takes the already-resolved bytes rather than a path — upload() fetches them
-// via media.bytes() once, up front (see the comment there), so the buffer is
-// already in hand here rather than being read from disk mid-flow.
-async function uploadBytes(opts: {
-  containerId: string
-  bytes: Buffer<ArrayBuffer>
-  token: string
-  fetchImpl: typeof fetch
-}): Promise<void> {
-  const url = `https://rupload.facebook.com/ig-api-upload/${IG_GRAPH_VERSION}/${opts.containerId}`
-  let res: Response
-  try {
-    res = await opts.fetchImpl(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `OAuth ${opts.token}`,
-        offset: '0',
-        file_size: String(opts.bytes.length),
-      },
-      body: opts.bytes,
-      signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
-    })
-  } catch (err) {
-    throw networkError('instagramTarget: uploadBytes', IG_UPLOAD_TIMEOUT_MS, err)
-  }
-  if (!res.ok) throw await mapIgHttpError('instagramTarget: uploadBytes', res)
-}
-
 async function pollUntilFinished(opts: {
   containerId: string
   token: string
@@ -124,7 +105,7 @@ async function pollUntilFinished(opts: {
   const deadline = opts.nowMs() + IG_POLL_TIMEOUT_MS
   for (;;) {
     const url = new URL(`https://graph.instagram.com/${IG_GRAPH_VERSION}/${opts.containerId}`)
-    url.searchParams.set('fields', 'status_code')
+    url.searchParams.set('fields', 'status_code,status')
     url.searchParams.set('access_token', opts.token)
     let res: Response
     try {
@@ -135,11 +116,14 @@ async function pollUntilFinished(opts: {
       throw networkError('instagramTarget: pollUntilFinished', IG_UPLOAD_TIMEOUT_MS, err)
     }
     if (!res.ok) throw await mapIgHttpError('instagramTarget: pollUntilFinished', res)
-    const body = (await res.json()) as { status_code?: string }
+    const body = (await res.json()) as { status_code?: string; status?: string }
     if (body.status_code === 'FINISHED') return
     if (body.status_code === 'ERROR' || body.status_code === 'EXPIRED') {
+      // Meta puts the actual cause in `status` — most often a failure to fetch
+      // video_url. Without it this reads as a bare "entered status ERROR".
+      const detail = body.status === undefined ? '' : `: ${body.status}`
       throw new PublishError(
-        `instagramTarget: container ${opts.containerId} entered status ${body.status_code}`,
+        `instagramTarget: container ${opts.containerId} entered status ${body.status_code}${detail}`,
         'rejected',
       )
     }
@@ -216,10 +200,12 @@ async function fetchPermalink(opts: {
 }
 
 /**
- * The Instagram Reels container-upload flow (design spec §6): create ->
- * upload bytes -> poll until FINISHED -> publish -> best-effort permalink.
- * `nowMs` is injectable so a poll-timeout test never waits IG_POLL_TIMEOUT_MS
- * of wall-clock time.
+ * The Instagram Reels container flow (design spec §6): presign -> create ->
+ * poll -> publish -> permalink. Meta's Instagram API with Instagram Login
+ * host (graph.instagram.com) has no resumable byte-upload path — it fetches
+ * the video itself from a `video_url` we hand it, so a presigned URL has to
+ * exist before any container does. `nowMs` is injectable so a poll-timeout
+ * test never waits IG_POLL_TIMEOUT_MS of wall-clock time.
  */
 export function instagramUploadTarget(
   fetchImpl: typeof fetch = fetch,
@@ -228,23 +214,19 @@ export function instagramUploadTarget(
   return {
     platformId: 'instagram',
     async upload(req, token) {
-      // Still a byte upload at this point — Task 7 replaces this with a
-      // presigned video_url, which is what Meta actually requires. Resolved
-      // up front, in this frame, rather than inside uploadBytes: a missing
-      // video must fail before a container is created that would just sit
-      // and expire. The buffer is then held for the rest of the container's
-      // lifetime — through uploadBytes, pollUntilFinished, publishContainer,
-      // and fetchPermalink — not released the moment upload() returns.
-      const bytes = await req.media.bytes()
+      // Presign BEFORE any network call to Meta: a video with no stored
+      // object must fail before a container is created that would just sit
+      // and expire.
+      const videoUrl = await req.media.url(IG_PRESIGN_TTL_SECONDS)
       const caption = renderCaption(req.meta)
       const containerId = await createContainer({
         igUserId: req.options.igUserId,
+        videoUrl,
         caption,
         shareToFeed: req.options.shareToFeed,
         token,
         fetchImpl,
       })
-      await uploadBytes({ containerId, bytes, token, fetchImpl })
       await pollUntilFinished({ containerId, token, fetchImpl, nowMs })
       const mediaId = await publishContainer({
         igUserId: req.options.igUserId,
