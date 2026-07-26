@@ -1,8 +1,19 @@
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { parseLibraryJobIds } from '../cli.js'
-import { approveLibrary, libraryObjectKeys, listLibrary, rejectLibrary } from './library.js'
+import { fakeStore } from '../storage/fake.js'
+import type { ObjectStore } from '../storage/types.js'
+import {
+  approveLibrary,
+  deleteRejectedObjects,
+  libraryObjectKeys,
+  listLibrary,
+  rejectLibrary,
+} from './library.js'
 import type { LibraryState } from './library.js'
 import { runCli } from '../testing/run-cli.js'
 
@@ -189,6 +200,122 @@ describe('libraryObjectKeys', () => {
   it('returns an empty array for no ids', () => {
     const db = openDb(':memory:')
     expect(libraryObjectKeys(db, [])).toEqual([])
+    db.close()
+  })
+})
+
+// Wraps a real store but makes `delete` throw for one chosen key, so a
+// partial-failure batch can be exercised without any network/module mocking.
+function storeThatFailsToDelete(store: ObjectStore, failingKey: string): ObjectStore {
+  return {
+    ...store,
+    delete: async (key: string) => {
+      if (key === failingKey) throw new Error(`boom: cannot delete ${key}`)
+      await store.delete(key)
+    },
+  }
+}
+
+describe('deleteRejectedObjects', () => {
+  function seedObjectRow(db: Database, jobId: string, objectKey: string): void {
+    db.prepare(
+      'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, 1, ?)',
+    ).run(jobId, objectKey, `etag-${jobId}`)
+  }
+
+  it('is a no-op for an empty object list', async () => {
+    const db = openDb(':memory:')
+    const store = fakeStore(mkdtempSync(path.join(tmpdir(), 'brainrot-reject-')))
+    const res = await deleteRejectedObjects({ db, objects: [], store })
+    expect(res).toEqual({ deleted: [], failed: [] })
+    db.close()
+  })
+
+  it('deletes every object and clears every library_objects row when all succeed', async () => {
+    const db = openDb(':memory:')
+    const a = seedJob(db, { id: 'a' })
+    const b = seedJob(db, { id: 'b' })
+    seedObjectRow(db, a, 'videos/chan-a/a.mp4')
+    seedObjectRow(db, b, 'videos/chan-a/b.mp4')
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-reject-'))
+    const store = fakeStore(dir)
+    await store.put('videos/chan-a/a.mp4', Buffer.from('a'), 'video/mp4')
+    await store.put('videos/chan-a/b.mp4', Buffer.from('b'), 'video/mp4')
+
+    const res = await deleteRejectedObjects({
+      db,
+      objects: [
+        { jobId: a, objectKey: 'videos/chan-a/a.mp4' },
+        { jobId: b, objectKey: 'videos/chan-a/b.mp4' },
+      ],
+      store,
+    })
+
+    expect(res).toEqual({ deleted: [a, b], failed: [] })
+    expect(db.prepare('SELECT job_id FROM library_objects').all()).toEqual([])
+    db.close()
+  })
+
+  it('one key throwing lands it in failed, still processes the rest, and warns with the key', async () => {
+    const db = openDb(':memory:')
+    const a = seedJob(db, { id: 'a' })
+    const b = seedJob(db, { id: 'b' })
+    const c = seedJob(db, { id: 'c' })
+    seedObjectRow(db, a, 'videos/chan-a/a.mp4')
+    seedObjectRow(db, b, 'videos/chan-a/b.mp4')
+    seedObjectRow(db, c, 'videos/chan-a/c.mp4')
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-reject-'))
+    const inner = fakeStore(dir)
+    await inner.put('videos/chan-a/a.mp4', Buffer.from('a'), 'video/mp4')
+    await inner.put('videos/chan-a/b.mp4', Buffer.from('b'), 'video/mp4')
+    await inner.put('videos/chan-a/c.mp4', Buffer.from('c'), 'video/mp4')
+    const store = storeThatFailsToDelete(inner, 'videos/chan-a/b.mp4')
+
+    const warnings: string[] = []
+    const res = await deleteRejectedObjects({
+      db,
+      objects: [
+        { jobId: a, objectKey: 'videos/chan-a/a.mp4' },
+        { jobId: b, objectKey: 'videos/chan-a/b.mp4' },
+        { jobId: c, objectKey: 'videos/chan-a/c.mp4' },
+      ],
+      store,
+      warn: (message) => warnings.push(message),
+    })
+
+    // The other keys are still processed and their rows still cleared.
+    expect(res).toEqual({ deleted: [a, c], failed: [b] })
+    expect(db.prepare('SELECT job_id AS jobId FROM library_objects ORDER BY job_id').all()).toEqual(
+      [{ jobId: b }],
+    )
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('videos/chan-a/b.mp4')
+    expect(warnings[0]).toContain(b)
+    db.close()
+  })
+
+  it('leaves the library_objects row of a failed delete in place so the orphan is still discoverable', async () => {
+    const db = openDb(':memory:')
+    const jobId = seedJob(db, { id: 'job-1' })
+    seedObjectRow(db, jobId, 'videos/chan-a/job-1.mp4')
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-reject-'))
+    const inner = fakeStore(dir)
+    await inner.put('videos/chan-a/job-1.mp4', Buffer.from('x'), 'video/mp4')
+    const store = storeThatFailsToDelete(inner, 'videos/chan-a/job-1.mp4')
+
+    const res = await deleteRejectedObjects({
+      db,
+      objects: [{ jobId, objectKey: 'videos/chan-a/job-1.mp4' }],
+      store,
+    })
+
+    expect(res).toEqual({ deleted: [], failed: [jobId] })
+    expect(
+      db.prepare('SELECT object_key AS k FROM library_objects WHERE job_id = ?').get(jobId),
+    ).toEqual({ k: 'videos/chan-a/job-1.mp4' })
     db.close()
   })
 })

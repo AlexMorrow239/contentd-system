@@ -20,7 +20,13 @@ import {
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { pipelineStages } from './jobs/pipeline.js'
-import { approveLibrary, libraryObjectKeys, listLibrary, rejectLibrary } from './jobs/library.js'
+import {
+  approveLibrary,
+  deleteRejectedObjects,
+  libraryObjectKeys,
+  listLibrary,
+  rejectLibrary,
+} from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
 import { backfillStore } from './jobs/backfill-store.js'
 import { runInstagramAuthFlow, runYoutubeAuthFlow } from './publish/oauth-flow.js'
@@ -478,17 +484,12 @@ library
         )
       }
       if (store !== null) {
-        const deleteStmt = db.prepare('DELETE FROM library_objects WHERE job_id = ?')
-        for (const o of objects) {
-          try {
-            await store.delete(o.objectKey)
-            deleteStmt.run(o.jobId)
-          } catch (err) {
-            console.warn(
-              `could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${err instanceof Error ? err.message : String(err)}`,
-            )
-          }
-        }
+        await deleteRejectedObjects({
+          db,
+          objects,
+          store,
+          warn: (message) => console.warn(message),
+        })
       }
     }
   })

@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import type { ObjectStore } from '../storage/types.js'
 
 export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
 
@@ -117,4 +118,38 @@ export function libraryObjectKeys(
        WHERE job_id IN (${placeholders}) ORDER BY job_id`,
     )
     .all(...jobIds) as { jobId: string; objectKey: string }[]
+}
+
+/**
+ * Deletes each rejected video's stored object, store-injected so the loop is
+ * unit-testable against a fake store with no S3/MinIO (mirrors backfillStore
+ * in ./backfill-store.ts). One bad key must not stop the rest: each delete is
+ * its own try/catch, and the `library_objects` row is cleared only after its
+ * delete succeeds, so a failure leaves the row in place as the orphan marker
+ * the CLI's warning line points the operator at.
+ */
+export async function deleteRejectedObjects(opts: {
+  db: Database
+  objects: { jobId: string; objectKey: string }[]
+  store: ObjectStore
+  warn?: (message: string) => void
+}): Promise<{ deleted: string[]; failed: string[] }> {
+  const warn = opts.warn ?? (() => {})
+  const deleteStmt = opts.db.prepare('DELETE FROM library_objects WHERE job_id = ?')
+
+  const deleted: string[] = []
+  const failed: string[] = []
+  for (const o of opts.objects) {
+    try {
+      await opts.store.delete(o.objectKey)
+      deleteStmt.run(o.jobId)
+      deleted.push(o.jobId)
+    } catch (err) {
+      warn(
+        `could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${err instanceof Error ? err.message : String(err)}`,
+      )
+      failed.push(o.jobId)
+    }
+  }
+  return { deleted, failed }
 }
