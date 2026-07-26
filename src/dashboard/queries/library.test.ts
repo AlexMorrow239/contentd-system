@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
-import { libraryChannels, listLibraryEntries } from './library.js'
+import { countLibraryEntries, libraryChannels, listLibraryEntries } from './library.js'
 
 function seed(): Database {
   const db = openDb(':memory:')
@@ -80,6 +80,14 @@ describe('listLibraryEntries', () => {
     expect(entries.find((e) => e.jobId === 'j2')?.qc).toEqual({ kind: 'ok' })
     db.close()
   })
+
+  it('defaults to a 200-row limit, matching listJobs', () => {
+    const db = seed()
+    addLibrary(db, 'j1', 'ready', '{}')
+    addLibrary(db, 'j2', 'ready', '{}')
+    expect(listLibraryEntries(db, { limit: 1 })).toHaveLength(1)
+    db.close()
+  })
 })
 
 describe('libraryChannels', () => {
@@ -88,6 +96,25 @@ describe('libraryChannels', () => {
     addLibrary(db, 'j1', 'ready', '{}')
     addLibrary(db, 'j2', 'ready', '{}')
     expect(libraryChannels(db)).toEqual(['ocean', 'space'])
+    db.close()
+  })
+})
+
+describe('countLibraryEntries', () => {
+  it('counts all matching rows regardless of any limit applied elsewhere', () => {
+    const db = seed()
+    addLibrary(db, 'j1', 'ready', '{}')
+    addLibrary(db, 'j2', 'needs-review', '{}')
+    expect(countLibraryEntries(db)).toBe(2)
+    db.close()
+  })
+
+  it('applies the same state and channel filters as listLibraryEntries', () => {
+    const db = seed()
+    addLibrary(db, 'j1', 'ready', '{}')
+    addLibrary(db, 'j2', 'needs-review', '{}')
+    expect(countLibraryEntries(db, { state: 'ready' })).toBe(1)
+    expect(countLibraryEntries(db, { channel: 'ocean' })).toBe(1)
     db.close()
   })
 })

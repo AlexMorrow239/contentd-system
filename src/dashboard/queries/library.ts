@@ -50,10 +50,10 @@ interface DbLibraryEntry {
   created_at: string
 }
 
-export function listLibraryEntries(
-  db: Database,
-  filter?: { state?: LibraryState; channel?: string },
-): LibraryEntry[] {
+function libraryWhereClause(filter?: { state?: LibraryState; channel?: string }): {
+  clause: string
+  params: string[]
+} {
   const where: string[] = []
   const params: string[] = []
   if (filter?.state !== undefined) {
@@ -64,16 +64,26 @@ export function listLibraryEntries(
     where.push('jobs.channel = ?')
     params.push(filter.channel)
   }
-  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  return { clause: where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '', params }
+}
+
+// limit defaults to 200, matching listJobs's shape — nothing prunes the
+// library table, and an unbounded SELECT would render every row ever finished.
+export function listLibraryEntries(
+  db: Database,
+  filter?: { state?: LibraryState; channel?: string; limit?: number },
+): LibraryEntry[] {
+  const { clause, params } = libraryWhereClause(filter)
+  const limit = filter?.limit ?? 200
   const rows = db
     .prepare(
       'SELECT library.job_id AS job_id, jobs.channel AS channel, jobs.topic AS topic, ' +
         'library.state AS state, library.video_path AS video_path, ' +
         'library.metadata_json AS metadata_json, library.created_at AS created_at ' +
         `FROM library JOIN jobs ON library.job_id = jobs.id${clause} ` +
-        'ORDER BY library.created_at DESC, library.job_id DESC',
+        'ORDER BY library.created_at DESC, library.job_id DESC LIMIT ?',
     )
-    .all(...params) as DbLibraryEntry[]
+    .all(...params, limit) as DbLibraryEntry[]
 
   return rows.map((row) => ({
     jobId: row.job_id,
@@ -84,6 +94,19 @@ export function listLibraryEntries(
     createdAt: row.created_at,
     qc: summarizeQc(row.metadata_json),
   }))
+}
+
+// Unbounded by the same limit listLibraryEntries applies, so the view can
+// tell the operator "showing 200 of 1,432" rather than truncating silently.
+export function countLibraryEntries(
+  db: Database,
+  filter?: { state?: LibraryState; channel?: string },
+): number {
+  const { clause, params } = libraryWhereClause(filter)
+  const row = db
+    .prepare(`SELECT COUNT(*) AS count FROM library JOIN jobs ON library.job_id = jobs.id${clause}`)
+    .get(...params) as { count: number }
+  return row.count
 }
 
 export function libraryChannels(db: Database): string[] {

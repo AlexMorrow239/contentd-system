@@ -37,6 +37,13 @@ describe('parseRange', () => {
   it('rejects a zero-length suffix', () => {
     expect(parseRange('bytes=-0', 1000)).toBeNull()
   })
+
+  it('rejects any range on a zero-byte file, falling through to the whole-file 200 path', () => {
+    // parseRange('bytes=-200', 0) would otherwise return { start: 0, end: -1 },
+    // which the route turns into a malformed 206 with content-range: bytes 0--1/0.
+    expect(parseRange('bytes=-200', 0)).toBeNull()
+    expect(parseRange('bytes=0-', 0)).toBeNull()
+  })
 })
 
 describe('resolveVideoPath', () => {

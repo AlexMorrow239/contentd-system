@@ -203,12 +203,15 @@ export function markTopicUsedByJob(db: Database, jobId: string): void {
   db.prepare("UPDATE topics SET status = 'used' WHERE job_id = ? AND status = 'claimed'").run(jobId)
 }
 
+// limit is optional and unlimited by default — the CLI (`topics list`) relies
+// on that to keep showing every row; only the dashboard passes one, to bound
+// what an unbounded scout queue can otherwise render.
 export function listTopics(
   db: Database,
-  filter?: { channel?: string; status?: TopicStatus },
+  filter?: { channel?: string; status?: TopicStatus; limit?: number },
 ): TopicRow[] {
   const where: string[] = []
-  const params: string[] = []
+  const params: (string | number)[] = []
   if (filter?.channel !== undefined) {
     where.push('channel = ?')
     params.push(filter.channel)
@@ -218,8 +221,12 @@ export function listTopics(
     params.push(filter.status)
   }
   const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  const limitClause = filter?.limit !== undefined ? ' LIMIT ?' : ''
+  if (filter?.limit !== undefined) params.push(filter.limit)
   const rows = db
-    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics${clause} ORDER BY created_at DESC, id DESC`)
+    .prepare(
+      `SELECT ${TOPIC_COLUMNS} FROM topics${clause} ORDER BY created_at DESC, id DESC${limitClause}`,
+    )
     .all(...params) as DbTopicRow[]
   return rows.map(toTopicRow)
 }

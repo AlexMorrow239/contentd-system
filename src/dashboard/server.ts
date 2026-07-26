@@ -1,4 +1,4 @@
-import { createReadStream, readFileSync, statSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import type { Database } from 'better-sqlite3'
@@ -12,11 +12,17 @@ import { ytUploadsPerDayCap } from '../publish/youtube.js'
 import type { DashboardConfig, DbChoice } from './config.js'
 import { resolveDbChoice } from './config.js'
 import { html } from './html.js'
-import { findLibraryVideoPath, libraryChannels, listLibraryEntries } from './queries/library.js'
-import { getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
+import {
+  countLibraryEntries,
+  findLibraryVideoPath,
+  libraryChannels,
+  listLibraryEntries,
+} from './queries/library.js'
+import { countJobs, getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
 import { buildOverview } from './queries/overview.js'
 import { buildPublishGrids } from './queries/publishes.js'
+import { countTopics, topicChannels } from './queries/topics.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
 import { parseRange, resolveVideoPath } from './video.js'
@@ -25,7 +31,7 @@ import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 import { renderOverviewPage } from './views/overview.js'
 import { renderPublishesPage } from './views/publishes.js'
-import { renderTopicsPage, topicChannels } from './views/topics.js'
+import { renderTopicsPage } from './views/topics.js'
 
 export interface DashboardVars {
   db: Database
@@ -62,9 +68,19 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const dbPath = deps.config.dbPaths[dbChoice]
     let db: Database
     try {
-      db = openDbReadonly(dbPath)
-    } catch {
-      return c.html(missingDbPage(dbPath, dbChoice), 503)
+      db = openAndValidate(dbPath)
+    } catch (err) {
+      // Never the DB contents or env values — just path/choice and the
+      // driver's own message, which is what an operator needs mid-incident.
+      console.error(`dashboard: failed to open ${dbChoice} database at ${dbPath}:`, err)
+      // existsSync, not matching on the SQLite error code: it's the more
+      // direct way to ask the actual question ("is the file there?") and
+      // doesn't depend on which error shape better-sqlite3 throws.
+      if (!existsSync(dbPath)) {
+        return c.html(missingDbPage(dbPath, dbChoice), 503)
+      }
+      const message = err instanceof Error ? err.message : String(err)
+      return c.html(corruptDbPage(dbPath, dbChoice, message), 503)
     }
     c.set('db', db)
     c.set('dbChoice', dbChoice)
@@ -115,6 +131,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         activeNav: 'jobs',
         body: renderJobsPage({
           jobs: listJobs(db, { channel, status }),
+          total: countJobs(db, { channel, status }),
           channels: jobChannels(db),
           filter: { channel, status },
           dbChoice,
@@ -166,6 +183,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         activeNav: 'library',
         body: renderLibraryPage({
           entries: listLibraryEntries(db, { state, channel }),
+          total: countLibraryEntries(db, { state, channel }),
           channels: libraryChannels(db),
           filter: { state, channel },
           dbChoice,
@@ -263,9 +281,11 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         dbChoice,
         activeNav: 'topics',
         body: renderTopicsPage({
-          topics: listTopics(db, { channel, status }),
-          // Unfiltered so the dropdown does not collapse to the current selection.
-          channels: topicChannels(listTopics(db)),
+          topics: listTopics(db, { channel, status, limit: 200 }),
+          total: countTopics(db, { channel, status }),
+          // A dedicated query, not a second listTopics(db) call: this is the
+          // full unfiltered channel set for the dropdown, not filtered rows.
+          channels: topicChannels(db),
           filter: { channel, status },
           dbChoice,
         }),
@@ -290,6 +310,9 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   app.onError((err, c) => {
     // A viewer must never be the thing that is broken: show the message,
     // keep the process up, let restart:unless-stopped handle a real crash.
+    // Also logged: rendering it to the browser was the only record before
+    // this, and `docker compose logs dashboard` had nothing for an incident.
+    console.error(`dashboard: unhandled error on ${c.req.method} ${c.req.path}:`, err)
     const dbChoice = resolveDbChoice(c.req.query('db'))
     return c.html(
       layout({
@@ -306,6 +329,24 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   return app
 }
 
+/**
+ * openDbReadonly does not eagerly read the file header on open — a
+ * corrupt-but-present file only throws once some route runs its first real
+ * query, deep inside an onError 500 with no distinguishing information.
+ * schema_version is a cheap read-only probe that forces the header read here,
+ * right alongside the missing-file case, so both are caught in one place.
+ */
+function openAndValidate(dbPath: string): Database {
+  const db = openDbReadonly(dbPath)
+  try {
+    db.pragma('schema_version')
+  } catch (err) {
+    db.close()
+    throw err
+  }
+  return db
+}
+
 function missingDbPage(dbPath: string, dbChoice: DbChoice): string {
   return layout({
     title: 'no database',
@@ -316,6 +357,19 @@ function missingDbPage(dbPath: string, dbChoice: DbChoice): string {
         The ${dbChoice} database does not exist. The dashboard never creates it — that is the
         pipeline's job.
       </p>`,
+  })
+}
+
+function corruptDbPage(dbPath: string, dbChoice: DbChoice, message: string): string {
+  return layout({
+    title: 'database could not be opened',
+    dbChoice,
+    activeNav: 'overview',
+    body: html`<h1>database could not be opened</h1>
+      <p class="muted">
+        The ${dbChoice} database at <code>${dbPath}</code> is present but could not be opened:
+      </p>
+      <p class="error">${message}</p>`,
   })
 }
 

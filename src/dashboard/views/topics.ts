@@ -1,7 +1,7 @@
 import type { TopicRow, TopicStatus } from '../../scout/topics.js'
 import type { DbChoice } from '../config.js'
 import { html, httpUrlOrNull, SafeHtml } from '../html.js'
-import { formatTime } from './jobs.js'
+import { formatTime, truncationNotice } from './jobs.js'
 import { dbHref } from './layout.js'
 
 const TOPIC_STATUSES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
@@ -12,12 +12,10 @@ function option(value: string, selected: string | undefined): SafeHtml {
     : html`<option value="${value}">${value}</option>`
 }
 
-export function topicChannels(topics: TopicRow[]): string[] {
-  return [...new Set(topics.map((topic) => topic.channel))].sort()
-}
-
 export interface TopicsPageData {
   topics: TopicRow[]
+  /** Total rows matching the filter, before the 200-row cap. Undefined skips the notice. */
+  total?: number
   channels: string[]
   filter: { channel?: string; status?: TopicStatus }
   dbChoice: DbChoice
@@ -77,6 +75,7 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
 
   return html`<h1>topics</h1>
     ${filters}
+    ${truncationNotice(data.topics.length, data.total)}
     <table>
       <thead>
         <tr>

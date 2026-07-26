@@ -66,6 +66,28 @@ describe('renderJobsPage', () => {
     expect(out).toContain('<option value="ocean" selected>ocean</option>')
     expect(out).toContain('<option value="failed" selected>failed</option>')
   })
+
+  it('shows a truncation notice when the 200-row cap cut the list', () => {
+    const out = renderJobsPage({
+      jobs: [job],
+      total: 1432,
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).toContain('showing 1 of 1,432')
+  })
+
+  it('shows no truncation notice when the total equals what is shown', () => {
+    const out = renderJobsPage({
+      jobs: [job],
+      total: 1,
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).not.toContain('showing')
+  })
 })
 
 describe('renderJobDetailPage', () => {

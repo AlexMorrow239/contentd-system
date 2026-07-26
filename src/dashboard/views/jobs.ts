@@ -34,9 +34,21 @@ function option(value: string, selected: string | undefined): SafeHtml {
 
 export interface JobsPageData {
   jobs: JobListRow[]
+  /** Total rows matching the filter, before the 200-row cap. Undefined skips the notice. */
+  total?: number
   channels: string[]
   filter: { channel?: string; status?: JobStatus }
   dbChoice: DbChoice
+}
+
+/**
+ * "showing 200 of 1,432" when a caller-side cap truncated the list, so the
+ * truncation is visible instead of silently dropping rows. Renders nothing
+ * when total is unknown or the shown count already equals it.
+ */
+export function truncationNotice(shown: number, total: number | undefined): SafeHtml {
+  if (total === undefined || shown >= total) return html``
+  return html`<p class="muted">showing ${shown.toLocaleString()} of ${total.toLocaleString()}</p>`
 }
 
 export function renderJobsPage(data: JobsPageData): SafeHtml {
@@ -77,6 +89,7 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
 
   return html`<h1>jobs</h1>
     ${filters}
+    ${truncationNotice(data.jobs.length, data.total)}
     <table>
       <thead>
         <tr>

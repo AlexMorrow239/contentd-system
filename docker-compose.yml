@@ -108,7 +108,12 @@ services:
     # Deliberately no depends_on: whisperx. The dashboard reads a file and
     # serves HTML; coupling it to sidecar health would hide the dashboard you
     # would use to diagnose an unhealthy sidecar.
-    env_file: .env
+    # Deliberately NO env_file here, unlike `brainrot`. This is the one
+    # process that terminates unauthenticated HTTP, and env_file would inject
+    # every key in the host .env — ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, and
+    # BRAINROT_TOKEN_KEY (the AES key that decrypts YouTube refresh tokens) —
+    # into it for no reason: every variable the dashboard actually reads is
+    # already pinned below.
     environment:
       BRAINROT_DB: data/brainrot.db
       BRAINROT_DEV_DB: data/dev.db

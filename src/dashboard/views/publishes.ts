@@ -1,5 +1,5 @@
 import type { DbChoice } from '../config.js'
-import { html, SafeHtml } from '../html.js'
+import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import type { PublishRow } from '../../publish/publishes.js'
 import type { ChannelGrid } from '../queries/publishes.js'
 import { cellKey } from '../queries/publishes.js'
@@ -17,10 +17,14 @@ export interface PublishesPageData {
 function renderCell(row: PublishRow | undefined, dbChoice: DbChoice): SafeHtml {
   if (row === undefined) return html`<td class="slot-empty">·</td>`
 
+  // Not currently exploitable — url is constructed server-side with a fixed
+  // https:// scheme, never from user input — but routed through the same
+  // check as topics.ts so the hardening cannot be quietly lost later.
+  const safeUrl = row.url === null ? null : httpUrlOrNull(row.url)
   const link =
-    row.url === null
+    safeUrl === null
       ? html`<a href="${dbHref(`/jobs/${row.jobId}`, dbChoice)}">${row.status}</a>`
-      : html`<a href="${row.url}" rel="noreferrer">${row.status}</a>`
+      : html`<a href="${safeUrl}" rel="noreferrer">${row.status}</a>`
 
   const kind = row.errorKind === null ? html`` : html`<div class="error">${row.errorKind}</div>`
   const attempt = row.attempt > 1 ? html`<div class="muted">attempt ${row.attempt}</div>` : html``

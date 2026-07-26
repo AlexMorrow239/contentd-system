@@ -410,6 +410,27 @@ describe('listTopics', () => {
     expect(listTopics(db, { channel: 'chan-a', status: 'claimed' })).toHaveLength(1)
     db.close()
   })
+
+  it('is unlimited by default, so existing CLI callers see every row', () => {
+    const db = openDb(':memory:')
+    seedTopic(db)
+    seedTopic(db)
+    seedTopic(db)
+    expect(listTopics(db)).toHaveLength(3)
+    db.close()
+  })
+
+  it('honours an optional limit for callers that need one bounded (the dashboard)', () => {
+    const db = openDb(':memory:')
+    seedTopic(db, { createdAt: '2026-07-19T00:00:00.000Z' })
+    seedTopic(db, { createdAt: '2026-07-20T00:00:00.000Z' })
+    seedTopic(db, { createdAt: '2026-07-21T00:00:00.000Z' })
+    expect(listTopics(db, { limit: 2 }).map((t) => t.createdAt)).toEqual([
+      '2026-07-21T00:00:00.000Z',
+      '2026-07-20T00:00:00.000Z',
+    ])
+    db.close()
+  })
 })
 
 describe('eligibleTopic', () => {

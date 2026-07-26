@@ -61,12 +61,12 @@ function toJobRow(row: DbJobRow): JobListRow {
   }
 }
 
-export function listJobs(
-  db: Database,
-  filter?: { channel?: string; status?: JobStatus; limit?: number },
-): JobListRow[] {
+function jobsWhereClause(filter?: { channel?: string; status?: JobStatus }): {
+  clause: string
+  params: string[]
+} {
   const where: string[] = []
-  const params: (string | number)[] = []
+  const params: string[] = []
   if (filter?.channel !== undefined) {
     where.push('jobs.channel = ?')
     params.push(filter.channel)
@@ -75,7 +75,14 @@ export function listJobs(
     where.push('jobs.status = ?')
     params.push(filter.status)
   }
-  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  return { clause: where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '', params }
+}
+
+export function listJobs(
+  db: Database,
+  filter?: { channel?: string; status?: JobStatus; limit?: number },
+): JobListRow[] {
+  const { clause, params } = jobsWhereClause(filter)
   const limit = filter?.limit ?? 200
   const rows = db
     .prepare(
@@ -83,6 +90,16 @@ export function listJobs(
     )
     .all(...params, limit) as DbJobRow[]
   return rows.map(toJobRow)
+}
+
+// Unbounded by listJobs's limit, so the view can tell the operator
+// "showing 200 of 1,432" rather than truncating silently.
+export function countJobs(db: Database, filter?: { channel?: string; status?: JobStatus }): number {
+  const { clause, params } = jobsWhereClause(filter)
+  const row = db.prepare(`SELECT COUNT(*) AS count FROM jobs${clause}`).get(...params) as {
+    count: number
+  }
+  return row.count
 }
 
 export function jobChannels(db: Database): string[] {

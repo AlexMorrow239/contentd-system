@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { TopicRow } from '../../scout/topics.js'
-import { renderTopicsPage, topicChannels } from './topics.js'
+import { renderTopicsPage } from './topics.js'
 
 function topic(overrides: Partial<TopicRow> = {}): TopicRow {
   return {
@@ -19,18 +19,6 @@ function topic(overrides: Partial<TopicRow> = {}): TopicRow {
     ...overrides,
   }
 }
-
-describe('topicChannels', () => {
-  it('lists distinct channels alphabetically', () => {
-    expect(
-      topicChannels([
-        topic({ channel: 'space' }),
-        topic({ channel: 'ocean' }),
-        topic({ channel: 'space' }),
-      ]),
-    ).toEqual(['ocean', 'space'])
-  })
-})
 
 describe('renderTopicsPage', () => {
   it('sorts by score descending, highest first', () => {
@@ -119,5 +107,27 @@ describe('renderTopicsPage', () => {
       dbChoice: 'prod',
     }).value
     expect(out).toContain('no topics match')
+  })
+
+  it('shows a truncation notice when the 200-row cap cut the list', () => {
+    const out = renderTopicsPage({
+      topics: [topic()],
+      total: 1432,
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).toContain('showing 1 of 1,432')
+  })
+
+  it('shows no truncation notice when the total equals what is shown', () => {
+    const out = renderTopicsPage({
+      topics: [topic()],
+      total: 1,
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).not.toContain('showing')
   })
 })

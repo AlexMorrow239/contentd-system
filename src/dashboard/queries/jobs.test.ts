@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
 import { pipelineStages } from '../../jobs/pipeline.js'
-import { DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from './jobs.js'
+import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from './jobs.js'
 
 function seed(): Database {
   const db = openDb(':memory:')
@@ -60,6 +60,22 @@ describe('listJobs', () => {
   it('honours the limit', () => {
     const db = seed()
     expect(listJobs(db, { limit: 1 }).map((j) => j.id)).toEqual(['j2'])
+    db.close()
+  })
+})
+
+describe('countJobs', () => {
+  it('counts all matching rows regardless of any limit applied elsewhere', () => {
+    const db = seed()
+    expect(countJobs(db)).toBe(2)
+    db.close()
+  })
+
+  it('applies the same channel and status filters as listJobs', () => {
+    const db = seed()
+    expect(countJobs(db, { channel: 'space' })).toBe(1)
+    expect(countJobs(db, { status: 'done' })).toBe(1)
+    expect(countJobs(db, { channel: 'space', status: 'done' })).toBe(0)
     db.close()
   })
 })

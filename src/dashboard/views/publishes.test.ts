@@ -58,6 +58,16 @@ describe('renderPublishesPage', () => {
     expect(out).toContain('attempt 3')
   })
 
+  it('blocks a javascript: url instead of linking it', () => {
+    // Not currently reachable — url is constructed server-side with a fixed
+    // https:// scheme — but applying the same control as topics.ts keeps the
+    // hardening from quietly regressing if that ever changes.
+    const cells = new Map([[cellKey('2026-07-25', '09:00'), row({ url: 'javascript:alert(1)' })]])
+    const out = renderPublishesPage(pageData(cells)).value
+    expect(out).not.toContain('href="javascript:alert(1)"')
+    expect(out).not.toContain('<a href="javascript:')
+  })
+
   it('reports quota consumption against the cap', () => {
     const out = renderPublishesPage(pageData(new Map())).value
     expect(out).toContain('2 / 6')

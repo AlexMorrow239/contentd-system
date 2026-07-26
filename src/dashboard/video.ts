@@ -10,6 +10,11 @@ export function parseRange(
   size: number,
 ): { start: number; end: number } | null {
   if (header === undefined) return null
+  // A zero-byte file has no satisfiable range at all — every possible start/end
+  // pair is out of bounds. Without this guard, 'bytes=-200' on size 0 falls
+  // through to { start: 0, end: -1 }, and the route would emit a malformed
+  // 206 with content-range: bytes 0--1/0.
+  if (size === 0) return null
   const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
   if (match === null) return null
   const rawStart = match[1]

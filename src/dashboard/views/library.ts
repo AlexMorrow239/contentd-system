@@ -2,7 +2,7 @@ import type { LibraryState } from '../../jobs/library.js'
 import type { DbChoice } from '../config.js'
 import { html, SafeHtml } from '../html.js'
 import type { LibraryEntry, QcSummary } from '../queries/library.js'
-import { formatTime } from './jobs.js'
+import { formatTime, truncationNotice } from './jobs.js'
 import { dbHref } from './layout.js'
 
 const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
@@ -30,6 +30,8 @@ function renderQc(qc: QcSummary): SafeHtml {
 
 export interface LibraryPageData {
   entries: LibraryEntry[]
+  /** Total rows matching the filter, before the 200-row cap. Undefined skips the notice. */
+  total?: number
   channels: string[]
   filter: { state?: LibraryState; channel?: string }
   dbChoice: DbChoice
@@ -76,6 +78,7 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
 
   return html`<h1>library</h1>
     ${filters}
+    ${truncationNotice(data.entries.length, data.total)}
     <table>
       <thead>
         <tr><th>video</th><th>job</th><th>topic</th><th>state</th><th>qc</th><th>created</th></tr>

@@ -44,6 +44,31 @@ describe('createApp', () => {
     expect(existsSync(config.dbPaths.dev)).toBe(false)
   })
 
+  it('distinguishes a corrupt-but-present database from a missing one', async () => {
+    const config = seededConfig()
+    // A present-but-not-SQLite file: better-sqlite3 throws on open, but
+    // existsSync is true, so the operator must not be told it "does not exist".
+    writeFileSync(config.dbPaths.dev, 'not a sqlite file')
+    const res = await createApp({ config }).request('/jobs?db=dev')
+    expect(res.status).toBe(503)
+    const body = await res.text()
+    expect(body).not.toContain('does not exist')
+    expect(body).toContain('could not be opened')
+  })
+
+  it('logs the underlying error when the database fails to open', async () => {
+    const config = seededConfig()
+    writeFileSync(config.dbPaths.dev, 'not a sqlite file')
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const res = await createApp({ config }).request('/jobs?db=dev')
+      expect(res.status).toBe(503)
+      expect(spy).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('defaults to the production database', async () => {
     const res = await createApp({ config: seededConfig() }).request('/jobs')
     expect(res.status).toBe(200)
@@ -64,6 +89,21 @@ describe('createApp', () => {
     const res = await app.request('/boom')
     expect(res.status).toBe(500)
     expect(await res.text()).toContain('kaboom')
+  })
+
+  it('logs an unhandled route error instead of only rendering it', async () => {
+    const app = createApp({ config: seededConfig() })
+    app.get('/boom', () => {
+      throw new Error('kaboom')
+    })
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const res = await app.request('/boom')
+      expect(res.status).toBe(500)
+      expect(spy).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+    }
   })
 })
 
@@ -167,5 +207,86 @@ describe('/', () => {
     const body = await res.text()
     expect(body).toContain('<meta http-equiv="refresh" content="30">')
     expect(body).toContain('overview')
+  })
+})
+
+describe('unbounded list truncation', () => {
+  function configWithManyJobs(count: number): DashboardConfig {
+    const config = seededConfig()
+    const db = openDb(config.dbPaths.prod)
+    const insert = db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'space', 'volume', 'x', 'done')",
+    )
+    for (let i = 0; i < count; i++) insert.run(`j${i}`)
+    db.close()
+    return config
+  }
+
+  function configWithManyTopics(count: number): DashboardConfig {
+    const config = seededConfig()
+    const db = openDb(config.dbPaths.prod)
+    const insert = db.prepare(
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status) ' +
+        "VALUES ('space', ?, ?, 'reddit', 'https://x', ?, 50, 'ok', 'candidate')",
+    )
+    for (let i = 0; i < count; i++) insert.run(`t${i}`, `t${i}`, `hash${i}`)
+    db.close()
+    return config
+  }
+
+  function configWithManyLibraryEntries(count: number): DashboardConfig {
+    const config = seededConfig()
+    const db = openDb(config.dbPaths.prod)
+    const insertJob = db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'space', 'volume', 'x', 'done')",
+    )
+    const insertLib = db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, '{}', 'ready')",
+    )
+    for (let i = 0; i < count; i++) {
+      insertJob.run(`j${i}`)
+      insertLib.run(`j${i}`, `runs/j${i}/assemble/final.mp4`)
+    }
+    db.close()
+    return config
+  }
+
+  it('/jobs shows a truncation notice past the 200-row cap', async () => {
+    const config = configWithManyJobs(201)
+    const res = await createApp({ config }).request('/jobs')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('showing 200 of 201')
+  })
+
+  it('/jobs shows no notice when under the cap', async () => {
+    const config = configWithManyJobs(5)
+    const res = await createApp({ config }).request('/jobs')
+    expect(await res.text()).not.toContain('showing')
+  })
+
+  it('/topics shows a truncation notice past the 200-row cap', async () => {
+    const config = configWithManyTopics(201)
+    const res = await createApp({ config }).request('/topics')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('showing 200 of 201')
+  })
+
+  it('/topics shows no notice when under the cap', async () => {
+    const config = configWithManyTopics(5)
+    const res = await createApp({ config }).request('/topics')
+    expect(await res.text()).not.toContain('showing')
+  })
+
+  it('/library shows a truncation notice past the 200-row cap', async () => {
+    const config = configWithManyLibraryEntries(201)
+    const res = await createApp({ config }).request('/library')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('showing 200 of 201')
+  })
+
+  it('/library shows no notice when under the cap', async () => {
+    const config = configWithManyLibraryEntries(5)
+    const res = await createApp({ config }).request('/library')
+    expect(await res.text()).not.toContain('showing')
   })
 })

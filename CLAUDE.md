@@ -196,9 +196,20 @@ changes only).
 `scripts/build-test-cli.ts` transpiles `src/` into a mirrored `dist/` tree via
 a Vitest `globalSetup`, so the CLI subprocess tests can spawn `node dist/cli.js`
 (~0.34s) instead of `pnpm exec tsx src/cli.ts` (~1.15s). It is transpile-only,
-never `--bundle`: bundling flattens the module graph and breaks the three
-`import.meta.url`-relative asset lookups in `src/cli.ts`, `src/db/index.ts` and
-`src/stages/assemble.ts`. `src/testing/dist-layout.test.ts` guards all three.
+never `--bundle`: bundling flattens the module graph and breaks
+`import.meta.url`-relative asset lookups. There are four in this codebase —
+`src/cli.ts`, `src/db/index.ts`, `src/stages/assemble.ts`, and
+`src/dashboard/server.ts` (`static/dashboard.css`) — but
+`src/testing/dist-layout.test.ts` guards only the first three. The dashboard's
+is untested there because it's also unused there: `docker-compose.yml` runs
+the dashboard as `pnpm exec tsx src/dashboard/server.ts` straight against
+`src/`, no spawned test starts it from `dist/`, and `build-test-cli.ts` only
+copies `db/schema.sql` — not the CSS — into `dist/`. The lookup is consequently
+correct by construction but unexercised, same as the Remotion entry path below;
+if the dashboard is ever spawned from `dist/` (a container `node dist/...`
+entrypoint, a dashboard CLI test), it will 404 its own stylesheet until both a
+copy step and a fourth `dist-layout.test.ts` case are added.
+
 Note that no spawned CLI test currently reaches the `assemble` stage, so the
 Remotion entry path is correct by construction but unexercised.
 
