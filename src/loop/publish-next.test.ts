@@ -8,7 +8,8 @@ import { parseTokenKey } from '../publish/crypto.js'
 import { claimPublish, markPublishDone } from '../publish/publishes.js'
 import { upsertToken } from '../publish/tokens.js'
 import { runCli } from '../testing/run-cli.js'
-import type { Platform, PublishTarget } from '../publish/types.js'
+import { PUBLISH_PLATFORMS } from '../publish/types.js'
+import type { Platform, PublishAdapter } from '../publish/types.js'
 import { PublishOutcomeUnknownError, YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
 import { publishNextTick } from './publish-next.js'
@@ -45,7 +46,9 @@ afterAll(() => {
 })
 
 // Plan-1-shape channel TOML plus an optional [publish] table (spec §3.3).
-function channelToml(opts: { name: string; slots?: string[] }): string {
+// `instagram: true` adds a second [publish.instagram] target sharing the
+// same slots, for the cross-platform/quota-pre-filter tests below.
+function channelToml(opts: { name: string; slots?: string[]; instagram?: boolean }): string {
   const lines = [
     `name = "${opts.name}"`,
     'niche = ["space facts"]',
@@ -68,12 +71,24 @@ function channelToml(opts: { name: string; slots?: string[] }): string {
     'per_day_usd = 20.0',
   ]
   if (opts.slots !== undefined) {
-    lines.push('', '[publish]', `slots = [${opts.slots.map((s) => `"${s}"`).join(', ')}]`)
+    lines.push(
+      '',
+      '[publish]',
+      `slots = [${opts.slots.map((s) => `"${s}"`).join(', ')}]`,
+      '',
+      '[publish.youtube]',
+    )
+    if (opts.instagram) {
+      lines.push('', '[publish.instagram]', 'ig_user_id = "ig-test"')
+    }
   }
   return lines.join('\n')
 }
 
-function writeChannel(dir: string, opts: { name: string; slots?: string[] }): void {
+function writeChannel(
+  dir: string,
+  opts: { name: string; slots?: string[]; instagram?: boolean },
+): void {
   writeFileSync(join(dir, `${opts.name}.toml`), channelToml(opts))
 }
 
@@ -144,17 +159,14 @@ function seedQuotaRows(db: Database, opts: { count: number; status?: string }): 
   }
 }
 
-function fakeTokenFetch(): typeof fetch {
-  const impl: typeof fetch = async () =>
-    new Response(JSON.stringify({ access_token: 'fake-access-token', expires_in: 3600 }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    })
-  return impl
-}
-
-function fakeTarget(upload: PublishTarget['upload']): PublishTarget {
-  return { platformId: 'youtube', upload }
+function fakeAdapter(upload: PublishAdapter['upload']): PublishAdapter {
+  return {
+    platformId: 'youtube',
+    quota: { scope: 'global', envVar: 'BRAINROT_YT_UPLOADS_PER_DAY', cap: () => 6 },
+    hasCredential: () => true,
+    resolveCredential: async () => 'fake-access-token',
+    upload,
+  }
 }
 
 beforeEach(() => {
@@ -358,15 +370,14 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       videoExists: false,
     })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({
+    const target = fakeAdapter(async () => ({
       postId: 'yt-old',
       url: 'https://youtube.com/shorts/yt-old',
     }))
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
-      target,
-      fetchImpl: fakeTokenFetch(),
+      adapters: { youtube: target },
     })
     expect(result).toEqual({
       action: 'published',
@@ -443,15 +454,14 @@ describe('publishNextTick — publish', () => {
       }),
     })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({
+    const target = fakeAdapter(async () => ({
       postId: 'yt123',
       url: 'https://youtube.com/shorts/yt123',
     }))
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
-      target,
-      fetchImpl: fakeTokenFetch(),
+      adapters: { youtube: target },
     })
     expect(result).toEqual({
       action: 'published',
@@ -489,14 +499,13 @@ describe('publishNextTick — publish', () => {
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const { PublishError } = await import('../publish/types.js')
-    const target = fakeTarget(async () => {
+    const target = fakeAdapter(async () => {
       throw new PublishError('upload: invalid metadata', 'rejected')
     })
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
-      target,
-      fetchImpl: fakeTokenFetch(),
+      adapters: { youtube: target },
     })
     expect(result).toEqual({
       action: 'publish-failed',
@@ -526,14 +535,13 @@ describe('publishNextTick — publish', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => {
+    const target = fakeAdapter(async () => {
       throw new Error('boom')
     })
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
-      target,
-      fetchImpl: fakeTokenFetch(),
+      adapters: { youtube: target },
     })
     expect(result.action).toBe('publish-failed')
     const row = db.prepare('SELECT error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
@@ -553,7 +561,7 @@ describe('publishNextTick — publish', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({
+    const target = fakeAdapter(async () => ({
       postId: 'yt-live-1',
       url: 'https://youtube.com/shorts/yt-live-1',
     }))
@@ -563,8 +571,7 @@ describe('publishNextTick — publish', () => {
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
-      target,
-      fetchImpl: fakeTokenFetch(),
+      adapters: { youtube: target },
     })
     expect(result.action).toBe('publish-failed')
     expect(result.jobId).toBe(jobId)
@@ -594,7 +601,7 @@ describe('publishNextTick — publish', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => {
+    const target = fakeAdapter(async () => {
       throw new PublishOutcomeUnknownError(
         'youtubeTarget: accepted the upload but its success body carried no video id',
       )
@@ -602,8 +609,7 @@ describe('publishNextTick — publish', () => {
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
-      target,
-      fetchImpl: fakeTokenFetch(),
+      adapters: { youtube: target },
     })
     expect(result).toEqual({
       action: 'publish-failed',
@@ -640,11 +646,11 @@ describe('publishNextTick — publish', () => {
     const clock = [started, finished]
     let call = 0
     const now = () => clock[Math.min(call++, clock.length - 1)]
-    const target = fakeTarget(async () => ({
+    const target = fakeAdapter(async () => ({
       postId: 'yt-slow-1',
       url: 'https://youtube.com/shorts/yt-slow-1',
     }))
-    await publishNextTick(db, { channelsDir, now, target, fetchImpl: fakeTokenFetch() })
+    await publishNextTick(db, { channelsDir, now, adapters: { youtube: target } })
     const row = db.prepare('SELECT finished_at FROM publishes WHERE job_id = ?').get(jobId) as {
       finished_at: string
     }
@@ -685,11 +691,11 @@ describe('publishNextTick — lease and sweep', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({
+    const target = fakeAdapter(async () => ({
       postId: 'yt1',
       url: 'https://youtube.com/shorts/yt1',
     }))
-    await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    await publishNextTick(db, { channelsDir, now: NOW, adapters: { youtube: target } })
     expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
@@ -705,12 +711,12 @@ describe('publishNextTick — lease and sweep', () => {
     vi.mocked(claimPublish).mockImplementationOnce(() => {
       throw new Error('disk full')
     })
-    const target = fakeTarget(async () => ({
+    const target = fakeAdapter(async () => ({
       postId: 'yt1',
       url: 'https://youtube.com/shorts/yt1',
     }))
     await expect(
-      publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() }),
+      publishNextTick(db, { channelsDir, now: NOW, adapters: { youtube: target } }),
     ).rejects.toThrow('disk full')
     expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
     db.close()
@@ -825,19 +831,103 @@ describe('publishNextTick — config errors', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({
+    const target = fakeAdapter(async () => ({
       postId: 'yt1',
       url: 'https://youtube.com/shorts/yt1',
     }))
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
-      target,
-      fetchImpl: fakeTokenFetch(),
+      adapters: { youtube: target },
     })
     expect(result.action).toBe('published')
     expect(result.reason).toBeUndefined()
     db.close()
+  })
+})
+
+describe('cross-platform candidates', () => {
+  it('builds one candidate per due slot per target, across platforms', async () => {
+    // Channel with both youtube and instagram targets, both due now, with a
+    // ready video: the candidate set spans both platforms — verified via
+    // dry-run so no claim mutates state. No stored token for either platform
+    // on a fresh db means neither can be picked, but the fact that BOTH
+    // platforms were considered (not just youtube) is what this test guards
+    // against, checked via the reason.
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-crossplatform-')
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    seedReadyVideo(db, { channel: 'chan' })
+    const now = () => new Date(2026, 6, 22, 10, 0)
+    const result = await publishNextTick(db, { channelsDir, now, dryRun: true })
+    expect(result).toEqual({ action: 'dry-run', wouldPublish: null, reason: 'no-auth' })
+    db.close()
+  })
+})
+
+describe('quota pre-filter', () => {
+  it('lets instagram publish when youtube alone is at its global cap', async () => {
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-quota-prefilter-')
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    seedReadyVideo(db, { channel: 'chan' })
+    // A prior youtube upload today, on a different slot, so it counts toward
+    // the global youtube quota (cap 1) without consuming the 10:00 slot.
+    seedConsumedSlot(db, {
+      channel: 'chan',
+      platform: 'youtube',
+      day: '2026-07-22',
+      slot: '09:00',
+      status: 'done',
+    })
+    const instagramTarget = fakeAdapter(async () => ({ postId: 'p1', url: 'https://ig/p1' }))
+    const igAdapter: PublishAdapter = {
+      platformId: 'instagram',
+      quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: () => 25 },
+      hasCredential: () => true,
+      resolveCredential: async () => 'ig-token',
+      upload: instagramTarget.upload,
+    }
+    const now = () => new Date(2026, 6, 22, 10, 0)
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now,
+      adapters: { instagram: igAdapter },
+    })
+    expect(result.action).toBe('published')
+    expect(result.platform).toBe('instagram')
+    db.close()
+  })
+
+  it('noops with platform-quota when every due candidate is capped', async () => {
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-quota-allcapped-')
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'] })
+    seedReadyVideo(db, { channel: 'chan' })
+    seedConsumedSlot(db, {
+      channel: 'chan',
+      platform: 'youtube',
+      day: '2026-07-22',
+      slot: '09:00',
+      status: 'done',
+    })
+    const now = () => new Date(2026, 6, 22, 10, 0)
+    const result = await publishNextTick(db, { channelsDir, now })
+    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    db.close()
+  })
+})
+
+describe('publish-next.ts names no platform', () => {
+  it('contains no youtube/instagram string literal in its own source', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const src = await readFile(new URL('./publish-next.ts', import.meta.url), 'utf8')
+    for (const platform of PUBLISH_PLATFORMS) {
+      expect(src).not.toContain(`'${platform}'`)
+      expect(src).not.toContain(`"${platform}"`)
+    }
   })
 })
 

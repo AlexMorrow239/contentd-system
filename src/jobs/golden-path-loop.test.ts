@@ -13,7 +13,7 @@ import { publishNextTick } from '../loop/publish-next.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { upsertToken } from '../publish/tokens.js'
 import { YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
-import type { PlatformMeta, PublishTarget } from '../publish/types.js'
+import type { PlatformMeta, PublishAdapter } from '../publish/types.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
 
@@ -180,6 +180,8 @@ describe('golden-path loop e2e', () => {
         '[publish]',
         'slots = ["00:00"]',
         '',
+        '[publish.youtube]',
+        '',
       ].join('\n'),
     )
 
@@ -277,38 +279,26 @@ describe('golden-path loop e2e', () => {
     const publishNow = () => new Date('2024-01-01T12:00:00Z')
 
     const uploadCalls: { videoPath: string; meta: PlatformMeta }[] = []
-    const fakeTarget: PublishTarget = {
+    // A full adapter stub (upload only — credential resolution is bypassed
+    // outright) for the 'published' call below, mirroring publish-next.test.ts's
+    // own fakeAdapter conversion.
+    const fakeAdapter: PublishAdapter = {
       platformId: 'youtube',
+      quota: { scope: 'global', envVar: 'BRAINROT_YT_UPLOADS_PER_DAY', cap: () => 6 },
+      hasCredential: () => true,
+      resolveCredential: async () => 'fake-access-token',
       async upload(req) {
         uploadCalls.push({ videoPath: req.videoPath, meta: req.meta })
         return { postId: 'fakeVideoId1', url: 'https://youtube.com/shorts/fakeVideoId1' }
       },
     }
-    // Fakes only the token-mint call (threaded via opts.fetchImpl); the
-    // fake target above fakes the upload itself, so no other URL is hit.
-    const tokenFetchImpl = (async (input: RequestInfo | URL) => {
-      const url = input instanceof Request ? input.url : String(input)
-      if (url === 'https://oauth2.googleapis.com/token') {
-        return new Response(
-          JSON.stringify({ access_token: 'fake-access-token', expires_in: 3599 }),
-          {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          },
-        )
-      }
-      throw new Error(`unexpected fetch: ${url}`)
-    }) as typeof fetch
 
     // Before any grant is on file, the due slot is blocked on auth — a
     // blocked candidate never claims its slot, so it stays open for the
-    // next tick (verified below).
-    const noGrant = await publishNextTick(db, {
-      channelsDir,
-      target: fakeTarget,
-      fetchImpl: tokenFetchImpl,
-      now: publishNow,
-    })
+    // next tick (verified below). No `adapters` override here: this exercises
+    // the real ADAPTERS.youtube credential check (client env presence, then a
+    // decryptable stored token), which the fakeAdapter above would bypass.
+    const noGrant = await publishNextTick(db, { channelsDir, now: publishNow })
     expect(noGrant).toEqual({ action: 'noop', reason: 'no-auth' })
     expect(uploadCalls).toEqual([])
 
@@ -317,9 +307,8 @@ describe('golden-path loop e2e', () => {
 
     const published = await publishNextTick(db, {
       channelsDir,
-      target: fakeTarget,
-      fetchImpl: tokenFetchImpl,
       now: publishNow,
+      adapters: { youtube: fakeAdapter },
     })
     expect(published).toEqual({
       action: 'published',
