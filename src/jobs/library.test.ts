@@ -175,11 +175,15 @@ describe('parseLibraryJobIds (in-process)', () => {
 })
 
 describe('library CLI', () => {
-  it.concurrent('`library --help` lists the list/approve/reject subcommands', async () => {
-    const result = await runCli(['library', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('list')
-    expect(result.stdout).toContain('approve')
-    expect(result.stdout).toContain('reject')
-  }, 60000)
+  it.concurrent(
+    '`library --help` lists the list/approve/reject subcommands',
+    async () => {
+      const result = await runCli(['library', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('list')
+      expect(result.stdout).toContain('approve')
+      expect(result.stdout).toContain('reject')
+    },
+    60000,
+  )
 })

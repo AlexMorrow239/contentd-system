@@ -11,7 +11,11 @@ describe('runCli', () => {
   it('returns a nonzero exit instead of rejecting', async () => {
     // Every call site asserts on exitCode, so a throw would break all of them.
     const result = await runCli([
-      'produce', '--channel', '/no/such/channel.toml', '--topic', 'venus',
+      'produce',
+      '--channel',
+      '/no/such/channel.toml',
+      '--topic',
+      'venus',
     ])
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toMatch(/ENOENT|no such file/)

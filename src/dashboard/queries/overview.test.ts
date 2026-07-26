@@ -187,7 +187,7 @@ describe('buildOverview', () => {
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
     ).run()
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
         "VALUES ('j1','youtube','space','2026-07-25','09:00','done',1)",
     ).run()
     const data = buildOverview(db, [], new Date('2026-07-25T12:00:00'), 6)

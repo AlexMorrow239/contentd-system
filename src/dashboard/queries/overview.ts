@@ -83,7 +83,7 @@ export function buildOverview(
   // at all — hence the LEFT JOIN rather than an inner one.
   const attention = db
     .prepare(
-      "SELECT jobs.id AS id, jobs.channel AS channel, jobs.topic AS topic, jobs.status AS status, " +
+      'SELECT jobs.id AS id, jobs.channel AS channel, jobs.topic AS topic, jobs.status AS status, ' +
         'stage.stage AS stage, stage.error AS error FROM jobs ' +
         "LEFT JOIN job_stages stage ON stage.job_id = jobs.id AND stage.status = 'failed' " +
         "WHERE jobs.status IN ('failed','blocked') " +
@@ -99,7 +99,9 @@ export function buildOverview(
   }[]
 
   const libraryByState = db
-    .prepare('SELECT state AS status, COUNT(*) AS count FROM library GROUP BY state ORDER BY status')
+    .prepare(
+      'SELECT state AS status, COUNT(*) AS count FROM library GROUP BY state ORDER BY status',
+    )
     .all() as StatusCount[]
 
   const leases = (

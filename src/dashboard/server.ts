@@ -87,7 +87,11 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         dbChoice,
         activeNav: 'overview',
         refreshSeconds: 30,
-        body: renderOverviewPage(buildOverview(db, channels, now, ytUploadsPerDayCap()), dbChoice, error),
+        body: renderOverviewPage(
+          buildOverview(db, channels, now, ytUploadsPerDayCap()),
+          dbChoice,
+          error,
+        ),
       }),
     )
   })

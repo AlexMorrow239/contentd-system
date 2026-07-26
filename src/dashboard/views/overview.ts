@@ -64,9 +64,11 @@ export function renderOverviewPage(
                 <td>${job.topic}</td>
                 <td class="status-${job.status}">
                   ${job.status}
-                  ${job.status === 'blocked'
-                    ? html`<div class="muted">budget enforcement, not a crash</div>`
-                    : html``}
+                  ${
+                    job.status === 'blocked'
+                      ? html`<div class="muted">budget enforcement, not a crash</div>`
+                      : html``
+                  }
                 </td>
                 <td>
                   ${job.stage ?? html`<span class="muted">—</span>`}
@@ -88,9 +90,9 @@ export function renderOverviewPage(
                 <td>${lease.name}</td>
                 <td>${lease.holder}</td>
                 <td class="${lease.expired ? 'status-failed' : ''}">
-                  ${formatTime(lease.expiresAt)}${lease.expired
-                    ? html` <span class="error">expired</span>`
-                    : html``}
+                  ${formatTime(lease.expiresAt)}${
+                    lease.expired ? html` <span class="error">expired</span>` : html``
+                  }
                 </td>
               </tr>`,
             )}

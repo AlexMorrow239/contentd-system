@@ -114,30 +114,30 @@ services:
       BRAINROT_DEV_DB: data/dev.db
       BRAINROT_CHANNELS_DIR: channels
       BRAINROT_RUNS_ROOT: runs
-      BRAINROT_DASHBOARD_PORT: "8787"
+      BRAINROT_DASHBOARD_PORT: '8787'
       # Read for the quota panel only; must match the brainrot service so the
       # dashboard reports the cap that is actually enforced.
-      BRAINROT_YT_UPLOADS_PER_DAY: "6"
+      BRAINROT_YT_UPLOADS_PER_DAY: '6'
       # Read for the spend panel; same reasoning.
-      BRAINROT_GLOBAL_DAILY_USD: "12"
+      BRAINROT_GLOBAL_DAILY_USD: '12'
       TZ: America/Chicago
     ports:
       # Loopback-bound on the HOST: unreachable from the network. There is no
       # auth layer, and this binding is what makes that acceptable.
-      - "127.0.0.1:8787:8787"
+      - '127.0.0.1:8787:8787'
     volumes:
       # READ-WRITE mount with a READ-ONLY connection. SQLite must create the
       # -shm file to read a WAL database, so a :ro mount breaks the dashboard
       # outright; the read-only guarantee lives in openDbReadonly's connection
       # flag, where better-sqlite3 hard-errors on any write.
       - ./data:/app/data
-      - ./runs:/app/runs:ro       # video playback only
+      - ./runs:/app/runs:ro # video playback only
       - ./channels:/app/channels:ro
     logging:
       driver: json-file
       options:
         max-size: 10m
-        max-file: "5"
+        max-file: '5'
 
 volumes:
   whisperx-cache:

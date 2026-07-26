@@ -55,7 +55,14 @@ describe('renderOverviewPage', () => {
     const out = renderOverviewPage(
       data({
         attention: [
-          { id: 'j1', channel: 'space', topic: 'Venus', status: 'blocked', stage: null, error: null },
+          {
+            id: 'j1',
+            channel: 'space',
+            topic: 'Venus',
+            status: 'blocked',
+            stage: null,
+            error: null,
+          },
         ],
       }),
       'prod',
@@ -68,7 +75,12 @@ describe('renderOverviewPage', () => {
     const out = renderOverviewPage(
       data({
         leases: [
-          { name: 'produce', holder: 'host-1', expiresAt: '2026-07-25T11:00:00.000Z', expired: true },
+          {
+            name: 'produce',
+            holder: 'host-1',
+            expiresAt: '2026-07-25T11:00:00.000Z',
+            expired: true,
+          },
         ],
       }),
       'prod',
