@@ -257,35 +257,26 @@ describe('instagramUploadTarget', () => {
 })
 
 describe('refreshLongLivedToken', () => {
-  it('re-runs the fb_exchange_token exchange against graph.facebook.com/oauth/access_token', async () => {
+  it('runs the ig_refresh_token exchange against graph.instagram.com/refresh_access_token', async () => {
     const fetchImpl: typeof fetch = async (input) => {
       const url = new URL(input instanceof Request ? input.url : String(input))
-      expect(url.hostname).toBe('graph.facebook.com')
-      expect(url.pathname).toBe(`/${IG_GRAPH_VERSION}/oauth/access_token`)
-      expect(url.searchParams.get('grant_type')).toBe('fb_exchange_token')
-      expect(url.searchParams.get('client_id')).toBe('app-id')
-      expect(url.searchParams.get('client_secret')).toBe('app-secret')
-      expect(url.searchParams.get('fb_exchange_token')).toBe('old-token')
+      expect(url.hostname).toBe('graph.instagram.com')
+      expect(url.pathname).toBe('/refresh_access_token')
+      expect(url.searchParams.get('grant_type')).toBe('ig_refresh_token')
+      expect(url.searchParams.get('access_token')).toBe('old-token')
       return new Response(JSON.stringify({ access_token: 'new-token', expires_in: 5_184_000 }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       })
     }
-    const result = await refreshLongLivedToken({
-      token: 'old-token',
-      appId: 'app-id',
-      appSecret: 'app-secret',
-      fetchImpl,
-    })
+    const result = await refreshLongLivedToken({ token: 'old-token', fetchImpl })
     expect(result.token).toBe('new-token')
     expect(new Date(result.expiresAt).getTime()).toBeGreaterThan(Date.now())
   })
 
   it('throws on a non-ok response', async () => {
     const fetchImpl: typeof fetch = async () => new Response('', { status: 400 })
-    await expect(
-      refreshLongLivedToken({ token: 't', appId: 'a', appSecret: 's', fetchImpl }),
-    ).rejects.toThrow(/responded 400/)
+    await expect(refreshLongLivedToken({ token: 't', fetchImpl })).rejects.toThrow(/responded 400/)
   })
 })
 
@@ -312,8 +303,6 @@ describe('instagramAdapter', () => {
   })
 
   it('resolveCredential refreshes and persists a new token inside the refresh window', async () => {
-    vi.stubEnv('IG_APP_ID', 'app-id')
-    vi.stubEnv('IG_APP_SECRET', 'app-secret')
     const db = openDb(':memory:')
     const soonExpiry = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString() // inside 10-day window
     upsertToken(db, 'instagram', 'chan', 'tok-old', 'scope', TEST_KEY, soonExpiry)
@@ -333,8 +322,6 @@ describe('instagramAdapter', () => {
   })
 
   it('resolveCredential maps a failed refresh to PublishError(auth)', async () => {
-    vi.stubEnv('IG_APP_ID', 'app-id')
-    vi.stubEnv('IG_APP_SECRET', 'app-secret')
     const db = openDb(':memory:')
     const soonExpiry = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString()
     upsertToken(db, 'instagram', 'chan', 'tok-old', 'scope', TEST_KEY, soonExpiry)
@@ -342,23 +329,6 @@ describe('instagramAdapter', () => {
     await expect(
       instagramAdapter(fetchImpl).resolveCredential(db, 'chan', TEST_KEY, new Date()),
     ).rejects.toMatchObject({ kind: 'auth' })
-  })
-
-  it('resolveCredential maps missing IG_APP_ID/IG_APP_SECRET to PublishError(auth) without calling fetch', async () => {
-    vi.stubEnv('IG_APP_ID', undefined)
-    vi.stubEnv('IG_APP_SECRET', undefined)
-    const db = openDb(':memory:')
-    const soonExpiry = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString()
-    upsertToken(db, 'instagram', 'chan', 'tok-old', 'scope', TEST_KEY, soonExpiry)
-    let called = false
-    const fetchImpl: typeof fetch = async () => {
-      called = true
-      throw new Error('fetchImpl must not be called when app credentials are missing')
-    }
-    await expect(
-      instagramAdapter(fetchImpl).resolveCredential(db, 'chan', TEST_KEY, new Date()),
-    ).rejects.toMatchObject({ kind: 'auth' })
-    expect(called).toBe(false)
   })
 
   it('resolveCredential throws PublishError(auth) with no stored token', async () => {

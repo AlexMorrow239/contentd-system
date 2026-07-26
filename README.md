@@ -160,14 +160,27 @@ URL in a wrong channel's digest is usually what surfaces the mistake.
 #### One-time setup (per Meta app, not per channel)
 
 1. Create an app at [developers.facebook.com](https://developers.facebook.com)
-   and add the **`instagram_content_publish`** permission (the flow also
-   requests `pages_show_list` and `business_management`, needed to resolve
-   the linked Page).
-2. Leave the app in **development mode** and add yourself as a **role user**
-   (App Roles → Roles) for each Meta/Facebook account that owns a target
-   Instagram account — development mode is enough for the operator's own
-   accounts and needs no App Review.
-3. Add the app id/secret to `.env`:
+   and add the **Instagram** product (the "Instagram API" use case) — this
+   provisions **Business Login for Instagram**, not Facebook Login for
+   Business; don't add the Facebook Login product, its scopes
+   (`instagram_content_publish`, `pages_show_list`, `business_management`)
+   belong to a different login flow and Meta's consent screen rejects them
+   as "Invalid Scopes" if this app requests them.
+2. On the app's **Instagram → API setup with Instagram login** page: add
+   yourself as an **Instagram tester** (no App Review needed for the
+   operator's own accounts in development mode), note the **Instagram App
+   ID/Secret** shown there — a different credential pair from the Facebook
+   App ID at the top of the dashboard — and register
+   **`https://localhost:51834/`** as a valid OAuth redirect URI (https, not
+   http — Meta rejects a plain http redirect URI even for localhost; the
+   Dashboard will likely save it with the trailing slash regardless of
+   whether you type one — matching it is required, the code-exchange step
+   validates the redirect URI as an exact string, unlike the more lenient
+   consent screen). The flow terminates that TLS connection itself with a
+   fresh self-signed certificate each run; your browser will show a
+   one-time "connection not private" warning after you approve — click
+   through it, that's expected, not a sign anything's wrong.
+3. Add the Instagram app id/secret to `.env`:
 
    ```
    IG_APP_ID=...
@@ -178,9 +191,8 @@ URL in a wrong channel's digest is usually what surfaces the mistake.
    Instagram's credential is encrypted with the same key, no second one to
    generate.
 
-Each target account must be an Instagram **Business or Creator** account
-linked to a Facebook Page — a personal Instagram account cannot be granted
-`instagram_content_publish` regardless of app config.
+Each target account must be an Instagram **Business or Creator** account —
+convert a personal account under Instagram settings if needed.
 
 #### Per-channel auth
 
@@ -188,9 +200,9 @@ linked to a Facebook Page — a personal Instagram account cannot be granted
 pnpm brainrot auth instagram --channel example
 ```
 
-This opens the system browser to Facebook's consent screen. **Pick the Page
-linked to the channel's Instagram account** — as with YouTube, a wrong pick
-is recoverable by re-running the command.
+This opens the system browser to Instagram's consent screen. **Pick the
+channel's Instagram account** — as with YouTube, a wrong pick is recoverable
+by re-running the command.
 
 ### Channel config
 
