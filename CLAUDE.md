@@ -21,6 +21,8 @@ docker compose up -d whisperx # caption-alignment sidecar (captions + ElevenLabs
 
 pnpm build                    # tsc --noEmit on both src/ and remotion/ — no emit, type-check only
 pnpm test                     # vitest run — mocked providers, real ffmpeg/Remotion
+                               # a globalSetup esbuilds src/ -> dist/ first (~19ms);
+                               # CLI tests spawn `node dist/cli.js` via src/testing/run-cli.ts
 pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one LLM call
 
 pnpm brainrot produce --channel channels/<name>.toml --topic "..."
@@ -171,6 +173,17 @@ Per-job filesystem artifacts live under `runs/<jobId>/<stage>/`. Schema lives
 in `src/db/schema.sql`, applied via `db.exec` on every `openDb` call (plain
 `CREATE TABLE IF NOT EXISTS`, no migration framework — additive schema
 changes only).
+
+### Test-only build
+
+`scripts/build-test-cli.ts` transpiles `src/` into a mirrored `dist/` tree via
+a Vitest `globalSetup`, so the CLI subprocess tests can spawn `node dist/cli.js`
+(~0.34s) instead of `pnpm exec tsx src/cli.ts` (~1.15s). It is transpile-only,
+never `--bundle`: bundling flattens the module graph and breaks the three
+`import.meta.url`-relative asset lookups in `src/cli.ts`, `src/db/index.ts` and
+`src/stages/assemble.ts`. `src/testing/dist-layout.test.ts` guards all three.
+Note that no spawned CLI test currently reaches the `assemble` stage, so the
+Remotion entry path is correct by construction but unexercised.
 
 ## Design docs
 
