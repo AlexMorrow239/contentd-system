@@ -210,7 +210,7 @@ progress), `library` (finished videos awaiting review/publish), `topics`
 Per-job filesystem artifacts live under `runs/<jobId>/<stage>/`. Schema lives
 in `src/db/schema.sql`, applied via `db.exec` on every `openDb` call (plain
 `CREATE TABLE IF NOT EXISTS`) — so schema.sql alone is the declarative shape
-of a _fresh_ database, and additive changes still need nothing else.
+of a _fresh_ database, and a new table still needs nothing else.
 
 Changes `CREATE TABLE IF NOT EXISTS` cannot express against an **existing**
 database go in `src/db/migrate.ts`, which `openDb` calls right after the
