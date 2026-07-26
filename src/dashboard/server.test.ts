@@ -67,6 +67,15 @@ describe('createApp', () => {
   })
 })
 
+describe('/publishes', () => {
+  it('renders with a warning rather than 500-ing when the channels dir is unreadable', async () => {
+    const config = seededConfig() // channelsDir points at a directory that does not exist
+    const res = await createApp({ config }).request('/publishes')
+    expect(res.status).toBe(200)
+    expect(await res.text()).toContain('channel config error')
+  })
+})
+
 describe('video streaming', () => {
   function configWithVideo(bytes: Buffer, videoPathInDb?: string): DashboardConfig {
     const dir = mkdtempSync(join(tmpdir(), 'brainrot-vid-'))

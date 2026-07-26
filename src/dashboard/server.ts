@@ -5,16 +5,21 @@ import type { Database } from 'better-sqlite3'
 import { Hono } from 'hono'
 import { openDbReadonly } from '../db/index.js'
 import type { LibraryState } from '../jobs/library.js'
+import { tryLoadChannelsDir } from '../config/channel.js'
+import { uploadsUsedToday } from '../publish/publishes.js'
+import { localDay } from '../publish/slots.js'
 import type { DashboardConfig, DbChoice } from './config.js'
 import { resolveDbChoice } from './config.js'
 import { html } from './html.js'
 import { findLibraryVideoPath, libraryChannels, listLibraryEntries } from './queries/library.js'
 import { getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
+import { buildPublishGrids } from './queries/publishes.js'
 import { parseRange, resolveVideoPath } from './video.js'
 import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
+import { renderPublishesPage } from './views/publishes.js'
 
 export interface DashboardVars {
   db: Database
@@ -31,6 +36,17 @@ const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url)
 
 const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
 const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
+
+// youtube.ts's own default, mirrored rather than imported so the dashboard
+// does not pull the upload client (and its googleapis surface) into a viewer.
+const DEFAULT_YT_UPLOADS_PER_DAY = 6
+
+function ytUploadCap(): number {
+  const raw = process.env.BRAINROT_YT_UPLOADS_PER_DAY
+  if (raw === undefined || raw.trim() === '') return DEFAULT_YT_UPLOADS_PER_DAY
+  const parsed = Number(raw)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_YT_UPLOADS_PER_DAY
+}
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
   const app = new Hono<{ Variables: DashboardVars }>()
@@ -183,6 +199,35 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         'accept-ranges': 'bytes',
       },
     })
+  })
+
+  app.get('/publishes', (c) => {
+    const db = c.get('db')
+    const dbChoice = c.get('dbChoice')
+    const now = deps.now?.() ?? new Date()
+
+    const rawDays = Number(c.req.query('days') ?? '14')
+    const days = Number.isInteger(rawDays) && rawDays > 0 && rawDays <= 90 ? rawDays : 14
+
+    // tryLoadChannelsDir, not loadChannelsDir: a broken TOML degrades one
+    // panel into a warning instead of 500-ing the page.
+    const { channels, error } = tryLoadChannelsDir(deps.config.channelsDir)
+
+    return c.html(
+      layout({
+        title: 'publishes',
+        dbChoice,
+        activeNav: 'publishes',
+        body: renderPublishesPage({
+          grids: buildPublishGrids(db, channels, days, now),
+          days,
+          quotaUsed: uploadsUsedToday(db, 'youtube', localDay(now)),
+          quotaCap: ytUploadCap(),
+          dbChoice,
+          configError: error,
+        }),
+      }),
+    )
   })
 
   app.notFound((c) => {
