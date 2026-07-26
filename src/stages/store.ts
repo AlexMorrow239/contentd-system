@@ -1,6 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import type { JobContext, StageDef } from '../jobs/types.js'
-import { s3ConfigFromEnv, s3Store } from '../storage/s3.js'
 import type { ObjectStore } from '../storage/types.js'
 
 export interface StoreArtifact {
@@ -23,13 +22,16 @@ export function objectKeyFor(channel: string, jobId: string): string {
  * store is constructed inside run(), NOT here — building it in the factory
  * would make pipelineStages() throw for every caller without S3 credentials,
  * breaking resume on old jobs, the dashboard parity test, and every unit test
- * that only wants the stage list.
+ * that only wants the stage list. The import is dynamic for the same reason it
+ * is deferred in publish-next: pipelineStages() reaches this module from every
+ * CLI command, and the AWS SDK costs ~35ms and ~10MB of startup that `jobs`,
+ * `costs`, and `topics` have no use for.
  */
 export function storeStage(store?: ObjectStore): StageDef {
   return {
     name: 'store',
     async run(ctx: JobContext): Promise<void> {
-      const active = store ?? s3Store(s3ConfigFromEnv())
+      const active = store ?? (await import('../storage/s3.js')).storeFromEnv()
       const finalPath = ctx.artifactPath('assemble', 'final.mp4')
 
       let bytes: Buffer

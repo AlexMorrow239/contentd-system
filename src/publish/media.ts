@@ -24,31 +24,19 @@ export function publishMedia(opts: {
   store: ObjectStore | null
 }): PublishMedia {
   return {
-    objectKey: opts.objectKey,
     localPath: opts.localPath,
 
     async bytes(): Promise<Buffer<ArrayBuffer>> {
       if (opts.localPath !== null && existsSync(opts.localPath)) {
         return readFileSync(opts.localPath)
       }
-      if (opts.objectKey !== null && opts.store !== null) {
-        try {
-          return await opts.store.get(opts.objectKey)
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          // Only a genuinely absent object is unretryable; an outage or a bad
-          // credential — including a non-StorageError throw, which is always
-          // unexpected rather than a confirmed absence — is the next tick's
-          // problem, not this video's fault.
-          const kind =
-            err instanceof StorageError && err.kind === 'not-found' ? 'rejected' : 'transient'
-          throw new PublishError(
-            `publishMedia: object ${opts.objectKey} could not be read: ${message}`,
-            kind,
-          )
-        }
+      if (opts.objectKey === null) {
+        throw new PublishError(
+          `publishMedia: no video available — local path ${opts.localPath ?? '(none)'} is missing and there is no stored object`,
+          'rejected',
+        )
       }
-      if (opts.objectKey !== null && opts.store === null) {
+      if (opts.store === null) {
         // An object key exists — the video isn't actually missing — but there
         // is no store configured to fetch it. A misconfiguration (e.g. a
         // deploy that dropped or broke BRAINROT_S3_* keys), not a defect in
@@ -58,10 +46,21 @@ export function publishMedia(opts: {
           'transient',
         )
       }
-      throw new PublishError(
-        `publishMedia: no video available — local path ${opts.localPath ?? '(none)'} is missing and there is no stored object`,
-        'rejected',
-      )
+      try {
+        return await opts.store.get(opts.objectKey)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        // Only a genuinely absent object is unretryable; an outage or a bad
+        // credential — including a non-StorageError throw, which is always
+        // unexpected rather than a confirmed absence — is the next tick's
+        // problem, not this video's fault.
+        const kind =
+          err instanceof StorageError && err.kind === 'not-found' ? 'rejected' : 'transient'
+        throw new PublishError(
+          `publishMedia: object ${opts.objectKey} could not be read: ${message}`,
+          kind,
+        )
+      }
     },
 
     async url(ttlSeconds: number): Promise<string> {

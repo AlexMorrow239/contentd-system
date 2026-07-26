@@ -1,40 +1,13 @@
-import { CreateBucketCommand, S3Client } from '@aws-sdk/client-s3'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db/index.js'
-import { s3Store, type S3Config } from '../storage/s3.js'
+import { ensureBucket, minioConfig } from '../storage/_testkit.js'
+import { s3Store } from '../storage/s3.js'
 import { runCli } from '../testing/run-cli.js'
 
-const CONFIG: S3Config = {
-  endpoint: 'http://localhost:9100',
-  bucket: 'brainrot-videos',
-  accessKeyId: 'brainrotdev',
-  secretAccessKey: 'brainrotdev',
-  region: 'auto',
-}
-
-// Mirrors s3.storage.test.ts's ensureBucket: this file's own worker may run
-// before that one (or in a separate process), so bucket creation cannot rely
-// on import order across storage-tier test files.
-async function ensureBucket(): Promise<void> {
-  const client = new S3Client({
-    region: CONFIG.region,
-    endpoint: CONFIG.endpoint,
-    credentials: {
-      accessKeyId: CONFIG.accessKeyId,
-      secretAccessKey: CONFIG.secretAccessKey,
-    },
-    forcePathStyle: true,
-  })
-  try {
-    await client.send(new CreateBucketCommand({ Bucket: CONFIG.bucket }))
-  } catch (err) {
-    const name = (err as { name?: string }).name ?? ''
-    if (name !== 'BucketAlreadyOwnedByYou' && name !== 'BucketAlreadyExists') throw err
-  }
-}
+const CONFIG = minioConfig()
 
 const ENV = {
   BRAINROT_S3_ENDPOINT: CONFIG.endpoint,
@@ -52,7 +25,7 @@ const VIDEO = Buffer.concat([
 
 describe('brainrot publish preflight (MinIO)', () => {
   it('reports every check ok for a well-formed stored object', async () => {
-    await ensureBucket()
+    await ensureBucket(CONFIG)
     const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-preflight-cli-'))
     const dbPath = path.join(dir, 'test.db')
     const db = openDb(dbPath)

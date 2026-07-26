@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { JobContext, StageName } from '../jobs/types.js'
 import { fakeStore } from '../storage/fake.js'
 import type { ObjectStore } from '../storage/types.js'
+import { testChannel } from './_testkit.js'
 import { storeStage } from './store.js'
 
 const VIDEO = Buffer.from('pretend this is an mp4', 'utf8')
@@ -19,7 +20,7 @@ describe('storeStage', () => {
     return {
       jobId: 'job-123',
       db: null as never, // the stage never touches the database
-      channel: { name: 'example' } as never,
+      channel: testChannel({ name: 'example' }),
       topic: 'a topic',
       runDir,
       artifactPath(stage: StageName, file: string): string {

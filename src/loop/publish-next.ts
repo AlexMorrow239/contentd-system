@@ -14,6 +14,7 @@ import {
   sweepInterrupted,
   uploadsUsedToday,
 } from '../publish/publishes.js'
+import type { EligibleVideo } from '../publish/publishes.js'
 import { dueSlotsForChannel, localDay, orderCandidates } from '../publish/slots.js'
 import type { SlotCandidate } from '../publish/slots.js'
 import {
@@ -23,7 +24,6 @@ import {
   resolvePlatformMeta,
 } from '../publish/types.js'
 import type { Platform, PublishAdapter } from '../publish/types.js'
-import { s3ConfigFromEnv, s3Store } from '../storage/s3.js'
 import type { ObjectStore } from '../storage/types.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
 
@@ -110,21 +110,20 @@ export async function publishNextTick(
     PUBLISH_PLATFORMS.map((p) => [p, opts.adapters?.[p] ?? ADAPTERS[p](opts.fetchImpl)]),
   ) as Record<Platform, PublishAdapter>
 
-  // Built once per tick, lazily: a channel set with no Instagram target never
-  // needs a store, and constructing one would demand S3 credentials from an
-  // otherwise-working YouTube-only deployment. A construction failure (no
+  // Built lazily, at the single upload attempt: a tick that publishes nothing
+  // never needs a store, and constructing one would demand S3 credentials from
+  // an otherwise-working YouTube-only deployment. A construction failure (no
   // credentials configured) degrades to "no store available" rather than
   // crashing the tick — it surfaces later as a legible per-video 'rejected'
   // error only if an Instagram upload actually calls media.url().
-  let storeMemo: ObjectStore | null | undefined
-  const resolveStore = (): ObjectStore | null => {
-    if (storeMemo !== undefined) return storeMemo
+  const resolveStore = async (): Promise<ObjectStore | null> => {
+    if (opts.store !== undefined) return opts.store
     try {
-      storeMemo = opts.store ?? s3Store(s3ConfigFromEnv())
+      const { storeFromEnv } = await import('../storage/s3.js')
+      return storeFromEnv()
     } catch {
-      storeMemo = null
+      return null
     }
-    return storeMemo
   }
 
   // Env validation comes BEFORE the lease and any candidate work: a bad value
@@ -215,19 +214,7 @@ export async function publishNextTick(
     const tokenKey = tokenKeyHex ? parseTokenKey(tokenKeyHex) : undefined
 
     let firstReason: 'no-ready-video' | 'no-video-file' | 'no-auth' | undefined
-    let picked:
-      | {
-          candidate: SlotCandidate
-          video: {
-            jobId: string
-            videoPath: string
-            objectKey: string | null
-            metadataJson: string
-            topic: string
-          }
-          tokenKey: Buffer
-        }
-      | undefined
+    let picked: { candidate: SlotCandidate; video: EligibleVideo; tokenKey: Buffer } | undefined
 
     for (const candidate of ordered) {
       // Video pre-flight: a candidate qualifies if the bytes are reachable at
@@ -237,13 +224,7 @@ export async function publishNextTick(
       // slot plus a quota unit on a failure the adapter can only call
       // 'rejected', so it is still excluded and the query re-run.
       const prunedJobIds: string[] = []
-      let video: {
-        jobId: string
-        videoPath: string
-        objectKey: string | null
-        metadataJson: string
-        topic: string
-      } | null = null
+      let video: EligibleVideo | null = null
       for (let scan = 0; scan < MAX_VIDEO_FILE_SCANS; scan++) {
         const row = eligibleVideo(db, candidate.channel, candidate.platform, prunedJobIds)
         if (row === null) break
@@ -336,7 +317,7 @@ export async function publishNextTick(
           media: publishMedia({
             objectKey: video.objectKey,
             localPath: video.videoPath,
-            store: resolveStore(),
+            store: await resolveStore(),
           }),
           meta,
           options: target.options,

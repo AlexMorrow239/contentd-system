@@ -4,7 +4,9 @@ import type { Database } from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import pino from 'pino'
 import type { ChannelConfig } from '../config/channel.js'
+import type { StoreArtifact } from '../stages/store.js'
 import { BudgetExceededError } from './costs.js'
+import { upsertLibraryObject } from './library.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
 
@@ -147,13 +149,9 @@ export async function runJob(
     // before object storage existed — the gate stays survivable for them, the
     // same way it already tolerates a missing script.json.
     const storePath = join(runDir, 'store', 'store.json')
-    let storeArtifact: { objectKey: string; bytes: number; etag: string } | undefined
+    let storeArtifact: StoreArtifact | undefined
     if (existsSync(storePath)) {
-      storeArtifact = JSON.parse(readFileSync(storePath, 'utf8')) as {
-        objectKey: string
-        bytes: number
-        etag: string
-      }
+      storeArtifact = JSON.parse(readFileSync(storePath, 'utf8')) as StoreArtifact
     }
 
     // Idempotent: a resume that reaches this final window again (all stages already
@@ -164,11 +162,6 @@ export async function runJob(
       'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?) ' +
         'ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path, metadata_json=excluded.metadata_json, state=excluded.state',
     )
-    // Same idempotency story as libraryUpsert above, keyed on the FK to library.
-    const objectUpsert = db.prepare(
-      'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?) ' +
-        'ON CONFLICT(job_id) DO UPDATE SET object_key=excluded.object_key, bytes=excluded.bytes, etag=excluded.etag',
-    )
     const markJobDone = db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?')
     db.transaction(() => {
       // library must be upserted first: library_objects.job_id references it,
@@ -176,7 +169,8 @@ export async function runJob(
       // satisfied even on the very first insert.
       libraryUpsert.run(jobId, videoPath, metadataJson, state)
       if (storeArtifact !== undefined) {
-        objectUpsert.run(jobId, storeArtifact.objectKey, storeArtifact.bytes, storeArtifact.etag)
+        // Same idempotency story as libraryUpsert above, keyed on the FK to library.
+        upsertLibraryObject(db, jobId, storeArtifact)
       }
       markJobDone.run('done', nowIso(), jobId)
     })()

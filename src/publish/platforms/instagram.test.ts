@@ -47,7 +47,6 @@ describe('igUploadsPerDayCap', () => {
 function urlMedia(opts: { url?: string; ttls?: number[] } = {}): PublishMedia {
   const url = opts.url ?? 'https://signed.example/video.mp4'
   return {
-    objectKey: 'videos/example/job-1.mp4',
     localPath: null,
     bytes: async () => {
       throw new Error('bytes() must not be called for Instagram')
@@ -298,7 +297,6 @@ describe('instagramUploadTarget', () => {
   it('rejects when the media has no presignable url, before any network call', async () => {
     const { impl, calls } = fakeFetch([])
     const media: PublishMedia = {
-      objectKey: null,
       localPath: null,
       bytes: async () => {
         throw new Error('bytes() must not be called for Instagram')

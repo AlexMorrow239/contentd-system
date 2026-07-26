@@ -45,10 +45,12 @@ function row<T>(db: Database, sql: string, ...params: unknown[]): T {
 }
 
 // Fake happy-path stages: script writes script.json, assemble writes final.mp4,
-// qc writes qc.json with the given pass flag, others drop a marker.
+// qc writes qc.json with the given pass flag, others drop a marker. `store`
+// writes store.json only when an artifact is supplied — omitting it is how a
+// pre-object-storage job is simulated.
 function buildStages(
   calls: StageName[],
-  opts: { qcPassed: boolean } = { qcPassed: true },
+  opts: { qcPassed?: boolean; storeArtifact?: StoreArtifact } = {},
 ): StageDef[] {
   return STAGE_ORDER.map((name) => ({
     name,
@@ -72,8 +74,10 @@ function buildStages(
       } else if (name === 'qc') {
         writeFileSync(
           ctx.artifactPath('qc', 'qc.json'),
-          JSON.stringify({ passed: opts.qcPassed, checks: [] }),
+          JSON.stringify({ passed: opts.qcPassed ?? true, checks: [] }),
         )
+      } else if (name === 'store' && opts.storeArtifact !== undefined) {
+        writeFileSync(ctx.artifactPath('store', 'store.json'), JSON.stringify(opts.storeArtifact))
       } else {
         writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
       }
@@ -506,29 +510,8 @@ describe('runJob', () => {
 })
 
 describe('final gate: library_objects', () => {
-  // Stages identical to buildStages()'s happy path, but the store stage writes
-  // a caller-supplied artifact (or nothing, to simulate a pre-storage job).
-  function stagesWithStore(storeArtifact: StoreArtifact | null): StageDef[] {
-    return STAGE_ORDER.map((name) => ({
-      name,
-      async run(ctx: JobContext) {
-        if (name === 'assemble') {
-          writeFileSync(ctx.artifactPath('assemble', 'final.mp4'), 'FAKEMP4')
-        } else if (name === 'qc') {
-          writeFileSync(
-            ctx.artifactPath('qc', 'qc.json'),
-            JSON.stringify({ passed: true, checks: [] }),
-          )
-        } else if (name === 'store') {
-          if (storeArtifact !== null) {
-            writeFileSync(ctx.artifactPath('store', 'store.json'), JSON.stringify(storeArtifact))
-          }
-        } else {
-          writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
-        }
-      },
-    }))
-  }
+  const stagesWithStore = (storeArtifact?: StoreArtifact): StageDef[] =>
+    buildStages([], { storeArtifact })
 
   it('records the object row from store.json inside the library transaction', async () => {
     const { db, runsRoot } = setup()
@@ -553,7 +536,7 @@ describe('final gate: library_objects', () => {
     const channel = testChannel()
     const jobId = createJob(db, channel, { topic: 'space' })
 
-    const result = await runJob(db, channel, jobId, stagesWithStore(null), { runsRoot })
+    const result = await runJob(db, channel, jobId, stagesWithStore(), { runsRoot })
 
     expect(result.status).toBe('ready')
     expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({

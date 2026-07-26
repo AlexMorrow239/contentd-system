@@ -17,14 +17,6 @@ export interface S3Config {
   publicEndpoint?: string
 }
 
-function required(name: string): string {
-  const raw = process.env[name]
-  if (raw === undefined || raw.trim() === '') {
-    throw new Error(`missing ${name}`)
-  }
-  return raw.trim()
-}
-
 /**
  * Reads S3/R2 configuration from the environment at CALL time, not module
  * load — the convention igUploadsPerDayCap already sets, so tests and
@@ -37,12 +29,9 @@ function required(name: string): string {
 export function s3ConfigFromEnv(): S3Config {
   const missing: string[] = []
   const read = (name: string): string => {
-    try {
-      return required(name)
-    } catch {
-      missing.push(name)
-      return ''
-    }
+    const value = process.env[name]?.trim() ?? ''
+    if (value === '') missing.push(name)
+    return value
   }
   const endpoint = read('BRAINROT_S3_ENDPOINT')
   const bucket = read('BRAINROT_S3_BUCKET')
@@ -185,4 +174,14 @@ export function s3Store(config: S3Config): ObjectStore {
       }
     },
   }
+}
+
+/**
+ * The production store, from the environment. Every caller that is not
+ * injecting a fake wants exactly this pair of calls, so it lives here once
+ * rather than at each site; the throw on missing configuration is
+ * s3ConfigFromEnv()'s, naming every absent key.
+ */
+export function storeFromEnv(): ObjectStore {
+  return s3Store(s3ConfigFromEnv())
 }

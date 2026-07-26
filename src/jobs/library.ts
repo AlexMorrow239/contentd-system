@@ -1,3 +1,4 @@
+import type { StoreArtifact } from '../stages/store.js'
 import type { Database } from 'better-sqlite3'
 import type { ObjectStore } from '../storage/types.js'
 
@@ -101,6 +102,20 @@ export function rejectLibrary(db: Database, jobIds: string[]): number {
       `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready', 'published')`,
     )
     .run(...jobIds).changes
+}
+
+/**
+ * Records where a finished video landed in object storage. Idempotent on
+ * job_id, which both callers depend on: the final gate's re-runnable window
+ * (runJob, ./runner.ts) upserts the same artifact on every resume, and the
+ * operator backfill (./backfill-store.ts) may be re-run over rows it already
+ * uploaded. Synchronous, so it composes inside runJob's db.transaction().
+ */
+export function upsertLibraryObject(db: Database, jobId: string, object: StoreArtifact): void {
+  db.prepare(
+    'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(job_id) DO UPDATE SET object_key=excluded.object_key, bytes=excluded.bytes, etag=excluded.etag',
+  ).run(jobId, object.objectKey, object.bytes, object.etag)
 }
 
 // Reject deletes the stored object too (design spec decision 7), so the CLI

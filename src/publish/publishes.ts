@@ -194,6 +194,20 @@ export function uploadsUsedToday(
   return row.n
 }
 
+// One row of the publish pool: the video the tick will hand an adapter, plus
+// the metadata it needs to render the post. `objectKey` is null for library
+// rows produced before object storage existed (see ../jobs/backfill-store.ts),
+// so it is the tick's cue that only a local file can serve this video.
+// Named rather than inlined at each use because the publish tick threads the
+// same shape through its candidate scan and its `picked` state.
+export interface EligibleVideo {
+  jobId: string
+  videoPath: string
+  objectKey: string | null
+  metadataJson: string
+  topic: string
+}
+
 // Eligibility per design spec §6 step 6 and §3.3 (decision 1, decision 9):
 // 'ready' OR 'published' library rows for jobs on this channel — a video
 // already published on one platform stays in every other platform's pool,
@@ -220,13 +234,7 @@ export function eligibleVideo(
   channel: string,
   platform: Platform,
   excludeJobIds: readonly string[] = [],
-): {
-  jobId: string
-  videoPath: string
-  objectKey: string | null
-  metadataJson: string
-  topic: string
-} | null {
+): EligibleVideo | null {
   const exclusion =
     excludeJobIds.length === 0
       ? ''
@@ -255,15 +263,7 @@ export function eligibleVideo(
        ORDER BY COALESCE(p.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
        LIMIT 1`,
     )
-    .get(platform, channel, MAX_PUBLISH_ATTEMPTS, ...excludeJobIds) as
-    | {
-        jobId: string
-        videoPath: string
-        objectKey: string | null
-        metadataJson: string
-        topic: string
-      }
-    | undefined
+    .get(platform, channel, MAX_PUBLISH_ATTEMPTS, ...excludeJobIds) as EligibleVideo | undefined
   return row === undefined ? null : row
 }
 

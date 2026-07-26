@@ -70,7 +70,6 @@ export interface PlatformQuota {
 // will not send, and a library row predating library_objects still publishes to
 // YouTube from its local file while failing legibly on Instagram.
 export interface PublishMedia {
-  readonly objectKey: string | null
   readonly localPath: string | null
   bytes(): Promise<Buffer<ArrayBuffer>>
   url(ttlSeconds: number): Promise<string>

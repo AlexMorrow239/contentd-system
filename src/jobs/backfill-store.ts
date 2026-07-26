@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { objectKeyFor } from '../stages/store.js'
 import type { ObjectStore } from '../storage/types.js'
+import { upsertLibraryObject } from './library.js'
 
 /**
  * Uploads finished videos produced before object storage existed. Without it,
@@ -32,11 +33,6 @@ export async function backfillStore(opts: {
     )
     .all() as { jobId: string; videoPath: string; channel: string }[]
 
-  const upsert = opts.db.prepare(
-    'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?) ' +
-      'ON CONFLICT(job_id) DO UPDATE SET object_key=excluded.object_key, bytes=excluded.bytes, etag=excluded.etag',
-  )
-
   const uploaded: string[] = []
   const skipped: string[] = []
   for (const row of rows) {
@@ -47,7 +43,7 @@ export async function backfillStore(opts: {
     const bytes = readFileSync(row.videoPath)
     const objectKey = objectKeyFor(row.channel, row.jobId)
     const put = await opts.store.put(objectKey, bytes, 'video/mp4')
-    upsert.run(row.jobId, objectKey, put.bytes, put.etag)
+    upsertLibraryObject(opts.db, row.jobId, { objectKey, bytes: put.bytes, etag: put.etag })
     uploaded.push(row.jobId)
   }
   return { uploaded, skipped }

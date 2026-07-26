@@ -35,7 +35,8 @@ import { upsertToken } from './publish/tokens.js'
 import { ADAPTERS } from './publish/platforms/index.js'
 import { preflight } from './publish/preflight.js'
 import { PUBLISH_PLATFORMS, type Platform } from './publish/types.js'
-import { s3ConfigFromEnv, s3Store } from './storage/s3.js'
+// storage/s3.js is imported dynamically at the three commands that need it —
+// a static import puts the AWS SDK on the startup path of every command.
 import type { ObjectStore } from './storage/types.js'
 import { DEV_VOICE_ENV } from './stages/voice.js'
 
@@ -477,7 +478,7 @@ library
     if (objects.length > 0) {
       let store: ObjectStore | null = null
       try {
-        store = s3Store(s3ConfigFromEnv())
+        store = (await import('./storage/s3.js')).storeFromEnv()
       } catch (err) {
         console.warn(
           `object storage unavailable, ${objects.length} object(s) left in place: ${err instanceof Error ? err.message : String(err)}`,
@@ -500,7 +501,10 @@ library
   .option('--db <path>', 'sqlite db path')
   .action(async (opts: { db?: string }) => {
     const db = openDb(resolveDbPath(opts.db))
-    const res = await backfillStore({ db, store: s3Store(s3ConfigFromEnv()) })
+    const res = await backfillStore({
+      db,
+      store: (await import('./storage/s3.js')).storeFromEnv(),
+    })
     console.log(`uploaded ${res.uploaded.length}, skipped ${res.skipped.length}`)
     for (const jobId of res.skipped) {
       console.log(`  skipped ${jobId}: local video file is gone, nothing to upload`)
@@ -691,7 +695,7 @@ publish
       db,
       jobId,
       platform: platform as Platform,
-      store: s3Store(s3ConfigFromEnv()),
+      store: (await import('./storage/s3.js')).storeFromEnv(),
     })
     console.log(`object: ${result.objectKey}`)
     for (const c of result.checks) {

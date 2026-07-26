@@ -70,6 +70,7 @@ export async function preflight(opts: {
   const res = await fetchImpl(url)
   const body = Buffer.from(await res.arrayBuffer())
   const contentType = res.headers.get('content-type') ?? ''
+  const mp4 = isMp4(body)
 
   const checks: PreflightCheck[] = [
     {
@@ -89,8 +90,8 @@ export async function preflight(opts: {
     },
     {
       name: 'mp4-header',
-      passed: isMp4(body),
-      detail: isMp4(body) ? "bytes 4-8 are 'ftyp'" : "bytes 4-8 are not 'ftyp'",
+      passed: mp4,
+      detail: mp4 ? "bytes 4-8 are 'ftyp'" : "bytes 4-8 are not 'ftyp'",
     },
   ]
 
