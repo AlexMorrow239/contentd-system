@@ -20,7 +20,8 @@
     "singleQuote": true,
     "semi": false,
     "tabWidth": 2,
-    "printWidth": 100
+    "printWidth": 100,
+    "embeddedLanguageFormatting": "off"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
