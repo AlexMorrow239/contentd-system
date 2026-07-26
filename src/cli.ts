@@ -17,7 +17,7 @@ import type { TopicStatus } from './scout/topics.js'
 import { pipelineStages } from './jobs/pipeline.js'
 import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
-import { runYoutubeAuthFlow } from './publish/oauth-flow.js'
+import { runInstagramAuthFlow, runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
 import { youtubeShortsUrl } from './publish/platforms/youtube.js'
@@ -487,13 +487,59 @@ auth
     const granted = await runYoutubeAuthFlow({ clientId, clientSecret })
     const db = openDb(resolveDbPath(opts.db))
     try {
-      upsertToken(db, 'youtube', channel.name, granted.refreshToken, granted.scopes, key)
+      upsertToken(db, 'youtube', channel.name, granted.refreshToken, granted.scopes, key, null)
     } finally {
       db.close()
     }
     // Confirmation only — never the refresh token itself (house rule: token
     // material never touches logs or stdout).
     console.log(`authorized youtube for channel "${channel.name}" — scopes: ${granted.scopes}`)
+  })
+
+auth
+  .command('instagram')
+  .requiredOption('--channel <name>', 'channel name to authorize')
+  .option('--db <path>', 'sqlite db path')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
+  .action(async (opts: { channel: string; db?: string; channelsDir?: string }) => {
+    const channelsDir = resolveChannelsDir(opts.channelsDir)
+    const channels = loadChannelsDir(channelsDir)
+    const channel = channels.find((c) => c.name === opts.channel)
+    if (!channel) {
+      throw new Error(`auth instagram: unknown channel "${opts.channel}" (checked ${channelsDir})`)
+    }
+    const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
+    const appId = process.env.IG_APP_ID
+    if (!appId) {
+      throw new Error('auth instagram: IG_APP_ID is not set (add it to .env)')
+    }
+    const appSecret = process.env.IG_APP_SECRET
+    if (!appSecret) {
+      throw new Error('auth instagram: IG_APP_SECRET is not set (add it to .env)')
+    }
+    const granted = await runInstagramAuthFlow({ appId, appSecret })
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      upsertToken(
+        db,
+        'instagram',
+        channel.name,
+        granted.token,
+        granted.scopes,
+        key,
+        granted.expiresAt,
+      )
+    } finally {
+      db.close()
+    }
+    // Confirmation only — never the access token itself (house rule: token
+    // material never touches logs or stdout).
+    console.log(
+      `authorized instagram for channel "${channel.name}" — scopes: ${granted.scopes}, expires ${granted.expiresAt}`,
+    )
   })
 
 program

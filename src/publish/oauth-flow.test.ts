@@ -1,6 +1,11 @@
 import http from 'node:http'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AUTH_FLOW_TIMEOUT_MS, runYoutubeAuthFlow } from './oauth-flow.js'
+import {
+  AUTH_FLOW_TIMEOUT_MS,
+  IG_CONTENT_PUBLISH_SCOPE,
+  runInstagramAuthFlow,
+  runYoutubeAuthFlow,
+} from './oauth-flow.js'
 import { YT_UPLOAD_SCOPE } from './platforms/youtube.js'
 
 describe('AUTH_FLOW_TIMEOUT_MS', () => {
@@ -176,5 +181,74 @@ describe('runYoutubeAuthFlow', () => {
 
   afterEach(() => {
     vi.useRealTimers()
+  })
+})
+
+describe('runInstagramAuthFlow', () => {
+  it('drives consent -> redirect -> two-step token exchange and returns a long-lived token', async () => {
+    let callIndex = 0
+    const fetchImpl: typeof fetch = async (url) => {
+      const parsed = new URL(String(url))
+      callIndex++
+      if (callIndex === 1) {
+        // short-lived code exchange
+        expect(parsed.searchParams.get('code')).toBe('test-auth-code')
+        expect(parsed.searchParams.get('client_id')).toBe('test-app-id')
+        expect(parsed.searchParams.get('client_secret')).toBe('test-app-secret')
+        return new Response(JSON.stringify({ access_token: 'short-lived-token' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      // long-lived exchange
+      expect(parsed.searchParams.get('grant_type')).toBe('fb_exchange_token')
+      expect(parsed.searchParams.get('fb_exchange_token')).toBe('short-lived-token')
+      return new Response(
+        JSON.stringify({ access_token: 'long-lived-token', expires_in: 5_184_000 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      )
+    }
+
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      expect(consentUrl.origin + consentUrl.pathname).toBe(
+        'https://www.facebook.com/v21.0/dialog/oauth',
+      )
+      expect(consentUrl.searchParams.get('client_id')).toBe('test-app-id')
+      expect(consentUrl.searchParams.get('scope')).toBe(IG_CONTENT_PUBLISH_SCOPE)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}/?code=test-auth-code&state=${state}`)
+    }
+
+    const result = await runInstagramAuthFlow({
+      appId: 'test-app-id',
+      appSecret: 'test-app-secret',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+    })
+
+    expect(result.token).toBe('long-lived-token')
+    expect(result.scopes).toBe(IG_CONTENT_PUBLISH_SCOPE)
+    expect(new Date(result.expiresAt).getTime()).toBeGreaterThan(Date.now())
+  })
+
+  it('rejects when consent is denied', async () => {
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}/?error=access_denied&state=${state}`)
+    }
+    await expect(
+      runInstagramAuthFlow({
+        appId: 'a',
+        appSecret: 'b',
+        listenPort: 0,
+        openBrowser,
+        fetchImpl: async () => new Response('', { status: 200 }),
+      }),
+    ).rejects.toThrow(/consent denied/)
   })
 })
