@@ -24,3 +24,4 @@ superpowers/
 channels-dev/*
 !channels-dev/.gitkeep
 runs-dev/
+.env.production

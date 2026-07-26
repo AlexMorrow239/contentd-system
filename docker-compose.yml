@@ -69,7 +69,18 @@ services:
     depends_on:
       whisperx:
         condition: service_healthy
-    env_file: .env
+    # Two files, evaluated in order — later wins for a duplicate key. This is
+    # what lets the host .env stay pointed at local MinIO (matching the dev
+    # triple it already carries for db/runs/channels) while the container gets
+    # real R2, with no manual swapping between them. .env.production is
+    # gitignored and holds only the credentials that cannot be pinned as
+    # literals below.
+    env_file:
+      - .env
+      # required: false so a fresh clone (or a YouTube-only deployment with no
+      # object storage) still starts instead of erroring on a missing file.
+      - path: .env.production
+        required: false
     environment:
       # env_file above forwards EVERY key in the host's (dev-pointing) .env —
       # provider keys, BRAINROT_TOKEN_KEY, etc — straight into this container.
@@ -114,14 +125,14 @@ services:
       # without a pin, a .env aimed at the local MinIO container would
       # silently redirect every production video into a container that is
       # not even running here.
-      # BRAINROT_S3_ENDPOINT is NOT pinned by this line, despite appearances:
-      # Compose's ${VAR} interpolation reads from that same host .env, so a
-      # dev .env's MinIO endpoint carries straight through — this line only
-      # documents that the key must be set, it enforces nothing. Pointing
-      # production at the real R2 endpoint is operator discipline: the
-      # deploying host's .env must carry the real BRAINROT_S3_ENDPOINT, never
-      # a MinIO one.
-      BRAINROT_S3_ENDPOINT: ${BRAINROT_S3_ENDPOINT}
+      # BRAINROT_S3_ENDPOINT is deliberately NOT listed here. It has to come
+      # from .env.production, and an `environment:` entry would defeat that:
+      # Compose applies `environment` after every env_file, and `${VAR}`
+      # interpolates from the project .env — the dev one — so writing
+      # `BRAINROT_S3_ENDPOINT: ${BRAINROT_S3_ENDPOINT}` would reach in, pick up
+      # the MinIO endpoint, and clobber the real R2 value that .env.production
+      # just supplied. The endpoint embeds the Cloudflare account id, so it
+      # cannot be a committed literal either.
       BRAINROT_S3_BUCKET: brainrot-videos
       # Never set for production: presigning must sign against the real R2
       # endpoint. This exists only so a dev .env's MinIO value cannot leak in.
