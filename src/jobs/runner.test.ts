@@ -39,7 +39,7 @@ function testChannel(): ChannelConfig {
   }
 }
 
-function row<T>(db: Database, sql: string, ...params: any[]): T {
+function row<T>(db: Database, sql: string, ...params: unknown[]): T {
   return db.prepare(sql).get(...params) as T
 }
 

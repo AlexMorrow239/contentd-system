@@ -12,8 +12,8 @@ export function parseRange(
   if (header === undefined) return null
   const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim())
   if (match === null) return null
-  const rawStart = match[1] as string
-  const rawEnd = match[2] as string
+  const rawStart = match[1]
+  const rawEnd = match[2]
   if (rawStart === '' && rawEnd === '') return null
 
   if (rawStart === '') {

@@ -20,7 +20,6 @@ export function createJob(
   db: Database,
   channel: ChannelConfig,
   opts: { topic: string },
-  _options: { runsRoot?: string } = {},
 ): string {
   const jobId = nanoid()
   // The 'tier' column is a legacy NOT NULL CHECK ('volume','premium') left in

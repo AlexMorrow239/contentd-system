@@ -184,6 +184,7 @@ async function synthEdge(hook: string, body: string, wavPath: string): Promise<v
   const synth = async (chunk: string): Promise<PcmChunk> => {
     // toStream is synchronous in current msedge-tts; awaiting a plain object is a
     // no-op, so this is robust across versions that return a promise.
+    // eslint-disable-next-line @typescript-eslint/await-thenable
     const { audioStream } = await tts.toStream(chunk);
     const buffers: Buffer[] = [];
     for await (const b of audioStream as AsyncIterable<Uint8Array>) buffers.push(Buffer.from(b));

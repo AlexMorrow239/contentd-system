@@ -6,7 +6,7 @@ import type { FetchLike } from './types.js'
 function fakeFetch(status: number, body: string) {
   const calls: { url: string; init: RequestInit | undefined }[] = []
   const impl: typeof fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
+    calls.push({ url: input instanceof Request ? input.url : String(input), init })
     return new Response(body, { status, headers: { 'content-type': 'application/xml' } })
   }
   return { impl, calls }

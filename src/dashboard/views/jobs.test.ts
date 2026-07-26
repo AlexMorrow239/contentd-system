@@ -126,7 +126,7 @@ describe('renderJobDetailPage', () => {
   it('escapes an error message containing markup', () => {
     const hostile: JobDetail = {
       ...detail,
-      stages: [{ ...detail.stages[1]!, error: '<img src=x onerror=alert(1)>' }],
+      stages: [{ ...detail.stages[1], error: '<img src=x onerror=alert(1)>' }],
     }
     const out = renderJobDetailPage(hostile, 'prod').value
     expect(out).not.toContain('<img src=x')

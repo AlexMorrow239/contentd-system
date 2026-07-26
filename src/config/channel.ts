@@ -114,7 +114,7 @@ const rawSchema = z.object({
     per_day_usd: z.number().positive('per_day_usd must be greater than 0'),
   }),
   bg_dir: z.preprocess(
-    (v) => (Array.isArray(v) ? v : [v]),
+    (v) => (Array.isArray(v) ? (v as unknown[]) : [v]),
     z.array(z.string()).min(1),
   ),
   bgm_dir: z.string(),

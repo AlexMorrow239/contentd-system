@@ -25,7 +25,7 @@ const ESCAPES: Record<string, string> = {
 // Quotes are escaped alongside the angle brackets so the same helper is safe
 // inside an attribute value, not only in element content.
 export function escapeHtml(value: unknown): string {
-  return String(value).replace(/[&<>"']/g, (ch) => ESCAPES[ch] as string)
+  return String(value).replace(/[&<>"']/g, (ch) => ESCAPES[ch])
 }
 
 function render(value: unknown): string {
@@ -42,9 +42,9 @@ function render(value: unknown): string {
  * accident is impossible.
  */
 export function html(strings: TemplateStringsArray, ...values: unknown[]): SafeHtml {
-  let out = strings[0] as string
+  let out = strings[0]
   for (let i = 0; i < values.length; i++) {
-    out += render(values[i]) + (strings[i + 1] as string)
+    out += render(values[i]) + strings[i + 1]
   }
   return new SafeHtml(out)
 }

@@ -57,7 +57,7 @@ function fakeFetch(responses: Array<{ status: number; body?: unknown; headers?: 
   const calls: { url: string; init: RequestInit | undefined }[] = []
   let i = 0
   const impl: typeof fetch = async (input, init) => {
-    calls.push({ url: String(input), init })
+    calls.push({ url: input instanceof Request ? input.url : String(input), init })
     const step = responses[i]
     i++
     return new Response(step.body === undefined ? '' : JSON.stringify(step.body), {

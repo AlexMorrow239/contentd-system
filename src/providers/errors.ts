@@ -24,7 +24,7 @@ export class ProviderCostError extends Error {
  */
 export function errorCostUsdMicros(err: unknown): number | undefined {
   if (err !== null && typeof err === 'object' && 'costUsdMicros' in err) {
-    const cost = (err as { costUsdMicros: unknown }).costUsdMicros;
+    const cost = err.costUsdMicros;
     if (typeof cost === 'number' && Number.isFinite(cost)) return cost;
   }
   return undefined;

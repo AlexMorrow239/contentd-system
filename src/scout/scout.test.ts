@@ -38,7 +38,7 @@ function redditFeed(posts: { name: string; title: string }[]): string {
 // Unmatched URLs throw, so a test never silently hits an unexpected source.
 function fetchStub(bodyBySubstring: Record<string, string | Error>): FetchLike {
   return (async (input: RequestInfo | URL) => {
-    const url = String(input)
+    const url = input instanceof Request ? input.url : String(input)
     for (const [needle, body] of Object.entries(bodyBySubstring)) {
       if (url.includes(needle)) {
         if (body instanceof Error) throw body
@@ -46,7 +46,7 @@ function fetchStub(bodyBySubstring: Record<string, string | Error>): FetchLike {
       }
     }
     throw new Error(`unexpected fetch: ${url}`)
-  }) as FetchLike
+  })
 }
 
 function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {

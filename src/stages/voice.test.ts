@@ -78,7 +78,6 @@ function premiumChannel() {
   return testChannel({ voice: { volume: 'af_heart', premium: { ...PREMIUM_VOICE } } });
 }
 
-const PREMIUM_NARRATION = 'Hook here\n\nOne.\n\nTwo.';
 // The hook and body are sent as one call, but with an explicit SSML break
 // between them so ElevenLabs (which understands the tag) leaves a real,
 // deliberate pause instead of reading straight through -- see HOOK_PAUSE_MS.
@@ -163,7 +162,7 @@ describe('voiceStage', () => {
 
     await voiceStage.run(ctx);
 
-    const texts = generate.mock.calls.map((c) => c[0] as string);
+    const texts = generate.mock.calls.map((c) => c[0]);
     // The hook (one sentence, under budget) is synthesized alone, first.
     expect(texts[0]).toBe(SENTENCE);
     const bodyTexts = texts.slice(1);
@@ -195,7 +194,7 @@ describe('voiceStage', () => {
 
     await voiceStage.run(ctx);
 
-    const texts = generate.mock.calls.map((c) => c[0] as string);
+    const texts = generate.mock.calls.map((c) => c[0]);
     expect(texts.length).toBeGreaterThan(1);
     // Each chunk keeps its speech plus at most 250ms of tail: the 3s pads are
     // gone both between chunks (internal gaps) and after the last one (tail).
@@ -228,7 +227,7 @@ describe('voiceStage', () => {
     const toStream = vi.fn(() => ({ audioStream: Readable.from([ONE_SECOND_WAV]) }));
     // vitest v4 constructs `new MsEdgeTTS()` via the mock implementation; an arrow
     // function is not a constructor, so use a regular function returning the stub.
-    vi.mocked(MsEdgeTTS).mockImplementation(function () { return { setMetadata, toStream }; } as never);
+    vi.mocked(MsEdgeTTS).mockImplementation(function () { return { setMetadata, toStream }; });
 
     await voiceStage.run(ctx);
 
@@ -244,7 +243,7 @@ describe('voiceStage', () => {
     // Each edge response is its own RIFF stream: 12s per chunk keeps the total
     // above the truncation guard's plausibility floor.
     const toStream = vi.fn((t: string) => ({ text: t, audioStream: Readable.from([buildWav(16000 * 12)]) }));
-    vi.mocked(MsEdgeTTS).mockImplementation(function () { return { setMetadata, toStream }; } as never);
+    vi.mocked(MsEdgeTTS).mockImplementation(function () { return { setMetadata, toStream }; });
 
     await voiceStage.run(ctx);
 
@@ -265,7 +264,7 @@ describe('voiceStage', () => {
         setMetadata: vi.fn().mockResolvedValue(undefined),
         toStream: vi.fn(() => { throw new Error('edge down'); }),
       };
-    } as never);
+    });
 
     await expect(voiceStage.run(ctx)).rejects.toThrow(/voice synthesis failed/);
   });

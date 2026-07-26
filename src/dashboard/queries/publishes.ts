@@ -77,7 +77,7 @@ export function buildPublishGrids(
   now: Date,
 ): ChannelGrid[] {
   const dayList = windowDays(days, now)
-  const oldest = dayList[dayList.length - 1] as string
+  const oldest = dayList[dayList.length - 1]
 
   const statement = db.prepare(
     'SELECT id, job_id, platform, channel, day, slot, status, post_id, url, error, ' +
@@ -88,7 +88,7 @@ export function buildPublishGrids(
   return channels
     .filter((channel) => channel.publish !== null)
     .map((channel) => {
-      const rows = statement.all(channel.name, oldest, dayList[0] as string) as DbPublishRow[]
+      const rows = statement.all(channel.name, oldest, dayList[0]) as DbPublishRow[]
       const cells = new Map<string, PublishRow>()
       // ORDER BY id ASC plus overwrite means the newest attempt for a cell
       // wins, which is what the UNIQUE(channel,platform,day,slot) constraint
