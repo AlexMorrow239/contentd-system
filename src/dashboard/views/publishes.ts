@@ -34,10 +34,12 @@ function renderCell(row: PublishRow | undefined, dbChoice: DbChoice): SafeHtml {
 
 function renderGrid(grid: ChannelGrid, dbChoice: DbChoice): SafeHtml {
   const header = grid.days.map((day) => html`<th>${day}</th>`)
-  const rows = grid.slots.map(
-    (slot) => html`<tr>
-      <th>${slot}</th>
-      ${grid.days.map((day) => renderCell(grid.cells.get(cellKey(day, slot)), dbChoice))}
+  const rows = grid.rows.map(
+    (row) => html`<tr>
+      <th>${row.slot} ${row.platform}</th>
+      ${grid.days.map((day) =>
+        renderCell(grid.cells.get(cellKey(day, row.slot, row.platform)), dbChoice),
+      )}
     </tr>`,
   )
   return html`<div class="panel">

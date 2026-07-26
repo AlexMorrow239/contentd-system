@@ -25,7 +25,14 @@ function row(overrides: Partial<PublishRow> = {}): PublishRow {
 
 function pageData(cells: Map<string, PublishRow>) {
   return {
-    grids: [{ channel: 'space', slots: ['09:00'], days: ['2026-07-25'], cells }],
+    grids: [
+      {
+        channel: 'space',
+        rows: [{ platform: 'youtube' as const, slot: '09:00' }],
+        days: ['2026-07-25'],
+        cells,
+      },
+    ],
     days: 1,
     quotaUsed: 2,
     quotaCap: 6,
@@ -35,7 +42,7 @@ function pageData(cells: Map<string, PublishRow>) {
 
 describe('renderPublishesPage', () => {
   it('links a done cell to the published video', () => {
-    const cells = new Map([[cellKey('2026-07-25', '09:00'), row()]])
+    const cells = new Map([[cellKey('2026-07-25', '09:00', 'youtube'), row()]])
     const out = renderPublishesPage(pageData(cells)).value
     expect(out).toContain('https://youtube.com/shorts/abc')
     expect(out).toContain('status-done')
@@ -49,7 +56,7 @@ describe('renderPublishesPage', () => {
   it('shows error kind and attempt on a failed cell', () => {
     const cells = new Map([
       [
-        cellKey('2026-07-25', '09:00'),
+        cellKey('2026-07-25', '09:00', 'youtube'),
         row({ status: 'failed', errorKind: 'quota', attempt: 3, url: null, postId: null }),
       ],
     ])
@@ -62,10 +69,55 @@ describe('renderPublishesPage', () => {
     // Not currently reachable — url is constructed server-side with a fixed
     // https:// scheme — but applying the same control as topics.ts keeps the
     // hardening from quietly regressing if that ever changes.
-    const cells = new Map([[cellKey('2026-07-25', '09:00'), row({ url: 'javascript:alert(1)' })]])
+    const cells = new Map([
+      [cellKey('2026-07-25', '09:00', 'youtube'), row({ url: 'javascript:alert(1)' })],
+    ])
     const out = renderPublishesPage(pageData(cells)).value
     expect(out).not.toContain('href="javascript:alert(1)"')
     expect(out).not.toContain('<a href="javascript:')
+  })
+
+  it('labels each row with its platform, and keeps same-slot platforms in separate rows', () => {
+    // Regression for the cellKey collision bug: two platforms sharing a slot
+    // time must render as two distinct rows/cells, not overwrite one another.
+    const cells = new Map([
+      [
+        cellKey('2026-07-25', '10:00', 'youtube'),
+        row({ platform: 'youtube', status: 'done', url: 'https://youtube.com/shorts/yt1' }),
+      ],
+      [
+        cellKey('2026-07-25', '10:00', 'instagram'),
+        row({
+          platform: 'instagram',
+          status: 'failed',
+          errorKind: 'transient',
+          url: null,
+          postId: null,
+        }),
+      ],
+    ])
+    const data = {
+      grids: [
+        {
+          channel: 'space',
+          rows: [
+            { platform: 'instagram' as const, slot: '10:00' },
+            { platform: 'youtube' as const, slot: '10:00' },
+          ],
+          days: ['2026-07-25'],
+          cells,
+        },
+      ],
+      days: 1,
+      quotaUsed: 0,
+      quotaCap: 6,
+      dbChoice: 'prod' as const,
+    }
+    const out = renderPublishesPage(data).value
+    expect(out).toContain('10:00 instagram')
+    expect(out).toContain('10:00 youtube')
+    expect(out).toContain('https://youtube.com/shorts/yt1')
+    expect(out).toContain('transient')
   })
 
   it('reports quota consumption against the cap', () => {

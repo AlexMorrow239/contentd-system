@@ -58,19 +58,22 @@ describe('buildPublishGrids', () => {
   it('produces one row per configured slot and one column per day, newest day first', () => {
     const db = seed()
     const [grid] = buildPublishGrids(db, [channel('space', ['09:00', '17:00'])], 3, now)
-    expect(grid?.slots).toEqual(['09:00', '17:00'])
+    expect(grid?.rows).toEqual([
+      { platform: 'youtube', slot: '09:00' },
+      { platform: 'youtube', slot: '17:00' },
+    ])
     expect(grid?.days).toEqual(['2026-07-25', '2026-07-24', '2026-07-23'])
     db.close()
   })
 
-  it('places a publish row in its day/slot cell', () => {
+  it('places a publish row in its day/slot/platform cell', () => {
     const db = seed()
     db.prepare(
       'INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, attempt) ' +
         "VALUES ('j1','youtube','space','2026-07-25','09:00','done','abc','https://y/abc',1)",
     ).run()
     const [grid] = buildPublishGrids(db, [channel('space', ['09:00', '17:00'])], 3, now)
-    const cell = grid?.cells.get(cellKey('2026-07-25', '09:00'))
+    const cell = grid?.cells.get(cellKey('2026-07-25', '09:00', 'youtube'))
     expect(cell?.status).toBe('done')
     expect(cell?.url).toBe('https://y/abc')
     db.close()
@@ -81,7 +84,7 @@ describe('buildPublishGrids', () => {
     // slot that was never filled must be visible as a gap, not omitted.
     const db = seed()
     const [grid] = buildPublishGrids(db, [channel('space', ['09:00'])], 2, now)
-    expect(grid?.cells.get(cellKey('2026-07-25', '09:00'))).toBeUndefined()
+    expect(grid?.cells.get(cellKey('2026-07-25', '09:00', 'youtube'))).toBeUndefined()
     expect(grid?.days).toContain('2026-07-25')
     db.close()
   })
@@ -97,7 +100,7 @@ describe('buildPublishGrids', () => {
     db.close()
   })
 
-  it('unions slots across targets, deduped and sorted, when platforms declare different times', () => {
+  it('gives every platform its own row, sorted by slot then platform, even with different times', () => {
     const db = seed()
     const multi = channelWithTargets('space', [
       {
@@ -112,7 +115,13 @@ describe('buildPublishGrids', () => {
       },
     ])
     const [grid] = buildPublishGrids(db, [multi], 1, now)
-    expect(grid?.slots).toEqual(['10:00', '11:00', '14:00', '19:00'])
+    expect(grid?.rows).toEqual([
+      { platform: 'youtube', slot: '10:00' },
+      { platform: 'instagram', slot: '11:00' },
+      { platform: 'instagram', slot: '14:00' },
+      { platform: 'youtube', slot: '14:00' },
+      { platform: 'youtube', slot: '19:00' },
+    ])
     db.close()
   })
 
@@ -130,6 +139,51 @@ describe('buildPublishGrids', () => {
     )
     expect(grids.find((g) => g.channel === 'space')?.cells.size).toBe(1)
     expect(grids.find((g) => g.channel === 'ocean')?.cells.size).toBe(0)
+    db.close()
+  })
+
+  it('regression: two platforms sharing the same slot time each keep their own row and cell', () => {
+    // This is the exact scenario from the shared `[publish] slots = [...]`
+    // configuration (see channels/test.toml): both targets declare the same
+    // slot times, so without a platform-aware cellKey and row model the
+    // second-inserted platform's row would overwrite the first's.
+    const db = seed()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, attempt) ' +
+        "VALUES ('j1','youtube','space','2026-07-25','10:00','done','yt1','https://y/yt1',1)",
+    ).run()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, error, error_kind, attempt) ' +
+        "VALUES ('j1','instagram','space','2026-07-25','10:00','failed','boom','transient',1)",
+    ).run()
+
+    const sharedSlots = channelWithTargets('space', [
+      {
+        platform: 'youtube',
+        slots: ['10:00'],
+        options: { privacy: 'public', categoryId: 27, madeForKids: false },
+      },
+      {
+        platform: 'instagram',
+        slots: ['10:00'],
+        options: { igUserId: 'ig1', shareToFeed: true },
+      },
+    ])
+    const [grid] = buildPublishGrids(db, [sharedSlots], 1, now)
+
+    expect(grid?.rows).toEqual([
+      { platform: 'instagram', slot: '10:00' },
+      { platform: 'youtube', slot: '10:00' },
+    ])
+    expect(grid?.cells.size).toBe(2)
+
+    const youtubeCell = grid?.cells.get(cellKey('2026-07-25', '10:00', 'youtube'))
+    expect(youtubeCell?.status).toBe('done')
+    expect(youtubeCell?.url).toBe('https://y/yt1')
+
+    const instagramCell = grid?.cells.get(cellKey('2026-07-25', '10:00', 'instagram'))
+    expect(instagramCell?.status).toBe('failed')
+    expect(instagramCell?.error).toBe('boom')
     db.close()
   })
 })

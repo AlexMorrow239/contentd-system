@@ -4,24 +4,30 @@ import type { PublishRow, PublishStatus } from '../../publish/publishes.js'
 import type { Platform, PublishErrorKind } from '../../publish/types.js'
 import { localDay } from '../../publish/slots.js'
 
+export interface GridRow {
+  platform: Platform
+  slot: string
+}
+
 export interface ChannelGrid {
   channel: string
   /**
-   * Row headers for the grid: the deduped, sorted union of every declared
-   * target's slots. Targets can each have their own slot list (e.g. youtube
-   * at 10:00/14:00/19:00, instagram at 11:00/18:00) — the grid still renders
-   * one row per distinct time-of-day, and a slot only one platform declares
-   * is simply empty in the other platform's cells.
+   * Row headers for the grid: one row per distinct (platform, slot) pair
+   * declared by any target. Targets can each have their own slot list (e.g.
+   * youtube at 10:00/14:00/19:00, instagram at 10:00/18:00) — even when two
+   * platforms share the same time-of-day, each gets its own row, so a
+   * publish attempt on one platform never overwrites or hides the other's.
+   * Sorted by slot time first, then platform, for a stable, readable grid.
    */
-  slots: string[]
+  rows: GridRow[]
   /** Newest day first. */
   days: string[]
-  /** Keyed by cellKey(day, slot). Absent means the slot was never filled. */
+  /** Keyed by cellKey(day, slot, platform). Absent means the slot was never filled. */
   cells: Map<string, PublishRow>
 }
 
-export function cellKey(day: string, slot: string): string {
-  return `${day} ${slot}`
+export function cellKey(day: string, slot: string, platform: Platform): string {
+  return `${day} ${slot} ${platform}`
 }
 
 interface DbPublishRow {
@@ -95,23 +101,37 @@ export function buildPublishGrids(
   return channels
     .filter((channel) => channel.publish !== null)
     .map((channel) => {
-      const rows = statement.all(channel.name, oldest, dayList[0]) as DbPublishRow[]
+      const dbRows = statement.all(channel.name, oldest, dayList[0]) as DbPublishRow[]
       const cells = new Map<string, PublishRow>()
       // ORDER BY id ASC plus overwrite means the newest attempt for a cell
       // wins, which is what the UNIQUE(channel,platform,day,slot) constraint
       // makes near-certain anyway.
-      for (const row of rows) {
-        cells.set(cellKey(row.day, row.slot), toPublishRow(row))
+      for (const row of dbRows) {
+        cells.set(cellKey(row.day, row.slot, row.platform), toPublishRow(row))
       }
-      // Union across targets rather than one target's list: a channel with
-      // both youtube and instagram declared can have different slot times
-      // per platform, and the grid needs a row for every distinct time any
-      // target fills, not just the first target's.
-      const slots = [...new Set(channel.publish?.targets.flatMap((t) => t.slots) ?? [])].sort()
+      // One row per (platform, slot) pair rather than per distinct time: two
+      // platforms declaring the identical slot time (the natural shared
+      // `[publish] slots = [...]` configuration) must not collapse into one
+      // row, or one platform's attempts would be indistinguishable from the
+      // other's in the grid.
+      const rowKeys = new Set<string>()
+      const rows: GridRow[] = []
+      for (const target of channel.publish?.targets ?? []) {
+        for (const slot of target.slots) {
+          const key = `${target.platform} ${slot}`
+          if (rowKeys.has(key)) continue
+          rowKeys.add(key)
+          rows.push({ platform: target.platform, slot })
+        }
+      }
+      rows.sort((a, b) => {
+        if (a.slot !== b.slot) return a.slot < b.slot ? -1 : 1
+        return a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0
+      })
 
       return {
         channel: channel.name,
-        slots,
+        rows,
         days: dayList,
         cells,
       }
