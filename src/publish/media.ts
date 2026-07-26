@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import type { ObjectStore } from '../storage/types.js'
+import { StorageError, type ObjectStore } from '../storage/types.js'
 import { PublishError, type PublishMedia } from './types.js'
 
 /**
@@ -21,7 +21,7 @@ export function publishMedia(opts: {
     objectKey: opts.objectKey,
     localPath: opts.localPath,
 
-    async bytes(): Promise<Buffer> {
+    async bytes(): Promise<Buffer<ArrayBuffer>> {
       if (opts.localPath !== null && existsSync(opts.localPath)) {
         return readFileSync(opts.localPath)
       }
@@ -30,11 +30,24 @@ export function publishMedia(opts: {
           return await opts.store.get(opts.objectKey)
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
+          // Only a genuinely absent object is unretryable; an outage or a bad
+          // credential is the next tick's problem, not this video's fault.
+          const kind =
+            err instanceof StorageError && err.kind !== 'not-found' ? 'transient' : 'rejected'
           throw new PublishError(
             `publishMedia: object ${opts.objectKey} could not be read: ${message}`,
-            'rejected',
+            kind,
           )
         }
+      }
+      if (opts.objectKey !== null && opts.store === null) {
+        // An object key exists — the video isn't actually missing — but there
+        // is no store configured to fetch it. A misconfiguration, not the same
+        // "no video available" case handled below.
+        throw new PublishError(
+          `publishMedia: object ${opts.objectKey} is recorded but no object store is configured to fetch it`,
+          'rejected',
+        )
       }
       throw new PublishError(
         `publishMedia: no video available — local path ${opts.localPath ?? '(none)'} is missing and there is no stored object`,

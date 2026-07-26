@@ -3,11 +3,34 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { fakeStore } from '../storage/fake.js'
-import type { ObjectStore } from '../storage/types.js'
+import { StorageError, type ObjectStore } from '../storage/types.js'
 import { publishMedia } from './media.js'
 
 const BODY = Buffer.from('local bytes', 'utf8')
 const REMOTE = Buffer.from('remote bytes', 'utf8')
+
+// Every method rejects with `err`, regardless of arguments — used to prove
+// publishMedia's construction does no I/O, and to drive store.get()/
+// presignGet() through their catch branches without a real backend.
+function throwingStore(err: unknown): ObjectStore {
+  return {
+    async put() {
+      throw err
+    },
+    async get() {
+      throw err
+    },
+    async head() {
+      throw err
+    },
+    async presignGet() {
+      throw err
+    },
+    async delete() {
+      throw err
+    },
+  }
+}
 
 describe('publishMedia', () => {
   let dir: string
@@ -44,9 +67,9 @@ describe('publishMedia', () => {
     await expect(media.bytes()).rejects.toMatchObject({ name: 'PublishError', kind: 'rejected' })
   })
 
-  it('presigns a URL from the object key', async () => {
+  it('presigns a URL from the object key with the ttl threaded through', async () => {
     const media = publishMedia({ objectKey: 'videos/example/job-1.mp4', localPath: null, store })
-    expect(await media.url(7200)).toContain('videos')
+    expect(await media.url(7200)).toMatch(/[?&]ttl=7200(&|$)/)
   })
 
   // A library row predating library_objects: still publishable to YouTube via
@@ -57,6 +80,7 @@ describe('publishMedia', () => {
     await expect(media.url(7200)).rejects.toMatchObject({
       name: 'PublishError',
       kind: 'rejected',
+      message: expect.stringMatching(/backfill-store/),
     })
   })
 
@@ -70,5 +94,53 @@ describe('publishMedia', () => {
       name: 'PublishError',
       kind: 'rejected',
     })
+  })
+
+  it('throws a rejected PublishError when store.get() reports the object as not-found', async () => {
+    const media = publishMedia({
+      objectKey: 'videos/example/job-1.mp4',
+      localPath: null,
+      store: throwingStore(
+        new StorageError('fakeStore: no object at videos/example/job-1.mp4', 'not-found'),
+      ),
+    })
+    await expect(media.bytes()).rejects.toMatchObject({ name: 'PublishError', kind: 'rejected' })
+  })
+
+  // Regression test for the store.get() catch flattening every StorageError
+  // kind to 'rejected': a transient outage or a bad credential must stay
+  // 'transient' so the failed publish attempt doesn't count toward
+  // rejectedCount (src/publish/publishes.ts eligibleVideo, cap 3) and
+  // permanently retire an otherwise-fine video.
+  it('throws a transient PublishError when store.get() reports a transient storage error', async () => {
+    const media = publishMedia({
+      objectKey: 'videos/example/job-1.mp4',
+      localPath: null,
+      store: throwingStore(new StorageError('r2: 503 service unavailable', 'transient')),
+    })
+    await expect(media.bytes()).rejects.toMatchObject({ name: 'PublishError', kind: 'transient' })
+  })
+
+  it('throws a transient PublishError when presignGet() throws', async () => {
+    const media = publishMedia({
+      objectKey: 'videos/example/job-1.mp4',
+      localPath: null,
+      store: throwingStore(new Error('network blip')),
+    })
+    await expect(media.url(7200)).rejects.toMatchObject({
+      name: 'PublishError',
+      kind: 'transient',
+    })
+  })
+
+  it('performs no I/O when merely constructed (laziness)', () => {
+    const throwing = throwingStore(new Error('should never be called during construction'))
+    expect(() =>
+      publishMedia({
+        objectKey: 'videos/example/job-1.mp4',
+        localPath: '/does/not/exist/final.mp4',
+        store: throwing,
+      }),
+    ).not.toThrow()
   })
 })

@@ -11,7 +11,7 @@
  */
 export interface ObjectStore {
   put(key: string, body: Buffer, contentType: string): Promise<{ etag: string; bytes: number }>
-  get(key: string): Promise<Buffer>
+  get(key: string): Promise<Buffer<ArrayBuffer>>
   head(key: string): Promise<{ bytes: number; contentType: string } | null>
   presignGet(key: string, ttlSeconds: number): Promise<string>
   delete(key: string): Promise<void>

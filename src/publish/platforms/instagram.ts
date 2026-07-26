@@ -88,9 +88,8 @@ async function createContainer(opts: {
 }
 
 // Takes the already-resolved bytes rather than a path — upload() fetches them
-// via media.bytes() once, up front, so the multi-MB buffer becomes
-// collectable the moment this returns, instead of staying pinned through the
-// up-to-5-minute poll loop that follows.
+// via media.bytes() once, up front (see the comment there), so the buffer is
+// already in hand here rather than being read from disk mid-flow.
 async function uploadBytes(opts: {
   containerId: string
   bytes: Buffer<ArrayBuffer>
@@ -231,13 +230,12 @@ export function instagramUploadTarget(
     async upload(req, token) {
       // Still a byte upload at this point — Task 7 replaces this with a
       // presigned video_url, which is what Meta actually requires. Resolved
-      // before any network call: a missing video must fail before a container
-      // is created that would just sit and expire.
-      // Cast to Buffer<ArrayBuffer>, not the bare `Buffer` alias PublishMedia
-      // declares: an unparameterized generic is Buffer<ArrayBufferLike>, which
-      // fetch's BodyInit rejects (SharedArrayBuffer-shaped, not assignable) —
-      // a real video buffer is always backed by a plain ArrayBuffer.
-      const bytes = (await req.media.bytes()) as Buffer<ArrayBuffer>
+      // up front, in this frame, rather than inside uploadBytes: a missing
+      // video must fail before a container is created that would just sit
+      // and expire. The buffer is then held for the rest of the container's
+      // lifetime — through uploadBytes, pollUntilFinished, publishContainer,
+      // and fetchPermalink — not released the moment upload() returns.
+      const bytes = await req.media.bytes()
       const caption = renderCaption(req.meta)
       const containerId = await createContainer({
         igUserId: req.options.igUserId,

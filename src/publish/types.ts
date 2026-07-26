@@ -72,7 +72,7 @@ export interface PlatformQuota {
 export interface PublishMedia {
   readonly objectKey: string | null
   readonly localPath: string | null
-  bytes(): Promise<Buffer>
+  bytes(): Promise<Buffer<ArrayBuffer>>
   url(ttlSeconds: number): Promise<string>
 }
 

@@ -146,11 +146,7 @@ export function youtubeTarget(
       // video must fail before any network call rather than after a wasted
       // initiate. media.bytes() itself raises a rejected PublishError when
       // neither the local file nor the object store has it.
-      // Cast to Buffer<ArrayBuffer>, not the bare `Buffer` alias PublishMedia
-      // declares: an unparameterized generic is Buffer<ArrayBufferLike>, which
-      // fetch's BodyInit rejects (SharedArrayBuffer-shaped, not assignable) —
-      // a real video buffer is always backed by a plain ArrayBuffer.
-      const bytes = (await media.bytes()) as Buffer<ArrayBuffer>
+      const bytes = await media.bytes()
 
       let initiateRes: Response
       try {
