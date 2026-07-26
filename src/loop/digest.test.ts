@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
-import { localDay } from '../publish/slots.js'
+import { localDay } from '../publish/schedule.js'
 import { upsertToken } from '../publish/tokens.js'
 import { testChannel } from '../stages/_testkit.js'
 import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from './digest.js'

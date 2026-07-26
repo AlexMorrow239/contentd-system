@@ -6,7 +6,7 @@ import {
   globalDaySpentMicros,
 } from '../../jobs/costs.js'
 import { uploadsUsedToday } from '../../publish/publishes.js'
-import { localDay } from '../../publish/slots.js'
+import { localDay } from '../../publish/schedule.js'
 
 export interface StatusCount {
   status: string

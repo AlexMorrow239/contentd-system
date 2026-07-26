@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../config/channel.js'
 import type { PublishRow, PublishStatus } from '../../publish/publishes.js'
 import type { Platform, PublishErrorKind } from '../../publish/types.js'
-import { localDay } from '../../publish/slots.js'
+import { localDay } from '../../publish/schedule.js'
 
 export interface GridRow {
   platform: Platform

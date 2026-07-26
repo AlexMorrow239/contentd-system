@@ -15,8 +15,8 @@ import {
   uploadsUsedToday,
 } from '../publish/publishes.js'
 import type { EligibleVideo } from '../publish/publishes.js'
-import { dueSlotsForChannel, localDay, orderCandidates } from '../publish/slots.js'
-import type { SlotCandidate } from '../publish/slots.js'
+import { dueSlotsForChannel, localDay, orderCandidates } from '../publish/schedule.js'
+import type { SlotCandidate } from '../publish/schedule.js'
 import {
   PUBLISH_PLATFORMS,
   PublishError,

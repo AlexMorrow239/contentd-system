@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../db/index.js'
-import { localDay } from '../publish/slots.js'
+import { localDay } from '../publish/schedule.js'
 import type { DashboardConfig } from './config.js'
 import { createApp } from './server.js'
 

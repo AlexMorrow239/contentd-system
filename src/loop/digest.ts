@@ -5,7 +5,7 @@ import { PUBLISHABLE_LIBRARY_STATES, unstoredLibraryJobs } from '../jobs/library
 import { parseTokenKey } from '../publish/crypto.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { consumedSlots, MAX_PUBLISH_ATTEMPTS } from '../publish/publishes.js'
-import { localDay } from '../publish/slots.js'
+import { localDay } from '../publish/schedule.js'
 import { loadToken } from '../publish/tokens.js'
 import { resolvePlatformMeta } from '../publish/types.js'
 import type { Platform } from '../publish/types.js'
