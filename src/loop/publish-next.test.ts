@@ -12,6 +12,7 @@ import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import type { Platform, PublishAdapter } from '../publish/types.js'
 import { YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
 import { PublishOutcomeUnknownError } from '../publish/types.js'
+import { fakeStore } from '../storage/fake.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
 import { publishNextTick } from './publish-next.js'
 
@@ -131,6 +132,14 @@ function seedReadyVideo(
   return jobId
 }
 
+// Inserts the library_objects row a real `store` pipeline stage would leave
+// behind — the durable-copy record eligibleVideo LEFT JOINs against.
+function seedObjectKey(db: Database, jobId: string, objectKey: string): void {
+  db.prepare(
+    'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?)',
+  ).run(jobId, objectKey, 123, 'etag-test')
+}
+
 function seedToken(db: Database, channel: string): void {
   const key = parseTokenKey(TEST_TOKEN_KEY_HEX)
   upsertToken(db, 'youtube', channel, 'rt-test-token', YT_UPLOAD_SCOPE, key)
@@ -171,11 +180,36 @@ function fakeAdapter(upload: PublishAdapter['upload']): PublishAdapter {
   }
 }
 
+// An Instagram-shaped adapter whose upload resolves `req.media.url()` the
+// same way instagramUploadTarget does (media.ts requires an object key + a
+// store for url() to succeed) — used to exercise the store-resolution path
+// the local-file-only fakeAdapter above never touches.
+function urlResolvingAdapter(): PublishAdapter {
+  return {
+    platformId: 'instagram',
+    quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: () => 25 },
+    postUrl: () => null,
+    hasCredential: () => true,
+    resolveCredential: async () => 'ig-token',
+    async upload(req) {
+      const url = await req.media.url(7200)
+      return { postId: 'ig-post-1', url }
+    },
+  }
+}
+
 beforeEach(() => {
   vi.stubEnv('YT_CLIENT_ID', 'test-client-id')
   vi.stubEnv('YT_CLIENT_SECRET', 'test-client-secret')
   vi.stubEnv('BRAINROT_TOKEN_KEY', TEST_TOKEN_KEY_HEX)
   vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '')
+  // Unconfigured by default so s3ConfigFromEnv() throws and resolveStore()
+  // falls back to null — tests that need a real store inject one via
+  // opts.store (a fakeStore) instead of relying on real S3 env vars.
+  vi.stubEnv('BRAINROT_S3_ENDPOINT', '')
+  vi.stubEnv('BRAINROT_S3_BUCKET', '')
+  vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', '')
+  vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', '')
 })
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -919,6 +953,146 @@ describe('quota pre-filter', () => {
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, { channelsDir, now })
     expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    db.close()
+  })
+})
+
+describe('publishNextTick — media resolved from object storage', () => {
+  // A pruned runs/ tree is now normal (the bucket is the durable copy), so a
+  // candidate whose local file is gone but has a library_objects row must
+  // still qualify and publish — the pre-flight guard is "local file OR
+  // stored object", not "local file alone".
+  it('qualifies and publishes a candidate whose local file is gone but has a stored object', async () => {
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-store-qualify-')
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    // Push youtube over its (capped-to-1) quota so only the instagram
+    // candidate for this slot survives the pre-filter.
+    seedConsumedSlot(db, {
+      channel: 'chan',
+      platform: 'youtube',
+      day: '2026-07-22',
+      slot: '09:00',
+      status: 'done',
+    })
+    const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
+    seedObjectKey(db, jobId, 'videos/chan/job.mp4')
+    const storeDir = tmpDir('brainrot-publish-fakestore-')
+    const now = () => new Date(2026, 6, 22, 10, 0)
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now,
+      adapters: { instagram: urlResolvingAdapter() },
+      store: fakeStore(storeDir),
+    })
+    expect(result).toMatchObject({
+      action: 'published',
+      channel: 'chan',
+      platform: 'instagram',
+      jobId,
+      postId: 'ig-post-1',
+    })
+    db.close()
+  })
+
+  it('excludes a candidate with neither a local file nor a stored object, reporting no-video-file', async () => {
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-store-noqualify-')
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    seedConsumedSlot(db, {
+      channel: 'chan',
+      platform: 'youtube',
+      day: '2026-07-22',
+      slot: '09:00',
+      status: 'done',
+    })
+    seedReadyVideo(db, { channel: 'chan', videoExists: false })
+    const now = () => new Date(2026, 6, 22, 10, 0)
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now,
+      adapters: { instagram: urlResolvingAdapter() },
+    })
+    expect(result).toEqual({ action: 'noop', reason: 'no-video-file' })
+    db.close()
+  })
+
+  // s3ConfigFromEnv() throws when object storage is unconfigured (design:
+  // no silent local fallback). A YouTube-only deployment must keep working;
+  // an Instagram upload that actually needs the store must fail the one
+  // video legibly (rejected) rather than crash the whole tick.
+  it('degrades to a legible rejected failure, not a crash, when no store is configured or injected', async () => {
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-store-unconfigured-')
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    seedConsumedSlot(db, {
+      channel: 'chan',
+      platform: 'youtube',
+      day: '2026-07-22',
+      slot: '09:00',
+      status: 'done',
+    })
+    const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
+    seedObjectKey(db, jobId, 'videos/chan/job.mp4')
+    const now = () => new Date(2026, 6, 22, 10, 0)
+    // No `store` in opts, and BRAINROT_S3_* is stubbed empty in beforeEach —
+    // resolveStore() must catch s3ConfigFromEnv()'s throw rather than let it
+    // escape the tick.
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now,
+      adapters: { instagram: urlResolvingAdapter() },
+    })
+    expect(result.action).toBe('publish-failed')
+    expect(result.jobId).toBe(jobId)
+    const row = db
+      .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
+      .get(jobId) as {
+      status: string
+      error_kind: string
+    }
+    expect(row).toEqual({ status: 'failed', error_kind: 'rejected' })
+    db.close()
+  })
+
+  // A signed URL is a bearer capability with a long TTL (IG_PRESIGN_TTL_SECONDS)
+  // — the tick must never write it anywhere, only the object key. Only the
+  // preflight CLI command (a later task) is allowed to print one.
+  it('never logs the presigned URL', async () => {
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const db = openDb(':memory:')
+    const channelsDir = tmpDir('brainrot-publish-nolog-url-')
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    seedConsumedSlot(db, {
+      channel: 'chan',
+      platform: 'youtube',
+      day: '2026-07-22',
+      slot: '09:00',
+      status: 'done',
+    })
+    const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
+    seedObjectKey(db, jobId, 'videos/chan/job.mp4')
+    const storeDir = tmpDir('brainrot-publish-fakestore-nolog-')
+    const now = () => new Date(2026, 6, 22, 10, 0)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now,
+      adapters: { instagram: urlResolvingAdapter() },
+      store: fakeStore(storeDir),
+    })
+    expect(result.action).toBe('published')
+    const everyLoggedString = [...log.mock.calls, ...error.mock.calls].flat().join('\n')
+    // fakeStore's presignGet shape is `fake-store://<key>?ttl=<n>` — assert
+    // neither the ttl query param nor the fake-store scheme reached a log.
+    expect(everyLoggedString).not.toContain('ttl=')
+    expect(everyLoggedString).not.toContain('fake-store://')
+    log.mockRestore()
+    error.mockRestore()
     db.close()
   })
 })

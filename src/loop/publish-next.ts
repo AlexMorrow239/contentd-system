@@ -23,6 +23,8 @@ import {
   resolvePlatformMeta,
 } from '../publish/types.js'
 import type { Platform, PublishAdapter } from '../publish/types.js'
+import { s3ConfigFromEnv, s3Store } from '../storage/s3.js'
+import type { ObjectStore } from '../storage/types.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
 
 export interface PublishTickResult {
@@ -97,6 +99,9 @@ export async function publishNextTick(
     fetchImpl?: typeof fetch
     now?: () => Date
     dryRun?: boolean
+    // Injectable for tests (a fakeStore); production leaves this undefined
+    // and resolveStore() below builds the real s3Store lazily, once per tick.
+    store?: ObjectStore
   },
 ): Promise<PublishTickResult> {
   const nowFn = opts.now ?? (() => new Date())
@@ -104,6 +109,23 @@ export async function publishNextTick(
   const adapters = Object.fromEntries(
     PUBLISH_PLATFORMS.map((p) => [p, opts.adapters?.[p] ?? ADAPTERS[p](opts.fetchImpl)]),
   ) as Record<Platform, PublishAdapter>
+
+  // Built once per tick, lazily: a channel set with no Instagram target never
+  // needs a store, and constructing one would demand S3 credentials from an
+  // otherwise-working YouTube-only deployment. A construction failure (no
+  // credentials configured) degrades to "no store available" rather than
+  // crashing the tick — it surfaces later as a legible per-video 'rejected'
+  // error only if an Instagram upload actually calls media.url().
+  let storeMemo: ObjectStore | null | undefined
+  const resolveStore = (): ObjectStore | null => {
+    if (storeMemo !== undefined) return storeMemo
+    try {
+      storeMemo = opts.store ?? s3Store(s3ConfigFromEnv())
+    } catch {
+      storeMemo = null
+    }
+    return storeMemo
+  }
 
   // Env validation comes BEFORE the lease and any candidate work: a bad value
   // blocks the whole tick either way, and nothing should be claimed or leased
@@ -196,24 +218,36 @@ export async function publishNextTick(
     let picked:
       | {
           candidate: SlotCandidate
-          video: { jobId: string; videoPath: string; metadataJson: string; topic: string }
+          video: {
+            jobId: string
+            videoPath: string
+            objectKey: string | null
+            metadataJson: string
+            topic: string
+          }
           tokenKey: Buffer
         }
       | undefined
 
     for (const candidate of ordered) {
-      // Video-file pre-flight: a pruned runs/ tree leaves a 'ready'/'published'
-      // library row pointing at nothing, and claiming it first would burn the
-      // slot plus a quota unit on an ENOENT the adapter can only report as
-      // 'rejected'. eligibleVideo returns only the TOP row, so a pruned one
-      // must be excluded and the query re-run.
+      // Video pre-flight: a candidate qualifies if the bytes are reachable at
+      // all — a local file OR a stored object. A pruned runs/ tree is now
+      // normal (the bucket is the durable copy), so requiring the local file
+      // would skip every archived video. A row with neither would burn the
+      // slot plus a quota unit on a failure the adapter can only call
+      // 'rejected', so it is still excluded and the query re-run.
       const prunedJobIds: string[] = []
-      let video: { jobId: string; videoPath: string; metadataJson: string; topic: string } | null =
-        null
+      let video: {
+        jobId: string
+        videoPath: string
+        objectKey: string | null
+        metadataJson: string
+        topic: string
+      } | null = null
       for (let scan = 0; scan < MAX_VIDEO_FILE_SCANS; scan++) {
         const row = eligibleVideo(db, candidate.channel, candidate.platform, prunedJobIds)
         if (row === null) break
-        if (existsSync(row.videoPath)) {
+        if (row.objectKey !== null || existsSync(row.videoPath)) {
           video = row
           break
         }
@@ -299,7 +333,11 @@ export async function publishNextTick(
       const credential = await adapter.resolveCredential(db, candidate.channel, pickedTokenKey, now)
       uploaded = await adapter.upload(
         {
-          media: publishMedia({ objectKey: null, localPath: video.videoPath, store: null }),
+          media: publishMedia({
+            objectKey: video.objectKey,
+            localPath: video.videoPath,
+            store: resolveStore(),
+          }),
           meta,
           options: target.options,
         },

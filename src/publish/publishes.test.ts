@@ -479,10 +479,35 @@ describe('eligibleVideo', () => {
     expect(eligibleVideo(db, 'chan-a', 'youtube')).toEqual({
       jobId: 'job-ready',
       videoPath: '/tmp/out.mp4',
+      objectKey: null,
       metadataJson: '{}',
       topic: 'ready topic',
     })
     expect(eligibleVideo(db, 'chan-c', 'youtube')).toBeNull()
+    db.close()
+  })
+
+  // library_objects is LEFT-joined, never inner-joined: a library row
+  // predating object storage has no object row and must still be selectable
+  // so it can publish to YouTube from its local file.
+  it('returns the object key when the job has one', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    db.prepare(
+      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('job-1', 'videos/chan-a/job-1.mp4', 10, 'e')",
+    ).run()
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube')?.objectKey).toBe('videos/chan-a/job-1.mp4')
+    db.close()
+  })
+
+  it('returns a null object key for a library row predating library_objects', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1')
+    seedLibrary(db, 'job-1', { state: 'ready' })
+
+    expect(eligibleVideo(db, 'chan-a', 'youtube')?.objectKey).toBeNull()
     db.close()
   })
 

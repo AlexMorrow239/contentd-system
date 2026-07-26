@@ -220,16 +220,24 @@ export function eligibleVideo(
   channel: string,
   platform: Platform,
   excludeJobIds: readonly string[] = [],
-): { jobId: string; videoPath: string; metadataJson: string; topic: string } | null {
+): {
+  jobId: string
+  videoPath: string
+  objectKey: string | null
+  metadataJson: string
+  topic: string
+} | null {
   const exclusion =
     excludeJobIds.length === 0
       ? ''
       : `AND l.job_id NOT IN (${excludeJobIds.map(() => '?').join(', ')})`
   const row = db
     .prepare(
-      `SELECT l.job_id AS jobId, l.video_path AS videoPath, l.metadata_json AS metadataJson, j.topic AS topic
+      `SELECT l.job_id AS jobId, l.video_path AS videoPath, lo.object_key AS objectKey,
+              l.metadata_json AS metadataJson, j.topic AS topic
        FROM library l
        JOIN jobs j ON j.id = l.job_id
+       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
        LEFT JOIN (
          SELECT job_id,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedCount,
@@ -248,7 +256,14 @@ export function eligibleVideo(
        LIMIT 1`,
     )
     .get(platform, channel, MAX_PUBLISH_ATTEMPTS, ...excludeJobIds) as
-    { jobId: string; videoPath: string; metadataJson: string; topic: string } | undefined
+    | {
+        jobId: string
+        videoPath: string
+        objectKey: string | null
+        metadataJson: string
+        topic: string
+      }
+    | undefined
   return row === undefined ? null : row
 }
 
