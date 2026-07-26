@@ -42,7 +42,9 @@ export function loadToken(
   key: Buffer,
 ): StoredToken | null {
   const row = db
-    .prepare('SELECT token_ciphertext, expires_at FROM oauth_tokens WHERE platform = ? AND channel = ?')
+    .prepare(
+      'SELECT token_ciphertext, expires_at FROM oauth_tokens WHERE platform = ? AND channel = ?',
+    )
     .get(platform, channel) as { token_ciphertext: Buffer; expires_at: string | null } | undefined
   if (row === undefined) return null
   try {
