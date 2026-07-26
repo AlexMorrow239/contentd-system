@@ -246,6 +246,45 @@ describe('resolvePlatformMeta — instagram normalization', () => {
     const composed = `${meta.title}\n\n${meta.description}\n\n${meta.hashtags.join(' ')}`
     expect(composed.length).toBeLessThanOrEqual(2200)
   })
+
+  // Regression (M1): the hashtag-trim loop used to measure the composed
+  // caption against the FULL, untruncated description — so a long
+  // description ate every hashtag before the description itself was ever
+  // trimmed, the opposite of the YouTube trim order this function's comment
+  // claims to mirror. A handful of short hashtags easily fit the 2200-char
+  // budget once the (much longer) description is trimmed down; they must
+  // survive, and the description — not the hashtags — absorbs the cut.
+  it('trims a long description rather than dropping hashtags that would otherwise fit', () => {
+    const hashtags = ['#a', '#b', '#c']
+    const meta = resolvePlatformMeta(
+      mapOf({ title: 't', description: 'd'.repeat(3000), hashtags }),
+      'instagram',
+      'fallback topic',
+    )
+    expect(meta.hashtags).toEqual(hashtags)
+    expect(meta.description.length).toBeLessThan(3000)
+    expect(renderCaption(meta).length).toBeLessThanOrEqual(2200)
+  })
+
+  // Regression (M1, combined-limits interaction the plan's own review flagged
+  // as missing): both bounds fire on the same input — over 30 hashtags forces
+  // the count cap, AND the description alone is long enough that the
+  // composed caption would still exceed 2200 after the count cap alone. The
+  // count-capped hashtag block (title + 30 short hashtags, no description)
+  // comfortably fits in 2200, so the description must be what gets trimmed;
+  // the hashtag count must stay at the cap, not get reduced further.
+  it('trims the description, not further hashtags, when both the count cap and the char budget are in play', () => {
+    const hashtags = Array(40).fill('#tag')
+    const meta = resolvePlatformMeta(
+      mapOf({ title: 't', description: 'd'.repeat(3000), hashtags }),
+      'instagram',
+      'fallback topic',
+    )
+    expect(meta.hashtags.length).toBe(30)
+    expect(meta.description.length).toBeGreaterThan(0)
+    expect(meta.description.length).toBeLessThan(3000)
+    expect(renderCaption(meta).length).toBeLessThanOrEqual(2200)
+  })
 })
 
 describe('renderCaption', () => {

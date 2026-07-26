@@ -102,11 +102,16 @@ function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
   const hashtags = meta.hashtags
     .filter((h) => h !== '' && !/\s/.test(h))
     .slice(0, INSTAGRAM_MAX_HASHTAGS)
-  // Trim the composed caption from the tail: drop hashtags first (least
-  // load-bearing), then the description, mirroring the YouTube trim order.
+  // Mirror the YouTube trim order: the description is the least load-bearing
+  // part and gets trimmed first (below, via `room`), not the hashtags. This
+  // loop only pops hashtags from the tail when the hashtag block ALONE —
+  // title + hashtags, description entirely absent — still can't fit; it must
+  // not measure against the untruncated meta.description, or a long
+  // description would eat every hashtag before the description itself is
+  // ever trimmed.
   while (
     hashtags.length > 0 &&
-    renderCaption({ ...meta, title, hashtags }).length > INSTAGRAM_CAPTION_MAX_CHARS
+    renderCaption({ title, description: '', hashtags }).length > INSTAGRAM_CAPTION_MAX_CHARS
   ) {
     hashtags.pop()
   }
