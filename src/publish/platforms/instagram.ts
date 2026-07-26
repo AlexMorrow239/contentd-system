@@ -1,7 +1,9 @@
 import { readFileSync } from 'node:fs'
+import type { Database } from 'better-sqlite3'
 import { renderCaption } from '../platform-meta.js'
+import { loadToken, upsertToken } from '../tokens.js'
 import { PublishError, PublishOutcomeUnknownError } from '../types.js'
-import type { PlatformMeta } from '../types.js'
+import type { PlatformMeta, PublishAdapter } from '../types.js'
 import type { InstagramOptions } from './options.js'
 
 export const IG_GRAPH_VERSION = 'v21.0'
@@ -294,5 +296,70 @@ export function instagramUploadTarget(
       const url = await fetchPermalink({ mediaId, token, fetchImpl })
       return { postId: mediaId, url }
     },
+  }
+}
+
+// Meta's long-lived-token refresh needs only the current valid token — no
+// app id/secret — unlike the initial grant (runInstagramAuthFlow). Any
+// failure here — network or HTTP — is caught and remapped to a single
+// PublishError('auth') by resolveCredential below (design spec §5): the
+// distinction between "network blip" and "token actually dead" does not
+// change what the operator does next.
+export async function refreshLongLivedToken(opts: {
+  token: string
+  fetchImpl: typeof fetch
+}): Promise<{ token: string; expiresAt: string }> {
+  const url = new URL(`https://graph.facebook.com/${IG_GRAPH_VERSION}/refresh_access_token`)
+  url.searchParams.set('grant_type', 'ig_refresh_token')
+  url.searchParams.set('access_token', opts.token)
+  const res = await opts.fetchImpl(url.toString(), { signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS) })
+  if (!res.ok) {
+    const raw = await res.text().catch(() => '')
+    throw new Error(`refresh_access_token responded ${res.status}: ${raw}`)
+  }
+  const body = (await res.json()) as { access_token?: string; expires_in?: number }
+  if (!body.access_token || !body.expires_in) {
+    throw new Error('refresh_access_token response missing access_token/expires_in')
+  }
+  return {
+    token: body.access_token,
+    expiresAt: new Date(Date.now() + body.expires_in * 1000).toISOString(),
+  }
+}
+
+// Wraps instagramUploadTarget behind the PublishAdapter seam. Credential
+// resolution is the piece unique to Instagram's token model: a long-lived
+// token that IS the access token (no separate mint step), refreshed in place
+// when within IG_TOKEN_REFRESH_WINDOW_MS of expiring (design spec decision 5).
+export function instagramAdapter(fetchImpl: typeof fetch = fetch): PublishAdapter<InstagramOptions> {
+  const target = instagramUploadTarget(fetchImpl)
+  return {
+    platformId: 'instagram',
+    quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: igUploadsPerDayCap },
+    hasCredential(db: Database, channel: string, key: Buffer): boolean {
+      return loadToken(db, 'instagram', channel, key) !== null
+    },
+    async resolveCredential(db: Database, channel: string, key: Buffer, now: Date): Promise<string> {
+      const stored = loadToken(db, 'instagram', channel, key)
+      if (stored === null) {
+        throw new PublishError('instagramAdapter: no stored token for this channel', 'auth')
+      }
+      if (stored.expiresAt !== null) {
+        const msUntilExpiry = new Date(stored.expiresAt).getTime() - now.getTime()
+        if (msUntilExpiry <= IG_TOKEN_REFRESH_WINDOW_MS) {
+          let refreshed: { token: string; expiresAt: string }
+          try {
+            refreshed = await refreshLongLivedToken({ token: stored.token, fetchImpl })
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            throw new PublishError(`instagramAdapter: token refresh failed: ${message}`, 'auth')
+          }
+          upsertToken(db, 'instagram', channel, refreshed.token, 'instagram_content_publish', key, refreshed.expiresAt)
+          return refreshed.token
+        }
+      }
+      return stored.token
+    },
+    upload: target.upload,
   }
 }
