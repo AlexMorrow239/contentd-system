@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { PublishRow } from '../../publish/publishes.js'
 import { cellKey } from '../queries/publishes.js'
+import type { PlatformQuotaView } from './publishes.js'
 import { renderPublishesPage } from './publishes.js'
+
+const YOUTUBE_QUOTA: PlatformQuotaView = { platform: 'youtube', scope: 'global', cap: 6, used: 2 }
 
 function row(overrides: Partial<PublishRow> = {}): PublishRow {
   return {
@@ -34,8 +37,7 @@ function pageData(cells: Map<string, PublishRow>) {
       },
     ],
     days: 1,
-    quotaUsed: 2,
-    quotaCap: 6,
+    quotas: [YOUTUBE_QUOTA],
     dbChoice: 'prod' as const,
   }
 }
@@ -109,8 +111,7 @@ describe('renderPublishesPage', () => {
         },
       ],
       days: 1,
-      quotaUsed: 0,
-      quotaCap: 6,
+      quotas: [{ platform: 'youtube', scope: 'global', cap: 6, used: 0 }] as PlatformQuotaView[],
       dbChoice: 'prod' as const,
     }
     const out = renderPublishesPage(data).value
@@ -137,10 +138,44 @@ describe('renderPublishesPage', () => {
     const out = renderPublishesPage({
       grids: [],
       days: 7,
-      quotaUsed: 0,
-      quotaCap: 6,
+      quotas: [{ platform: 'youtube', scope: 'global', cap: 6, used: 0 }],
       dbChoice: 'prod',
     }).value
     expect(out).toContain('no channel has a [publish] schedule')
+  })
+
+  it('reports a channel-scoped quota as a per-channel breakdown, not a summed total', () => {
+    const data = {
+      ...pageData(new Map()),
+      quotas: [
+        YOUTUBE_QUOTA,
+        {
+          platform: 'instagram',
+          scope: 'channel',
+          cap: 25,
+          perChannel: [
+            { channel: 'space', used: 5 },
+            { channel: 'history', used: 25 },
+          ],
+        },
+      ] as PlatformQuotaView[],
+    }
+    const out = renderPublishesPage(data).value
+    expect(out).toContain('space: 5 / 25')
+    expect(out).toContain('history: 25 / 25')
+    // Not summed: 5 + 25 = 30 must never appear as a combined "used" figure.
+    expect(out).not.toContain('30 / 25')
+  })
+
+  it('says so when no channel has a channel-scoped platform configured', () => {
+    const data = {
+      ...pageData(new Map()),
+      quotas: [
+        YOUTUBE_QUOTA,
+        { platform: 'instagram', scope: 'channel', cap: 25, perChannel: [] },
+      ] as PlatformQuotaView[],
+    }
+    const out = renderPublishesPage(data).value
+    expect(out).toContain('instagram: no channel has a [publish.instagram] target configured')
   })
 })

@@ -6,8 +6,11 @@ import { Hono } from 'hono'
 import { openDbReadonly } from '../db/index.js'
 import type { LibraryState } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
+import type { ChannelConfig } from '../config/channel.js'
 import { uploadsUsedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/slots.js'
+import { PUBLISH_PLATFORMS } from '../publish/types.js'
+import { ADAPTERS } from '../publish/platforms/index.js'
 import { ytUploadsPerDayCap } from '../publish/platforms/youtube.js'
 import type { DashboardConfig, DbChoice } from './config.js'
 import { resolveDbChoice } from './config.js'
@@ -31,6 +34,7 @@ import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 import { renderOverviewPage } from './views/overview.js'
 import { renderPublishesPage } from './views/publishes.js'
+import type { PlatformQuotaView } from './views/publishes.js'
 import { renderTopicsPage } from './views/topics.js'
 
 export interface DashboardVars {
@@ -256,8 +260,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         body: renderPublishesPage({
           grids: buildPublishGrids(db, channels, days, now),
           days,
-          quotaUsed: uploadsUsedToday(db, 'youtube', localDay(now)),
-          quotaCap: ytUploadsPerDayCap(),
+          quotas: buildPlatformQuotas(db, channels, localDay(now)),
           dbChoice,
           configError: error,
         }),
@@ -327,6 +330,43 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   })
 
   return app
+}
+
+/**
+ * Reuses the same adapter quota descriptors the publish loop enforces
+ * against (ADAPTERS[platform]().quota — publish-next.ts's own quota gate
+ * reads this identical `{scope, envVar, cap()}` shape) rather than a
+ * mirrored copy that could silently drift. 'global' (YouTube: one shared
+ * Google Cloud project quota) reports one all-channels figure; 'channel'
+ * (Instagram: one IG account per channel) has no single meaningful "used"
+ * total to sum against the single per-channel `cap`, so it reports a
+ * per-channel breakdown instead — summing usage across channels against a
+ * cap that applies separately to EACH channel would misreport how much
+ * headroom any one channel actually has left.
+ */
+function buildPlatformQuotas(
+  db: Database,
+  channels: ChannelConfig[],
+  day: string,
+): PlatformQuotaView[] {
+  return PUBLISH_PLATFORMS.map((platform) => {
+    const { quota } = ADAPTERS[platform]()
+    if (quota.scope === 'global') {
+      return {
+        platform,
+        scope: 'global',
+        cap: quota.cap(),
+        used: uploadsUsedToday(db, platform, day),
+      }
+    }
+    const perChannel = channels
+      .filter((channel) => channel.publish?.targets.some((t) => t.platform === platform) === true)
+      .map((channel) => ({
+        channel: channel.name,
+        used: uploadsUsedToday(db, platform, day, channel.name),
+      }))
+    return { platform, scope: 'channel', cap: quota.cap(), perChannel }
+  })
 }
 
 /**

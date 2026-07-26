@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../db/index.js'
+import { localDay } from '../publish/slots.js'
 import type { DashboardConfig } from './config.js'
 import { createApp } from './server.js'
 
@@ -128,7 +129,74 @@ describe('/publishes', () => {
     const res = await createApp({ config }).request('/publishes')
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('0 / 3 uploads used today')
+    expect(body).toContain('youtube: 0 / 3 uploads used today')
+  })
+
+  it('says so when no channel has an instagram target configured', async () => {
+    const config = seededConfig() // channelsDir has no files at all
+    mkdirSync(config.channelsDir, { recursive: true })
+    const res = await createApp({ config }).request('/publishes')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('instagram: no channel has a [publish.instagram] target configured')
+  })
+
+  it('reports instagram quota per channel — same cap, independent usage — instead of one summed figure', async () => {
+    // Instagram's quota is channel-scoped (one IG account per channel, all
+    // capped at the same BRAINROT_IG_UPLOADS_PER_DAY): a channel with its
+    // own [publish.instagram] table must get its own line, and one
+    // channel's usage must never be added into another's.
+    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '4')
+    const config = seededConfig()
+    mkdirSync(config.channelsDir, { recursive: true })
+    writeFileSync(
+      join(config.channelsDir, 'space.toml'),
+      [
+        'name = "space"',
+        'niche = ["space facts"]',
+        'script_model = "claude-sonnet-5"',
+        'bg_dir = "assets/bg"',
+        'bgm_dir = "assets/bgm"',
+        'videos_per_day = 1',
+        '',
+        '[voice]',
+        'volume = "af_heart"',
+        '',
+        '[caption_style]',
+        'font = "Inter"',
+        'font_size_px = 72',
+        'active_color = "#FFD700"',
+        'inactive_color = "#FFFFFF"',
+        'stroke_px = 8',
+        '',
+        '[budget]',
+        'per_video_usd = 8.0',
+        'per_day_usd = 20.0',
+        '',
+        '[publish]',
+        'slots = ["10:00"]',
+        '',
+        '[publish.instagram]',
+        'ig_user_id = "1"',
+        '',
+      ].join('\n'),
+    )
+    const now = new Date()
+    const today = localDay(now)
+    const db = openDb(config.dbPaths.prod)
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
+    ).run()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
+        "VALUES ('j1','instagram','space',?,'10:00','done',1)",
+    ).run(today)
+    db.close()
+
+    const res = await createApp({ config, now: () => now }).request('/publishes')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('space: 1 / 4')
   })
 })
 
