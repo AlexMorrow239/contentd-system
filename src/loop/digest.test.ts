@@ -158,11 +158,13 @@ function publishChannel(name: string, overrides: { slots?: string[] } = {}) {
   return testChannel({
     name,
     publish: {
-      slots: overrides.slots ?? ['10:00'],
-      platforms: ['youtube'],
-      privacy: 'public',
-      categoryId: 24,
-      madeForKids: false,
+      targets: [
+        {
+          platform: 'youtube',
+          slots: overrides.slots ?? ['10:00'],
+          options: { privacy: 'public', categoryId: 24, madeForKids: false },
+        },
+      ],
     },
   })
 }
@@ -432,7 +434,7 @@ describe('buildDigest — publishing action items', () => {
     })
     const digest = buildDigest(db, [])
     expect(digest).toContain(
-      '  chan-a: 2 auth failures in the last 24h — run brainrot auth youtube --channel chan-a',
+      '  chan-a youtube: 2 auth failures in the last 24h — run brainrot auth youtube --channel chan-a',
     )
     db.close()
   })
@@ -455,7 +457,7 @@ describe('buildDigest — publishing action items', () => {
     })
     const digest = buildDigest(db, [])
     expect(digest).toContain(
-      "  chan-a: 2 quota failures in the last 24h — YouTube refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the project's real quota",
+      '  chan-a youtube: 2 quota failures in the last 24h — the platform refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the real quota',
     )
     db.close()
   })
@@ -471,7 +473,7 @@ describe('buildDigest — publishing action items', () => {
     })
     const digest = buildDigest(db, [])
     expect(digest).toContain(
-      '  interrupted publish j-int (chan-a, 19:00) — check YouTube Studio, then brainrot publish retry j-int or brainrot publish mark-done j-int <postId>',
+      '  interrupted publish j-int (chan-a, youtube, 19:00) — check YouTube Studio, then brainrot publish retry j-int or brainrot publish mark-done j-int <postId>',
     )
     db.close()
   })
@@ -543,11 +545,13 @@ describe('buildDigest — ready-backlog in the Publishing section', () => {
     const chA = testChannel({
       name: 'chan-a',
       publish: {
-        slots: ['10:00'],
-        platforms: ['youtube'],
-        privacy: 'public',
-        categoryId: 24,
-        madeForKids: false,
+        targets: [
+          {
+            platform: 'youtube',
+            slots: ['10:00'],
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
       },
     })
     const chB = testChannel({ name: 'chan-b', publish: null })
@@ -590,11 +594,13 @@ describe('buildDigest — lapsed-slots action item', () => {
     const chA = testChannel({
       name: 'chan-a',
       publish: {
-        slots: ['09:00', '14:00', '19:00'],
-        platforms: ['youtube'],
-        privacy: 'public',
-        categoryId: 24,
-        madeForKids: false,
+        targets: [
+          {
+            platform: 'youtube',
+            slots: ['09:00', '14:00', '19:00'],
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
       },
     })
     seedJob(db, { id: 'j-yday', channel: 'chan-a' })
@@ -813,6 +819,54 @@ describe('buildDigest — publish token health', () => {
   })
 })
 
+describe('buildDigest — token expiry warning', () => {
+  // buildDigest reads its own clock (new Date()), so these seed expiries
+  // relative to Date.now() rather than an injected `now`.
+  function instagramChannel(name: string) {
+    return testChannel({
+      name,
+      publish: {
+        targets: [
+          {
+            platform: 'instagram',
+            slots: ['10:00'],
+            options: { igUserId: 'ig-1', shareToFeed: true },
+          },
+        ],
+      },
+    })
+  }
+
+  it('warns when a stored token expires within the 3-day window', () => {
+    const db = openDb(':memory:')
+    const channel = instagramChannel('chan-a')
+    const soonExpiry = new Date(Date.now() + 2 * DAY_MS).toISOString()
+    upsertToken(db, 'instagram', 'chan-a', 'tok', 'scope', TEST_KEY, soonExpiry)
+    const digest = buildDigest(db, [channel], ENV_OK)
+    expect(digest).toContain(`  chan-a instagram: stored token expires ${soonExpiry}`)
+    db.close()
+  })
+
+  it('does not warn when expiry is far out', () => {
+    const db = openDb(':memory:')
+    const channel = instagramChannel('chan-a')
+    const farExpiry = new Date(Date.now() + 30 * DAY_MS).toISOString()
+    upsertToken(db, 'instagram', 'chan-a', 'tok', 'scope', TEST_KEY, farExpiry)
+    const digest = buildDigest(db, [channel], ENV_OK)
+    expect(digest).not.toContain('stored token expires')
+    db.close()
+  })
+
+  it('never warns for a null expiry (youtube)', () => {
+    const db = openDb(':memory:')
+    const channel = publishChannel('chan-a')
+    upsertToken(db, 'youtube', 'chan-a', 'rt', 'scope', TEST_KEY)
+    const digest = buildDigest(db, [channel], ENV_OK)
+    expect(digest).not.toContain('stored token expires')
+    db.close()
+  })
+})
+
 describe('buildDigest — ready videos whose file is gone', () => {
   it('flags a ready library row whose video_path no longer exists', () => {
     const db = openDb(':memory:')
@@ -820,7 +874,7 @@ describe('buildDigest — ready videos whose file is gone', () => {
     seedLibraryPath(db, 'j-gone', '/nonexistent/runs/j-gone/final.mp4')
     const digest = buildDigest(db, [], ENV_OK)
     expect(digest).toContain(
-      '  ready job j-gone (chan-a) has no video file at /nonexistent/runs/j-gone/final.mp4 — run brainrot library reject j-gone',
+      '  job j-gone (chan-a) has no video file at /nonexistent/runs/j-gone/final.mp4 — run brainrot library reject j-gone',
     )
     db.close()
   })
@@ -834,14 +888,30 @@ describe('buildDigest — ready videos whose file is gone', () => {
     db.close()
   })
 
-  it('ignores non-ready library rows with missing files', () => {
+  it('ignores needs-review library rows with missing files', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-review', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-review', '/nonexistent/final.mp4', '{}', 'needs-review')",
+    ).run()
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).not.toContain('j-review')
+    db.close()
+  })
+
+  // A row already 'published' on one target can still be eligible for
+  // another target (multi-platform publishing) — its file has to exist
+  // just as much as a plain 'ready' row's does.
+  it('flags a published library row whose video_path no longer exists', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'j-published', channel: 'chan-a' })
     db.prepare(
       "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-published', '/nonexistent/final.mp4', '{}', 'published')",
     ).run()
     const digest = buildDigest(db, [], ENV_OK)
-    expect(digest).not.toContain('j-published')
+    expect(digest).toContain(
+      '  job j-published (chan-a) has no video file at /nonexistent/final.mp4 — run brainrot library reject j-published',
+    )
     db.close()
   })
 })

@@ -5,7 +5,7 @@ import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } fro
 import { parseTokenKey } from '../publish/crypto.js'
 import { consumedSlots, MAX_PUBLISH_ATTEMPTS } from '../publish/publishes.js'
 import { localDay } from '../publish/slots.js'
-import { loadRefreshToken } from '../publish/tokens.js'
+import { loadToken } from '../publish/tokens.js'
 import { resolvePlatformMeta } from '../publish/types.js'
 import type { Platform } from '../publish/types.js'
 
@@ -352,31 +352,35 @@ export function buildDigest(
   // spam identical suggestions.
   const authFailures = db
     .prepare(
-      `SELECT channel, COUNT(*) AS n FROM publishes
+      `SELECT channel, platform, COUNT(*) AS n FROM publishes
        WHERE status = 'failed' AND error_kind = 'auth'
          AND datetime(created_at) >= datetime('now', '-1 day')
-       GROUP BY channel ORDER BY channel`,
+       GROUP BY channel, platform ORDER BY channel, platform`,
     )
-    .all() as { channel: string; n: number }[]
+    .all() as { channel: string; platform: Platform; n: number }[]
   for (const r of authFailures) {
     lines.push(
-      `  ${r.channel}: ${r.n} auth failures in the last 24h — run brainrot auth youtube --channel ${r.channel}`,
+      `  ${r.channel} ${r.platform}: ${r.n} auth failures in the last 24h — run brainrot auth ${r.platform} --channel ${r.channel}`,
     )
   }
-  // Quota failures mean the BRAINROT_YT_UPLOADS_PER_DAY estimate and
-  // YouTube's real project quota disagree (spec §5: "cap vs reality
-  // drift") — a distinct line per channel, mirroring the auth hint.
+  // Quota failures mean the per-platform daily-cap env estimate and the
+  // platform's real quota disagree (spec §5: "cap vs reality drift") — a
+  // distinct line per channel+platform, mirroring the auth hint.
+  const QUOTA_CAP_ENV: Record<Platform, string> = {
+    youtube: 'BRAINROT_YT_UPLOADS_PER_DAY',
+    instagram: 'BRAINROT_IG_UPLOADS_PER_DAY',
+  }
   const quotaFailures = db
     .prepare(
-      `SELECT channel, COUNT(*) AS n FROM publishes
+      `SELECT channel, platform, COUNT(*) AS n FROM publishes
        WHERE status = 'failed' AND error_kind = 'quota'
          AND datetime(created_at) >= datetime('now', '-1 day')
-       GROUP BY channel ORDER BY channel`,
+       GROUP BY channel, platform ORDER BY channel, platform`,
     )
-    .all() as { channel: string; n: number }[]
+    .all() as { channel: string; platform: Platform; n: number }[]
   for (const r of quotaFailures) {
     lines.push(
-      `  ${r.channel}: ${r.n} quota failures in the last 24h — YouTube refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the project's real quota`,
+      `  ${r.channel} ${r.platform}: ${r.n} quota failures in the last 24h — the platform refused the upload; check ${QUOTA_CAP_ENV[r.platform]} against the real quota`,
     )
   }
   // Token health per publish-enabled channel. A missing grant, a rotated
@@ -385,6 +389,10 @@ export function buildDigest(
   // above (which counts failed rows) can never fire, and the only other
   // signal is a lapsed slot a full day later with no cause named. Names
   // only: neither key nor token bytes are ever read into a line here.
+  // A stored token nearing expiry without auto-refresh keeping ahead of it
+  // (design spec decision 5) is the digest's own signal that resolveCredential
+  // has been failing tick after tick, not a one-off blip.
+  const TOKEN_EXPIRY_WARNING_MS = 3 * 24 * 60 * 60 * 1000 // 3 days
   if (channels.some((c) => c.publish !== null)) {
     const unsetVars: string[] = []
     if (!digestEnv.ytClientIdPresent) unsetVars.push('YT_CLIENT_ID')
@@ -413,7 +421,8 @@ export function buildDigest(
     )
     for (const channel of channels) {
       if (channel.publish === null) continue
-      for (const platform of channel.publish.platforms) {
+      for (const target of channel.publish.targets) {
+        const platform = target.platform
         const remedy = `run brainrot auth ${platform} --channel ${channel.name}`
         if (tokenRow.get(platform, channel.name) === undefined) {
           lines.push(`  ${channel.name} ${platform}: no stored token — ${remedy}`)
@@ -422,9 +431,19 @@ export function buildDigest(
         // With no usable key the decrypt cannot be attempted; the unset /
         // malformed line above already names that cause.
         if (tokenKey === undefined) continue
-        if (loadRefreshToken(db, platform, channel.name, tokenKey) === null) {
+        const stored = loadToken(db, platform, channel.name, tokenKey)
+        if (stored === null) {
           lines.push(
             `  ${channel.name} ${platform}: the stored token does not decrypt with the current BRAINROT_TOKEN_KEY — ${remedy}`,
+          )
+          continue
+        }
+        if (
+          stored.expiresAt !== null &&
+          new Date(stored.expiresAt).getTime() - now.getTime() <= TOKEN_EXPIRY_WARNING_MS
+        ) {
+          lines.push(
+            `  ${channel.name} ${platform}: stored token expires ${stored.expiresAt} and auto-refresh is not keeping ahead of it — ${remedy}`,
           )
         }
       }
@@ -434,12 +453,16 @@ export function buildDigest(
   // interrupted upload sits until the operator checks Studio, however old.
   const interruptedRows = db
     .prepare(
-      "SELECT job_id AS jobId, channel, slot FROM publishes WHERE status = 'interrupted' ORDER BY created_at ASC",
+      "SELECT job_id AS jobId, channel, platform, slot FROM publishes WHERE status = 'interrupted' ORDER BY created_at ASC",
     )
-    .all() as { jobId: string; channel: string; slot: string }[]
+    .all() as { jobId: string; channel: string; platform: Platform; slot: string }[]
+  const STUDIO_HINT: Record<Platform, string> = {
+    youtube: 'check YouTube Studio',
+    instagram: 'check the Instagram app',
+  }
   for (const r of interruptedRows) {
     lines.push(
-      `  interrupted publish ${r.jobId} (${r.channel}, ${r.slot}) — check YouTube Studio, then brainrot publish retry ${r.jobId} or brainrot publish mark-done ${r.jobId} <postId>`,
+      `  interrupted publish ${r.jobId} (${r.channel}, ${r.platform}, ${r.slot}) — ${STUDIO_HINT[r.platform]}, then brainrot publish retry ${r.jobId} or brainrot publish mark-done ${r.jobId} <postId>`,
     )
   }
   // Only 'rejected' failures count toward the cap (decision 8) — auth/
@@ -449,7 +472,7 @@ export function buildDigest(
     .prepare(
       `SELECT p.job_id AS jobId, p.channel AS channel, COUNT(*) AS n
        FROM publishes p JOIN library l ON l.job_id = p.job_id
-       WHERE p.status = 'failed' AND p.error_kind = 'rejected' AND l.state = 'ready'
+       WHERE p.status = 'failed' AND p.error_kind = 'rejected' AND l.state IN ('ready', 'published')
        GROUP BY p.job_id, p.channel
        HAVING COUNT(*) >= ?
        ORDER BY p.job_id`,
@@ -468,13 +491,13 @@ export function buildDigest(
     .prepare(
       `SELECT l.job_id AS jobId, j.channel AS channel, l.video_path AS videoPath
        FROM library l JOIN jobs j ON j.id = l.job_id
-       WHERE l.state = 'ready' ORDER BY l.job_id`,
+       WHERE l.state IN ('ready', 'published') ORDER BY l.job_id`,
     )
     .all() as { jobId: string; channel: string; videoPath: string }[]
   for (const r of readyVideos) {
     if (existsSync(r.videoPath)) continue
     lines.push(
-      `  ready job ${r.jobId} (${r.channel}) has no video file at ${r.videoPath} — run brainrot library reject ${r.jobId}`,
+      `  job ${r.jobId} (${r.channel}) has no video file at ${r.videoPath} — run brainrot library reject ${r.jobId}`,
     )
   }
   // Local-time slot bookkeeping (decision 13): "yesterday" is the local
@@ -485,12 +508,12 @@ export function buildDigest(
   const yesterday = localDay(yesterdayDate)
   for (const channel of channels) {
     if (channel.publish === null) continue
-    for (const platform of channel.publish.platforms) {
-      const consumed = consumedSlots(db, channel.name, platform, yesterday)
-      const lapsed = channel.publish.slots.filter((slot) => !consumed.has(slot))
+    for (const target of channel.publish.targets) {
+      const consumed = consumedSlots(db, channel.name, target.platform, yesterday)
+      const lapsed = target.slots.filter((slot) => !consumed.has(slot))
       if (lapsed.length > 0) {
         lines.push(
-          `  ${channel.name} ${platform}: slots ${lapsed.join(', ')} lapsed unfilled yesterday (${yesterday})`,
+          `  ${channel.name} ${target.platform}: slots ${lapsed.join(', ')} lapsed unfilled yesterday (${yesterday})`,
         )
       }
     }
