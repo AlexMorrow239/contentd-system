@@ -1,6 +1,6 @@
 import type { TopicRow, TopicStatus } from '../../scout/topics.js'
 import type { DbChoice } from '../config.js'
-import { html, SafeHtml } from '../html.js'
+import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import { formatTime } from './jobs.js'
 import { dbHref } from './layout.js'
 
@@ -62,7 +62,14 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
             : html`<a href="${dbHref(`/jobs/${topic.jobId}`, data.dbChoice)}">${topic.jobId}</a>`
         }
       </td>
-      <td><a href="${topic.url}" rel="noreferrer">${topic.source}</a></td>
+      <td>
+        ${(() => {
+          const safeUrl = httpUrlOrNull(topic.url)
+          return safeUrl === null
+            ? html`<span class="warning" title="blocked unsafe link scheme">${topic.source}</span>`
+            : html`<a href="${safeUrl}" rel="noreferrer">${topic.source}</a>`
+        })()}
+      </td>
       <td class="muted">${topic.reason}</td>
       <td>${formatTime(topic.createdAt)}</td>
     </tr>`,

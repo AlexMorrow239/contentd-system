@@ -99,6 +99,18 @@ describe('renderTopicsPage', () => {
     expect(out).toContain('&quot;onmouseover=')
   })
 
+  it('blocks a javascript: url instead of linking it', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ url: 'javascript:alert(1)', source: 'reddit:r/space' })],
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).not.toContain('href="javascript:alert(1)"')
+    expect(out).not.toContain('<a href="javascript:')
+    expect(out).toContain('reddit:r/space')
+  })
+
   it('reports an empty queue plainly', () => {
     const out = renderTopicsPage({
       topics: [],
