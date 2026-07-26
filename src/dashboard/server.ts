@@ -15,6 +15,7 @@ import { html } from './html.js'
 import { findLibraryVideoPath, libraryChannels, listLibraryEntries } from './queries/library.js'
 import { getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
+import { buildOverview } from './queries/overview.js'
 import { buildPublishGrids } from './queries/publishes.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
@@ -22,6 +23,7 @@ import { parseRange, resolveVideoPath } from './video.js'
 import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
+import { renderOverviewPage } from './views/overview.js'
 import { renderPublishesPage } from './views/publishes.js'
 import { renderTopicsPage, topicChannels } from './views/topics.js'
 
@@ -71,6 +73,23 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     } finally {
       db.close()
     }
+  })
+
+  app.get('/', (c) => {
+    const db = c.get('db')
+    const dbChoice = c.get('dbChoice')
+    const now = deps.now?.() ?? new Date()
+    const { channels, error } = tryLoadChannelsDir(deps.config.channelsDir)
+
+    return c.html(
+      layout({
+        title: 'overview',
+        dbChoice,
+        activeNav: 'overview',
+        refreshSeconds: 30,
+        body: renderOverviewPage(buildOverview(db, channels, now, ytUploadsPerDayCap()), dbChoice, error),
+      }),
+    )
   })
 
   app.get('/jobs', (c) => {

@@ -159,3 +159,13 @@ describe('video streaming', () => {
     expect(res.status).toBe(403)
   })
 })
+
+describe('/', () => {
+  it('renders the overview with an auto-refresh', async () => {
+    const res = await createApp({ config: seededConfig() }).request('/')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('<meta http-equiv="refresh" content="30">')
+    expect(body).toContain('overview')
+  })
+})
