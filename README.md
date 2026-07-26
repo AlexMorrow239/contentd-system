@@ -240,8 +240,8 @@ The production loop is four commands, scheduled inside the container by
 supercronic — there is no host cron and no launchd agent anymore. `scout`
 fills the topic queue, `produce-next` performs one unit of work per tick
 (resume one blocked job or produce one video), `publish-next` uploads one
-`ready` video per tick into its channel's next due slot per declared platform
-(see Publishing above), and `digest` prints a daily report.
+`ready` video per tick into the next due slot among all channels' declared
+platforms (see Publishing above), and `digest` prints a daily report.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
