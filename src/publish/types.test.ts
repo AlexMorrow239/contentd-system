@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { PUBLISH_PLATFORMS, PublishError, PublishOutcomeUnknownError, resolvePlatformMeta } from './types.js'
+import {
+  PUBLISH_PLATFORMS,
+  PublishError,
+  PublishOutcomeUnknownError,
+  resolvePlatformMeta,
+} from './types.js'
 import type { PublishErrorKind } from './types.js'
 import { renderCaption, renderTags, TAGS_MAX_CHARS, tagsPayloadLength } from './platform-meta.js'
 
@@ -221,6 +226,25 @@ describe('resolvePlatformMeta — instagram normalization', () => {
       'fallback topic',
     )
     expect(meta.title).toHaveLength(100)
+  })
+
+  // Regression: the hashtag-trim loop used to measure the composed caption
+  // against the RAW (un-normalized) title, which overestimates the length
+  // and drops hashtags that fit comfortably once the title is normalized
+  // down to 100 chars. With a 200-char title and a description sized so the
+  // composed caption only clears 2200 chars once the title shrinks, all
+  // hashtags should survive.
+  it('normalizes the title before measuring the caption for hashtag trimming', () => {
+    const hashtags = ['#one', '#two', '#three', '#four', '#five']
+    const meta = resolvePlatformMeta(
+      mapOf({ title: 'T'.repeat(200), description: 'd'.repeat(1980), hashtags }),
+      'instagram',
+      'fallback topic',
+    )
+    expect(meta.title).toHaveLength(100)
+    expect(meta.hashtags).toEqual(hashtags)
+    const composed = `${meta.title}\n\n${meta.description}\n\n${meta.hashtags.join(' ')}`
+    expect(composed.length).toBeLessThanOrEqual(2200)
   })
 })
 

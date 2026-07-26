@@ -94,6 +94,11 @@ function normalizeForYoutube(meta: PlatformMeta): PlatformMeta {
 }
 
 function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
+  // Normalize the title BEFORE the trim loop below: normalizeTitle only ever
+  // shrinks, so trimming hashtags against the raw (longer) title would
+  // overestimate the composed length and drop hashtags that fit once the
+  // title is actually normalized.
+  const title = normalizeTitle(meta.title)
   const hashtags = meta.hashtags
     .filter((h) => h !== '' && !/\s/.test(h))
     .slice(0, INSTAGRAM_MAX_HASHTAGS)
@@ -101,11 +106,10 @@ function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
   // load-bearing), then the description, mirroring the YouTube trim order.
   while (
     hashtags.length > 0 &&
-    renderCaption({ ...meta, hashtags }).length > INSTAGRAM_CAPTION_MAX_CHARS
+    renderCaption({ ...meta, title, hashtags }).length > INSTAGRAM_CAPTION_MAX_CHARS
   ) {
     hashtags.pop()
   }
-  const title = normalizeTitle(meta.title)
   const fixedLength = renderCaption({ title, description: '', hashtags }).length
   const room = Math.max(0, INSTAGRAM_CAPTION_MAX_CHARS - fixedLength)
   return { title, description: meta.description.slice(0, room), hashtags }
