@@ -45,7 +45,10 @@ function row<T>(db: Database, sql: string, ...params: unknown[]): T {
 
 // Fake happy-path stages: script writes script.json, assemble writes final.mp4,
 // qc writes qc.json with the given pass flag, others drop a marker.
-function buildStages(calls: StageName[], opts: { qcPassed: boolean } = { qcPassed: true }): StageDef[] {
+function buildStages(
+  calls: StageName[],
+  opts: { qcPassed: boolean } = { qcPassed: true },
+): StageDef[] {
   return STAGE_ORDER.map((name) => ({
     name,
     async run(ctx: JobContext) {
@@ -271,8 +274,7 @@ describe('runJob', () => {
       async run(ctx: JobContext) {
         const dir = join(runsRoot, jobId, name)
         seen[`${name}:before`] = existsSync(dir)
-        const file =
-          name === 'qc' ? 'qc.json' : name === 'assemble' ? 'final.mp4' : `${name}.txt`
+        const file = name === 'qc' ? 'qc.json' : name === 'assemble' ? 'final.mp4' : `${name}.txt`
         const p = ctx.artifactPath(name, file)
         seen[`${name}:after`] = existsSync(dir)
         writeFileSync(p, name === 'qc' ? JSON.stringify({ passed: true, checks: [] }) : 'x')
@@ -321,9 +323,9 @@ describe('runJob', () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
     const root = dirname(runsRoot)
-    await expect(
-      runJob(db, channel, '../outside', buildStages([]), { runsRoot }),
-    ).rejects.toThrow(/invalid job id/)
+    await expect(runJob(db, channel, '../outside', buildStages([]), { runsRoot })).rejects.toThrow(
+      /invalid job id/,
+    )
     // The traversal target join(runsRoot, '../outside') === join(root, 'outside').
     expect(existsSync(join(root, 'outside'))).toBe(false)
   })

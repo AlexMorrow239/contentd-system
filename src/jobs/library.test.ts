@@ -60,11 +60,11 @@ describe('listLibrary', () => {
     seedLibrary(db, seedJob(db, { id: 'j-old', topic: 'old topic' }), {
       createdAt: '2026-07-19T00:00:00.000Z',
     })
-    seedLibrary(
-      db,
-      seedJob(db, { id: 'j-new', channel: 'chan-b', topic: 'deep sea trivia' }),
-      { videoPath: 'runs/j-new/final.mp4', state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' },
-    )
+    seedLibrary(db, seedJob(db, { id: 'j-new', channel: 'chan-b', topic: 'deep sea trivia' }), {
+      videoPath: 'runs/j-new/final.mp4',
+      state: 'ready',
+      createdAt: '2026-07-20T00:00:00.000Z',
+    })
     const rows = listLibrary(db)
     expect(rows.map((r) => r.jobId)).toEqual(['j-new', 'j-old'])
     expect(rows[0]).toEqual({

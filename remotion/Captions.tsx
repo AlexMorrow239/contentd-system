@@ -18,7 +18,10 @@ export function captionWordGapPx(fontSizePx: number): number {
   return Math.round(fontSizePx * 0.25)
 }
 
-export const Captions: React.FC<{ words: WordTiming[]; style: CaptionStyle }> = ({ words, style }) => {
+export const Captions: React.FC<{ words: WordTiming[]; style: CaptionStyle }> = ({
+  words,
+  style,
+}) => {
   const frame = useCurrentFrame()
   const { fps } = useVideoConfig()
   const currentTimeMs = (frame / fps) * 1000

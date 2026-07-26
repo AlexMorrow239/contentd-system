@@ -13,9 +13,9 @@ describe('openDb', () => {
   it('creates the parent directory and all tables', () => {
     const db = openDb(tempDbPath())
     const names = (
-      db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        .all() as { name: string }[]
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
+        name: string
+      }[]
     ).map((r) => r.name)
     expect(names).toContain('jobs')
     expect(names).toContain('job_stages')
@@ -58,7 +58,9 @@ describe('openDbReadonly', () => {
   it('reads an existing database', () => {
     const path = tempDbPath()
     const writable = openDb(path)
-    writable.prepare("INSERT INTO jobs (id, channel, tier, topic) VALUES ('j1','c','volume','t')").run()
+    writable
+      .prepare("INSERT INTO jobs (id, channel, tier, topic) VALUES ('j1','c','volume','t')")
+      .run()
     writable.close()
 
     const db = openDbReadonly(path)

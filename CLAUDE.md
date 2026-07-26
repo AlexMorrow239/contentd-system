@@ -66,7 +66,7 @@ stages are free. The final gate (after all stages succeed) reads `qc.json` and
 QC), and marks the job `done` — this final window is itself re-run-safe on
 resume (upsert, not insert).
 
-A stage failure marks the job `failed`, *except* a thrown `BudgetExceededError`
+A stage failure marks the job `failed`, _except_ a thrown `BudgetExceededError`
 (from `src/jobs/costs.ts`) which marks it `blocked` instead — this is an
 enforcement outcome, not a crash, and `produce-next`/digest treat the two
 differently.
@@ -129,7 +129,7 @@ TOML with no `[publish]` table never enters the publish pool; one with no
 `src/jobs/costs.ts`'s `assertBudget` is called before every paid provider call
 and checks, in order: per-video cap (`channel.budget.perVideoUsdMicros`) →
 channel-day cap (UTC) → global-day cap (`BRAINROT_GLOBAL_DAILY_USD`, spans all
-channels). A breach throws `BudgetExceededError` *before* the call fires.
+channels). A breach throws `BudgetExceededError` _before_ the call fires.
 Providers that pay for a call that then fails downstream (e.g. a schema-invalid
 LLM response) still have to ledger that spend — see `src/providers/errors.ts`'s
 `ProviderCostError` / `errorCostUsdMicros` duck-typed cost-recovery convention.

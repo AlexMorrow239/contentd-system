@@ -331,7 +331,9 @@ describe('[publish] validation', () => {
   })
 
   it('rejects an empty slots array', () => {
-    expect(() => loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = []']))).toThrow()
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = []'])),
+    ).toThrow()
   })
 
   it('rejects a platform outside PUBLISH_PLATFORMS', () => {
@@ -358,7 +360,13 @@ describe('testChannel() publish default', () => {
   it('defaults publish to null and allows overriding it', () => {
     expect(testChannel().publish).toBeNull()
     const withPublish = testChannel({
-      publish: { slots: ['10:00'], platforms: ['youtube'], privacy: 'public', categoryId: 24, madeForKids: false },
+      publish: {
+        slots: ['10:00'],
+        platforms: ['youtube'],
+        privacy: 'public',
+        categoryId: 24,
+        madeForKids: false,
+      },
     })
     expect(withPublish.publish).toEqual({
       slots: ['10:00'],

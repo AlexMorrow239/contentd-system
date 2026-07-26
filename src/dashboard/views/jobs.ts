@@ -89,8 +89,7 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
 }
 
 function stageRow(stage: StageRow): SafeHtml {
-  const error =
-    stage.error === null ? html`` : html`<p class="error">${stage.error}</p>`
+  const error = stage.error === null ? html`` : html`<p class="error">${stage.error}</p>`
   return html`<tr>
     <td>${stage.stage}</td>
     <td class="status-${stage.status}">${stage.status}</td>

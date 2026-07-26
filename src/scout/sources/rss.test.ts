@@ -286,9 +286,9 @@ describe('rssSource single-item normalization', () => {
 describe('rssSource error paths', () => {
   it('throws with the HTTP status on a non-2xx response', async () => {
     const { impl } = fakeFetch(404, 'Not Found')
-    await expect(
-      rssSource('https://feeds.example.com/gone.xml', impl).fetch(OPTS),
-    ).rejects.toThrow(/responded 404/)
+    await expect(rssSource('https://feeds.example.com/gone.xml', impl).fetch(OPTS)).rejects.toThrow(
+      /responded 404/,
+    )
   })
 
   it('throws on a document that is neither RSS nor Atom', async () => {

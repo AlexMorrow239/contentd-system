@@ -1,6 +1,14 @@
 import { afterAll, describe, expect, it } from 'vitest'
 import { execa } from 'execa'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { loadChannelConfig } from '../config/channel.js'
@@ -38,9 +46,16 @@ describe('golden-path e2e', () => {
 
     // One 1080x1920 background clip in the library.
     await execa('ffmpeg', [
-      '-f', 'lavfi', '-i', 'testsrc2=duration=2:size=1080x1920:rate=30',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      path.join(bgDir, 'bg1.mp4'), '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=duration=2:size=1080x1920:rate=30',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      path.join(bgDir, 'bg1.mp4'),
+      '-y',
     ])
 
     // Channel TOML with absolute asset dirs.
@@ -96,8 +111,12 @@ describe('golden-path e2e', () => {
     )
     mkdirSync(path.join(runDir, 'voice'), { recursive: true })
     await execa('ffmpeg', [
-      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=3',
-      path.join(runDir, 'voice', 'narration.wav'), '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:duration=3',
+      path.join(runDir, 'voice', 'narration.wav'),
+      '-y',
     ])
     writeFileSync(
       path.join(runDir, 'voice', 'voice.json'),
@@ -126,7 +145,9 @@ describe('golden-path e2e', () => {
     // Seeded stages were skipped (not re-run): their status is still 'done'
     // and no network provider was invoked.
     const seeded = db
-      .prepare(`SELECT stage, status FROM job_stages WHERE job_id = ? AND stage IN ('script','voice','captions')`)
+      .prepare(
+        `SELECT stage, status FROM job_stages WHERE job_id = ? AND stage IN ('script','voice','captions')`,
+      )
       .all(jobId) as { stage: string; status: string }[]
     expect(seeded.length).toBe(3)
     for (const s of seeded) expect(s.status).toBe('done')
@@ -140,9 +161,9 @@ describe('golden-path e2e', () => {
     expect(p.durationMs).toBeGreaterThanOrEqual(2800) // ~3s from seeded voice.json
     expect(p.durationMs).toBeLessThanOrEqual(3400)
 
-    const qc = JSON.parse(
-      readFileSync(path.join(runDir, 'qc', 'qc.json'), 'utf8'),
-    ) as { passed: boolean }
+    const qc = JSON.parse(readFileSync(path.join(runDir, 'qc', 'qc.json'), 'utf8')) as {
+      passed: boolean
+    }
     expect(qc.passed).toBe(true)
   }, 240000)
 })

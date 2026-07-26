@@ -228,12 +228,12 @@ upload attempt, or a scout run whose every channel died.
 
 ### Schedule
 
-| Command | Cadence |
-|---|---|
-| `scout` | 07:05, 12:05, 17:05 — staggered 5 min off the hour so it never co-fires with `produce-next` |
-| `produce-next` | every 25 min |
+| Command        | Cadence                                                                                                                                                               |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scout`        | 07:05, 12:05, 17:05 — staggered 5 min off the hour so it never co-fires with `produce-next`                                                                           |
+| `produce-next` | every 25 min                                                                                                                                                          |
 | `publish-next` | every 15 min — deliberately not staggered off `produce-next`; the two touch disjoint rows and WAL plus the `busy_timeout=5000` pragma make a same-minute co-fire safe |
-| `digest` | 08:00 — printed to the log stream only, nothing else delivers it |
+| `digest`       | 08:00 — printed to the log stream only, nothing else delivers it                                                                                                      |
 
 Times are container-local (`TZ=America/Chicago`, set in
 `deploy/docker/Dockerfile` and pinned again in `docker-compose.yml`'s
@@ -245,12 +245,12 @@ same as any other source change. There is no hot reload.
 
 ### Development vs. production
 
-|  | Production (container) | Development (host) |
-|---|---|---|
-| channels | `channels/` | `channels-dev/` |
-| db | `data/brainrot.db` | `data/dev.db` |
-| runs | `runs/` | `runs-dev/` |
-| voice | real chain | `--dev` / `[voice] dev = true` |
+|          | Production (container) | Development (host)             |
+| -------- | ---------------------- | ------------------------------ |
+| channels | `channels/`            | `channels-dev/`                |
+| db       | `data/brainrot.db`     | `data/dev.db`                  |
+| runs     | `runs/`                | `runs-dev/`                    |
+| voice    | real chain             | `--dev` / `[voice] dev = true` |
 
 A bare `pnpm brainrot ...` on the host reads and writes only the development
 triple — the host's `.env` carries those defaults. The same command run

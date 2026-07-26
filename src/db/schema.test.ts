@@ -5,9 +5,9 @@ describe('publishes and oauth_tokens tables', () => {
   it('are created by openDb', () => {
     const db = openDb(':memory:')
     const names = (
-      db
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-        .all() as { name: string }[]
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as {
+        name: string
+      }[]
     ).map((r) => r.name)
     expect(names).toContain('publishes')
     expect(names).toContain('oauth_tokens')
@@ -21,7 +21,7 @@ describe('publishes table constraints', () => {
     expect(() =>
       db
         .prepare(
-          "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
+          'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
             "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'uploading', 1)",
         )
         .run(),
@@ -32,13 +32,13 @@ describe('publishes table constraints', () => {
   it('rejects a duplicate (channel, platform, day, slot) insert', () => {
     const db = openDb(':memory:')
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
         "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'claimed', 1)",
     ).run()
     expect(() =>
       db
         .prepare(
-          "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
+          'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
             "VALUES ('job-2', 'youtube', 'chan-a', '2026-07-22', '10:00', 'claimed', 1)",
         )
         .run(),
@@ -51,13 +51,13 @@ describe('publishes table constraints', () => {
     expect(() =>
       db
         .prepare(
-          "INSERT INTO publishes (job_id, platform, channel, day, slot, status, error_kind, attempt) " +
+          'INSERT INTO publishes (job_id, platform, channel, day, slot, status, error_kind, attempt) ' +
             "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'failed', 'timeout', 1)",
         )
         .run(),
     ).toThrow(/CHECK/)
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, error_kind, attempt) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, error_kind, attempt) ' +
         "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'claimed', NULL, 1)",
     ).run()
     const row = db.prepare('SELECT error_kind FROM publishes').get() as {

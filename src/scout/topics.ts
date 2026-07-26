@@ -180,14 +180,13 @@ export type RequeueOutcome =
 export function requeueTopic(db: Database, id: number): RequeueOutcome {
   const attempt = db.transaction((): RequeueOutcome => {
     const topic = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as
-      | { status: TopicStatus; job_id: string | null }
-      | undefined
+      { status: TopicStatus; job_id: string | null } | undefined
     if (topic === undefined) return { ok: false, reason: 'unknown' }
-    if (topic.status !== 'claimed') return { ok: false, reason: 'not-claimed', status: topic.status }
+    if (topic.status !== 'claimed')
+      return { ok: false, reason: 'not-claimed', status: topic.status }
     if (topic.job_id !== null) {
       const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(topic.job_id) as
-        | { status: string }
-        | undefined
+        { status: string } | undefined
       if (job !== undefined && ACTIVE_JOB_STATUSES.includes(job.status)) {
         return { ok: false, reason: 'job-active', jobId: topic.job_id, jobStatus: job.status }
       }

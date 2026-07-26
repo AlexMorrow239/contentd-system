@@ -53,7 +53,7 @@ const REDDIT_FEED = `<?xml version="1.0" encoding="UTF-8"?>
 
 // Serves only r/space's feed; any other URL is a test bug, never a
 // silent live-network hit.
-const fetchImpl: FetchLike = (async (input: RequestInfo | URL) => {
+const fetchImpl: FetchLike = async (input: RequestInfo | URL) => {
   const url = input instanceof Request ? input.url : String(input)
   if (url.includes('/r/space/.rss')) {
     return new Response(REDDIT_FEED, {
@@ -62,7 +62,7 @@ const fetchImpl: FetchLike = (async (input: RequestInfo | URL) => {
     })
   }
   throw new Error(`unexpected fetch: ${url}`)
-})
+}
 
 // The scorer's structuredCompletion consumes a forced 'emit' tool_use; the
 // response shape mirrors fakeClient in src/providers/anthropic.test.ts.
@@ -229,9 +229,7 @@ describe('golden-path loop e2e', () => {
     // instead of a bare field mismatch.
     if (tick.action !== 'produced' || tick.status !== 'ready') {
       const stageRows = tick.jobId
-        ? db
-            .prepare('SELECT stage, status, error FROM job_stages WHERE job_id = ?')
-            .all(tick.jobId)
+        ? db.prepare('SELECT stage, status, error FROM job_stages WHERE job_id = ?').all(tick.jobId)
         : []
       throw new Error(`loop golden path did not land: ${JSON.stringify({ tick, stageRows })}`)
     }
@@ -252,14 +250,14 @@ describe('golden-path loop e2e', () => {
       status: 'done',
     })
 
-    const lib = db
-      .prepare('SELECT state FROM library WHERE job_id = ?')
-      .get(tick.jobId!) as { state: string } | undefined
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(tick.jobId!) as
+      { state: string } | undefined
     expect(lib?.state).toBe('ready')
 
-    const used = db
-      .prepare('SELECT status, job_id FROM topics WHERE id = ?')
-      .get(topic.id) as { status: string; job_id: string }
+    const used = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(topic.id) as {
+      status: string
+      job_id: string
+    }
     expect(used).toEqual({ status: 'used', job_id: tick.jobId })
 
     // the tick's lease was released in its finally
@@ -291,10 +289,13 @@ describe('golden-path loop e2e', () => {
     const tokenFetchImpl = (async (input: RequestInfo | URL) => {
       const url = input instanceof Request ? input.url : String(input)
       if (url === 'https://oauth2.googleapis.com/token') {
-        return new Response(JSON.stringify({ access_token: 'fake-access-token', expires_in: 3599 }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        })
+        return new Response(
+          JSON.stringify({ access_token: 'fake-access-token', expires_in: 3599 }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        )
       }
       throw new Error(`unexpected fetch: ${url}`)
     }) as typeof fetch

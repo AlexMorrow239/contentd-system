@@ -41,7 +41,7 @@ export function claimPublish(
     'SELECT COUNT(*) AS n FROM publishes WHERE job_id = ? AND platform = ?',
   )
   const insertClaim = db.prepare(
-    "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
+    'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
       "VALUES (?, ?, ?, ?, ?, 'claimed', ?)",
   )
   // `.immediate()` (not a deferred BEGIN): the count read and the INSERT must
@@ -92,8 +92,7 @@ function finishPublish(
 ): number {
   // Fixed literals, chosen by the target shape — never caller-supplied SQL.
   const where = 'id' in target ? 'id = ?' : 'job_id = ? AND status = ?'
-  const params: (number | string)[] =
-    'id' in target ? [target.id] : [target.jobId, target.status]
+  const params: (number | string)[] = 'id' in target ? [target.id] : [target.jobId, target.status]
   const selectJobIds = db.prepare(`SELECT job_id FROM publishes WHERE ${where}`)
   const updatePublish = db.prepare(
     `UPDATE publishes SET status = 'done', post_id = ?, url = ?, finished_at = ? WHERE ${where}`,
@@ -174,7 +173,7 @@ export function consumedSlots(
 export function uploadsUsedToday(db: Database, platform: Platform, day: string): number {
   const row = db
     .prepare(
-      "SELECT COUNT(*) AS n FROM publishes WHERE platform = ? AND day = ? " +
+      'SELECT COUNT(*) AS n FROM publishes WHERE platform = ? AND day = ? ' +
         "AND (status != 'failed' OR error_kind IS NOT 'auth')",
     )
     .get(platform, day) as { n: number }
@@ -233,8 +232,7 @@ export function eligibleVideo(
        LIMIT 1`,
     )
     .get(platform, channel, MAX_PUBLISH_ATTEMPTS, ...excludeJobIds) as
-    | { jobId: string; videoPath: string; metadataJson: string; topic: string }
-    | undefined
+    { jobId: string; videoPath: string; metadataJson: string; topic: string } | undefined
   return row === undefined ? null : row
 }
 

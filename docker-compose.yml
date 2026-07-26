@@ -7,7 +7,7 @@ services:
     # after a reboot and every job then hard-fails at the captions stage.
     restart: unless-stopped
     ports:
-      - "8585:8585"
+      - '8585:8585'
     environment:
       WHISPERX_DEVICE: cpu
       # The sidecar reads this at import to size its upload cap; compose
@@ -15,11 +15,17 @@ services:
       # container. Default matches the sidecar's own (app.py).
       WHISPERX_MAX_UPLOAD_MB: ${WHISPERX_MAX_UPLOAD_MB:-64}
     volumes:
-      - whisperx-cache:/root/.cache   # persist downloaded alignment models
+      - whisperx-cache:/root/.cache # persist downloaded alignment models
     healthcheck:
       # python rather than curl: the sidecar image has no curl and adding one
       # for a probe is not worth a layer.
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8585/health')"]
+      test:
+        [
+          'CMD',
+          'python',
+          '-c',
+          "import urllib.request; urllib.request.urlopen('http://localhost:8585/health')",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -59,31 +65,31 @@ services:
       # local runs — if that landed in the host .env, every production video
       # would silently and permanently lose ElevenLabs with nothing in QC
       # catching it. Pinning to "" closes that off. Do not pin any other value.
-      BRAINROT_DEV_VOICE: ""
+      BRAINROT_DEV_VOICE: ''
       # Pins the cross-channel daily spend cap currently effective via the
       # host .env (BRAINROT_GLOBAL_DAILY_USD=12), so this commit does not
       # change today's budget behavior while removing the coupling to
       # whatever the host .env happens to contain. costs.ts treats an empty
       # string as "unset" (falls back to its own $25 default), so this must
       # be a real number, not "".
-      BRAINROT_GLOBAL_DAILY_USD: "12"
+      BRAINROT_GLOBAL_DAILY_USD: '12'
       # Pins youtube.ts's own DEFAULT_YT_UPLOADS_PER_DAY (unset in .env
       # today, so this was already the effective value) rather than leaving
       # it implicit. youtube.ts also treats "" as unset, so this must be a
       # real integer, not "".
-      BRAINROT_YT_UPLOADS_PER_DAY: "6"
+      BRAINROT_YT_UPLOADS_PER_DAY: '6'
     volumes:
-      - ./assets:/app/assets:ro      # 21 GB, never copied, never written
-      - ./channels:/app/channels:ro  # production config, re-read every tick
-      - ./data:/app/data             # the SQLite file, shared with host-side OAuth
-      - ./runs:/app/runs             # per-job artifacts, inspectable from the host
+      - ./assets:/app/assets:ro # 21 GB, never copied, never written
+      - ./channels:/app/channels:ro # production config, re-read every tick
+      - ./data:/app/data # the SQLite file, shared with host-side OAuth
+      - ./runs:/app/runs # per-job artifacts, inspectable from the host
     # Chrome's default 64 MB /dev/shm in Docker is the classic renderer crash.
     shm_size: 1gb
     logging:
       driver: json-file
       options:
         max-size: 10m
-        max-file: "5"
+        max-file: '5'
 
 volumes:
   whisperx-cache:

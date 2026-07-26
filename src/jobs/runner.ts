@@ -16,11 +16,7 @@ export interface JobResult {
   videoPath?: string
 }
 
-export function createJob(
-  db: Database,
-  channel: ChannelConfig,
-  opts: { topic: string },
-): string {
+export function createJob(db: Database, channel: ChannelConfig, opts: { topic: string }): string {
   const jobId = nanoid()
   // The 'tier' column is a legacy NOT NULL CHECK ('volume','premium') left in
   // place for historical rows (see schema.sql) — no application code models a
@@ -28,9 +24,7 @@ export function createJob(
   const insertJob = db.prepare(
     "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, ?)",
   )
-  const insertStage = db.prepare(
-    'INSERT INTO job_stages (job_id, stage, status) VALUES (?, ?, ?)',
-  )
+  const insertStage = db.prepare('INSERT INTO job_stages (job_id, stage, status) VALUES (?, ?, ?)')
   db.transaction(() => {
     insertJob.run(jobId, channel.name, opts.topic, 'queued')
     for (const stage of STAGE_ORDER) {
@@ -57,9 +51,8 @@ export async function runJob(
   const runsRoot = options.runsRoot ?? 'runs'
   const runDir = join(runsRoot, jobId)
 
-  const jobRow = db
-    .prepare('SELECT topic FROM jobs WHERE id = ?')
-    .get(jobId) as { topic: string } | undefined
+  const jobRow = db.prepare('SELECT topic FROM jobs WHERE id = ?').get(jobId) as
+    { topic: string } | undefined
   if (!jobRow) {
     throw new Error(`job not found: ${jobId}`)
   }
@@ -82,9 +75,7 @@ export async function runJob(
 
   db.prepare('UPDATE jobs SET status = ? WHERE id = ?').run('running', jobId)
 
-  const stageStatus = db.prepare(
-    'SELECT status FROM job_stages WHERE job_id = ? AND stage = ?',
-  )
+  const stageStatus = db.prepare('SELECT status FROM job_stages WHERE job_id = ? AND stage = ?')
   const markStageRunning = db.prepare(
     'UPDATE job_stages SET status = ?, started_at = ? WHERE job_id = ? AND stage = ?',
   )
@@ -110,7 +101,10 @@ export async function runJob(
       try {
         options.heartbeat()
       } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err) }, 'lease heartbeat failed')
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          'lease heartbeat failed',
+        )
       }
     }
     markStageRunning.run('running', nowIso(), jobId, stage.name)

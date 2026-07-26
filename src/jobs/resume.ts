@@ -47,9 +47,8 @@ export async function resumeJob(
     heartbeat?: () => void
   },
 ): Promise<JobResult> {
-  const job = db
-    .prepare('SELECT channel, status FROM jobs WHERE id = ?')
-    .get(jobId) as { channel: string; status: string } | undefined
+  const job = db.prepare('SELECT channel, status FROM jobs WHERE id = ?').get(jobId) as
+    { channel: string; status: string } | undefined
   if (!job) {
     throw new ResumeError(`job not found: ${jobId}`)
   }

@@ -21,7 +21,10 @@ export type PublishErrorKind = 'auth' | 'quota' | 'rejected' | 'transient'
 // — config/validation errors stay plain `Error` per house style. `kind` drives
 // the tick's attempt-failure handling and the digest's per-kind messaging.
 export class PublishError extends Error {
-  constructor(message: string, public kind: PublishErrorKind) {
+  constructor(
+    message: string,
+    public kind: PublishErrorKind,
+  ) {
     super(message)
     this.name = 'PublishError'
   }

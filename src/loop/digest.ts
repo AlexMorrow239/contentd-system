@@ -1,11 +1,7 @@
 import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
-import {
-  channelDaySpentMicros,
-  globalDailyCapMicros,
-  globalDaySpentMicros,
-} from '../jobs/costs.js'
+import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } from '../jobs/costs.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { consumedSlots, MAX_PUBLISH_ATTEMPTS } from '../publish/publishes.js'
 import { localDay } from '../publish/slots.js'
@@ -50,9 +46,12 @@ function resolveDigestEnv(overrides: Partial<DigestEnv>): DigestEnv {
   return {
     ytClientIdPresent: overrides.ytClientIdPresent ?? !!process.env.YT_CLIENT_ID,
     ytClientSecretPresent: overrides.ytClientSecretPresent ?? !!process.env.YT_CLIENT_SECRET,
-    tokenKeyHex: 'tokenKeyHex' in overrides
-      ? overrides.tokenKeyHex
-      : tokenKeyHex === undefined || tokenKeyHex === '' ? undefined : tokenKeyHex,
+    tokenKeyHex:
+      'tokenKeyHex' in overrides
+        ? overrides.tokenKeyHex
+        : tokenKeyHex === undefined || tokenKeyHex === ''
+          ? undefined
+          : tokenKeyHex,
   }
 }
 
@@ -217,9 +216,7 @@ export function buildDigest(
        GROUP BY j.channel`,
     )
     .all() as { channel: string; n: number; oldest: string }[]
-  const publishingChannels = new Set(
-    channels.filter((c) => c.publish !== null).map((c) => c.name),
-  )
+  const publishingChannels = new Set(channels.filter((c) => c.publish !== null).map((c) => c.name))
   lines.push('  Backlog:')
   const backlogStart = lines.length
   for (const r of readyBacklog) {
@@ -302,7 +299,9 @@ export function buildDigest(
   // day it would otherwise vanish from every operator surface with its spend
   // sunk and its topic still 'claimed'.
   const blockedJobs = db
-    .prepare("SELECT id, channel FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC")
+    .prepare(
+      "SELECT id, channel FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
+    )
     .all() as { id: string; channel: string }[]
   if (blockedJobs.length > 0) {
     const byName = new Map(channels.map((c) => [c.name, c]))

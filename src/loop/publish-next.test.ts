@@ -95,11 +95,9 @@ function seedReadyVideo(
 ): string {
   jobSeq += 1
   const jobId = `job-${jobSeq}`
-  db.prepare("INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, 'done')").run(
-    jobId,
-    opts.channel,
-    opts.topic ?? 'A test topic',
-  )
+  db.prepare(
+    "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, 'done')",
+  ).run(jobId, opts.channel, opts.topic ?? 'A test topic')
   videoRoot ??= tmpDir('brainrot-publish-videos-')
   const videoPath = join(videoRoot, `${jobId}.mp4`)
   if (opts.videoExists !== false) writeFileSync(videoPath, 'fake video bytes')
@@ -122,10 +120,20 @@ function seedToken(db: Database, channel: string): void {
   upsertToken(db, 'youtube', channel, 'rt-test-token', YT_UPLOAD_SCOPE, key)
 }
 
-function seedConsumedSlot(db: Database, opts: { channel: string; platform: Platform; day: string; slot: string; status?: string }): void {
+function seedConsumedSlot(
+  db: Database,
+  opts: { channel: string; platform: Platform; day: string; slot: string; status?: string },
+): void {
   db.prepare(
     'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) VALUES (?, ?, ?, ?, ?, ?, 1)',
-  ).run(`consumed-${opts.channel}-${opts.slot}`, opts.platform, opts.channel, opts.day, opts.slot, opts.status ?? 'done')
+  ).run(
+    `consumed-${opts.channel}-${opts.slot}`,
+    opts.platform,
+    opts.channel,
+    opts.day,
+    opts.slot,
+    opts.status ?? 'done',
+  )
 }
 
 function seedQuotaRows(db: Database, opts: { count: number; status?: string }): void {
@@ -268,7 +276,13 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
     expect(result).toEqual({
       action: 'dry-run',
-      wouldPublish: { channel: 'chan-b', platform: 'youtube', slot: '14:00', jobId, title: 'Chan B topic' },
+      wouldPublish: {
+        channel: 'chan-b',
+        platform: 'youtube',
+        slot: '14:00',
+        jobId,
+        title: 'Chan B topic',
+      },
     })
     db.close()
   })
@@ -313,7 +327,13 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
     expect(result).toEqual({
       action: 'dry-run',
-      wouldPublish: { channel: 'chan-b', platform: 'youtube', slot: '14:00', jobId: jobB, title: 'Chan B topic' },
+      wouldPublish: {
+        channel: 'chan-b',
+        platform: 'youtube',
+        slot: '14:00',
+        jobId: jobB,
+        title: 'Chan B topic',
+      },
     })
     db.close()
   })
@@ -338,7 +358,10 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       videoExists: false,
     })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({ postId: 'yt-old', url: 'https://youtube.com/shorts/yt-old' }))
+    const target = fakeTarget(async () => ({
+      postId: 'yt-old',
+      url: 'https://youtube.com/shorts/yt-old',
+    }))
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
@@ -383,7 +406,12 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     const channelsDir = tmpDir('brainrot-publish-fair-')
     writeChannel(channelsDir, { name: 'chan-a', slots: ['09:00', '14:00'] })
     writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
-    seedConsumedSlot(db, { channel: 'chan-a', platform: 'youtube', day: '2026-07-22', slot: '09:00' })
+    seedConsumedSlot(db, {
+      channel: 'chan-a',
+      platform: 'youtube',
+      day: '2026-07-22',
+      slot: '09:00',
+    })
     seedReadyVideo(db, { channel: 'chan-a', topic: 'Chan A topic' })
     seedToken(db, 'chan-a')
     const jobB = seedReadyVideo(db, { channel: 'chan-b', topic: 'Chan B topic' })
@@ -391,7 +419,13 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
     expect(result).toEqual({
       action: 'dry-run',
-      wouldPublish: { channel: 'chan-b', platform: 'youtube', slot: '14:00', jobId: jobB, title: 'Chan B topic' },
+      wouldPublish: {
+        channel: 'chan-b',
+        platform: 'youtube',
+        slot: '14:00',
+        jobId: jobB,
+        title: 'Chan B topic',
+      },
     })
     db.close()
   })
@@ -404,10 +438,15 @@ describe('publishNextTick — publish', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     const jobId = seedReadyVideo(db, {
       channel: 'chan-a',
-      metadataJson: JSON.stringify({ youtube: { title: 'Great Video', description: 'desc', hashtags: ['#space'] } }),
+      metadataJson: JSON.stringify({
+        youtube: { title: 'Great Video', description: 'desc', hashtags: ['#space'] },
+      }),
     })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({ postId: 'yt123', url: 'https://youtube.com/shorts/yt123' }))
+    const target = fakeTarget(async () => ({
+      postId: 'yt123',
+      url: 'https://youtube.com/shorts/yt123',
+    }))
     const result = await publishNextTick(db, {
       channelsDir,
       now: NOW,
@@ -423,13 +462,21 @@ describe('publishNextTick — publish', () => {
       postId: 'yt123',
       url: 'https://youtube.com/shorts/yt123',
     })
-    const row = db.prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?').get(jobId) as {
+    const row = db
+      .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
+      .get(jobId) as {
       status: string
       post_id: string
       url: string
     }
-    expect(row).toEqual({ status: 'done', post_id: 'yt123', url: 'https://youtube.com/shorts/yt123' })
-    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    expect(row).toEqual({
+      status: 'done',
+      post_id: 'yt123',
+      url: 'https://youtube.com/shorts/yt123',
+    })
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as {
+      state: string
+    }
     expect(lib.state).toBe('published')
     expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
     db.close()
@@ -445,7 +492,12 @@ describe('publishNextTick — publish', () => {
     const target = fakeTarget(async () => {
       throw new PublishError('upload: invalid metadata', 'rejected')
     })
-    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      target,
+      fetchImpl: fakeTokenFetch(),
+    })
     expect(result).toEqual({
       action: 'publish-failed',
       channel: 'chan-a',
@@ -454,12 +506,16 @@ describe('publishNextTick — publish', () => {
       slot: '14:00',
       error: 'upload: invalid metadata',
     })
-    const row = db.prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
+    const row = db
+      .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
+      .get(jobId) as {
       status: string
       error_kind: string
     }
     expect(row).toEqual({ status: 'failed', error_kind: 'rejected' })
-    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as {
+      state: string
+    }
     expect(lib.state).toBe('ready')
     db.close()
   })
@@ -473,9 +529,16 @@ describe('publishNextTick — publish', () => {
     const target = fakeTarget(async () => {
       throw new Error('boom')
     })
-    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      target,
+      fetchImpl: fakeTokenFetch(),
+    })
     expect(result.action).toBe('publish-failed')
-    const row = db.prepare('SELECT error_kind FROM publishes WHERE job_id = ?').get(jobId) as { error_kind: string }
+    const row = db.prepare('SELECT error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
+      error_kind: string
+    }
     expect(row.error_kind).toBe('transient')
     db.close()
   })
@@ -490,23 +553,35 @@ describe('publishNextTick — publish', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({ postId: 'yt-live-1', url: 'https://youtube.com/shorts/yt-live-1' }))
+    const target = fakeTarget(async () => ({
+      postId: 'yt-live-1',
+      url: 'https://youtube.com/shorts/yt-live-1',
+    }))
     vi.mocked(markPublishDone).mockImplementationOnce(() => {
       throw new Error('database is locked')
     })
-    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      target,
+      fetchImpl: fakeTokenFetch(),
+    })
     expect(result.action).toBe('publish-failed')
     expect(result.jobId).toBe(jobId)
     // The post facts survive in the error text — the operator needs them to
     // confirm the upload in Studio and run `publish mark-done`.
     expect(result.error).toContain('yt-live-1')
     expect(result.error).toContain('https://youtube.com/shorts/yt-live-1')
-    const row = db.prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
+    const row = db
+      .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
+      .get(jobId) as {
       status: string
       error_kind: string | null
     }
     expect(row).toEqual({ status: 'claimed', error_kind: null })
-    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as {
+      state: string
+    }
     expect(lib.state).toBe('ready')
     db.close()
   })
@@ -520,9 +595,16 @@ describe('publishNextTick — publish', () => {
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const target = fakeTarget(async () => {
-      throw new PublishOutcomeUnknownError('youtubeTarget: accepted the upload but its success body carried no video id')
+      throw new PublishOutcomeUnknownError(
+        'youtubeTarget: accepted the upload but its success body carried no video id',
+      )
     })
-    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      target,
+      fetchImpl: fakeTokenFetch(),
+    })
     expect(result).toEqual({
       action: 'publish-failed',
       channel: 'chan-a',
@@ -531,12 +613,16 @@ describe('publishNextTick — publish', () => {
       slot: '14:00',
       error: 'youtubeTarget: accepted the upload but its success body carried no video id',
     })
-    const row = db.prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?').get(jobId) as {
+    const row = db
+      .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
+      .get(jobId) as {
       status: string
       error_kind: string | null
     }
     expect(row).toEqual({ status: 'claimed', error_kind: null })
-    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as { state: string }
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as {
+      state: string
+    }
     expect(lib.state).toBe('ready')
     db.close()
   })
@@ -554,7 +640,10 @@ describe('publishNextTick — publish', () => {
     const clock = [started, finished]
     let call = 0
     const now = () => clock[Math.min(call++, clock.length - 1)]
-    const target = fakeTarget(async () => ({ postId: 'yt-slow-1', url: 'https://youtube.com/shorts/yt-slow-1' }))
+    const target = fakeTarget(async () => ({
+      postId: 'yt-slow-1',
+      url: 'https://youtube.com/shorts/yt-slow-1',
+    }))
     await publishNextTick(db, { channelsDir, now, target, fetchImpl: fakeTokenFetch() })
     const row = db.prepare('SELECT finished_at FROM publishes WHERE job_id = ?').get(jobId) as {
       finished_at: string
@@ -596,7 +685,10 @@ describe('publishNextTick — lease and sweep', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({ postId: 'yt1', url: 'https://youtube.com/shorts/yt1' }))
+    const target = fakeTarget(async () => ({
+      postId: 'yt1',
+      url: 'https://youtube.com/shorts/yt1',
+    }))
     await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
     expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
     db.close()
@@ -613,7 +705,10 @@ describe('publishNextTick — lease and sweep', () => {
     vi.mocked(claimPublish).mockImplementationOnce(() => {
       throw new Error('disk full')
     })
-    const target = fakeTarget(async () => ({ postId: 'yt1', url: 'https://youtube.com/shorts/yt1' }))
+    const target = fakeTarget(async () => ({
+      postId: 'yt1',
+      url: 'https://youtube.com/shorts/yt1',
+    }))
     await expect(
       publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() }),
     ).rejects.toThrow('disk full')
@@ -628,12 +723,14 @@ describe('publishNextTick — lease and sweep', () => {
     // Seed the stale claim RELATIVE to NOW (65 min ago > 30-min TTL) so the
     // age is identical in every timezone the suite runs in.
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) ' +
         "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', '09:00', 'claimed', 1, ?)",
     ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({ action: 'noop', reason: 'no-due-slot' })
-    const row = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as { status: string }
+    const row = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as {
+      status: string
+    }
     expect(row.status).toBe('interrupted')
     db.close()
   })
@@ -644,7 +741,7 @@ describe('publishNextTick — lease and sweep', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     // Old enough that a real sweep WOULD flip it — proving dry-run skipped it.
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) ' +
         "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-21', '09:00', 'claimed', 1, ?)",
     ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
     const jobId = seedReadyVideo(db, { channel: 'chan-a', topic: 'Preview me' })
@@ -652,13 +749,25 @@ describe('publishNextTick — lease and sweep', () => {
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
     expect(result).toEqual({
       action: 'dry-run',
-      wouldPublish: { channel: 'chan-a', platform: 'youtube', slot: '14:00', jobId, title: 'Preview me' },
+      wouldPublish: {
+        channel: 'chan-a',
+        platform: 'youtube',
+        slot: '14:00',
+        jobId,
+        title: 'Preview me',
+      },
     })
     // the stale row from a DIFFERENT day is untouched: sweep never ran
-    const stale = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as { status: string }
+    const stale = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as {
+      status: string
+    }
     expect(stale.status).toBe('claimed')
     // no new row for today's slot, no lease taken
-    const count = (db.prepare("SELECT COUNT(*) AS n FROM publishes WHERE day = '2026-07-22'").get() as { n: number }).n
+    const count = (
+      db.prepare("SELECT COUNT(*) AS n FROM publishes WHERE day = '2026-07-22'").get() as {
+        n: number
+      }
+    ).n
     expect(count).toBe(0)
     const lease = db.prepare("SELECT * FROM leases WHERE name = 'publish'").get()
     expect(lease).toBeUndefined()
@@ -716,8 +825,16 @@ describe('publishNextTick — config errors', () => {
     writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const target = fakeTarget(async () => ({ postId: 'yt1', url: 'https://youtube.com/shorts/yt1' }))
-    const result = await publishNextTick(db, { channelsDir, now: NOW, target, fetchImpl: fakeTokenFetch() })
+    const target = fakeTarget(async () => ({
+      postId: 'yt1',
+      url: 'https://youtube.com/shorts/yt1',
+    }))
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      target,
+      fetchImpl: fakeTokenFetch(),
+    })
     expect(result.action).toBe('published')
     expect(result.reason).toBeUndefined()
     db.close()
@@ -725,36 +842,60 @@ describe('publishNextTick — config errors', () => {
 })
 
 describe('publish-next CLI', () => {
-  it.concurrent('`publish-next --help` prints usage with --db/--channels-dir/--dry-run', async () => {
-    const result = await runCli(['publish-next', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('--db')
-    expect(result.stdout).toContain('--channels-dir')
-    expect(result.stdout).toContain('--dry-run')
-  }, 60000)
+  it.concurrent(
+    '`publish-next --help` prints usage with --db/--channels-dir/--dry-run',
+    async () => {
+      const result = await runCli(['publish-next', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('--db')
+      expect(result.stdout).toContain('--channels-dir')
+      expect(result.stdout).toContain('--dry-run')
+    },
+    60000,
+  )
 
-  it.concurrent('`publish-next` with no due slot prints one noop JSON line and exits 0', async () => {
-    const root = tmpDir('brainrot-publish-cli-')
-    const channelsDir = tmpDir('brainrot-publish-cli-channels-')
-    writeChannel(channelsDir, { name: 'chan-a' })
-    const result = await runCli([
-      'publish-next', '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir,
-    ])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout.trim().split('\n')).toHaveLength(1)
-    expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-due-slot' })
-  }, 60000)
+  it.concurrent(
+    '`publish-next` with no due slot prints one noop JSON line and exits 0',
+    async () => {
+      const root = tmpDir('brainrot-publish-cli-')
+      const channelsDir = tmpDir('brainrot-publish-cli-channels-')
+      writeChannel(channelsDir, { name: 'chan-a' })
+      const result = await runCli([
+        'publish-next',
+        '--db',
+        join(root, 'brainrot.db'),
+        '--channels-dir',
+        channelsDir,
+      ])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.trim().split('\n')).toHaveLength(1)
+      expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-due-slot' })
+    },
+    60000,
+  )
 
-  it.concurrent('`publish-next --dry-run` with no due slot prints one dry-run JSON line and exits 0', async () => {
-    const root = tmpDir('brainrot-publish-cli-dry-')
-    const channelsDir = tmpDir('brainrot-publish-cli-dry-channels-')
-    writeChannel(channelsDir, { name: 'chan-a' })
-    const result = await runCli([
-      'publish-next',
-      '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir, '--dry-run',
-    ])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout.trim().split('\n')).toHaveLength(1)
-    expect(JSON.parse(result.stdout)).toEqual({ action: 'dry-run', wouldPublish: null, reason: 'no-due-slot' })
-  }, 60000)
+  it.concurrent(
+    '`publish-next --dry-run` with no due slot prints one dry-run JSON line and exits 0',
+    async () => {
+      const root = tmpDir('brainrot-publish-cli-dry-')
+      const channelsDir = tmpDir('brainrot-publish-cli-dry-channels-')
+      writeChannel(channelsDir, { name: 'chan-a' })
+      const result = await runCli([
+        'publish-next',
+        '--db',
+        join(root, 'brainrot.db'),
+        '--channels-dir',
+        channelsDir,
+        '--dry-run',
+      ])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.trim().split('\n')).toHaveLength(1)
+      expect(JSON.parse(result.stdout)).toEqual({
+        action: 'dry-run',
+        wouldPublish: null,
+        reason: 'no-due-slot',
+      })
+    },
+    60000,
+  )
 })

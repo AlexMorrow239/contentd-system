@@ -98,7 +98,6 @@ export function libraryChannels(db: Database): string[] {
 
 export function findLibraryVideoPath(db: Database, jobId: string): string | null {
   const row = db.prepare('SELECT video_path FROM library WHERE job_id = ?').get(jobId) as
-    | { video_path: string }
-    | undefined
+    { video_path: string } | undefined
   return row?.video_path ?? null
 }

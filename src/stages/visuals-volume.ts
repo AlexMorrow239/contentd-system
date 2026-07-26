@@ -35,14 +35,16 @@ function listMp4sRecursively(dirs: string[]): string[] {
 export const visualsVolumeStage: StageDef = {
   name: 'visuals',
   async run(ctx: JobContext): Promise<void> {
-    const voice = JSON.parse(
-      readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
-    ) as { durationMs: number }
+    const voice = JSON.parse(readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8')) as {
+      durationMs: number
+    }
 
     const bgDirs = ctx.channel.bgDir
     const all = listMp4sRecursively(bgDirs)
     if (all.length === 0) {
-      throw new Error(`visuals: no .mp4 background clips found under bgDir(s): ${bgDirs.join(', ')}`)
+      throw new Error(
+        `visuals: no .mp4 background clips found under bgDir(s): ${bgDirs.join(', ')}`,
+      )
     }
 
     const recent = (

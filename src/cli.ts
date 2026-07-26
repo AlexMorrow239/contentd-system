@@ -119,27 +119,38 @@ program
     '--dev',
     'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
   )
-  .action(async (opts: { channel: string; topic: string; db?: string; runsRoot?: string; dev?: boolean }) => {
-    applyDevFlag(opts.dev)
-    const runsRoot = resolveRunsRoot(opts.runsRoot)
-    const channel = loadChannelConfig(opts.channel)
-    const db = openDb(resolveDbPath(opts.db))
-    const jobId = createJob(db, channel, { topic: opts.topic })
-    const result = await runJob(db, channel, jobId, pipelineStages(), { runsRoot })
-    // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
-    // event loop alive, letting the process drain stdout and exit on its own.
-    db.close()
-    process.stdout.write(JSON.stringify(result) + '\n')
-    // Set exitCode (not process.exit) so a piped stdout flushes fully before exit —
-    // process.exit can truncate the JSON line mid-write. exit 0 for ready/needs-review;
-    // exit 1 for failed AND blocked (the JSON line carries the finer distinction).
-    process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
-  })
+  .action(
+    async (opts: {
+      channel: string
+      topic: string
+      db?: string
+      runsRoot?: string
+      dev?: boolean
+    }) => {
+      applyDevFlag(opts.dev)
+      const runsRoot = resolveRunsRoot(opts.runsRoot)
+      const channel = loadChannelConfig(opts.channel)
+      const db = openDb(resolveDbPath(opts.db))
+      const jobId = createJob(db, channel, { topic: opts.topic })
+      const result = await runJob(db, channel, jobId, pipelineStages(), { runsRoot })
+      // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
+      // event loop alive, letting the process drain stdout and exit on its own.
+      db.close()
+      process.stdout.write(JSON.stringify(result) + '\n')
+      // Set exitCode (not process.exit) so a piped stdout flushes fully before exit —
+      // process.exit can truncate the JSON line mid-write. exit 0 for ready/needs-review;
+      // exit 1 for failed AND blocked (the JSON line carries the finer distinction).
+      process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
+    },
+  )
 
 program
   .command('scout')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
   .action(async (opts: { db?: string; channelsDir?: string }) => {
     const channelsDir = resolveChannelsDir(opts.channelsDir)
     // Config load precedes the db handle AND the lease, exactly as in
@@ -192,7 +203,10 @@ program
   .argument('<jobId>', 'job id to resume (failed or blocked; running needs --force)')
   .option('--db <path>', 'sqlite db path')
   .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
-  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
   .option('--force', 'resume a job stuck in running (asserts no live process holds it)')
   .option(
     '--dev',
@@ -201,7 +215,13 @@ program
   .action(
     async (
       jobId: string,
-      opts: { db?: string; runsRoot?: string; channelsDir?: string; force?: boolean; dev?: boolean },
+      opts: {
+        db?: string
+        runsRoot?: string
+        channelsDir?: string
+        force?: boolean
+        dev?: boolean
+      },
     ) => {
       applyDevFlag(opts.dev)
       const runsRoot = resolveRunsRoot(opts.runsRoot)
@@ -254,7 +274,10 @@ program
 program
   .command('produce-next')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
   .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
   .action(async (opts: { db?: string; channelsDir?: string; runsRoot?: string }) => {
     const channelsDir = resolveChannelsDir(opts.channelsDir)
@@ -279,7 +302,10 @@ program
 program
   .command('publish-next')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
   .option('--dry-run', 'preview the next publish without writing anything')
   .action(async (opts: { db?: string; channelsDir?: string; dryRun?: boolean }) => {
     const channelsDir = resolveChannelsDir(opts.channelsDir)
@@ -435,7 +461,10 @@ auth
   .command('youtube')
   .requiredOption('--channel <name>', 'channel name to authorize')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
   .action(async (opts: { channel: string; db?: string; channelsDir?: string }) => {
     // Channel + env checks precede any db handle or browser launch, so a typo
     // or missing credential fails clean before Alex is asked to click through
@@ -470,7 +499,10 @@ auth
 program
   .command('digest')
   .option('--db <path>', 'sqlite db path')
-  .option('--channels-dir <dir>', 'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
   .action((opts: { db?: string; channelsDir?: string }) => {
     // A report, not a check: nothing here may set a non-zero exit — cron
     // MAILTO should deliver whatever printed, so even a config/db error is
@@ -484,7 +516,9 @@ program
       const loaded = tryLoadChannelsDir(resolveChannelsDir(opts.channelsDir))
       const db = openDb(resolveDbPath(opts.db))
       try {
-        process.stdout.write(buildDigest(db, loaded.channels, {}, { channelsError: loaded.error }) + '\n')
+        process.stdout.write(
+          buildDigest(db, loaded.channels, {}, { channelsError: loaded.error }) + '\n',
+        )
       } finally {
         db.close()
       }
@@ -512,7 +546,9 @@ publish
         process.exitCode = 1
         return
       }
-      console.log(`job ${jobId}: interrupted publish cleared — back in the pool for the next due slot`)
+      console.log(
+        `job ${jobId}: interrupted publish cleared — back in the pool for the next due slot`,
+      )
     } finally {
       db.close()
     }

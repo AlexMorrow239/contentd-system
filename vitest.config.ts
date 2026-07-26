@@ -13,7 +13,9 @@ export default defineConfig({
     // 8 leaves headroom for the ffmpeg and Remotion files in sibling workers.
     maxConcurrency: 8,
     sequence: { sequencer: SlowFilesFirstSequencer },
-    include: contract ? ['src/**/*.contract.test.ts'] : ['src/**/*.test.ts', 'remotion/**/*.test.ts'],
+    include: contract
+      ? ['src/**/*.contract.test.ts']
+      : ['src/**/*.test.ts', 'remotion/**/*.test.ts'],
     exclude: contract
       ? ['**/node_modules/**', '**/dist/**']
       : ['**/node_modules/**', '**/dist/**', 'src/**/*.contract.test.ts'],

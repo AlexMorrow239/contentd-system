@@ -49,8 +49,7 @@ function buildPrompt(
   recentTitles: string[],
 ): string {
   const list = candidates.map((c, i) => `${i}. [${c.sourceId}] ${c.title}`).join('\n')
-  const recent =
-    recentTitles.length > 0 ? recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
+  const recent = recentTitles.length > 0 ? recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
   return `Score each candidate headline as a video topic for the "${niche.join(', ')}" niche.
 
 Candidates (score every one by its index):
@@ -96,7 +95,8 @@ export async function scoreCandidates(opts: {
     })
   }
   const scored = opts.candidates.map(
-    (c, i) => byIndex.get(i) ?? { candidateIndex: i, score: 0, topic: c.title, reason: 'not scored' },
+    (c, i) =>
+      byIndex.get(i) ?? { candidateIndex: i, score: 0, topic: c.title, reason: 'not scored' },
   )
   return { scored, costUsdMicros: cost.usdMicros }
 }

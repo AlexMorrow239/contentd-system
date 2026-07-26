@@ -75,7 +75,9 @@ describe('resolvePlatformMeta', () => {
   describe('normalization', () => {
     // Mirrors what youtubeTarget.upload sends as `snippet.description`.
     const renderedDescription = (meta: { description: string; hashtags: string[] }) =>
-      meta.hashtags.length > 0 ? `${meta.description}\n\n${meta.hashtags.join(' ')}` : meta.description
+      meta.hashtags.length > 0
+        ? `${meta.description}\n\n${meta.hashtags.join(' ')}`
+        : meta.description
 
     const mapOf = (entry: Record<string, unknown>) => JSON.stringify({ youtube: entry })
 
@@ -160,7 +162,11 @@ describe('resolvePlatformMeta', () => {
 
     it('drops empty and whitespace-bearing hashtags', () => {
       const meta = resolvePlatformMeta(
-        mapOf({ title: 'ok', description: 'd', hashtags: ['#space', '', '#two words', ' ', '#ok'] }),
+        mapOf({
+          title: 'ok',
+          description: 'd',
+          hashtags: ['#space', '', '#two words', ' ', '#ok'],
+        }),
         'youtube',
         'fallback topic',
       )

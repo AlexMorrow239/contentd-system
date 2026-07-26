@@ -187,7 +187,10 @@ export async function scoutChannel(
 // can still print its one JSON line (Global Constraints: JSON even on failure
 // outcomes) before exit 1.
 export class ScoutRunFailedError extends Error {
-  constructor(message: string, public results: ScoutChannelResult[]) {
+  constructor(
+    message: string,
+    public results: ScoutChannelResult[],
+  ) {
     super(message)
     this.name = 'ScoutRunFailedError'
   }

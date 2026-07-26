@@ -144,18 +144,19 @@ describe('produceNextTick — produce', () => {
       status: 'ready',
     })
     // topic consumed: claimed → used, bound to the created job
-    const topic = db
-      .prepare('SELECT status, job_id FROM topics WHERE id = ?')
-      .get(topicId) as { status: string; job_id: string }
+    const topic = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(topicId) as {
+      status: string
+      job_id: string
+    }
     expect(topic).toEqual({ status: 'used', job_id: result.jobId })
     // the job row carries the reframed topic title and landed in the library
     const job = db
       .prepare('SELECT topic, tier, status FROM jobs WHERE id = ?')
       .get(result.jobId) as { topic: string; tier: string; status: string }
     expect(job).toEqual({ topic: 'Venus rains molten metal', tier: 'volume', status: 'done' })
-    const lib = db
-      .prepare('SELECT state FROM library WHERE job_id = ?')
-      .get(result.jobId) as { state: string }
+    const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(result.jobId) as {
+      state: string
+    }
     expect(lib.state).toBe('ready')
     db.close()
   })
@@ -207,7 +208,6 @@ describe('produceNextTick — lease', () => {
     expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
     db.close()
   })
-
 })
 
 describe('produceNextTick — config errors', () => {
@@ -285,9 +285,10 @@ describe('produceNextTick — failed produce', () => {
     })
     // claimed + bound to its failed job: the resume path owns recovery, the
     // topic is never re-claimed or lost
-    const topic = db
-      .prepare('SELECT status, job_id FROM topics WHERE id = ?')
-      .get(topicId) as { status: string; job_id: string }
+    const topic = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(topicId) as {
+      status: string
+      job_id: string
+    }
     expect(topic).toEqual({ status: 'claimed', job_id: result.jobId })
     const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(result.jobId) as {
       status: string
@@ -318,9 +319,9 @@ describe('produceNextTick — repair sweep', () => {
     // neverStages guards that no production runs on this path
     const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
     expect(result).toEqual({ action: 'noop', reason: 'no-eligible-work' })
-    const topic = db
-      .prepare("SELECT status FROM topics WHERE dedupe_hash = 'h-repair'")
-      .get() as { status: string }
+    const topic = db.prepare("SELECT status FROM topics WHERE dedupe_hash = 'h-repair'").get() as {
+      status: string
+    }
     expect(topic.status).toBe('used')
     db.close()
   })
@@ -449,43 +450,65 @@ describe('produceNextTick — lease heartbeat', () => {
 })
 
 describe('produce-next CLI', () => {
-  it.concurrent('`produce-next --help` prints usage with --db/--channels-dir/--runs-root', async () => {
-    const result = await runCli(['produce-next', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('--db')
-    expect(result.stdout).toContain('--channels-dir')
-    expect(result.stdout).toContain('--runs-root')
-  }, 60000)
+  it.concurrent(
+    '`produce-next --help` prints usage with --db/--channels-dir/--runs-root',
+    async () => {
+      const result = await runCli(['produce-next', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('--db')
+      expect(result.stdout).toContain('--channels-dir')
+      expect(result.stdout).toContain('--runs-root')
+    },
+    60000,
+  )
 
-  it.concurrent('`produce-next` with no eligible work prints one noop JSON line and exits 0', async () => {
-    const root = tmpDir('brainrot-loop-cli-')
-    const result = await runCli([
-      'produce-next',
-      '--db', join(root, 'brainrot.db'), '--channels-dir', channelsDir, '--runs-root', join(root, 'runs'),
-    ])
-    expect(result.exitCode).toBe(0)
-    // exactly one cron-greppable JSON line
-    expect(result.stdout.trim().split('\n')).toHaveLength(1)
-    expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-eligible-work' })
-  }, 60000)
+  it.concurrent(
+    '`produce-next` with no eligible work prints one noop JSON line and exits 0',
+    async () => {
+      const root = tmpDir('brainrot-loop-cli-')
+      const result = await runCli([
+        'produce-next',
+        '--db',
+        join(root, 'brainrot.db'),
+        '--channels-dir',
+        channelsDir,
+        '--runs-root',
+        join(root, 'runs'),
+      ])
+      expect(result.exitCode).toBe(0)
+      // exactly one cron-greppable JSON line
+      expect(result.stdout.trim().split('\n')).toHaveLength(1)
+      expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-eligible-work' })
+    },
+    60000,
+  )
 
   // The G14 symptom end to end: this used to exit 1 with an empty stdout, so a
   // cron log of JSON lines simply had a hole in it every 25 minutes.
-  it.concurrent('`produce-next` over a broken channels dir still prints one JSON line and exits 0', async () => {
-    const root = tmpDir('brainrot-loop-cli-broken-')
-    const brokenDir = tmpDir('brainrot-loop-cli-broken-channels-')
-    writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
-    const result = await runCli([
-      'produce-next',
-      '--db', join(root, 'brainrot.db'), '--channels-dir', brokenDir, '--runs-root', join(root, 'runs'),
-    ])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout.trim().split('\n')).toHaveLength(1)
-    const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
-    expect(line.action).toBe('noop')
-    expect(line.reason).toBe('config-error')
-    expect(line.error).toContain('broken.toml')
-    // stderr keeps the cause visible where the JSON line is only grepped
-    expect(result.stderr).toContain('broken.toml')
-  }, 60000)
+  it.concurrent(
+    '`produce-next` over a broken channels dir still prints one JSON line and exits 0',
+    async () => {
+      const root = tmpDir('brainrot-loop-cli-broken-')
+      const brokenDir = tmpDir('brainrot-loop-cli-broken-channels-')
+      writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli([
+        'produce-next',
+        '--db',
+        join(root, 'brainrot.db'),
+        '--channels-dir',
+        brokenDir,
+        '--runs-root',
+        join(root, 'runs'),
+      ])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.trim().split('\n')).toHaveLength(1)
+      const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
+      expect(line.action).toBe('noop')
+      expect(line.reason).toBe('config-error')
+      expect(line.error).toContain('broken.toml')
+      // stderr keeps the cause visible where the JSON line is only grepped
+      expect(result.stderr).toContain('broken.toml')
+    },
+    60000,
+  )
 })

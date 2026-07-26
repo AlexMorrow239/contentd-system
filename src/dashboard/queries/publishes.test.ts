@@ -61,7 +61,7 @@ describe('buildPublishGrids', () => {
   it('places a publish row in its day/slot cell', () => {
     const db = seed()
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, attempt) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, attempt) ' +
         "VALUES ('j1','youtube','space','2026-07-25','09:00','done','abc','https://y/abc',1)",
     ).run()
     const [grid] = buildPublishGrids(db, [channel('space', ['09:00', '17:00'])], 3, now)
@@ -84,7 +84,7 @@ describe('buildPublishGrids', () => {
   it('ignores publish rows outside the requested window', () => {
     const db = seed()
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
         "VALUES ('j1','youtube','space','2026-01-01','09:00','done',1)",
     ).run()
     const [grid] = buildPublishGrids(db, [channel('space', ['09:00'])], 2, now)
@@ -95,7 +95,7 @@ describe('buildPublishGrids', () => {
   it('keeps channels separate', () => {
     const db = seed()
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) " +
+      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
         "VALUES ('j1','youtube','space','2026-07-25','09:00','done',1)",
     ).run()
     const grids = buildPublishGrids(

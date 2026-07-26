@@ -98,9 +98,15 @@ export async function mintAccessToken(opts: {
     // invalid_grant and every other 4xx are the caller's problem (revoked or
     // expired grant, bad client secret) — re-auth is the fix, not a retry.
     if (res.status >= 500) {
-      throw new PublishError(`mintAccessToken: token endpoint responded ${res.status}: ${raw}`, 'transient')
+      throw new PublishError(
+        `mintAccessToken: token endpoint responded ${res.status}: ${raw}`,
+        'transient',
+      )
     }
-    throw new PublishError(`mintAccessToken: token endpoint responded ${res.status}: ${raw}`, 'auth')
+    throw new PublishError(
+      `mintAccessToken: token endpoint responded ${res.status}: ${raw}`,
+      'auth',
+    )
   }
   // A 200 with an unparseable body is a broken success response, not a caller
   // fault — 'transient' so the next tick retries rather than forcing re-auth.
@@ -132,7 +138,9 @@ async function mapUploadHttpError(op: string, res: Response): Promise<PublishErr
   let reasons: string[] = []
   try {
     const parsed = JSON.parse(raw) as YoutubeErrorBody
-    reasons = (parsed.error?.errors ?? []).map((e) => e.reason).filter((r): r is string => Boolean(r))
+    reasons = (parsed.error?.errors ?? [])
+      .map((e) => e.reason)
+      .filter((r): r is string => Boolean(r))
   } catch {
     // Non-JSON body: nothing to inspect, fall through to status-only mapping.
   }
@@ -208,7 +216,10 @@ export function youtubeTarget(fetchImpl: typeof fetch = fetch): PublishTarget {
       }
       const location = initiateRes.headers.get('location')
       if (!location) {
-        throw new PublishError('youtubeTarget: resumable initiate response carried no Location header', 'transient')
+        throw new PublishError(
+          'youtubeTarget: resumable initiate response carried no Location header',
+          'transient',
+        )
       }
 
       // The PUT to the session Location is its own authenticated request — the

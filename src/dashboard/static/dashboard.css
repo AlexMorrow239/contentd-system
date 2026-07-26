@@ -10,13 +10,19 @@
   --link: #6fa8ff;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    14px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 
 header {
@@ -28,10 +34,24 @@ header {
   border-bottom: 1px solid var(--border);
 }
 
-nav { display: flex; gap: 1rem; }
-nav a, .db-switch { color: var(--link); text-decoration: none; }
-nav a.active { color: var(--fg); font-weight: 700; text-decoration: underline; }
-.db-switch { color: var(--muted); font-size: 12px; }
+nav {
+  display: flex;
+  gap: 1rem;
+}
+nav a,
+.db-switch {
+  color: var(--link);
+  text-decoration: none;
+}
+nav a.active {
+  color: var(--fg);
+  font-weight: 700;
+  text-decoration: underline;
+}
+.db-switch {
+  color: var(--muted);
+  font-size: 12px;
+}
 
 .env-banner.dev {
   background: var(--warn);
@@ -41,16 +61,46 @@ nav a.active { color: var(--fg); font-weight: 700; text-decoration: underline; }
   letter-spacing: 0.04em;
 }
 
-main { padding: 1rem; }
-footer { padding: 1rem; color: var(--muted); font-size: 12px; }
+main {
+  padding: 1rem;
+}
+footer {
+  padding: 1rem;
+  color: var(--muted);
+  font-size: 12px;
+}
 
-h1 { font-size: 18px; margin: 0 0 1rem; }
-h2 { font-size: 15px; margin: 1.5rem 0 0.5rem; color: var(--muted); }
+h1 {
+  font-size: 18px;
+  margin: 0 0 1rem;
+}
+h2 {
+  font-size: 15px;
+  margin: 1.5rem 0 0.5rem;
+  color: var(--muted);
+}
 
-table { border-collapse: collapse; width: 100%; margin-bottom: 1rem; }
-th, td { border-bottom: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
-th { color: var(--muted); font-weight: 400; font-size: 12px; text-transform: uppercase; }
-td a { color: var(--link); }
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  vertical-align: top;
+}
+th {
+  color: var(--muted);
+  font-weight: 400;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+td a {
+  color: var(--link);
+}
 
 .panel {
   background: var(--panel);
@@ -60,11 +110,29 @@ td a { color: var(--link); }
   margin-bottom: 1rem;
 }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
 
-.status-done, .status-ready, .status-published { color: var(--ok); }
-.status-running, .status-claimed, .status-queued, .status-pending, .status-needs-review { color: var(--warn); }
-.status-failed, .status-blocked, .status-interrupted { color: var(--bad); }
+.status-done,
+.status-ready,
+.status-published {
+  color: var(--ok);
+}
+.status-running,
+.status-claimed,
+.status-queued,
+.status-pending,
+.status-needs-review {
+  color: var(--warn);
+}
+.status-failed,
+.status-blocked,
+.status-interrupted {
+  color: var(--bad);
+}
 
 .error {
   white-space: pre-wrap;
@@ -79,11 +147,23 @@ td a { color: var(--link); }
   color: var(--warn);
 }
 
-.muted { color: var(--muted); }
-.empty { color: var(--muted); font-style: italic; }
+.muted {
+  color: var(--muted);
+}
+.empty {
+  color: var(--muted);
+  font-style: italic;
+}
 
-form.filters { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-form.filters select, form.filters input, form.filters button {
+form.filters {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+form.filters select,
+form.filters input,
+form.filters button {
   background: var(--panel);
   color: var(--fg);
   border: 1px solid var(--border);
@@ -92,7 +172,17 @@ form.filters select, form.filters input, form.filters button {
   font: inherit;
 }
 
-video { width: 100%; max-width: 320px; border-radius: 6px; background: #000; }
+video {
+  width: 100%;
+  max-width: 320px;
+  border-radius: 6px;
+  background: #000;
+}
 
-.slot-grid td { text-align: center; font-size: 12px; }
-.slot-empty { color: var(--border); }
+.slot-grid td {
+  text-align: center;
+  font-size: 12px;
+}
+.slot-empty {
+  color: var(--border);
+}

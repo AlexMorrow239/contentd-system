@@ -56,9 +56,11 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
       <td>${topic.channel}</td>
       <td class="status-${topic.status}">${topic.status}</td>
       <td>
-        ${topic.jobId === null
-          ? html`<span class="muted">—</span>`
-          : html`<a href="${dbHref(`/jobs/${topic.jobId}`, data.dbChoice)}">${topic.jobId}</a>`}
+        ${
+          topic.jobId === null
+            ? html`<span class="muted">—</span>`
+            : html`<a href="${dbHref(`/jobs/${topic.jobId}`, data.dbChoice)}">${topic.jobId}</a>`
+        }
       </td>
       <td><a href="${topic.url}" rel="noreferrer">${topic.source}</a></td>
       <td class="muted">${topic.reason}</td>

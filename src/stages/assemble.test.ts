@@ -25,7 +25,13 @@ function makeChannel(bgmDir: string): ChannelConfig {
     niche: ['space'],
     videosPerDay: 2,
     voice: { volume: 'af_heart' },
-    captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
+    captionStyle: {
+      font: 'Inter',
+      fontSizePx: 72,
+      activeColor: '#FFD700',
+      inactiveColor: '#FFFFFF',
+      strokePx: 8,
+    },
     bgDir: [tmp('brainrot-bg-')],
     bgmDir,
     budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
@@ -52,8 +58,15 @@ function makeCtx(runDir: string, channel: ChannelConfig): JobContext {
 }
 
 async function codecs(file: string): Promise<{ video?: string; audio?: string }> {
-  const { stdout } = await execa('ffprobe', ['-v', 'error', '-print_format', 'json', '-show_streams', file])
-  const streams = (JSON.parse(stdout).streams as { codec_type: string; codec_name: string }[])
+  const { stdout } = await execa('ffprobe', [
+    '-v',
+    'error',
+    '-print_format',
+    'json',
+    '-show_streams',
+    file,
+  ])
+  const streams = JSON.parse(stdout).streams as { codec_type: string; codec_name: string }[]
   return {
     video: streams.find((s) => s.codec_type === 'video')?.codec_name,
     audio: streams.find((s) => s.codec_type === 'audio')?.codec_name,
@@ -71,13 +84,24 @@ describe('assembleStage', () => {
 
     // Real tiny fixtures.
     await execa('ffmpeg', [
-      '-f', 'lavfi', '-i', 'testsrc2=duration=2:size=1080x1920:rate=30',
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
-      ctx.artifactPath('visuals', 'background.mp4'), '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'testsrc2=duration=2:size=1080x1920:rate=30',
+      '-c:v',
+      'libx264',
+      '-pix_fmt',
+      'yuv420p',
+      ctx.artifactPath('visuals', 'background.mp4'),
+      '-y',
     ])
     await execa('ffmpeg', [
-      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
-      ctx.artifactPath('voice', 'narration.wav'), '-y',
+      '-f',
+      'lavfi',
+      '-i',
+      'sine=frequency=440:duration=1',
+      ctx.artifactPath('voice', 'narration.wav'),
+      '-y',
     ])
     writeFileSync(
       ctx.artifactPath('voice', 'voice.json'),
@@ -218,4 +242,3 @@ describe('assembleStage bundle robustness', () => {
     expect(bundleMock).toHaveBeenCalledWith({ entryPoint: expectedEntry })
   })
 })
-

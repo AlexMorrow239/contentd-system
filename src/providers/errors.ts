@@ -11,9 +11,12 @@
  * Kept dependency-free so both providers can import it without coupling.
  */
 export class ProviderCostError extends Error {
-  constructor(message: string, public costUsdMicros: number) {
-    super(message);
-    this.name = 'ProviderCostError';
+  constructor(
+    message: string,
+    public costUsdMicros: number,
+  ) {
+    super(message)
+    this.name = 'ProviderCostError'
   }
 }
 
@@ -24,8 +27,8 @@ export class ProviderCostError extends Error {
  */
 export function errorCostUsdMicros(err: unknown): number | undefined {
   if (err !== null && typeof err === 'object' && 'costUsdMicros' in err) {
-    const cost = err.costUsdMicros;
-    if (typeof cost === 'number' && Number.isFinite(cost)) return cost;
+    const cost = err.costUsdMicros
+    if (typeof cost === 'number' && Number.isFinite(cost)) return cost
   }
-  return undefined;
+  return undefined
 }

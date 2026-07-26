@@ -22,10 +22,22 @@ function tmp(prefix: string): string {
 async function makeClip(file: string): Promise<void> {
   // 2s 640x360 testsrc2 + sine (same command as Task 10 fixture) — forces the crop path.
   await execa('ffmpeg', [
-    '-f', 'lavfi', '-i', 'testsrc2=duration=2:size=640x360:rate=30',
-    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-    file, '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=duration=2:size=640x360:rate=30',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:duration=2',
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    file,
+    '-y',
   ])
 }
 
@@ -35,7 +47,13 @@ function makeChannel(bgDir: string | string[]): ChannelConfig {
     niche: ['space'],
     videosPerDay: 2,
     voice: { volume: 'af_heart' },
-    captionStyle: { font: 'Inter', fontSizePx: 72, activeColor: '#FFD700', inactiveColor: '#FFFFFF', strokePx: 8 },
+    captionStyle: {
+      font: 'Inter',
+      fontSizePx: 72,
+      activeColor: '#FFD700',
+      inactiveColor: '#FFFFFF',
+      strokePx: 8,
+    },
     bgDir: Array.isArray(bgDir) ? bgDir : [bgDir],
     bgmDir: tmp('brainrot-bgm-'),
     budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
@@ -88,9 +106,9 @@ describe('visualsVolumeStage', () => {
     expect(p.height).toBe(1920)
     expect(p.durationMs).toBeGreaterThanOrEqual(2000) // >= narration durationMs
 
-    const rows = ctx.db
-      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
-      .all('testchan') as { file: string }[]
+    const rows = ctx.db.prepare('SELECT file FROM bg_usage WHERE channel = ?').all('testchan') as {
+      file: string
+    }[]
     expect(rows.length).toBe(1)
     expect([path.resolve(bgDir, 'clip1.mp4'), path.resolve(bgDir, 'clip2.mp4')]).toContain(
       rows[0].file,
@@ -137,9 +155,9 @@ describe('visualsVolumeStage', () => {
 
     await visualsVolumeStage.run(ctx)
 
-    const rows = ctx.db
-      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
-      .all('testchan') as { file: string }[]
+    const rows = ctx.db.prepare('SELECT file FROM bg_usage WHERE channel = ?').all('testchan') as {
+      file: string
+    }[]
     expect(rows[0].file).toBe(path.resolve(nestedClip))
   }, 60000)
 
@@ -156,9 +174,9 @@ describe('visualsVolumeStage', () => {
 
     await visualsVolumeStage.run(ctx)
 
-    const rows = ctx.db
-      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
-      .all('testchan') as { file: string }[]
+    const rows = ctx.db.prepare('SELECT file FROM bg_usage WHERE channel = ?').all('testchan') as {
+      file: string
+    }[]
     expect(rows[0].file).toBe(path.resolve(clip))
   }, 60000)
 
@@ -175,9 +193,9 @@ describe('visualsVolumeStage', () => {
 
     await visualsVolumeStage.run(ctx)
 
-    const rows = ctx.db
-      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
-      .all('testchan') as { file: string }[]
+    const rows = ctx.db.prepare('SELECT file FROM bg_usage WHERE channel = ?').all('testchan') as {
+      file: string
+    }[]
     expect([path.resolve(clipA), path.resolve(clipB)]).toContain(rows[0].file)
   }, 60000)
 
@@ -216,9 +234,9 @@ describe('visualsVolumeStage', () => {
 
     await visualsVolumeStage.run(ctx)
 
-    const rows = ctx.db
-      .prepare('SELECT file FROM bg_usage WHERE channel = ?')
-      .all('testchan') as { file: string }[]
+    const rows = ctx.db.prepare('SELECT file FROM bg_usage WHERE channel = ?').all('testchan') as {
+      file: string
+    }[]
     expect(rows[0].file).toBe(path.resolve(clip))
   }, 60000)
 })

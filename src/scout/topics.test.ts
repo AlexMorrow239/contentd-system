@@ -131,9 +131,10 @@ describe('insertTopics', () => {
       { ...base, channel: 'chan-a', dedupeHash: 'h3', status: 'candidate' },
     ])
     expect(second).toBe(1)
-    const rows = db
-      .prepare('SELECT dedupe_hash, status FROM topics ORDER BY id')
-      .all() as { dedupe_hash: string; status: string }[]
+    const rows = db.prepare('SELECT dedupe_hash, status FROM topics ORDER BY id').all() as {
+      dedupe_hash: string
+      status: string
+    }[]
     expect(rows).toEqual([
       { dedupe_hash: 'h1', status: 'candidate' },
       { dedupe_hash: 'h2', status: 'rejected' },
@@ -168,8 +169,17 @@ describe('recentTopicTitles', () => {
     seedTopic(db, { title: 'oldest', createdAt: '2026-07-18T00:00:00.000Z' })
     seedTopic(db, { title: 'skipped', createdAt: '2026-07-19T00:00:00.000Z', status: 'rejected' })
     seedTopic(db, { title: 'middle', createdAt: '2026-07-19T12:00:00.000Z', status: 'used' })
-    seedTopic(db, { title: 'newest', createdAt: '2026-07-20T00:00:00.000Z', status: 'claimed', jobId: 'job-1' })
-    seedTopic(db, { title: 'other channel', channel: 'chan-b', createdAt: '2026-07-20T06:00:00.000Z' })
+    seedTopic(db, {
+      title: 'newest',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      status: 'claimed',
+      jobId: 'job-1',
+    })
+    seedTopic(db, {
+      title: 'other channel',
+      channel: 'chan-b',
+      createdAt: '2026-07-20T06:00:00.000Z',
+    })
     expect(recentTopicTitles(db, 'chan-a')).toEqual(['newest', 'middle', 'oldest'])
     expect(recentTopicTitles(db, 'chan-a', 2)).toEqual(['newest', 'middle'])
     db.close()

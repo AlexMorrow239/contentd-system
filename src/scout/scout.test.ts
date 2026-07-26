@@ -7,7 +7,12 @@ import type { ChannelConfig, ScoutConfig } from '../config/channel.js'
 import { testChannel } from '../stages/_testkit.js'
 import type { FetchLike } from './sources/types.js'
 import { listTopics } from './topics.js'
-import { AllChannelsScoringFailedError, AllSourcesFailedError, scoutAll, scoutChannel } from './scout.js'
+import {
+  AllChannelsScoringFailedError,
+  AllSourcesFailedError,
+  scoutAll,
+  scoutChannel,
+} from './scout.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {
@@ -37,7 +42,7 @@ function redditFeed(posts: { name: string; title: string }[]): string {
 // URL-substring-keyed fetch stub: string body → 200 response, Error → throw.
 // Unmatched URLs throw, so a test never silently hits an unexpected source.
 function fetchStub(bodyBySubstring: Record<string, string | Error>): FetchLike {
-  return (async (input: RequestInfo | URL) => {
+  return async (input: RequestInfo | URL) => {
     const url = input instanceof Request ? input.url : String(input)
     for (const [needle, body] of Object.entries(bodyBySubstring)) {
       if (url.includes(needle)) {
@@ -46,7 +51,7 @@ function fetchStub(bodyBySubstring: Record<string, string | Error>): FetchLike {
       }
     }
     throw new Error(`unexpected fetch: ${url}`)
-  })
+  }
 }
 
 function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
@@ -79,7 +84,12 @@ describe('scoutChannel', () => {
     })
     const { client, create } = fakeClient(
       emitScores([
-        { candidateIndex: 0, score: 85, topic: 'The Moon is escaping Earth', reason: 'novel physics hook' },
+        {
+          candidateIndex: 0,
+          score: 85,
+          topic: 'The Moon is escaping Earth',
+          reason: 'novel physics hook',
+        },
         { candidateIndex: 1, score: 10, topic: 'Telescope ad', reason: 'commercial spam' },
       ]),
     )
@@ -103,7 +113,12 @@ describe('scoutChannel', () => {
     expect(queued?.source).toBe('reddit:r/space')
     const costs = db.prepare('SELECT job_id, provider, operation, usd_micros FROM costs').all()
     expect(costs).toEqual([
-      { job_id: 'scout:chan-a', provider: 'anthropic', operation: 'scout-score', usd_micros: 2_000 },
+      {
+        job_id: 'scout:chan-a',
+        provider: 'anthropic',
+        operation: 'scout-score',
+        usd_micros: 2_000,
+      },
     ])
     // ONE batched call for the whole channel
     expect(create).toHaveBeenCalledTimes(1)
@@ -146,7 +161,9 @@ describe('scoutChannel', () => {
       '/r/askscience/.rss': redditFeed([{ name: 't3_ccc', title: 'Why is the sky blue' }]),
     })
     const { client } = fakeClient(
-      emitScores([{ candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' }]),
+      emitScores([
+        { candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' },
+      ]),
     )
     const result = await scoutChannel(db, channel, { client, fetchImpl })
     expect(result.fetched).toBe(1)
@@ -166,7 +183,9 @@ describe('scoutChannel', () => {
       '/r/space/.rss': redditFeed([{ name: 't3_ok', title: 'Why is the sky blue' }]),
     })
     const { client } = fakeClient(
-      emitScores([{ candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' }]),
+      emitScores([
+        { candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' },
+      ]),
     )
     const result = await scoutChannel(db, channel, { client, fetchImpl })
     // the good subreddit still scouted and queued despite the bad feed URL
@@ -326,7 +345,9 @@ describe('scoutAll', () => {
     expect(err).toBeInstanceOf(AllChannelsScoringFailedError)
     // the error carries every channel's result so the CLI still prints its JSON line
     expect((err as AllChannelsScoringFailedError).results.map((r) => r.channel)).toEqual(['a', 'b'])
-    expect((err as AllChannelsScoringFailedError).results.every((r) => r.scoringError !== undefined)).toBe(true)
+    expect(
+      (err as AllChannelsScoringFailedError).results.every((r) => r.scoringError !== undefined),
+    ).toBe(true)
     stderrSpy.mockRestore()
     db.close()
   })
@@ -383,7 +404,9 @@ describe('scoutAll', () => {
     // counts only the channel that hit a real error.
     expect(failed.results[0].scoringError).not.toContain('global-day')
     expect(failed.results[1].scoringError).toContain('global-day')
-    expect(failed.message).toBe('all 1 scouted channel(s) failed in scoring (1 more budget-blocked)')
+    expect(failed.message).toBe(
+      'all 1 scouted channel(s) failed in scoring (1 more budget-blocked)',
+    )
     stderrSpy.mockRestore()
     db.close()
   })

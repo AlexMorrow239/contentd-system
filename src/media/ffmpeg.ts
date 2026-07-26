@@ -21,8 +21,10 @@ interface FfprobeJson {
 
 export async function probe(file: string): Promise<MediaProbe> {
   const { stdout } = await execa('ffprobe', [
-    '-v', 'error',
-    '-print_format', 'json',
+    '-v',
+    'error',
+    '-print_format',
+    'json',
     '-show_streams',
     '-show_format',
     file,
@@ -45,22 +47,34 @@ export async function probe(file: string): Promise<MediaProbe> {
 
 export async function cropToVertical(input: string, output: string): Promise<void> {
   await execa('ffmpeg', [
-    '-i', input,
-    '-vf', 'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
-    '-c:a', 'copy',
+    '-i',
+    input,
+    '-vf',
+    'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
+    '-c:a',
+    'copy',
     '-y',
     output,
   ])
 }
 
-export async function loopToDuration(input: string, output: string, durationMs: number): Promise<void> {
+export async function loopToDuration(
+  input: string,
+  output: string,
+  durationMs: number,
+): Promise<void> {
   const seconds = (durationMs / 1000).toFixed(3)
   await execa('ffmpeg', [
-    '-stream_loop', '-1',
-    '-i', input,
-    '-t', seconds,
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
+    '-stream_loop',
+    '-1',
+    '-i',
+    input,
+    '-t',
+    seconds,
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
     '-an',
     '-y',
     output,

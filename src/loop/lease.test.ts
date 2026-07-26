@@ -135,7 +135,9 @@ describe('extendLease', () => {
     const db = openDb(':memory:')
     acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)
     // A drifted expiry stands in for a render that outlived its lease.
-    db.prepare("UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'").run()
+    db.prepare(
+      "UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'",
+    ).run()
     const before = Date.now()
     expect(extendLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
     const row = db
@@ -162,7 +164,7 @@ describe('extendLease', () => {
   it('refuses when the lease row is gone', () => {
     const db = openDb(':memory:')
     expect(extendLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(false)
-    expect(db.prepare("SELECT COUNT(*) AS n FROM leases").get()).toEqual({ n: 0 })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
     db.close()
   })
 })

@@ -43,7 +43,13 @@ export interface PublishTickResult {
   postId?: string
   url?: string
   error?: string
-  wouldPublish?: { channel: string; platform: Platform; slot: string; jobId: string; title: string } | null
+  wouldPublish?: {
+    channel: string
+    platform: Platform
+    slot: string
+    jobId: string
+    title: string
+  } | null
 }
 
 // Checks the two env vars whose malformed values would otherwise throw from
@@ -192,7 +198,8 @@ export async function publishNextTick(
       // Only when every ready row on the channel is pruned does the candidate
       // fall through as 'no-video-file'.
       const prunedJobIds: string[] = []
-      let video: { jobId: string; videoPath: string; metadataJson: string; topic: string } | null = null
+      let video: { jobId: string; videoPath: string; metadataJson: string; topic: string } | null =
+        null
       // Defensive bound: the exclusion list grows by one per pass, so the
       // query is strictly monotonic and terminates on its own — the cap only
       // limits how much a channel of thousands of pruned rows can cost a tick.
@@ -256,7 +263,9 @@ export async function publishNextTick(
     // same channels list, every entry of which carries a non-null publish.
     const channel = channels.find((c) => c.name === candidate.channel)
     if (channel === undefined || channel.publish === null) {
-      throw new Error(`publishNextTick: channel ${candidate.channel} missing publish config at claim time`)
+      throw new Error(
+        `publishNextTick: channel ${candidate.channel} missing publish config at claim time`,
+      )
     }
 
     // The UNIQUE(channel, platform, day, slot) constraint is the real guard;

@@ -16,8 +16,7 @@ export function acquireLease(db: Database, name: string, holder: string, ttlMs: 
   const attempt = db.transaction((): boolean => {
     const now = new Date().toISOString()
     const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get(name) as
-      | { expires_at: string }
-      | undefined
+      { expires_at: string } | undefined
     if (row !== undefined && row.expires_at > now) return false
     const expiresAt = new Date(Date.now() + ttlMs).toISOString()
     db.prepare(

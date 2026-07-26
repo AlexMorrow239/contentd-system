@@ -1,71 +1,74 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import http from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { mkdtempSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-import { alignTranscript } from './whisperx.js';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { mkdtempSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { alignTranscript } from './whisperx.js'
 
-let server: http.Server;
-let baseUrl: string;
-let lastBody: string;
-let responder: () => { status: number; body: string };
+let server: http.Server
+let baseUrl: string
+let lastBody: string
+let responder: () => { status: number; body: string }
 
 beforeEach(async () => {
-  responder = () => ({ status: 200, body: JSON.stringify({ words: [{ word: 'hi', start: 0.12, end: 0.34 }] }) });
+  responder = () => ({
+    status: 200,
+    body: JSON.stringify({ words: [{ word: 'hi', start: 0.12, end: 0.34 }] }),
+  })
   server = http.createServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (c) => chunks.push(c));
+    const chunks: Buffer[] = []
+    req.on('data', (c) => chunks.push(c))
     req.on('end', () => {
-      lastBody = Buffer.concat(chunks).toString('utf8');
-      const r = responder();
-      res.writeHead(r.status, { 'content-type': 'application/json' });
-      res.end(r.body);
-    });
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-});
+      lastBody = Buffer.concat(chunks).toString('utf8')
+      const r = responder()
+      res.writeHead(r.status, { 'content-type': 'application/json' })
+      res.end(r.body)
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+})
 
-afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())));
+afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())))
 
 async function tmpWav(): Promise<string> {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-wx-'));
-  const p = path.join(dir, 'narration.wav');
-  await writeFile(p, Buffer.from('RIFFxxxxWAVEdummy'));
-  return p;
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-wx-'))
+  const p = path.join(dir, 'narration.wav')
+  await writeFile(p, Buffer.from('RIFFxxxxWAVEdummy'))
+  return p
 }
 
 describe('alignTranscript', () => {
   it('posts multipart audio + transcript and converts seconds to integer ms', async () => {
-    const wavPath = await tmpWav();
-    const words = await alignTranscript({ baseUrl, wavPath, transcript: 'hi there' });
-    expect(lastBody).toContain('name="transcript"');
-    expect(lastBody).toContain('hi there');
-    expect(lastBody).toContain('name="audio"');
-    expect(lastBody).toContain('filename="narration.wav"');
-    expect(words).toEqual([{ word: 'hi', startMs: 120, endMs: 340 }]);
-  });
+    const wavPath = await tmpWav()
+    const words = await alignTranscript({ baseUrl, wavPath, transcript: 'hi there' })
+    expect(lastBody).toContain('name="transcript"')
+    expect(lastBody).toContain('hi there')
+    expect(lastBody).toContain('name="audio"')
+    expect(lastBody).toContain('filename="narration.wav"')
+    expect(words).toEqual([{ word: 'hi', startMs: 120, endMs: 340 }])
+  })
 
   it('throws on a non-2xx response', async () => {
-    const wavPath = await tmpWav();
-    responder = () => ({ status: 500, body: JSON.stringify({ detail: 'boom' }) });
-    await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(/500/);
-  });
+    const wavPath = await tmpWav()
+    responder = () => ({ status: 500, body: JSON.stringify({ detail: 'boom' }) })
+    await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(/500/)
+  })
 
   it('throws naming the endpoint when a 200 body has no words array', async () => {
-    const wavPath = await tmpWav();
+    const wavPath = await tmpWav()
     // A 200 of an unexpected shape used to surface as "Cannot read properties of
     // undefined (reading 'map')", indistinguishable from a bug in this repo.
-    responder = () => ({ status: 200, body: JSON.stringify({ detail: 'model still loading' }) });
+    responder = () => ({ status: 200, body: JSON.stringify({ detail: 'model still loading' }) })
     await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(
       new RegExp(`malformed response from ${baseUrl}/align`),
-    );
-  });
+    )
+  })
 
   it('drops words whose timings are not finite rather than emitting NaN ms', async () => {
-    const wavPath = await tmpWav();
+    const wavPath = await tmpWav()
     responder = () => ({
       status: 200,
       body: JSON.stringify({
@@ -75,29 +78,29 @@ describe('alignTranscript', () => {
           { word: 'there', start: 0.4, end: 0.6 },
         ],
       }),
-    });
-    const words = await alignTranscript({ baseUrl, wavPath, transcript: 'hi gone there' });
+    })
+    const words = await alignTranscript({ baseUrl, wavPath, transcript: 'hi gone there' })
     expect(words).toEqual([
       { word: 'hi', startMs: 120, endMs: 340 },
       { word: 'there', startMs: 400, endMs: 600 },
-    ]);
-  });
+    ])
+  })
 
   it('times out against a sidecar that never responds', async () => {
-    const wavPath = await tmpWav();
+    const wavPath = await tmpWav()
     // A server that accepts the request but never sends a response.
     const hung = http.createServer(() => {
       /* intentionally never ends the response */
-    });
-    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve));
-    const hungUrl = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`;
+    })
+    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve))
+    const hungUrl = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`
     try {
       await expect(
         alignTranscript({ baseUrl: hungUrl, wavPath, transcript: 'x', timeoutMs: 200 }),
-      ).rejects.toThrow(/whisperx align timed out after 200ms/);
+      ).rejects.toThrow(/whisperx align timed out after 200ms/)
     } finally {
-      hung.closeAllConnections?.();
-      await new Promise<void>((resolve) => hung.close(() => resolve()));
+      hung.closeAllConnections?.()
+      await new Promise<void>((resolve) => hung.close(() => resolve()))
     }
-  });
-});
+  })
+})

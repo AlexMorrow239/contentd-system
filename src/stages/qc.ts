@@ -67,9 +67,9 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
     name: 'qc',
     async run(ctx: JobContext): Promise<void> {
       const finalPath = ctx.artifactPath('assemble', 'final.mp4')
-      const voice = JSON.parse(
-        readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
-      ) as { durationMs: number }
+      const voice = JSON.parse(readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8')) as {
+        durationMs: number
+      }
       const p = await probe(finalPath)
       const checks: QcResult['checks'] = []
 

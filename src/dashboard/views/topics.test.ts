@@ -23,7 +23,11 @@ function topic(overrides: Partial<TopicRow> = {}): TopicRow {
 describe('topicChannels', () => {
   it('lists distinct channels alphabetically', () => {
     expect(
-      topicChannels([topic({ channel: 'space' }), topic({ channel: 'ocean' }), topic({ channel: 'space' })]),
+      topicChannels([
+        topic({ channel: 'space' }),
+        topic({ channel: 'ocean' }),
+        topic({ channel: 'space' }),
+      ]),
     ).toEqual(['ocean', 'space'])
   })
 })
@@ -31,7 +35,10 @@ describe('topicChannels', () => {
 describe('renderTopicsPage', () => {
   it('sorts by score descending, highest first', () => {
     const out = renderTopicsPage({
-      topics: [topic({ id: 1, score: 40, title: 'low' }), topic({ id: 2, score: 90, title: 'high' })],
+      topics: [
+        topic({ id: 1, score: 40, title: 'low' }),
+        topic({ id: 2, score: 90, title: 'high' }),
+      ],
       channels: ['space'],
       filter: {},
       dbChoice: 'prod',

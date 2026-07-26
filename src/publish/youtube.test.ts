@@ -53,7 +53,9 @@ describe('ytUploadsPerDayCap', () => {
 
 // Injectable fetch: captures every call, answers with one canned response per
 // call in sequence (used later for the resumable upload's two HTTP calls).
-function fakeFetch(responses: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>) {
+function fakeFetch(
+  responses: Array<{ status: number; body?: unknown; headers?: Record<string, string> }>,
+) {
   const calls: { url: string; init: RequestInit | undefined }[] = []
   let i = 0
   const impl: typeof fetch = async (input, init) => {
@@ -70,7 +72,9 @@ function fakeFetch(responses: Array<{ status: number; body?: unknown; headers?: 
 
 describe('mintAccessToken', () => {
   it('POSTs a refresh_token grant and returns the access token', async () => {
-    const { impl, calls } = fakeFetch([{ status: 200, body: { access_token: 'ya29.at-test', expires_in: 3600 } }])
+    const { impl, calls } = fakeFetch([
+      { status: 200, body: { access_token: 'ya29.at-test', expires_in: 3600 } },
+    ])
     const token = await mintAccessToken({
       refreshToken: 'rt-test-token',
       clientId: 'client-id-x',
@@ -91,7 +95,10 @@ describe('mintAccessToken', () => {
 
   it('maps an invalid_grant rejection to kind "auth"', async () => {
     const { impl } = fakeFetch([
-      { status: 400, body: { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' } },
+      {
+        status: 400,
+        body: { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' },
+      },
     ])
     const err = await mintAccessToken({
       refreshToken: 'rt-test-token',
@@ -137,8 +144,16 @@ function tempVideoFile(bytes = 'fake video bytes'): string {
   return path
 }
 
-const META: PlatformMeta = { title: 'A great short', description: 'Watch this.', hashtags: ['#funny', '#shorts'] }
-const META_NO_HASHTAGS: PlatformMeta = { title: 'A great short', description: 'Watch this.', hashtags: [] }
+const META: PlatformMeta = {
+  title: 'A great short',
+  description: 'Watch this.',
+  hashtags: ['#funny', '#shorts'],
+}
+const META_NO_HASHTAGS: PlatformMeta = {
+  title: 'A great short',
+  description: 'Watch this.',
+  hashtags: [],
+}
 const PUBLISH_CFG: PublishChannelConfig = {
   slots: ['10:00'],
   platforms: ['youtube'],
@@ -155,7 +170,10 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
       { status: 200, body: { id: 'yt-video-1' } },
     ])
     const target = youtubeTarget(impl)
-    const res = await target.upload({ videoPath, meta: META, publish: PUBLISH_CFG }, 'access-token-x')
+    const res = await target.upload(
+      { videoPath, meta: META, publish: PUBLISH_CFG },
+      'access-token-x',
+    )
 
     expect(calls).toHaveLength(2)
     // Phase 1: resumable initiate — exact metadata body per the interface contract.
@@ -169,7 +187,9 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
     const initHeaders = initInit.headers as Record<string, string>
     expect(initHeaders.Authorization).toBe('Bearer access-token-x')
     expect(initHeaders['Content-Type']).toBe('application/json')
-    expect(initHeaders['X-Upload-Content-Length']).toBe(String(Buffer.byteLength('fake video bytes')))
+    expect(initHeaders['X-Upload-Content-Length']).toBe(
+      String(Buffer.byteLength('fake video bytes')),
+    )
     expect(initHeaders['X-Upload-Content-Type']).toBe('video/mp4')
     expect(JSON.parse(initInit.body as string)).toEqual({
       snippet: {
@@ -178,7 +198,11 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
         tags: ['funny', 'shorts'],
         categoryId: '24',
       },
-      status: { privacyStatus: 'public', selfDeclaredMadeForKids: false, containsSyntheticMedia: true },
+      status: {
+        privacyStatus: 'public',
+        selfDeclaredMadeForKids: false,
+        containsSyntheticMedia: true,
+      },
     })
 
     // Phase 2: PUT the raw bytes to the Location URL returned by phase 1 — its
@@ -201,7 +225,10 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
       { status: 200, body: { id: 'yt-video-2' } },
     ])
     const target = youtubeTarget(impl)
-    await target.upload({ videoPath, meta: META_NO_HASHTAGS, publish: PUBLISH_CFG }, 'access-token-x')
+    await target.upload(
+      { videoPath, meta: META_NO_HASHTAGS, publish: PUBLISH_CFG },
+      'access-token-x',
+    )
     const body = JSON.parse(calls[0].init!.body as string)
     expect(body.snippet.description).toBe('Watch this.')
     expect(body.snippet.tags).toEqual([])
@@ -223,7 +250,9 @@ describe('youtubeTarget upload — error mapping', () => {
   )
 
   it('maps HTTP 401 to kind "auth"', async () => {
-    const { impl } = fakeFetch([{ status: 401, body: { error: { errors: [{ reason: 'authError' }] } } }])
+    const { impl } = fakeFetch([
+      { status: 401, body: { error: { errors: [{ reason: 'authError' }] } } },
+    ])
     const target = youtubeTarget(impl)
     const err = await target
       .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
@@ -233,7 +262,9 @@ describe('youtubeTarget upload — error mapping', () => {
   })
 
   it('maps another 4xx to kind "rejected"', async () => {
-    const { impl } = fakeFetch([{ status: 400, body: { error: { errors: [{ reason: 'invalidMetadata' }] } } }])
+    const { impl } = fakeFetch([
+      { status: 400, body: { error: { errors: [{ reason: 'invalidMetadata' }] } } },
+    ])
     const target = youtubeTarget(impl)
     const err = await target
       .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
@@ -243,7 +274,9 @@ describe('youtubeTarget upload — error mapping', () => {
   })
 
   it('maps a 5xx to kind "transient"', async () => {
-    const { impl } = fakeFetch([{ status: 503, body: { error: { errors: [{ reason: 'backendError' }] } } }])
+    const { impl } = fakeFetch([
+      { status: 503, body: { error: { errors: [{ reason: 'backendError' }] } } },
+    ])
     const target = youtubeTarget(impl)
     const err = await target
       .upload({ videoPath: tempVideoFile(), meta: META, publish: PUBLISH_CFG }, 'tok')
@@ -267,11 +300,17 @@ describe('youtubeTarget upload — error mapping', () => {
   })
 
   it('maps a missing local video file (ENOENT) to kind "rejected" before any network call', async () => {
-    const { impl, calls } = fakeFetch([{ status: 200, headers: { location: 'https://upload.example.com/session/ghost' } }])
+    const { impl, calls } = fakeFetch([
+      { status: 200, headers: { location: 'https://upload.example.com/session/ghost' } },
+    ])
     const target = youtubeTarget(impl)
     const err = await target
       .upload(
-        { videoPath: '/nonexistent/brainrot-yt-missing/video.mp4', meta: META, publish: PUBLISH_CFG },
+        {
+          videoPath: '/nonexistent/brainrot-yt-missing/video.mp4',
+          meta: META,
+          publish: PUBLISH_CFG,
+        },
         'tok',
       )
       .catch((e: unknown) => e)
@@ -297,7 +336,10 @@ describe('youtubeTarget upload — error mapping', () => {
           headers: { location: 'https://upload.example.com/session/xyz' },
         })
       }
-      return new Response('not json{', { status: 200, headers: { 'content-type': 'application/json' } })
+      return new Response('not json{', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
     }
     const target = youtubeTarget(impl)
     const err = await target

@@ -1,11 +1,11 @@
-import { promises as fs } from 'node:fs';
-import { KokoroTTS, type GenerateOptions } from 'kokoro-js';
-import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts';
-import type { StageDef, JobContext } from '../jobs/types.js';
-import type { ScriptArtifact } from './script.js';
-import { assertBudget, recordCost } from '../jobs/costs.js';
-import { estimateTtsCostMicros, synthWithTimestamps } from '../providers/elevenlabs.js';
-import type { WordTiming } from '../providers/whisperx.js';
+import { promises as fs } from 'node:fs'
+import { KokoroTTS, type GenerateOptions } from 'kokoro-js'
+import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts'
+import type { StageDef, JobContext } from '../jobs/types.js'
+import type { ScriptArtifact } from './script.js'
+import { assertBudget, recordCost } from '../jobs/costs.js'
+import { estimateTtsCostMicros, synthWithTimestamps } from '../providers/elevenlabs.js'
+import type { WordTiming } from '../providers/whisperx.js'
 import {
   narrationText,
   bodyText,
@@ -13,34 +13,41 @@ import {
   minPlausibleNarrationMs,
   MAX_PLAUSIBLE_WORDS_PER_SEC,
   HOOK_PAUSE_MS,
-} from './narration-text.js';
-import { encodePcmWav, pcmFromFloat32, parseWav, parseWavDurationMs, silencePcm, trimTrailingSilence } from '../media/wav.js';
+} from './narration-text.js'
+import {
+  encodePcmWav,
+  pcmFromFloat32,
+  parseWav,
+  parseWavDurationMs,
+  silencePcm,
+  trimTrailingSilence,
+} from '../media/wav.js'
 
 export interface VoiceMeta {
-  provider: 'kokoro' | 'edge-tts' | 'elevenlabs';
-  voiceId: string;
-  durationMs: number;
+  provider: 'kokoro' | 'edge-tts' | 'elevenlabs'
+  voiceId: string
+  durationMs: number
 }
 
-export const KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX';
-const EDGE_VOICE = 'en-US-AriaNeural';
+export const KOKORO_MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX'
+const EDGE_VOICE = 'en-US-AriaNeural'
 // The Edge TTS backend supports "riff-24khz-16bit-mono-pcm" (a RIFF/WAV PCM
 // container), but msedge-tts ships that OUTPUT_FORMAT member commented out, so
 // only MP3/Opus constants exist. We pass the literal, protocol-valid format
 // string; the cast only satisfies the enum-typed parameter.
-const EDGE_FORMAT = 'riff-24khz-16bit-mono-pcm' as unknown as OUTPUT_FORMAT;
+const EDGE_FORMAT = 'riff-24khz-16bit-mono-pcm' as unknown as OUTPUT_FORMAT
 
 // kokoro-js tokenizes with `truncation: true` against the model's 510-phoneme-token
 // context (see `generate_from_ids`: `Math.min(..., 509)`). Anything past that is
 // silently dropped, yielding a well-formed WAV holding only the start of the script.
 // ~510 phoneme tokens is roughly 80 English words; 60 is a conservative budget that
 // leaves headroom for phoneme-dense words.
-export const MAX_CHUNK_WORDS = 60;
+export const MAX_CHUNK_WORDS = 60
 
 // Single source of truth for the dev-voice-mode env var name, so the gate
 // below, the `--dev` CLI flag (src/cli.ts), and both test files can never
 // drift apart by hardcoding independent copies of the same literal.
-export const DEV_VOICE_ENV = 'BRAINROT_DEV_VOICE';
+export const DEV_VOICE_ENV = 'BRAINROT_DEV_VOICE'
 
 // Break any piece still over budget on `boundary`; leave the rest alone.
 function refine(pieces: string[], boundary: RegExp): string[] {
@@ -51,7 +58,7 @@ function refine(pieces: string[], boundary: RegExp): string[] {
           .split(boundary)
           .map((s) => s.trim())
           .filter(Boolean),
-  );
+  )
 }
 
 // Split `text` into pieces of at most MAX_CHUNK_WORDS words, preferring the most
@@ -60,52 +67,52 @@ export function splitForTts(text: string): string[] {
   const sentences = text
     .split(/(?<=[.!?])\s+/)
     .map((s) => s.trim())
-    .filter(Boolean);
-  const clauses = refine(sentences, /(?<=,)\s+/);
+    .filter(Boolean)
+  const clauses = refine(sentences, /(?<=,)\s+/)
   // Anything still over budget has no punctuation to lean on: slice on raw word
   // count so no piece can ever exceed what the model will accept.
   const atomic = clauses.flatMap((piece) => {
-    const words = piece.split(/\s+/).filter(Boolean);
-    if (words.length <= MAX_CHUNK_WORDS) return [piece];
-    const sliced: string[] = [];
+    const words = piece.split(/\s+/).filter(Boolean)
+    if (words.length <= MAX_CHUNK_WORDS) return [piece]
+    const sliced: string[] = []
     for (let i = 0; i < words.length; i += MAX_CHUNK_WORDS) {
-      sliced.push(words.slice(i, i + MAX_CHUNK_WORDS).join(' '));
+      sliced.push(words.slice(i, i + MAX_CHUNK_WORDS).join(' '))
     }
-    return sliced;
-  });
+    return sliced
+  })
 
   // Greedily pack the atomic pieces back into full-budget chunks.
-  const chunks: string[] = [];
-  let current = '';
-  let currentWords = 0;
+  const chunks: string[] = []
+  let current = ''
+  let currentWords = 0
   for (const piece of atomic) {
-    const pieceWords = countWords(piece);
+    const pieceWords = countWords(piece)
     if (current && currentWords + pieceWords > MAX_CHUNK_WORDS) {
-      chunks.push(current);
-      current = piece;
-      currentWords = pieceWords;
+      chunks.push(current)
+      current = piece
+      currentWords = pieceWords
     } else {
-      current = current ? `${current} ${piece}` : piece;
-      currentWords += pieceWords;
+      current = current ? `${current} ${piece}` : piece
+      currentWords += pieceWords
     }
   }
-  if (current) chunks.push(current);
-  return chunks;
+  if (current) chunks.push(current)
+  return chunks
 }
 
 // One synthesized chunk, reduced to the PCM payload plus the format it came in.
 interface PcmChunk {
-  data: Buffer;
-  sampleRate: number;
-  channels: number;
+  data: Buffer
+  sampleRate: number
+  channels: number
 }
 
 // A section's (hook or body's) synthesized chunks, unjoined so encodePcmWav
 // still copies the payload only once across the whole hook+silence+body splice.
 interface PcmSection {
-  parts: Buffer[];
-  sampleRate: number;
-  channels: number;
+  parts: Buffer[]
+  sampleRate: number
+  channels: number
 }
 
 /**
@@ -125,17 +132,17 @@ async function synthChunked(
   provider: string,
   synth: (chunk: string) => Promise<PcmChunk>,
 ): Promise<PcmSection> {
-  const parts: Buffer[] = [];
-  let sampleRate = 0;
-  let channels = 0;
+  const parts: Buffer[] = []
+  let sampleRate = 0
+  let channels = 0
   for (const chunk of splitForTts(text)) {
-    const pcm = await synth(chunk);
-    parts.push(trimTrailingSilence(pcm.data, pcm.sampleRate, Math.max(1, pcm.channels)));
-    sampleRate = pcm.sampleRate;
-    channels = pcm.channels;
+    const pcm = await synth(chunk)
+    parts.push(trimTrailingSilence(pcm.data, pcm.sampleRate, Math.max(1, pcm.channels)))
+    sampleRate = pcm.sampleRate
+    channels = pcm.channels
   }
-  if (parts.length === 0 || sampleRate <= 0) throw new Error(`${provider} produced no audio`);
-  return { parts, sampleRate, channels: Math.max(1, channels) };
+  if (parts.length === 0 || sampleRate <= 0) throw new Error(`${provider} produced no audio`)
+  return { parts, sampleRate, channels: Math.max(1, channels) }
 }
 
 /**
@@ -152,30 +159,39 @@ async function synthHookAndBody(
   synth: (chunk: string) => Promise<PcmChunk>,
   wavPath: string,
 ): Promise<void> {
-  const hookPcm = await synthChunked(hook, provider, synth);
-  const bodyPcm = await synthChunked(body, provider, synth);
-  const silence = silencePcm(HOOK_PAUSE_MS, hookPcm.sampleRate, hookPcm.channels);
+  const hookPcm = await synthChunked(hook, provider, synth)
+  const bodyPcm = await synthChunked(body, provider, synth)
+  const silence = silencePcm(HOOK_PAUSE_MS, hookPcm.sampleRate, hookPcm.channels)
   await fs.writeFile(
     wavPath,
-    encodePcmWav([...hookPcm.parts, silence, ...bodyPcm.parts], hookPcm.sampleRate, hookPcm.channels),
-  );
+    encodePcmWav(
+      [...hookPcm.parts, silence, ...bodyPcm.parts],
+      hookPcm.sampleRate,
+      hookPcm.channels,
+    ),
+  )
 }
 
-async function synthKokoro(hook: string, body: string, voiceId: string, wavPath: string): Promise<void> {
-  const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype: 'q8' });
+async function synthKokoro(
+  hook: string,
+  body: string,
+  voiceId: string,
+  wavPath: string,
+): Promise<void> {
+  const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype: 'q8' })
   const synth = async (chunk: string): Promise<PcmChunk> => {
     // ctx.channel.voice.volume is a runtime-configured string; kokoro-js types the
     // `voice` option as a narrow union of built-in voice names. Narrow the config
     // value here, mirroring the EDGE_FORMAT cast above.
-    const audio = await tts.generate(chunk, { voice: voiceId as GenerateOptions['voice'] });
-    return { data: pcmFromFloat32(audio.audio), sampleRate: audio.sampling_rate, channels: 1 };
-  };
-  await synthHookAndBody(hook, body, 'kokoro', synth, wavPath);
+    const audio = await tts.generate(chunk, { voice: voiceId as GenerateOptions['voice'] })
+    return { data: pcmFromFloat32(audio.audio), sampleRate: audio.sampling_rate, channels: 1 }
+  }
+  await synthHookAndBody(hook, body, 'kokoro', synth, wavPath)
 }
 
 async function synthEdge(hook: string, body: string, wavPath: string): Promise<void> {
-  const tts = new MsEdgeTTS();
-  await tts.setMetadata(EDGE_VOICE, EDGE_FORMAT);
+  const tts = new MsEdgeTTS()
+  await tts.setMetadata(EDGE_VOICE, EDGE_FORMAT)
 
   // Edge TTS is a cloud service with no local context window, but its input limits
   // are undocumented and could not be exercised here (the endpoint currently answers
@@ -185,13 +201,13 @@ async function synthEdge(hook: string, body: string, wavPath: string): Promise<v
     // toStream is synchronous in current msedge-tts; awaiting a plain object is a
     // no-op, so this is robust across versions that return a promise.
     // eslint-disable-next-line @typescript-eslint/await-thenable
-    const { audioStream } = await tts.toStream(chunk);
-    const buffers: Buffer[] = [];
-    for await (const b of audioStream as AsyncIterable<Uint8Array>) buffers.push(Buffer.from(b));
-    const wav = parseWav(Buffer.concat(buffers));
-    return { data: wav.data, sampleRate: wav.sampleRate, channels: wav.channels };
-  };
-  await synthHookAndBody(hook, body, 'edge-tts', synth, wavPath);
+    const { audioStream } = await tts.toStream(chunk)
+    const buffers: Buffer[] = []
+    for await (const b of audioStream as AsyncIterable<Uint8Array>) buffers.push(Buffer.from(b))
+    const wav = parseWav(Buffer.concat(buffers))
+    return { data: wav.data, sampleRate: wav.sampleRate, channels: wav.channels }
+  }
+  await synthHookAndBody(hook, body, 'edge-tts', synth, wavPath)
 }
 
 // ElevenLabs' eleven_multilingual_v2 model (the only premium model this repo
@@ -200,48 +216,50 @@ async function synthEdge(hook: string, body: string, wavPath: string): Promise<v
 // understanding of this syntax"). Sent as one call so the API's own pacing
 // carries across the hook/body boundary, instead of splicing two separate
 // syntheses together as the local kokoro/edge-tts path must.
-const HOOK_BREAK_TAG = `<break time="${HOOK_PAUSE_MS}ms" />`;
+const HOOK_BREAK_TAG = `<break time="${HOOK_PAUSE_MS}ms" />`
 // Defense in depth: if a provider ever echoed the tag's characters back into
 // its alignment instead of consuming it as markup, match on the tag's
 // distinctive markup shape rather than the exact fragments we happened to
 // send — robust to whitespace/quoting variance a Set of literal tokens is not.
-const BREAK_TAG_FRAGMENT = /^<\/?break\b|^time\s*=|^\/?>$/i;
+const BREAK_TAG_FRAGMENT = /^<\/?break\b|^time\s*=|^\/?>$/i
 
 export const voiceStage: StageDef = {
   name: 'voice',
   async run(ctx: JobContext): Promise<void> {
-    const script = JSON.parse(await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8')) as ScriptArtifact;
-    const narration = narrationText(script);
-    const body = bodyText(script);
-    const wavPath = ctx.artifactPath('voice', 'narration.wav');
-    const timingsPath = ctx.artifactPath('voice', 'timings.json');
+    const script = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptArtifact
+    const narration = narrationText(script)
+    const body = bodyText(script)
+    const wavPath = ctx.artifactPath('voice', 'narration.wav')
+    const timingsPath = ctx.artifactPath('voice', 'timings.json')
 
     // Captions trusts voice/timings.json over WhisperX, so a stale file from a
     // previous failed attempt would caption audio it was never measured against.
     // Remove it before any synthesis; only a VALIDATED ElevenLabs success
     // recreates it (below, after the duration guard).
-    await fs.rm(timingsPath, { force: true });
+    await fs.rm(timingsPath, { force: true })
 
-    let provider: VoiceMeta['provider'] | undefined;
-    let voiceId = '';
-    let premiumWords: WordTiming[] | undefined;
+    let provider: VoiceMeta['provider'] | undefined
+    let voiceId = ''
+    let premiumWords: WordTiming[] | undefined
 
     // Dev mode (channel-level `[voice] dev = true` or BRAINROT_DEV_VOICE=1)
     // forces the volume chain regardless of [voice.premium] — see
     // docs/superpowers/specs/2026-07-25-dev-voice-mode-design.md.
-    const devMode = ctx.channel.voice.dev === true || process.env[DEV_VOICE_ENV] === '1';
-    const premiumVoice = devMode ? undefined : ctx.channel.voice.premium;
+    const devMode = ctx.channel.voice.dev === true || process.env[DEV_VOICE_ENV] === '1'
+    const premiumVoice = devMode ? undefined : ctx.channel.voice.premium
     if (devMode) {
       ctx.log.info(
         { hadPremiumConfigured: Boolean(ctx.channel.voice.premium) },
         'dev voice mode active; forcing volume voice chain',
-      );
+      )
     }
     if (premiumVoice) {
       // The hook and body go in one call, with an explicit SSML break between
       // them so ElevenLabs leaves a deliberate pause instead of reading
       // straight into the story (see HOOK_BREAK_TAG above).
-      const elevenText = `${script.hook} ${HOOK_BREAK_TAG}\n\n${body}`;
+      const elevenText = `${script.hook} ${HOOK_BREAK_TAG}\n\n${body}`
 
       // Paid call: reserve the character-based estimate against the per-video
       // cap before dialing out. This sits OUTSIDE the fallback catch on
@@ -250,23 +268,23 @@ export const voiceStage: StageDef = {
       // instead of silently downgrading the voice. Estimated off the actual
       // (SSML-augmented) text sent — never under-reserve against the shorter
       // plain narration.
-      assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(elevenText));
+      assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(elevenText))
 
       // ONLY the provider call is fallback-eligible: while nothing has been
       // delivered, a failure legitimately means "use the volume chain".
-      let synth: Awaited<ReturnType<typeof synthWithTimestamps>> | undefined;
+      let synth: Awaited<ReturnType<typeof synthWithTimestamps>> | undefined
       try {
         synth = await synthWithTimestamps({
           voiceId: premiumVoice.voiceId,
           modelId: premiumVoice.modelId,
           text: elevenText,
-        });
+        })
       } catch (err) {
         // The timings write is deferred past the duration guard, so this
         // attempt cannot have created timings.json — the rm is defense in
         // depth against the write ever drifting back into the try.
-        await fs.rm(timingsPath, { force: true });
-        ctx.log.warn({ err }, 'elevenlabs TTS failed; falling back to volume voice chain');
+        await fs.rm(timingsPath, { force: true })
+        ctx.log.warn({ err }, 'elevenlabs TTS failed; falling back to volume voice chain')
       }
 
       if (synth) {
@@ -274,56 +292,58 @@ export const voiceStage: StageDef = {
         // fallible local write. A failure below is a local fault, not a
         // provider one — it surfaces as a stage error rather than a silent
         // downgrade that would strand this charge unrecorded.
-        recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros);
-        await fs.writeFile(wavPath, synth.wavBytes);
-        provider = 'elevenlabs';
-        voiceId = premiumVoice.voiceId;
+        recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros)
+        await fs.writeFile(wavPath, synth.wavBytes)
+        provider = 'elevenlabs'
+        voiceId = premiumVoice.voiceId
         // timings.json is NOT written here: it becomes visible to captions
         // only after the shared duration guard below has accepted the audio.
-        premiumWords = synth.words.filter((w) => !BREAK_TAG_FRAGMENT.test(w.word));
+        premiumWords = synth.words.filter((w) => !BREAK_TAG_FRAGMENT.test(w.word))
       }
     }
 
     if (provider === undefined) {
       try {
-        await synthKokoro(script.hook, body, ctx.channel.voice.volume, wavPath);
-        provider = 'kokoro';
-        voiceId = ctx.channel.voice.volume;
+        await synthKokoro(script.hook, body, ctx.channel.voice.volume, wavPath)
+        provider = 'kokoro'
+        voiceId = ctx.channel.voice.volume
       } catch (kokoroErr) {
-        ctx.log.warn({ err: kokoroErr }, 'kokoro TTS failed; falling back to edge-tts');
+        ctx.log.warn({ err: kokoroErr }, 'kokoro TTS failed; falling back to edge-tts')
         try {
-          await synthEdge(script.hook, body, wavPath);
-          provider = 'edge-tts';
-          voiceId = EDGE_VOICE;
+          await synthEdge(script.hook, body, wavPath)
+          provider = 'edge-tts'
+          voiceId = EDGE_VOICE
         } catch (edgeErr) {
-          throw new Error(`voice synthesis failed: kokoro=${String(kokoroErr)}; edge=${String(edgeErr)}`);
+          throw new Error(
+            `voice synthesis failed: kokoro=${String(kokoroErr)}; edge=${String(edgeErr)}`,
+          )
         }
       }
     }
 
-    const durationMs = parseWavDurationMs(await fs.readFile(wavPath));
+    const durationMs = parseWavDurationMs(await fs.readFile(wavPath))
 
     // Defense in depth: a TTS backend that silently drops text still returns a
     // well-formed WAV, so the only signal is that it is too short for the
     // script. This guard covers every provider, ElevenLabs included.
-    const words = countWords(narration);
-    const minPlausibleMs = minPlausibleNarrationMs(words);
+    const words = countWords(narration)
+    const minPlausibleMs = minPlausibleNarrationMs(words)
     if (durationMs < minPlausibleMs) {
       throw new Error(
         `voice synthesis produced implausibly short audio: ${durationMs}ms for ${words} words ` +
           `(minimum ${minPlausibleMs}ms at ${MAX_PLAUSIBLE_WORDS_PER_SEC} words/sec); ` +
           `narration was likely truncated by provider "${provider}"`,
-      );
+      )
     }
 
     // Only now — with the audio validated — may the provider timings land on
     // disk. Writing timings.json any earlier would break the ABSENT guarantee:
     // a truncation throw above must leave nothing for captions to trust.
     if (premiumWords !== undefined) {
-      await fs.writeFile(timingsPath, JSON.stringify({ words: premiumWords }, null, 2));
+      await fs.writeFile(timingsPath, JSON.stringify({ words: premiumWords }, null, 2))
     }
 
-    const meta: VoiceMeta = { provider, voiceId, durationMs };
-    await fs.writeFile(ctx.artifactPath('voice', 'voice.json'), JSON.stringify(meta, null, 2));
+    const meta: VoiceMeta = { provider, voiceId, durationMs }
+    await fs.writeFile(ctx.artifactPath('voice', 'voice.json'), JSON.stringify(meta, null, 2))
   },
-};
+}

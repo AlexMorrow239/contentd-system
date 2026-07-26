@@ -7,11 +7,11 @@ import { DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from './jo
 function seed(): Database {
   const db = openDb(':memory:')
   db.prepare(
-    "INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) " +
+    'INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) ' +
       "VALUES ('j1','space','volume','Why Venus is hot','failed','2026-07-24T10:00:00.000Z',NULL)",
   ).run()
   db.prepare(
-    "INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) " +
+    'INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) ' +
       "VALUES ('j2','ocean','premium','Deep sea','done','2026-07-25T10:00:00.000Z','2026-07-25T10:04:00.000Z')",
   ).run()
   return db
@@ -82,11 +82,11 @@ describe('getJobDetail', () => {
   it('puts the error on the failing stage and leaves later stages pending', () => {
     const db = seed()
     db.prepare(
-      "INSERT INTO job_stages (job_id, stage, status, started_at, finished_at) " +
+      'INSERT INTO job_stages (job_id, stage, status, started_at, finished_at) ' +
         "VALUES ('j1','script','done','2026-07-24T10:00:00.000Z','2026-07-24T10:00:30.000Z')",
     ).run()
     db.prepare(
-      "INSERT INTO job_stages (job_id, stage, status, error, started_at) " +
+      'INSERT INTO job_stages (job_id, stage, status, error, started_at) ' +
         "VALUES ('j1','voice','failed','elevenlabs 401','2026-07-24T10:00:30.000Z')",
     ).run()
 
@@ -104,11 +104,11 @@ describe('getJobDetail', () => {
   it('returns the job costs newest first', () => {
     const db = seed()
     db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) " +
+      'INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) ' +
         "VALUES ('j1','anthropic','script',12000,'2026-07-24T10:00:10.000Z')",
     ).run()
     db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) " +
+      'INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) ' +
         "VALUES ('j1','elevenlabs','tts',30000,'2026-07-24T10:00:40.000Z')",
     ).run()
     const detail = getJobDetail(db, 'j1')
@@ -119,7 +119,7 @@ describe('getJobDetail', () => {
   it('reports the library row when one exists', () => {
     const db = seed()
     db.prepare(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) " +
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
         "VALUES ('j2','runs/j2/assemble/final.mp4','{}','ready')",
     ).run()
     const detail = getJobDetail(db, 'j2')

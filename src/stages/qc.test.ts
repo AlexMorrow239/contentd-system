@@ -62,34 +62,73 @@ const SENTENCE =
 function seedScript(ctx: JobContext, sentences: number, text = SENTENCE): void {
   writeFileSync(
     ctx.artifactPath('script', 'script.json'),
-    JSON.stringify(testScript({ hook: text, segments: Array.from({ length: sentences - 1 }, () => text) })),
+    JSON.stringify(
+      testScript({ hook: text, segments: Array.from({ length: sentences - 1 }, () => text) }),
+    ),
   )
 }
 
 async function goodClip(file: string, seconds = 2): Promise<void> {
   await execa('ffmpeg', [
-    '-f', 'lavfi', '-i', `testsrc2=duration=${seconds}:size=1080x1920:rate=30`,
-    '-f', 'lavfi', '-i', `sine=frequency=440:duration=${seconds}`,
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-    file, '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    `testsrc2=duration=${seconds}:size=1080x1920:rate=30`,
+    '-f',
+    'lavfi',
+    '-i',
+    `sine=frequency=440:duration=${seconds}`,
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    file,
+    '-y',
   ])
 }
 async function blackClip(file: string): Promise<void> {
   await execa('ffmpeg', [
-    '-f', 'lavfi', '-i', 'color=black:size=1080x1920:duration=2:rate=30',
-    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-    file, '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=black:size=1080x1920:duration=2:rate=30',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:duration=2',
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    file,
+    '-y',
   ])
 }
 async function silentFrozenClip(file: string): Promise<void> {
   // Static black video (frozen) + digital silence (anullsrc): trips both
   // frozen-frames (>= 2s freeze) and audio-level (mean_volume well below -50 dB).
   await execa('ffmpeg', [
-    '-f', 'lavfi', '-i', 'color=black:size=1080x1920:duration=3:rate=30',
-    '-f', 'lavfi', '-i', 'anullsrc=channel_layout=mono:sample_rate=44100',
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
-    file, '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'color=black:size=1080x1920:duration=3:rate=30',
+    '-f',
+    'lavfi',
+    '-i',
+    'anullsrc=channel_layout=mono:sample_rate=44100',
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    '-shortest',
+    file,
+    '-y',
   ])
 }
 

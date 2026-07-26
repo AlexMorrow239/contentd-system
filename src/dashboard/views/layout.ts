@@ -67,7 +67,8 @@ export function layout(opts: LayoutOptions): string {
       : html``
 
   return `<!doctype html>
-${html`<html lang="en">
+${
+  html`<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -84,5 +85,6 @@ ${banner}
 <main>${opts.body}</main>
 <footer>times shown in container-local time (TZ=${process.env.TZ ?? 'system'})</footer>
 </body>
-</html>`.value}`
+</html>`.value
+}`
 }

@@ -1,41 +1,41 @@
-import { readFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises'
 
 export interface WordTiming {
-  word: string;
-  startMs: number;
-  endMs: number;
+  word: string
+  startMs: number
+  endMs: number
 }
 
 export async function alignTranscript(opts: {
-  baseUrl: string;
-  wavPath: string;
-  transcript: string;
-  timeoutMs?: number;
+  baseUrl: string
+  wavPath: string
+  transcript: string
+  timeoutMs?: number
 }): Promise<WordTiming[]> {
-  const bytes = await readFile(opts.wavPath);
-  const form = new FormData();
-  form.append('audio', new Blob([bytes], { type: 'audio/wav' }), 'narration.wav');
-  form.append('transcript', opts.transcript);
+  const bytes = await readFile(opts.wavPath)
+  const form = new FormData()
+  form.append('audio', new Blob([bytes], { type: 'audio/wav' }), 'narration.wav')
+  form.append('transcript', opts.transcript)
 
   // Without a timeout a hung sidecar wedges the align stage forever. Abort the fetch
   // after timeoutMs and rethrow with a message that names the sidecar and the budget.
-  const timeoutMs = opts.timeoutMs ?? 120_000;
-  let res: Response;
+  const timeoutMs = opts.timeoutMs ?? 120_000
+  let res: Response
   try {
     res = await fetch(`${opts.baseUrl}/align`, {
       method: 'POST',
       body: form,
       signal: AbortSignal.timeout(timeoutMs),
-    });
+    })
   } catch (err) {
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      throw new Error(`alignTranscript: whisperx align timed out after ${timeoutMs}ms`);
+      throw new Error(`alignTranscript: whisperx align timed out after ${timeoutMs}ms`)
     }
-    throw err;
+    throw err
   }
   if (!res.ok) {
-    const raw = await res.text().catch(() => '');
-    throw new Error(`alignTranscript: whisperx responded ${res.status}: ${raw}`);
+    const raw = await res.text().catch(() => '')
+    throw new Error(`alignTranscript: whisperx responded ${res.status}: ${raw}`)
   }
 
   // The 200 body is sidecar output, not a local invariant: casting it blind
@@ -43,9 +43,9 @@ export async function alignTranscript(opts: {
   // (reading 'map')" stored verbatim as the stage error — indistinguishable from
   // a bug in this repo. Name the endpoint instead, and drop any word whose
   // timings are not finite rather than emitting NaN (or silently 0) ms.
-  const body = (await res.json()) as { words?: { word: string; start: number; end: number }[] };
+  const body = (await res.json()) as { words?: { word: string; start: number; end: number }[] }
   if (!Array.isArray(body.words)) {
-    throw new Error(`alignTranscript: malformed response from ${opts.baseUrl}/align`);
+    throw new Error(`alignTranscript: malformed response from ${opts.baseUrl}/align`)
   }
   return body.words
     .filter((w) => Number.isFinite(w?.start) && Number.isFinite(w?.end))
@@ -53,5 +53,5 @@ export async function alignTranscript(opts: {
       word: w.word,
       startMs: Math.round(w.start * 1000),
       endMs: Math.round(w.end * 1000),
-    }));
+    }))
 }

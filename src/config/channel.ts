@@ -209,9 +209,7 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
   for (const { file, cfg } of parsed) {
     const prior = declaredBy.get(cfg.name)
     if (prior !== undefined) {
-      throw new Error(
-        `duplicate channel name "${cfg.name}" declared by both ${prior} and ${file}`,
-      )
+      throw new Error(`duplicate channel name "${cfg.name}" declared by both ${prior} and ${file}`)
     }
     declaredBy.set(cfg.name, file)
   }
@@ -223,9 +221,7 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
       )
     }
   }
-  return parsed
-    .map((p) => p.cfg)
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  return parsed.map((p) => p.cfg).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 }
 
 /**

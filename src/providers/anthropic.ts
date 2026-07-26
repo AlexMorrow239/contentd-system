@@ -1,28 +1,31 @@
-import { readFileSync } from 'node:fs';
-import path from 'node:path';
-import Anthropic from '@anthropic-ai/sdk';
-import { z } from 'zod';
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import Anthropic from '@anthropic-ai/sdk'
+import { z } from 'zod'
 
 export interface LlmUsageCost {
-  usdMicros: number;
+  usdMicros: number
 }
 
 // List prices in usd-micros per 1,000,000 tokens.
 // NOTE: claude-sonnet-5 has an intro promo of $2/$10 per MTok through 2026-08-31;
 // we ledger at the durable list price ($3/$15) so the cost record stays correct
 // after the promo ends. ($3/MTok == 3 usd-micros/token; $15/MTok == 15.)
-export const PRICE_TABLE: Record<string, { inputUsdMicrosPerMTok: number; outputUsdMicrosPerMTok: number }> = {
+export const PRICE_TABLE: Record<
+  string,
+  { inputUsdMicrosPerMTok: number; outputUsdMicrosPerMTok: number }
+> = {
   'claude-sonnet-5': { inputUsdMicrosPerMTok: 3_000_000, outputUsdMicrosPerMTok: 15_000_000 },
   'claude-haiku-4-5': { inputUsdMicrosPerMTok: 1_000_000, outputUsdMicrosPerMTok: 5_000_000 },
-};
+}
 
-type Price = { inputUsdMicrosPerMTok: number; outputUsdMicrosPerMTok: number };
+type Price = { inputUsdMicrosPerMTok: number; outputUsdMicrosPerMTok: number }
 
 function costMicros(price: Price, inputTokens: number, outputTokens: number): number {
   return (
     Math.round((inputTokens * price.inputUsdMicrosPerMTok) / 1_000_000) +
     Math.round((outputTokens * price.outputUsdMicrosPerMTok) / 1_000_000)
-  );
+  )
 }
 
 // Recursively JSON.parse any string value that looks like a JSON array or
@@ -30,20 +33,20 @@ function costMicros(price: Price, inputTokens: number, outputTokens: number): nu
 // quirk doesn't fail validation. Leaves ordinary strings untouched.
 function coerceJsonStrings(value: unknown): unknown {
   if (typeof value === 'string') {
-    const trimmed = value.trim();
+    const trimmed = value.trim()
     // The prefix check is only a cheap filter; JSON.parse rejects the rest.
-    if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return value;
+    if (!trimmed.startsWith('[') && !trimmed.startsWith('{')) return value
     try {
-      return coerceJsonStrings(JSON.parse(trimmed));
+      return coerceJsonStrings(JSON.parse(trimmed))
     } catch {
-      return value;
+      return value
     }
   }
-  if (Array.isArray(value)) return value.map(coerceJsonStrings);
+  if (Array.isArray(value)) return value.map(coerceJsonStrings)
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, coerceJsonStrings(v)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, coerceJsonStrings(v)]))
   }
-  return value;
+  return value
 }
 
 // The strict tool-schema mode rejects minimum/maximum on integer properties
@@ -55,18 +58,18 @@ function coerceJsonStrings(value: unknown): unknown {
 // validation still runs the full zod schema, bounds included.
 function stripIntegerBounds(node: unknown): void {
   if (Array.isArray(node)) {
-    for (const item of node) stripIntegerBounds(item);
-    return;
+    for (const item of node) stripIntegerBounds(item)
+    return
   }
-  if (!node || typeof node !== 'object') return;
-  const record = node as Record<string, unknown>;
+  if (!node || typeof node !== 'object') return
+  const record = node as Record<string, unknown>
   if (record.type === 'integer') {
-    delete record.minimum;
-    delete record.maximum;
-    delete record.exclusiveMinimum;
-    delete record.exclusiveMaximum;
+    delete record.minimum
+    delete record.maximum
+    delete record.exclusiveMinimum
+    delete record.exclusiveMaximum
   }
-  for (const value of Object.values(record)) stripIntegerBounds(value);
+  for (const value of Object.values(record)) stripIntegerBounds(value)
 }
 
 // Shared forced-tool core for structuredCompletion and visionJudgment. The two
@@ -76,26 +79,28 @@ function stripIntegerBounds(node: unknown): void {
 // coerceJsonStrings retry, cost math — is identical and lives here. `label`
 // keeps error messages caller-specific so a failure names its entry point.
 async function forcedToolCompletion<T>(opts: {
-  label: 'structuredCompletion' | 'visionJudgment';
-  model: string;
-  system: string;
-  content: string | Anthropic.ContentBlockParam[];
-  schema: z.ZodType<T>;
-  maxTokens?: number;
-  client?: Anthropic;
+  label: 'structuredCompletion' | 'visionJudgment'
+  model: string
+  system: string
+  content: string | Anthropic.ContentBlockParam[]
+  schema: z.ZodType<T>
+  maxTokens?: number
+  client?: Anthropic
 }): Promise<{ data: T; cost: LlmUsageCost }> {
-  const client = opts.client ?? new Anthropic();
+  const client = opts.client ?? new Anthropic()
 
   // Resolve the price BEFORE the paid API call: a model absent from PRICE_TABLE
   // must fail at zero spend, not after a real call whose cost can never reach the
   // ledger.
-  const price = PRICE_TABLE[opts.model];
-  if (!price) throw new Error(`${opts.label}: no price table entry for model "${opts.model}"`);
+  const price = PRICE_TABLE[opts.model]
+  if (!price) throw new Error(`${opts.label}: no price table entry for model "${opts.model}"`)
 
   // Zod v4 native JSON Schema. `reused: 'inline'` inlines any reused sub-schema so
   // the tool input_schema has no $ref (the Anthropic tool API does not resolve $ref).
-  const inputSchema = z.toJSONSchema(opts.schema, { reused: 'inline' }) as Anthropic.Tool.InputSchema;
-  stripIntegerBounds(inputSchema);
+  const inputSchema = z.toJSONSchema(opts.schema, {
+    reused: 'inline',
+  }) as Anthropic.Tool.InputSchema
+  stripIntegerBounds(inputSchema)
 
   const response = await client.messages.create({
     model: opts.model,
@@ -121,55 +126,57 @@ async function forcedToolCompletion<T>(opts: {
       },
     ],
     tool_choice: { type: 'tool', name: 'emit' },
-  });
+  })
 
   // Cost is fixed by the usage the paid call already reported. Compute it BEFORE
   // any inspection of the response so EVERY failure below can carry the spend to
   // the caller's ledger instead of vanishing — the messages.create call is
   // billed whether or not its content is usable.
-  const cost: LlmUsageCost = { usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens) };
+  const cost: LlmUsageCost = {
+    usdMicros: costMicros(price, response.usage.input_tokens, response.usage.output_tokens),
+  }
 
   // Attach the already-billed cost to a thrown error so the caller can ledger
   // this paid-but-unusable response before rethrowing, without changing the
   // error's identity (callers and tests still match on `instanceof z.ZodError`).
   const withCost = <E>(err: E): E => {
-    (err as E & { costUsdMicros?: number }).costUsdMicros = cost.usdMicros;
-    return err;
-  };
+    ;(err as E & { costUsdMicros?: number }).costUsdMicros = cost.usdMicros
+    return err
+  }
 
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit',
-  );
-  if (!toolUse) throw withCost(new Error(`${opts.label}: no emit tool_use block in response`));
+  )
+  if (!toolUse) throw withCost(new Error(`${opts.label}: no emit tool_use block in response`))
 
   // Anthropic's tool_choice does not guarantee schema-conformant output (no
   // `strict` mode in this SDK version): models occasionally stringify a
   // nested array/object instead of emitting it structurally. Validate first;
   // only on failure, walk the raw input and JSON.parse any string that looks
   // like a JSON array/object, then re-validate.
-  const firstAttempt = opts.schema.safeParse(toolUse.input);
-  let data: T;
+  const firstAttempt = opts.schema.safeParse(toolUse.input)
+  let data: T
   if (firstAttempt.success) {
-    data = firstAttempt.data;
+    data = firstAttempt.data
   } else {
-    const retry = opts.schema.safeParse(coerceJsonStrings(toolUse.input));
+    const retry = opts.schema.safeParse(coerceJsonStrings(toolUse.input))
     if (!retry.success) {
       // Report the original error: it describes what the model actually sent,
       // not the rewritten value the coercion produced.
-      throw withCost(firstAttempt.error);
+      throw withCost(firstAttempt.error)
     }
-    data = retry.data;
+    data = retry.data
   }
-  return { data, cost };
+  return { data, cost }
 }
 
 export async function structuredCompletion<T>(opts: {
-  model: string;
-  system: string;
-  prompt: string;
-  schema: z.ZodType<T>;
-  maxTokens?: number;
-  client?: Anthropic; // injected in tests; defaults to a real client
+  model: string
+  system: string
+  prompt: string
+  schema: z.ZodType<T>
+  maxTokens?: number
+  client?: Anthropic // injected in tests; defaults to a real client
 }): Promise<{ data: T; cost: LlmUsageCost }> {
   return forcedToolCompletion({
     label: 'structuredCompletion',
@@ -179,7 +186,7 @@ export async function structuredCompletion<T>(opts: {
     schema: opts.schema,
     maxTokens: opts.maxTokens,
     client: opts.client,
-  });
+  })
 }
 
 // media_type by extension. Verified against the Anthropic vision docs
@@ -191,34 +198,38 @@ const IMAGE_MEDIA_TYPES: Record<string, 'image/png' | 'image/jpeg'> = {
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
-};
+}
 
 export async function visionJudgment<T>(opts: {
-  model: string;
-  system: string;
-  prompt: string;
-  imagePaths: string[];
-  schema: z.ZodType<T>;
-  maxTokens?: number;
-  client?: Anthropic; // injected in tests; defaults to a real client
+  model: string
+  system: string
+  prompt: string
+  imagePaths: string[]
+  schema: z.ZodType<T>
+  maxTokens?: number
+  client?: Anthropic // injected in tests; defaults to a real client
 }): Promise<{ data: T; cost: LlmUsageCost }> {
   // Content layout: every image block first (base64, media_type by extension),
   // then the text prompt referencing them. Built before delegating so a missing
   // file or unsupported extension fails at zero spend, before any client work.
   const content: Anthropic.ContentBlockParam[] = opts.imagePaths.map((imagePath) => {
-    const ext = path.extname(imagePath).toLowerCase();
-    const mediaType = IMAGE_MEDIA_TYPES[ext];
+    const ext = path.extname(imagePath).toLowerCase()
+    const mediaType = IMAGE_MEDIA_TYPES[ext]
     if (!mediaType) {
       throw new Error(
         `visionJudgment: unsupported image extension "${ext}" for "${imagePath}" (expected .png, .jpg, or .jpeg)`,
-      );
+      )
     }
     return {
       type: 'image',
-      source: { type: 'base64', media_type: mediaType, data: readFileSync(imagePath).toString('base64') },
-    };
-  });
-  content.push({ type: 'text', text: opts.prompt });
+      source: {
+        type: 'base64',
+        media_type: mediaType,
+        data: readFileSync(imagePath).toString('base64'),
+      },
+    }
+  })
+  content.push({ type: 'text', text: opts.prompt })
 
   return forcedToolCompletion({
     label: 'visionJudgment',
@@ -228,5 +239,5 @@ export async function visionJudgment<T>(opts: {
     schema: opts.schema,
     maxTokens: opts.maxTokens,
     client: opts.client,
-  });
+  })
 }

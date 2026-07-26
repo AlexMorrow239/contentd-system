@@ -53,7 +53,10 @@ describe('scoreCandidates', () => {
       ]),
     )
     await scoreCandidates({
-      candidates: [candidate(0), candidate(1, { sourceId: 'rss:example.com', title: 'Solar wind news' })],
+      candidates: [
+        candidate(0),
+        candidate(1, { sourceId: 'rss:example.com', title: 'Solar wind news' }),
+      ],
       niche: ['space facts', 'astronomy'],
       recentTitles: ['Old moon topic'],
       client,

@@ -46,9 +46,12 @@ describe('recordCost + assertBudget', () => {
   it('records a cost row', () => {
     const db = tempDb()
     recordCost(db, 'job-1', 'anthropic', 'script', 1_500_000)
-    const row = db
-      .prepare('SELECT job_id, provider, operation, usd_micros FROM costs')
-      .get() as { job_id: string; provider: string; operation: string; usd_micros: number }
+    const row = db.prepare('SELECT job_id, provider, operation, usd_micros FROM costs').get() as {
+      job_id: string
+      provider: string
+      operation: string
+      usd_micros: number
+    }
     expect(row).toEqual({
       job_id: 'job-1',
       provider: 'anthropic',
@@ -80,9 +83,7 @@ describe('recordCost + assertBudget', () => {
     recordCost(db, jobId, 'anthropic', 'script', 7_500_000)
     // 7.5M + 1M = 8.5M > 8M volume cap
     expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(BudgetExceededError)
-    expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(
-      /^per-video budget exceeded/,
-    )
+    expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(/^per-video budget exceeded/)
     db.close()
   })
 
@@ -131,9 +132,7 @@ describe('recordCost + assertBudget', () => {
     recordCost(db, jobB, 'fal', 'image', 1_500_000)
     // all channels today: 4.5M; + 1M = 5.5M > 5M env cap — trips even though
     // chan-b's own channel-day sum is only 2.5M
-    expect(() => assertBudget(db, chB, jobB, 1_000_000)).toThrow(
-      /^global-day budget exceeded/,
-    )
+    expect(() => assertBudget(db, chB, jobB, 1_000_000)).toThrow(/^global-day budget exceeded/)
     db.close()
   })
 
@@ -149,9 +148,7 @@ describe('recordCost + assertBudget', () => {
     // 24.5M + 0.5M == 25M default cap exactly: boundary passes (strict >)
     expect(() => assertBudget(db, ch, jobId, 500_000)).not.toThrow()
     // 24.5M + 1M = 25.5M > 25M default cap
-    expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(
-      /^global-day budget exceeded/,
-    )
+    expect(() => assertBudget(db, ch, jobId, 1_000_000)).toThrow(/^global-day budget exceeded/)
     db.close()
   })
 
@@ -172,9 +169,7 @@ describe('recordCost + assertBudget', () => {
       perVideoUsdMicros: 5_000_000,
       perDayUsdMicros: 5_000_000,
     })
-    expect(() => assertBudget(db, tight, jobId, 1_000_000)).toThrow(
-      /^per-video budget exceeded/,
-    )
+    expect(() => assertBudget(db, tight, jobId, 1_000_000)).toThrow(/^per-video budget exceeded/)
     db.close()
   })
 

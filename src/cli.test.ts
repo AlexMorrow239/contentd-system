@@ -27,39 +27,55 @@ afterAll(() => {
 })
 
 describe('brainrot CLI', () => {
-  it.concurrent('`jobs` opens the db and prints a table header, exiting 0', async () => {
-    const dbPath = tmpDbPath()
-    // Seed one job so console.table renders column headers (empty tables print nothing).
-    const db = openDb(dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1', 'example', 'volume', 'venus', 'queued')",
-    ).run()
-    db.close()
+  it.concurrent(
+    '`jobs` opens the db and prints a table header, exiting 0',
+    async () => {
+      const dbPath = tmpDbPath()
+      // Seed one job so console.table renders column headers (empty tables print nothing).
+      const db = openDb(dbPath)
+      db.prepare(
+        "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1', 'example', 'volume', 'venus', 'queued')",
+      ).run()
+      db.close()
 
-    const result = await runCli(['jobs', '--db', dbPath])
-    expect(result.exitCode).toBe(0)
-    // console.table header row names the selected columns.
-    expect(result.stdout).toContain('status')
-  }, 60000)
+      const result = await runCli(['jobs', '--db', dbPath])
+      expect(result.exitCode).toBe(0)
+      // console.table header row names the selected columns.
+      expect(result.stdout).toContain('status')
+    },
+    60000,
+  )
 
-  it.concurrent('`produce --help` prints usage with --channel/--topic', async () => {
-    const result = await runCli(['produce', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('--channel')
-    expect(result.stdout).toContain('--topic')
-  }, 60000)
+  it.concurrent(
+    '`produce --help` prints usage with --channel/--topic',
+    async () => {
+      const result = await runCli(['produce', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('--channel')
+      expect(result.stdout).toContain('--topic')
+    },
+    60000,
+  )
 
-  it.concurrent('`produce --help` lists --dev', async () => {
-    const result = await runCli(['produce', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('--dev')
-  }, 60000)
+  it.concurrent(
+    '`produce --help` lists --dev',
+    async () => {
+      const result = await runCli(['produce', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('--dev')
+    },
+    60000,
+  )
 
-  it.concurrent('`resume --help` lists --dev', async () => {
-    const result = await runCli(['resume', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('--dev')
-  }, 60000)
+  it.concurrent(
+    '`resume --help` lists --dev',
+    async () => {
+      const result = await runCli(['resume', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('--dev')
+    },
+    60000,
+  )
 
   function countJobs(dbPath: string): number {
     const db = openDb(dbPath)
@@ -108,18 +124,27 @@ describe('brainrot CLI', () => {
     db.close()
   }
 
-  it.concurrent('`produce` with a nonexistent --channel exits 1 with a clean one-line error (no stack)', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli([
-      'produce',
-      '--channel', '/no/such/channel.toml', '--topic', 'venus', '--db', dbPath,
-    ])
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toMatch(/ENOENT|no such file/)
-    // Just the message — no raw unhandled-rejection stack frames ("    at ...").
-    expect(result.stderr).not.toMatch(/\n\s+at /)
-    expect(countJobs(dbPath)).toBe(0)
-  }, 60000)
+  it.concurrent(
+    '`produce` with a nonexistent --channel exits 1 with a clean one-line error (no stack)',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli([
+        'produce',
+        '--channel',
+        '/no/such/channel.toml',
+        '--topic',
+        'venus',
+        '--db',
+        dbPath,
+      ])
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toMatch(/ENOENT|no such file/)
+      // Just the message — no raw unhandled-rejection stack frames ("    at ...").
+      expect(result.stderr).not.toMatch(/\n\s+at /)
+      expect(countJobs(dbPath)).toBe(0)
+    },
+    60000,
+  )
 
   // Plan-1-shape channel TOML with no [scout] table: loadChannelsDir parses it,
   // scoutAll skips it (DEFAULT_SCOUT has no sources) — the cheapest full E2E.
@@ -145,91 +170,111 @@ describe('brainrot CLI', () => {
     'per_day_usd = 20.0',
   ].join('\n')
 
-  it.concurrent('`scout --help` prints usage with --db/--channels-dir', async () => {
-    const result = await runCli(['scout', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('--db')
-    expect(result.stdout).toContain('--channels-dir')
-  }, 60000)
+  it.concurrent(
+    '`scout --help` prints usage with --db/--channels-dir',
+    async () => {
+      const result = await runCli(['scout', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('--db')
+      expect(result.stdout).toContain('--channels-dir')
+    },
+    60000,
+  )
 
-  it.concurrent('`scout` over a sourceless channels dir prints one JSON line and exits 0', async () => {
-    const dbPath = tmpDbPath()
-    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-channels-'))
-    cleanup.push(channelsDir)
-    // filename must equal the channel name (loadChannelsDir invariant)
-    writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
-    const result = await runCli(['scout', '--db', dbPath, '--channels-dir', channelsDir])
-    expect(result.exitCode).toBe(0)
-    // exactly one cron-greppable JSON line on stdout
-    expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
-  }, 60000)
+  it.concurrent(
+    '`scout` over a sourceless channels dir prints one JSON line and exits 0',
+    async () => {
+      const dbPath = tmpDbPath()
+      const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-channels-'))
+      cleanup.push(channelsDir)
+      // filename must equal the channel name (loadChannelsDir invariant)
+      writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
+      const result = await runCli(['scout', '--db', dbPath, '--channels-dir', channelsDir])
+      expect(result.exitCode).toBe(0)
+      // exactly one cron-greppable JSON line on stdout
+      expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
+    },
+    60000,
+  )
 
   // The same G14 symptom the two loops already fixed: a broken channels dir
   // used to exit 1 with an empty stdout, punching a hole in the cron log of
   // JSON lines every scout firing until someone noticed.
-  it.concurrent('`scout` over a broken channels dir still prints one JSON line and exits 0', async () => {
-    const dbPath = tmpDbPath()
-    const brokenDir = mkdtempSync(path.join(tmpdir(), 'brainrot-scout-broken-'))
-    cleanup.push(brokenDir)
-    writeFileSync(path.join(brokenDir, 'broken.toml'), 'this is not toml [')
-    const result = await runCli(['scout', '--db', dbPath, '--channels-dir', brokenDir])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout.trim().split('\n')).toHaveLength(1)
-    const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
-    expect(line.action).toBe('noop')
-    expect(line.reason).toBe('config-error')
-    expect(line.error).toContain('broken.toml')
-    // stderr keeps the cause visible where the JSON line is only grepped
-    expect(result.stderr).toContain('broken.toml')
-    // The failure precedes the lease: nothing was leased on a config's behalf.
-    const after = openDb(dbPath)
-    const leases = after.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
-    after.close()
-    expect(leases).toEqual({ n: 0 })
-  }, 60000)
+  it.concurrent(
+    '`scout` over a broken channels dir still prints one JSON line and exits 0',
+    async () => {
+      const dbPath = tmpDbPath()
+      const brokenDir = mkdtempSync(path.join(tmpdir(), 'brainrot-scout-broken-'))
+      cleanup.push(brokenDir)
+      writeFileSync(path.join(brokenDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli(['scout', '--db', dbPath, '--channels-dir', brokenDir])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.trim().split('\n')).toHaveLength(1)
+      const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
+      expect(line.action).toBe('noop')
+      expect(line.reason).toBe('config-error')
+      expect(line.error).toContain('broken.toml')
+      // stderr keeps the cause visible where the JSON line is only grepped
+      expect(result.stderr).toContain('broken.toml')
+      // The failure precedes the lease: nothing was leased on a config's behalf.
+      const after = openDb(dbPath)
+      const leases = after.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
+      after.close()
+      expect(leases).toEqual({ n: 0 })
+    },
+    60000,
+  )
 
-  it.concurrent('`scout` no-ops under a held lease, and releases its own lease on a clean run', async () => {
-    const dbPath = tmpDbPath()
-    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-scout-lease-'))
-    cleanup.push(channelsDir)
-    writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
-    const seeded = openDb(dbPath)
-    seeded
-      .prepare('INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)')
-      .run('scout', 'pid:999999', new Date(Date.now() + 600_000).toISOString())
-    seeded.close()
+  it.concurrent(
+    '`scout` no-ops under a held lease, and releases its own lease on a clean run',
+    async () => {
+      const dbPath = tmpDbPath()
+      const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-scout-lease-'))
+      cleanup.push(channelsDir)
+      writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
+      const seeded = openDb(dbPath)
+      seeded
+        .prepare('INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)')
+        .run('scout', 'pid:999999', new Date(Date.now() + 600_000).toISOString())
+      seeded.close()
 
-    const args = ['scout', '--db', dbPath, '--channels-dir', channelsDir]
-    const held = await runCli(args)
-    // A held lease is the normal overlap case: benign one-line noop, exit 0.
-    expect(held.exitCode).toBe(0)
-    expect(JSON.parse(held.stdout)).toEqual({ action: 'noop', reason: 'lease-held' })
-    const afterNoop = openDb(dbPath)
-    const foreign = afterNoop.prepare("SELECT holder FROM leases WHERE name = 'scout'").get() as {
-      holder: string
-    }
-    // the other holder's lease is untouched
-    expect(foreign.holder).toBe('pid:999999')
-    afterNoop.prepare("DELETE FROM leases WHERE name = 'scout'").run()
-    afterNoop.close()
+      const args = ['scout', '--db', dbPath, '--channels-dir', channelsDir]
+      const held = await runCli(args)
+      // A held lease is the normal overlap case: benign one-line noop, exit 0.
+      expect(held.exitCode).toBe(0)
+      expect(JSON.parse(held.stdout)).toEqual({ action: 'noop', reason: 'lease-held' })
+      const afterNoop = openDb(dbPath)
+      const foreign = afterNoop.prepare("SELECT holder FROM leases WHERE name = 'scout'").get() as {
+        holder: string
+      }
+      // the other holder's lease is untouched
+      expect(foreign.holder).toBe('pid:999999')
+      afterNoop.prepare("DELETE FROM leases WHERE name = 'scout'").run()
+      afterNoop.close()
 
-    const free = await runCli(args)
-    expect(free.exitCode).toBe(0)
-    expect(JSON.parse(free.stdout)).toEqual({ channels: [] })
-    const afterRun = openDb(dbPath)
-    const leases = afterRun.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
-    afterRun.close()
-    expect(leases).toEqual({ n: 0 })
-  }, 60000)
+      const free = await runCli(args)
+      expect(free.exitCode).toBe(0)
+      expect(JSON.parse(free.stdout)).toEqual({ channels: [] })
+      const afterRun = openDb(dbPath)
+      const leases = afterRun.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
+      afterRun.close()
+      expect(leases).toEqual({ n: 0 })
+    },
+    60000,
+  )
 
-  it.concurrent('`topics --help` lists the list/reject/requeue subcommands', async () => {
-    const result = await runCli(['topics', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('list')
-    expect(result.stdout).toContain('reject')
-    expect(result.stdout).toContain('requeue')
-    expect(result.stdout).not.toContain('approve')
-  }, 60000)
+  it.concurrent(
+    '`topics --help` lists the list/reject/requeue subcommands',
+    async () => {
+      const result = await runCli(['topics', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('list')
+      expect(result.stdout).toContain('reject')
+      expect(result.stdout).toContain('requeue')
+      expect(result.stdout).not.toContain('approve')
+    },
+    60000,
+  )
 
   // Claimed topic + (optionally) the job holding it — the state `topics
   // requeue` exists to repair.
@@ -242,7 +287,7 @@ describe('brainrot CLI', () => {
     }
     const res = db
       .prepare(
-        "INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) " +
+        'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) ' +
           "VALUES ('demo', 'T', 'R', 'reddit:r/space', 'https://example.com/1', 'h1', 80, 'seeded', 'claimed', ?)",
       )
       .run(opts.jobId)
@@ -250,210 +295,315 @@ describe('brainrot CLI', () => {
     return Number(res.lastInsertRowid)
   }
 
-  it.concurrent('`topics requeue` returns an orphaned claimed topic to the queue', async () => {
-    const dbPath = tmpDbPath()
-    const id = seedClaimedTopic(dbPath, { jobId: 'job-stranded', jobStatus: 'failed' })
-    const result = await runCli(['topics', 'requeue', String(id), '--db', dbPath])
-    expect(result.exitCode).toBe(0)
-    expect(JSON.parse(result.stdout)).toEqual({ action: 'requeued', topicId: id })
-    const db = openDb(dbPath)
-    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
-      status: string
-      job_id: string | null
-    }
-    db.close()
-    expect(row).toEqual({ status: 'candidate', job_id: null })
-  }, 60000)
+  it.concurrent(
+    '`topics requeue` returns an orphaned claimed topic to the queue',
+    async () => {
+      const dbPath = tmpDbPath()
+      const id = seedClaimedTopic(dbPath, { jobId: 'job-stranded', jobStatus: 'failed' })
+      const result = await runCli(['topics', 'requeue', String(id), '--db', dbPath])
+      expect(result.exitCode).toBe(0)
+      expect(JSON.parse(result.stdout)).toEqual({ action: 'requeued', topicId: id })
+      const db = openDb(dbPath)
+      const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+        status: string
+        job_id: string | null
+      }
+      db.close()
+      expect(row).toEqual({ status: 'candidate', job_id: null })
+    },
+    60000,
+  )
 
-  it.concurrent('`topics requeue` refuses while a live job holds the topic, naming the job', async () => {
-    const dbPath = tmpDbPath()
-    const id = seedClaimedTopic(dbPath, { jobId: 'job-live', jobStatus: 'running' })
-    const result = await runCli(['topics', 'requeue', String(id), '--db', dbPath])
-    expect(result.exitCode).toBe(1)
-    expect(JSON.parse(result.stdout)).toEqual({
-      action: 'refused',
-      topicId: id,
-      reason: 'job-active',
-      jobId: 'job-live',
-      jobStatus: 'running',
-    })
-    expect(result.stderr).toContain('job-live')
-    const db = openDb(dbPath)
-    const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
-      status: string
-      job_id: string | null
-    }
-    db.close()
-    expect(row).toEqual({ status: 'claimed', job_id: 'job-live' })
-  }, 60000)
+  it.concurrent(
+    '`topics requeue` refuses while a live job holds the topic, naming the job',
+    async () => {
+      const dbPath = tmpDbPath()
+      const id = seedClaimedTopic(dbPath, { jobId: 'job-live', jobStatus: 'running' })
+      const result = await runCli(['topics', 'requeue', String(id), '--db', dbPath])
+      expect(result.exitCode).toBe(1)
+      expect(JSON.parse(result.stdout)).toEqual({
+        action: 'refused',
+        topicId: id,
+        reason: 'job-active',
+        jobId: 'job-live',
+        jobStatus: 'running',
+      })
+      expect(result.stderr).toContain('job-live')
+      const db = openDb(dbPath)
+      const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
+        status: string
+        job_id: string | null
+      }
+      db.close()
+      expect(row).toEqual({ status: 'claimed', job_id: 'job-live' })
+    },
+    60000,
+  )
 
-  it.concurrent('`topics requeue` on an unknown id exits 1 with one JSON line and no stack', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli(['topics', 'requeue', '9999', '--db', dbPath])
-    expect(result.exitCode).toBe(1)
-    expect(JSON.parse(result.stdout)).toEqual({
-      action: 'refused',
-      topicId: 9999,
-      reason: 'unknown',
-    })
-    expect(result.stderr).not.toMatch(/\n\s+at /)
-  }, 60000)
+  it.concurrent(
+    '`topics requeue` on an unknown id exits 1 with one JSON line and no stack',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli(['topics', 'requeue', '9999', '--db', dbPath])
+      expect(result.exitCode).toBe(1)
+      expect(JSON.parse(result.stdout)).toEqual({
+        action: 'refused',
+        topicId: 9999,
+        reason: 'unknown',
+      })
+      expect(result.stderr).not.toMatch(/\n\s+at /)
+    },
+    60000,
+  )
 
-  it.concurrent('`topics requeue` rejects a non-integer id before opening the db', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli(['topics', 'requeue', 'abc', '--db', dbPath])
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('invalid topic id "abc"')
-  }, 60000)
+  it.concurrent(
+    '`topics requeue` rejects a non-integer id before opening the db',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli(['topics', 'requeue', 'abc', '--db', dbPath])
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('invalid topic id "abc"')
+    },
+    60000,
+  )
 
-  it.concurrent('`digest --help` prints usage with --db/--channels-dir', async () => {
-    const result = await runCli(['digest', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('--db')
-    expect(result.stdout).toContain('--channels-dir')
-  }, 60000)
+  it.concurrent(
+    '`digest --help` prints usage with --db/--channels-dir',
+    async () => {
+      const result = await runCli(['digest', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('--db')
+      expect(result.stdout).toContain('--channels-dir')
+    },
+    60000,
+  )
 
-  it.concurrent('`digest` over an empty channels dir prints all four sections and exits 0', async () => {
-    const dbPath = tmpDbPath()
-    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-digest-channels-'))
-    cleanup.push(channelsDir)
-    const result = await runCli(['digest', '--db', dbPath, '--channels-dir', channelsDir])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('Topics (last 24h)')
-    expect(result.stdout).toContain('Jobs (last 24h)')
-    expect(result.stdout).toContain('Spend today (UTC)')
-    expect(result.stdout).toContain('Action items')
-  }, 60000)
+  it.concurrent(
+    '`digest` over an empty channels dir prints all four sections and exits 0',
+    async () => {
+      const dbPath = tmpDbPath()
+      const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-digest-channels-'))
+      cleanup.push(channelsDir)
+      const result = await runCli(['digest', '--db', dbPath, '--channels-dir', channelsDir])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('Topics (last 24h)')
+      expect(result.stdout).toContain('Jobs (last 24h)')
+      expect(result.stdout).toContain('Spend today (UTC)')
+      expect(result.stdout).toContain('Action items')
+    },
+    60000,
+  )
 
   // A channels dir that will not load used to cost the operator the whole
   // report — one stderr line and nothing else, on the morning it matters most.
-  it.concurrent('`digest` with a missing channels dir still prints the db sections and names the config error', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli([
-      'digest',
-      '--db', dbPath, '--channels-dir', '/no/such/channels-dir',
-    ])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('Topics (last 24h)')
-    expect(result.stdout).toContain('Jobs (last 24h)')
-    expect(result.stdout).toContain('Action items')
-    expect(result.stdout).toContain('the channels dir did not load')
-    expect(result.stdout).toMatch(/ENOENT|no such/)
-  }, 60000)
+  it.concurrent(
+    '`digest` with a missing channels dir still prints the db sections and names the config error',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli([
+        'digest',
+        '--db',
+        dbPath,
+        '--channels-dir',
+        '/no/such/channels-dir',
+      ])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('Topics (last 24h)')
+      expect(result.stdout).toContain('Jobs (last 24h)')
+      expect(result.stdout).toContain('Action items')
+      expect(result.stdout).toContain('the channels dir did not load')
+      expect(result.stdout).toMatch(/ENOENT|no such/)
+    },
+    60000,
+  )
 
-  it.concurrent('`digest` with an unparseable channel TOML still prints the db sections and names the file', async () => {
-    const dbPath = tmpDbPath()
-    const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-digest-broken-'))
-    cleanup.push(channelsDir)
-    writeFileSync(path.join(channelsDir, 'broken.toml'), 'this is not toml [')
-    const result = await runCli(['digest', '--db', dbPath, '--channels-dir', channelsDir])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('Topics (last 24h)')
-    expect(result.stdout).toContain('Jobs (last 24h)')
-    expect(result.stdout).toContain('the channels dir did not load')
-    expect(result.stdout).toContain('broken.toml')
-  }, 60000)
+  it.concurrent(
+    '`digest` with an unparseable channel TOML still prints the db sections and names the file',
+    async () => {
+      const dbPath = tmpDbPath()
+      const channelsDir = mkdtempSync(path.join(tmpdir(), 'brainrot-digest-broken-'))
+      cleanup.push(channelsDir)
+      writeFileSync(path.join(channelsDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli(['digest', '--db', dbPath, '--channels-dir', channelsDir])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('Topics (last 24h)')
+      expect(result.stdout).toContain('Jobs (last 24h)')
+      expect(result.stdout).toContain('the channels dir did not load')
+      expect(result.stdout).toContain('broken.toml')
+    },
+    60000,
+  )
 
-  it.concurrent('`publish --help` lists the retry/mark-done subcommands', async () => {
-    const result = await runCli(['publish', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('retry')
-    expect(result.stdout).toContain('mark-done')
-  }, 60000)
+  it.concurrent(
+    '`publish --help` lists the retry/mark-done subcommands',
+    async () => {
+      const result = await runCli(['publish', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('retry')
+      expect(result.stdout).toContain('mark-done')
+    },
+    60000,
+  )
 
-  it.concurrent('`publish retry` on a job with no interrupted publish exits 1 naming the job', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli(['publish', 'retry', 'no-such-job', '--db', dbPath])
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('no interrupted publish for job no-such-job')
-  }, 60000)
+  it.concurrent(
+    '`publish retry` on a job with no interrupted publish exits 1 naming the job',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli(['publish', 'retry', 'no-such-job', '--db', dbPath])
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('no interrupted publish for job no-such-job')
+    },
+    60000,
+  )
 
-  it.concurrent('`publish retry` on a job with an interrupted publish clears it and returns the job to the pool', async () => {
-    const dbPath = tmpDbPath()
-    seedPublishRow(dbPath, {
-      jobId: 'job-retry-1', channel: 'demo', day: '2026-07-22', slot: '10:00', status: 'interrupted',
-    })
-    const result = await runCli(['publish', 'retry', 'job-retry-1', '--db', dbPath])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('job-retry-1')
-    const db = openDb(dbPath)
-    const row = db
-      .prepare('SELECT status, error_kind, error FROM publishes WHERE job_id = ?')
-      .get('job-retry-1') as { status: string; error_kind: string; error: string }
-    db.close()
-    expect(row.status).toBe('failed')
-    expect(row.error_kind).toBe('transient')
-    expect(row.error).toContain('manually cleared')
-  }, 60000)
+  it.concurrent(
+    '`publish retry` on a job with an interrupted publish clears it and returns the job to the pool',
+    async () => {
+      const dbPath = tmpDbPath()
+      seedPublishRow(dbPath, {
+        jobId: 'job-retry-1',
+        channel: 'demo',
+        day: '2026-07-22',
+        slot: '10:00',
+        status: 'interrupted',
+      })
+      const result = await runCli(['publish', 'retry', 'job-retry-1', '--db', dbPath])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('job-retry-1')
+      const db = openDb(dbPath)
+      const row = db
+        .prepare('SELECT status, error_kind, error FROM publishes WHERE job_id = ?')
+        .get('job-retry-1') as { status: string; error_kind: string; error: string }
+      db.close()
+      expect(row.status).toBe('failed')
+      expect(row.error_kind).toBe('transient')
+      expect(row.error).toContain('manually cleared')
+    },
+    60000,
+  )
 
-  it.concurrent('`publish mark-done` on a job with no interrupted publish exits 1 naming the job', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli(['publish', 'mark-done', 'no-such-job', 'yt-post-1', '--db', dbPath])
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('no interrupted publish for job no-such-job')
-  }, 60000)
+  it.concurrent(
+    '`publish mark-done` on a job with no interrupted publish exits 1 naming the job',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli([
+        'publish',
+        'mark-done',
+        'no-such-job',
+        'yt-post-1',
+        '--db',
+        dbPath,
+      ])
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('no interrupted publish for job no-such-job')
+    },
+    60000,
+  )
 
-  it.concurrent('`publish mark-done` on a job with an interrupted publish marks it done and flips the library row', async () => {
-    const dbPath = tmpDbPath()
-    seedPublishRow(dbPath, {
-      jobId: 'job-done-1', channel: 'demo', day: '2026-07-22', slot: '10:00', status: 'interrupted',
-    })
-    const result = await runCli(['publish', 'mark-done', 'job-done-1', 'yt-post-1', '--db', dbPath])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('https://youtube.com/shorts/yt-post-1')
-    const db = openDb(dbPath)
-    const publishRow = db
-      .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
-      .get('job-done-1') as { status: string; post_id: string; url: string }
-    const libraryRow = db
-      .prepare('SELECT state FROM library WHERE job_id = ?')
-      .get('job-done-1') as { state: string }
-    db.close()
-    expect(publishRow.status).toBe('done')
-    expect(publishRow.post_id).toBe('yt-post-1')
-    expect(publishRow.url).toBe('https://youtube.com/shorts/yt-post-1')
-    expect(libraryRow.state).toBe('published')
-  }, 60000)
+  it.concurrent(
+    '`publish mark-done` on a job with an interrupted publish marks it done and flips the library row',
+    async () => {
+      const dbPath = tmpDbPath()
+      seedPublishRow(dbPath, {
+        jobId: 'job-done-1',
+        channel: 'demo',
+        day: '2026-07-22',
+        slot: '10:00',
+        status: 'interrupted',
+      })
+      const result = await runCli([
+        'publish',
+        'mark-done',
+        'job-done-1',
+        'yt-post-1',
+        '--db',
+        dbPath,
+      ])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('https://youtube.com/shorts/yt-post-1')
+      const db = openDb(dbPath)
+      const publishRow = db
+        .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
+        .get('job-done-1') as { status: string; post_id: string; url: string }
+      const libraryRow = db
+        .prepare('SELECT state FROM library WHERE job_id = ?')
+        .get('job-done-1') as { state: string }
+      db.close()
+      expect(publishRow.status).toBe('done')
+      expect(publishRow.post_id).toBe('yt-post-1')
+      expect(publishRow.url).toBe('https://youtube.com/shorts/yt-post-1')
+      expect(libraryRow.state).toBe('published')
+    },
+    60000,
+  )
 
-  it.concurrent('`publishes --help` lists the list subcommand', async () => {
-    const result = await runCli(['publishes', '--help'])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('list')
-  }, 60000)
+  it.concurrent(
+    '`publishes --help` lists the list subcommand',
+    async () => {
+      const result = await runCli(['publishes', '--help'])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('list')
+    },
+    60000,
+  )
 
-  it.concurrent('`publishes list` on an empty db prints a friendly empty message', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli(['publishes', 'list', '--db', dbPath])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain('no publishes in the last 7 days')
-  }, 60000)
+  it.concurrent(
+    '`publishes list` on an empty db prints a friendly empty message',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli(['publishes', 'list', '--db', dbPath])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('no publishes in the last 7 days')
+    },
+    60000,
+  )
 
-  it.concurrent('`publishes list` prints day/slot/channel/platform/status/attempt/jobId and the url or error', async () => {
-    const dbPath = tmpDbPath()
-    seedPublishRow(dbPath, {
-      jobId: 'job-list-done', channel: 'demo', day: '2026-07-22', slot: '10:00',
-      status: 'done', postId: 'yt-1', url: 'https://youtube.com/shorts/yt-1', attempt: 1,
-    })
-    seedPublishRow(dbPath, {
-      jobId: 'job-list-failed', channel: 'demo', day: '2026-07-22', slot: '14:00',
-      status: 'failed', error: 'upload rejected: bad file', errorKind: 'rejected', attempt: 2,
-    })
-    const result = await runCli(['publishes', 'list', '--db', dbPath])
-    expect(result.exitCode).toBe(0)
-    expect(result.stdout).toContain(
-      '2026-07-22 10:00 demo youtube done attempt 1 job-list-done https://youtube.com/shorts/yt-1',
-    )
-    expect(result.stdout).toContain(
-      '2026-07-22 14:00 demo youtube failed attempt 2 job-list-failed upload rejected: bad file',
-    )
-  }, 60000)
+  it.concurrent(
+    '`publishes list` prints day/slot/channel/platform/status/attempt/jobId and the url or error',
+    async () => {
+      const dbPath = tmpDbPath()
+      seedPublishRow(dbPath, {
+        jobId: 'job-list-done',
+        channel: 'demo',
+        day: '2026-07-22',
+        slot: '10:00',
+        status: 'done',
+        postId: 'yt-1',
+        url: 'https://youtube.com/shorts/yt-1',
+        attempt: 1,
+      })
+      seedPublishRow(dbPath, {
+        jobId: 'job-list-failed',
+        channel: 'demo',
+        day: '2026-07-22',
+        slot: '14:00',
+        status: 'failed',
+        error: 'upload rejected: bad file',
+        errorKind: 'rejected',
+        attempt: 2,
+      })
+      const result = await runCli(['publishes', 'list', '--db', dbPath])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain(
+        '2026-07-22 10:00 demo youtube done attempt 1 job-list-done https://youtube.com/shorts/yt-1',
+      )
+      expect(result.stdout).toContain(
+        '2026-07-22 14:00 demo youtube failed attempt 2 job-list-failed upload rejected: bad file',
+      )
+    },
+    60000,
+  )
 
-  it.concurrent('`publishes list --days garbage` exits 1 before opening the db', async () => {
-    const dbPath = tmpDbPath()
-    const result = await runCli(['publishes', 'list', '--days', 'garbage', '--db', dbPath])
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('invalid --days "garbage"')
-  }, 60000)
+  it.concurrent(
+    '`publishes list --days garbage` exits 1 before opening the db',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli(['publishes', 'list', '--days', 'garbage', '--db', dbPath])
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('invalid --days "garbage"')
+    },
+    60000,
+  )
 
   describe('path resolvers', () => {
     // These mirror resolveDbPath's flag > env > default precedence. They are

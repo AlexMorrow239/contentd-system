@@ -17,7 +17,13 @@ function seed(): Database {
 function addLibrary(db: Database, jobId: string, state: string, metadata: string): void {
   db.prepare(
     'INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(jobId, `runs/${jobId}/assemble/final.mp4`, metadata, state, `2026-07-2${jobId.slice(1)}T00:00:00.000Z`)
+  ).run(
+    jobId,
+    `runs/${jobId}/assemble/final.mp4`,
+    metadata,
+    state,
+    `2026-07-2${jobId.slice(1)}T00:00:00.000Z`,
+  )
 }
 
 describe('listLibraryEntries', () => {

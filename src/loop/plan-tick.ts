@@ -35,7 +35,9 @@ export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
   // sunk cost beats spending on new work. Oldest first; an ineligible job is
   // skipped, not terminal (a later one may belong to a channel with headroom).
   const blocked = db
-    .prepare("SELECT id, channel FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC")
+    .prepare(
+      "SELECT id, channel FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
+    )
     .all() as { id: string; channel: string }[]
   const globalRemainingMicros = globalDailyCapMicros() - globalDaySpentMicros(db)
   for (const job of blocked) {
@@ -64,12 +66,15 @@ export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
   const candidates = channels
     .map((channel) => {
       const today = jobsToday(channel.name)
-      return { channel, open: today < channel.videosPerDay, filledFraction: today / channel.videosPerDay }
+      return {
+        channel,
+        open: today < channel.videosPerDay,
+        filledFraction: today / channel.videosPerDay,
+      }
     })
     .filter((c) => c.open)
     .sort(
-      (a, b) =>
-        a.filledFraction - b.filledFraction || (a.channel.name < b.channel.name ? -1 : 1),
+      (a, b) => a.filledFraction - b.filledFraction || (a.channel.name < b.channel.name ? -1 : 1),
     )
 
   for (const { channel } of candidates) {

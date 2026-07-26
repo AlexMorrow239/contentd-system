@@ -1,16 +1,16 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { describe, it, expect, vi } from 'vitest';
-import { z } from 'zod';
-import type Anthropic from '@anthropic-ai/sdk';
-import { structuredCompletion, visionJudgment } from './anthropic.js';
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { describe, it, expect, vi } from 'vitest'
+import { z } from 'zod'
+import type Anthropic from '@anthropic-ai/sdk'
+import { structuredCompletion, visionJudgment } from './anthropic.js'
 
-const schema = z.object({ answer: z.string(), n: z.number() });
+const schema = z.object({ answer: z.string(), n: z.number() })
 
 function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn().mockResolvedValue(response);
-  return { client: { messages: { create } } as unknown as Anthropic, create };
+  const create = vi.fn().mockResolvedValue(response)
+  return { client: { messages: { create } } as unknown as Anthropic, create }
 }
 
 describe('structuredCompletion', () => {
@@ -18,25 +18,33 @@ describe('structuredCompletion', () => {
     const { client, create } = fakeClient({
       content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
       usage: { input_tokens: 100, output_tokens: 200 },
-    });
-    const { data, cost } = await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client });
-    expect(data).toEqual({ answer: 'hi', n: 3 });
-    expect(cost.usdMicros).toBe(100 * 3 + 200 * 15); // 3300
+    })
+    const { data, cost } = await structuredCompletion({
+      model: 'claude-sonnet-5',
+      system: 's',
+      prompt: 'p',
+      schema,
+      client,
+    })
+    expect(data).toEqual({ answer: 'hi', n: 3 })
+    expect(cost.usdMicros).toBe(100 * 3 + 200 * 15) // 3300
 
     // The forced emit tool must carry the zod schema rendered to JSON Schema.
-    const sentTool = create.mock.calls[0][0].tools[0];
-    expect(sentTool.name).toBe('emit');
-    expect(sentTool.input_schema.type).toBe('object');
-    expect(sentTool.input_schema.required).toEqual(expect.arrayContaining(['answer', 'n']));
-  });
+    const sentTool = create.mock.calls[0][0].tools[0]
+    expect(sentTool.name).toBe('emit')
+    expect(sentTool.input_schema.type).toBe('object')
+    expect(sentTool.input_schema.required).toEqual(expect.arrayContaining(['answer', 'n']))
+  })
 
   it('throws a zod error on malformed tool input', async () => {
     const { client } = fakeClient({
       content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi' } }],
       usage: { input_tokens: 10, output_tokens: 10 },
-    });
-    await expect(structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client })).rejects.toThrow(z.ZodError);
-  });
+    })
+    await expect(
+      structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client }),
+    ).rejects.toThrow(z.ZodError)
+  })
 
   it('attaches the already-billed cost to a schema-validation failure so callers can ledger it', async () => {
     // The messages.create call is billed whether or not the tool output validates;
@@ -44,15 +52,21 @@ describe('structuredCompletion', () => {
     const { client } = fakeClient({
       content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi' } }],
       usage: { input_tokens: 100, output_tokens: 200 },
-    });
-    const err = await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client }).catch((e) => e);
+    })
+    const err = await structuredCompletion({
+      model: 'claude-sonnet-5',
+      system: 's',
+      prompt: 'p',
+      schema,
+      client,
+    }).catch((e) => e)
     // Identity is preserved (still a ZodError), and the cost rides along on it.
-    expect(err).toBeInstanceOf(z.ZodError);
-    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15); // 3300
-  });
+    expect(err).toBeInstanceOf(z.ZodError)
+    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15) // 3300
+  })
 
   it('coerces a JSON-stringified nested value before validating (observed real-model behavior)', async () => {
-    const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) });
+    const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) })
     const { client } = fakeClient({
       content: [
         {
@@ -67,26 +81,45 @@ describe('structuredCompletion', () => {
         },
       ],
       usage: { input_tokens: 10, output_tokens: 10 },
-    });
-    const { data } = await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema: arraySchema, client });
-    expect(data).toEqual({ segments: [{ text: 'a' }, { text: 'b' }] });
-  });
+    })
+    const { data } = await structuredCompletion({
+      model: 'claude-sonnet-5',
+      system: 's',
+      prompt: 'p',
+      schema: arraySchema,
+      client,
+    })
+    expect(data).toEqual({ segments: [{ text: 'a' }, { text: 'b' }] })
+  })
 
   it('still throws on genuinely malformed input (not a JSON string, just wrong)', async () => {
-    const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) });
+    const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) })
     const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { segments: 'not json at all' } }],
+      content: [
+        { type: 'tool_use', name: 'emit', id: 't1', input: { segments: 'not json at all' } },
+      ],
       usage: { input_tokens: 10, output_tokens: 10 },
-    });
+    })
     await expect(
-      structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema: arraySchema, client }),
-    ).rejects.toThrow(z.ZodError);
-  });
+      structuredCompletion({
+        model: 'claude-sonnet-5',
+        system: 's',
+        prompt: 'p',
+        schema: arraySchema,
+        client,
+      }),
+    ).rejects.toThrow(z.ZodError)
+  })
 
   it('throws when there is no emit tool_use block', async () => {
-    const { client } = fakeClient({ content: [{ type: 'text', text: 'nope' }], usage: { input_tokens: 1, output_tokens: 1 } });
-    await expect(structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client })).rejects.toThrow(/no emit tool_use/);
-  });
+    const { client } = fakeClient({
+      content: [{ type: 'text', text: 'nope' }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
+    await expect(
+      structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client }),
+    ).rejects.toThrow(/no emit tool_use/)
+  })
 
   it('attaches the already-billed cost to a missing-tool_use failure so callers can ledger it', async () => {
     // A billed response that came back without the forced tool block is still
@@ -94,46 +127,77 @@ describe('structuredCompletion', () => {
     const { client } = fakeClient({
       content: [{ type: 'text', text: 'nope' }],
       usage: { input_tokens: 100, output_tokens: 200 },
-    });
-    const err = await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client }).catch((e) => e);
-    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15); // 3300
-  });
+    })
+    const err = await structuredCompletion({
+      model: 'claude-sonnet-5',
+      system: 's',
+      prompt: 'p',
+      schema,
+      client,
+    }).catch((e) => e)
+    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15) // 3300
+  })
 
   it('rejects an unpriced model at zero spend, before the API is called', async () => {
     const { client, create } = fakeClient({
       content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
       usage: { input_tokens: 100, output_tokens: 200 },
-    });
+    })
     await expect(
-      structuredCompletion({ model: 'claude-nonexistent-9', system: 's', prompt: 'p', schema, client }),
-    ).rejects.toThrow(/no price table entry for model/);
+      structuredCompletion({
+        model: 'claude-nonexistent-9',
+        system: 's',
+        prompt: 'p',
+        schema,
+        client,
+      }),
+    ).rejects.toThrow(/no price table entry for model/)
     // The paid call must never fire for a model we cannot price.
-    expect(create).not.toHaveBeenCalled();
-  });
-});
+    expect(create).not.toHaveBeenCalled()
+  })
+})
 
 describe('visionJudgment', () => {
-  const judgmentSchema = z.object({ pass: z.boolean(), critique: z.string() });
+  const judgmentSchema = z.object({ pass: z.boolean(), critique: z.string() })
 
   // Tiny fake image bytes: visionJudgment reads and base64-encodes files, it
   // never decodes them, so magic-number-only "images" are enough for unit tests.
-  function writeImages(): { dir: string; pngPath: string; jpgPath: string; pngB64: string; jpgB64: string } {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-vision-'));
-    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03]);
-    const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0x04, 0x05, 0x06]);
-    const pngPath = path.join(dir, 'scene-01.png');
-    const jpgPath = path.join(dir, 'frame-2.JPG'); // uppercase on purpose: extension mapping is case-insensitive
-    writeFileSync(pngPath, pngBytes);
-    writeFileSync(jpgPath, jpgBytes);
-    return { dir, pngPath, jpgPath, pngB64: pngBytes.toString('base64'), jpgB64: jpgBytes.toString('base64') };
+  function writeImages(): {
+    dir: string
+    pngPath: string
+    jpgPath: string
+    pngB64: string
+    jpgB64: string
+  } {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-vision-'))
+    const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03])
+    const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0x04, 0x05, 0x06])
+    const pngPath = path.join(dir, 'scene-01.png')
+    const jpgPath = path.join(dir, 'frame-2.JPG') // uppercase on purpose: extension mapping is case-insensitive
+    writeFileSync(pngPath, pngBytes)
+    writeFileSync(jpgPath, jpgBytes)
+    return {
+      dir,
+      pngPath,
+      jpgPath,
+      pngB64: pngBytes.toString('base64'),
+      jpgB64: jpgBytes.toString('base64'),
+    }
   }
 
   it('sends base64 image blocks (media_type by extension) before the text prompt and parses the emit output', async () => {
-    const { pngPath, jpgPath, pngB64, jpgB64 } = writeImages();
+    const { pngPath, jpgPath, pngB64, jpgB64 } = writeImages()
     const { client, create } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { pass: true, critique: 'matches the scene' } }],
+      content: [
+        {
+          type: 'tool_use',
+          name: 'emit',
+          id: 't1',
+          input: { pass: true, critique: 'matches the scene' },
+        },
+      ],
       usage: { input_tokens: 1000, output_tokens: 100 },
-    });
+    })
     const { data, cost } = await visionJudgment({
       model: 'claude-sonnet-5',
       system: 's',
@@ -141,49 +205,76 @@ describe('visionJudgment', () => {
       imagePaths: [pngPath, jpgPath],
       schema: judgmentSchema,
       client,
-    });
-    expect(data).toEqual({ pass: true, critique: 'matches the scene' });
-    expect(cost.usdMicros).toBe(1000 * 3 + 100 * 15); // 4500 — same PRICE_TABLE math as structuredCompletion
+    })
+    expect(data).toEqual({ pass: true, critique: 'matches the scene' })
+    expect(cost.usdMicros).toBe(1000 * 3 + 100 * 15) // 4500 — same PRICE_TABLE math as structuredCompletion
 
-    const request = create.mock.calls[0][0];
+    const request = create.mock.calls[0][0]
     // Shared forced-tool core: emit tool, forced tool_choice.
-    expect(request.tools[0].name).toBe('emit');
-    expect(request.tool_choice).toEqual({ type: 'tool', name: 'emit' });
+    expect(request.tools[0].name).toBe('emit')
+    expect(request.tool_choice).toEqual({ type: 'tool', name: 'emit' })
     // Content layout: every image block precedes the single trailing text block.
     expect(request.messages[0].content).toEqual([
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngB64 } },
       { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: jpgB64 } },
       { type: 'text', text: 'Does this keyframe match the scene intent?' },
-    ]);
-  });
+    ])
+  })
 
   it('rejects an unpriced model at zero spend, before the API is called', async () => {
-    const { pngPath } = writeImages();
-    const { client, create } = fakeClient({ content: [], usage: { input_tokens: 1, output_tokens: 1 } });
+    const { pngPath } = writeImages()
+    const { client, create } = fakeClient({
+      content: [],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
     await expect(
-      visionJudgment({ model: 'claude-nonexistent-9', system: 's', prompt: 'p', imagePaths: [pngPath], schema: judgmentSchema, client }),
-    ).rejects.toThrow(/visionJudgment: no price table entry for model/);
-    expect(create).not.toHaveBeenCalled();
-  });
+      visionJudgment({
+        model: 'claude-nonexistent-9',
+        system: 's',
+        prompt: 'p',
+        imagePaths: [pngPath],
+        schema: judgmentSchema,
+        client,
+      }),
+    ).rejects.toThrow(/visionJudgment: no price table entry for model/)
+    expect(create).not.toHaveBeenCalled()
+  })
 
   it('throws on an unsupported image extension without calling the API', async () => {
-    const { dir } = writeImages();
-    const gifPath = path.join(dir, 'frame.gif');
-    writeFileSync(gifPath, Buffer.from([0x47, 0x49, 0x46]));
-    const { client, create } = fakeClient({ content: [], usage: { input_tokens: 1, output_tokens: 1 } });
+    const { dir } = writeImages()
+    const gifPath = path.join(dir, 'frame.gif')
+    writeFileSync(gifPath, Buffer.from([0x47, 0x49, 0x46]))
+    const { client, create } = fakeClient({
+      content: [],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    })
     await expect(
-      visionJudgment({ model: 'claude-sonnet-5', system: 's', prompt: 'p', imagePaths: [gifPath], schema: judgmentSchema, client }),
-    ).rejects.toThrow(/visionJudgment: unsupported image extension/);
-    expect(create).not.toHaveBeenCalled();
-  });
+      visionJudgment({
+        model: 'claude-sonnet-5',
+        system: 's',
+        prompt: 'p',
+        imagePaths: [gifPath],
+        schema: judgmentSchema,
+        client,
+      }),
+    ).rejects.toThrow(/visionJudgment: unsupported image extension/)
+    expect(create).not.toHaveBeenCalled()
+  })
 
   it('coerces a JSON-stringified nested value via the shared retry path', async () => {
-    const { pngPath } = writeImages();
-    const listSchema = z.object({ issues: z.array(z.string()) });
+    const { pngPath } = writeImages()
+    const listSchema = z.object({ issues: z.array(z.string()) })
     const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { issues: JSON.stringify(['caption obscures subject']) } }],
+      content: [
+        {
+          type: 'tool_use',
+          name: 'emit',
+          id: 't1',
+          input: { issues: JSON.stringify(['caption obscures subject']) },
+        },
+      ],
       usage: { input_tokens: 10, output_tokens: 10 },
-    });
+    })
     const { data } = await visionJudgment({
       model: 'claude-sonnet-5',
       system: 's',
@@ -191,10 +282,10 @@ describe('visionJudgment', () => {
       imagePaths: [pngPath],
       schema: listSchema,
       client,
-    });
-    expect(data).toEqual({ issues: ['caption obscures subject'] });
-  });
-});
+    })
+    expect(data).toEqual({ issues: ['caption obscures subject'] })
+  })
+})
 
 describe('strict tool schema enforcement', () => {
   it('sends the emit tool with strict: true so the API constrains input to the schema', async () => {
@@ -205,10 +296,16 @@ describe('strict tool schema enforcement', () => {
     const { client, create } = fakeClient({
       content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
       usage: { input_tokens: 100, output_tokens: 200 },
-    });
-    await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client });
-    expect(create.mock.calls[0][0].tools[0].strict).toBe(true);
-  });
+    })
+    await structuredCompletion({
+      model: 'claude-sonnet-5',
+      system: 's',
+      prompt: 'p',
+      schema,
+      client,
+    })
+    expect(create.mock.calls[0][0].tools[0].strict).toBe(true)
+  })
 
   it('strips integer minimum/maximum from the wire schema (strict mode rejects them)', async () => {
     // Observed live 2026-07-21: 400 invalid_request_error "tools.0.custom: For
@@ -220,21 +317,32 @@ describe('strict tool schema enforcement', () => {
       n: z.number().int().min(0).max(10),
       nested: z.array(z.object({ idx: z.number().int() })),
       ratio: z.number().min(0), // non-integer bounds must survive the strip
-    });
+    })
     const { client, create } = fakeClient({
       content: [
-        { type: 'tool_use', name: 'emit', id: 't1', input: { n: 3, nested: [{ idx: 1 }], ratio: 0.5 } },
+        {
+          type: 'tool_use',
+          name: 'emit',
+          id: 't1',
+          input: { n: 3, nested: [{ idx: 1 }], ratio: 0.5 },
+        },
       ],
       usage: { input_tokens: 100, output_tokens: 200 },
-    });
-    await structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema: intSchema, client });
-    const sent = JSON.stringify(create.mock.calls[0][0].tools[0].input_schema);
-    expect(sent).not.toContain('"maximum"');
+    })
+    await structuredCompletion({
+      model: 'claude-sonnet-5',
+      system: 's',
+      prompt: 'p',
+      schema: intSchema,
+      client,
+    })
+    const sent = JSON.stringify(create.mock.calls[0][0].tools[0].input_schema)
+    expect(sent).not.toContain('"maximum"')
     // the number-typed ratio keeps its minimum; no integer node carries one
     const wire = create.mock.calls[0][0].tools[0].input_schema as {
-      properties: { n: Record<string, unknown>; ratio: Record<string, unknown> };
-    };
-    expect(wire.properties.n.minimum).toBeUndefined();
-    expect(wire.properties.ratio.minimum).toBe(0);
-  });
-});
+      properties: { n: Record<string, unknown>; ratio: Record<string, unknown> }
+    }
+    expect(wire.properties.n.minimum).toBeUndefined()
+    expect(wire.properties.ratio.minimum).toBe(0)
+  })
+})

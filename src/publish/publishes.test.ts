@@ -591,9 +591,11 @@ describe('retryInterrupted', () => {
     expect(retryInterrupted(db, 'job-1')).toBe(false)
     expect(retryInterrupted(db, 'job-unknown')).toBe(false)
     expect(
-      (db.prepare('SELECT status FROM publishes WHERE job_id = ?').get('job-1') as {
-        status: string
-      }).status,
+      (
+        db.prepare('SELECT status FROM publishes WHERE job_id = ?').get('job-1') as {
+          status: string
+        }
+      ).status,
     ).toBe('done')
     db.close()
   })
@@ -624,9 +626,11 @@ describe('markInterruptedDone', () => {
       finished_at: '2026-07-20T10:10:00.000Z',
     })
     expect(
-      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as {
-        state: string
-      }).state,
+      (
+        db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as {
+          state: string
+        }
+      ).state,
     ).toBe('published')
     db.close()
   })
@@ -638,7 +642,13 @@ describe('markInterruptedDone', () => {
     seedPublish(db, { jobId: 'job-1', status: 'interrupted' })
     const modes = recordTransactionModes(db)
 
-    markInterruptedDone(db, 'job-1', 'yt-xyz789', 'https://youtube.com/shorts/yt-xyz789', new Date())
+    markInterruptedDone(
+      db,
+      'job-1',
+      'yt-xyz789',
+      'https://youtube.com/shorts/yt-xyz789',
+      new Date(),
+    )
 
     expect(modes).toEqual(['immediate'])
     db.close()
@@ -659,9 +669,11 @@ describe('markInterruptedDone', () => {
 
     expect(ok).toBe(false)
     expect(
-      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as {
-        state: string
-      }).state,
+      (
+        db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-1') as {
+          state: string
+        }
+      ).state,
     ).toBe('ready')
     db.close()
   })

@@ -32,9 +32,9 @@ function getBundle(): Promise<string> {
 export const assembleStage: StageDef = {
   name: 'assemble',
   async run(ctx: JobContext): Promise<void> {
-    const voice = JSON.parse(
-      readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
-    ) as { durationMs: number }
+    const voice = JSON.parse(readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8')) as {
+      durationMs: number
+    }
     const captions = JSON.parse(
       readFileSync(ctx.artifactPath('captions', 'words.json'), 'utf8'),
     ) as { words: WordTiming[] }

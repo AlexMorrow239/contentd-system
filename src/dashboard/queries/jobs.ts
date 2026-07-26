@@ -86,9 +86,9 @@ export function listJobs(
 }
 
 export function jobChannels(db: Database): string[] {
-  const rows = db
-    .prepare('SELECT DISTINCT channel FROM jobs ORDER BY channel ASC')
-    .all() as { channel: string }[]
+  const rows = db.prepare('SELECT DISTINCT channel FROM jobs ORDER BY channel ASC').all() as {
+    channel: string
+  }[]
   return rows.map((r) => r.channel)
 }
 
@@ -117,8 +117,7 @@ export interface JobDetail {
 
 export function getJobDetail(db: Database, jobId: string): JobDetail | null {
   const row = db.prepare(`SELECT ${JOB_COLUMNS} FROM jobs WHERE jobs.id = ?`).get(jobId) as
-    | DbJobRow
-    | undefined
+    DbJobRow | undefined
   if (row === undefined) return null
 
   const stageRows = db
@@ -168,8 +167,7 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
   }))
 
   const lib = db.prepare('SELECT state, video_path FROM library WHERE job_id = ?').get(jobId) as
-    | { state: string; video_path: string }
-    | undefined
+    { state: string; video_path: string } | undefined
 
   return {
     job: toJobRow(row),

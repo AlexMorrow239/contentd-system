@@ -18,9 +18,12 @@ export function recordCost(
   operation: string,
   usdMicros: number,
 ): void {
-  db.prepare(
-    'INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES (?, ?, ?, ?)',
-  ).run(jobId, provider, operation, usdMicros)
+  db.prepare('INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES (?, ?, ?, ?)').run(
+    jobId,
+    provider,
+    operation,
+    usdMicros,
+  )
 }
 
 // Parsed at call time (not module load) so tests and long-lived processes see

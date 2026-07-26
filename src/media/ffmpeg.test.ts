@@ -13,10 +13,22 @@ beforeAll(async () => {
   fixture = path.join(dir, 'fixture.mp4')
   // 2s 640x360 testsrc2 video + 440Hz sine audio, H.264 + AAC.
   await execa('ffmpeg', [
-    '-f', 'lavfi', '-i', 'testsrc2=duration=2:size=640x360:rate=30',
-    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
-    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-    fixture, '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    'testsrc2=duration=2:size=640x360:rate=30',
+    '-f',
+    'lavfi',
+    '-i',
+    'sine=frequency=440:duration=2',
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
+    fixture,
+    '-y',
   ])
 }, 60000)
 
