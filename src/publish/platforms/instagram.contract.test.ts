@@ -1,6 +1,8 @@
 import 'dotenv/config'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../../db/index.js'
+import { s3ConfigFromEnv, s3Store } from '../../storage/s3.js'
 import { parseTokenKey } from '../crypto.js'
 import { publishMedia } from '../media.js'
 import { IG_CONTENT_PUBLISH_SCOPE } from '../oauth-flow.js'
@@ -19,19 +21,29 @@ const CHANNEL = process.env.CONTRACT_IG_CHANNEL
 const IG_USER_ID = process.env.CONTRACT_IG_USER_ID
 const VIDEO_PATH = process.env.CONTRACT_IG_VIDEO_PATH
 
-// describe.skipIf (not a thrown error) is what lets `CONTRACT=1 pnpm test`
-// exit 0 when these three are unset, instead of failing or hanging.
+// Uploads CONTRACT_IG_VIDEO_PATH to the configured object store, then posts ONE
+// real PRIVATE Reel from a presigned video_url. This is the exact path that
+// returned `The parameter video_url is required` before Plan 7, and the only
+// thing that validates Meta's real field names.
 describe.skipIf(!CHANNEL || !IG_USER_ID || !VIDEO_PATH)('instagram adapter (contract)', () => {
-  it('publishes a real Reel through the full container flow', async () => {
+  it('publishes a real Reel from a presigned video_url', async () => {
     const db = openDb(process.env.BRAINROT_DB ?? 'data/brainrot.db')
+    const store = s3Store(s3ConfigFromEnv())
+    // A `contract/` prefix, never `videos/`: contract objects are not archive
+    // material and must not accumulate where backfill-store and the digest
+    // sweep would later reason about them.
+    const objectKey = `contract/${Date.now()}-reel.mp4`
     try {
+      const bytes = readFileSync(VIDEO_PATH!)
+      await store.put(objectKey, bytes, 'video/mp4')
+
       const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
       const adapter = instagramAdapter()
       expect(adapter.hasCredential(db, CHANNEL!, key)).toBe(true)
       const credential = await adapter.resolveCredential(db, CHANNEL!, key, new Date())
       const result = await adapter.upload(
         {
-          media: publishMedia({ objectKey: null, localPath: VIDEO_PATH!, store: null }),
+          media: publishMedia({ objectKey, localPath: null, store }),
           meta: {
             title: 'Contract test',
             description: 'Automated contract test — safe to delete.',
@@ -46,9 +58,10 @@ describe.skipIf(!CHANNEL || !IG_USER_ID || !VIDEO_PATH)('instagram adapter (cont
         `contract test posted ${result.postId} (${result.url}) — delete it from Instagram manually`,
       )
     } finally {
+      await store.delete(objectKey).catch(() => {})
       db.close()
     }
-  }, 120_000)
+  }, 180_000)
 })
 
 // Exercises resolveCredential's in-place refresh (design spec decision 5)

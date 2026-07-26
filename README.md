@@ -93,12 +93,75 @@ See Development vs. production below.
 - State + library + cost ledger: SQLite at `data/brainrot.db` (override with
   `--db` or `BRAINROT_DB`) — `data/dev.db` on the host
 
+**`runs/<jobId>/` is a disposable local cache, not the durable copy.** Once a
+job's `store` stage completes, the finished video also lives in the object
+store (see Object storage below) and `library_objects` records its key —
+`rm -rf runs/<jobId>` is then safe. Nothing deletes `runs/` for you
+automatically; reclaiming disk is a manual operator call, and it's only safe
+for jobs whose `store` stage actually finished (check `pnpm brainrot jobs` or
+the dashboard first).
+
 ## Inspect
 
 ```bash
 pnpm brainrot jobs    # last 20 jobs
 pnpm brainrot costs   # per-day USD totals, last 7 days
 ```
+
+## Object storage
+
+Finished videos are uploaded to Cloudflare R2 by the `store` stage. Instagram
+publishing requires this: `graph.instagram.com` rejects direct uploads with
+`The parameter video_url is required` — Meta's servers fetch the video from a
+URL you provide, so a finished video must be reachable over the public internet.
+
+1. In the Cloudflare dashboard, create an **R2 bucket** (e.g. `brainrot-videos`).
+2. Create an **R2 API token** scoped to that bucket with **Object Read & Write**.
+3. Fill the `BRAINROT_S3_*` keys in `.env`. The endpoint is
+   `https://<account-id>.r2.cloudflarestorage.com`.
+
+Verify before going live — this fetches the stored object back and checks it is
+a well-formed, correctly-typed, complete MP4:
+
+```bash
+pnpm brainrot publish preflight <jobId>
+```
+
+Videos finished before object storage existed have no stored object and are
+YouTube-only until uploaded:
+
+```bash
+pnpm brainrot library backfill-store
+```
+
+### Local development
+
+MinIO stands in for R2. It is a `dev`-profile Compose service, so a normal
+`docker compose up -d` does not start it:
+
+```bash
+docker compose --profile dev up -d minio
+```
+
+Console at http://localhost:9101 (user/password `brainrotdev`), S3 API on
+port 9100. Point `.env` at it:
+
+```
+BRAINROT_S3_ENDPOINT=http://localhost:9100
+BRAINROT_S3_BUCKET=brainrot-test
+BRAINROT_S3_ACCESS_KEY_ID=brainrotdev
+BRAINROT_S3_SECRET_ACCESS_KEY=brainrotdev
+```
+
+Then run the storage test tier, which creates the bucket if it is missing:
+
+```bash
+pnpm test:storage
+```
+
+**A MinIO presigned URL is not reachable by Meta.** It is `localhost`, so it
+proves content-type and completeness but nothing about public reachability.
+Real Instagram publishing always needs real R2.
 
 ## Publishing
 
@@ -493,6 +556,7 @@ is done — ticks stay paused until you do.
 ```bash
 pnpm test           # unit + integration (mocked providers; real ffmpeg/Remotion)
 pnpm test:contract  # real paid calls, a few cents total (ElevenLabs synth, one LLM call)
+pnpm test:storage   # object-store conformance against real MinIO (see Object storage above)
 ```
 
 Media/render tests shell out to ffmpeg and run a real Remotion render; the first

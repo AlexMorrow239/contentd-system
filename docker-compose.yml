@@ -108,6 +108,16 @@ services:
       # it implicit. youtube.ts also treats "" as unset, so this must be a
       # real integer, not "".
       BRAINROT_YT_UPLOADS_PER_DAY: '6'
+      # Pinned for the same reason as BRAINROT_DEV_VOICE and BRAINROT_RUNS_ROOT:
+      # env_file forwards the host's (dev-pointing) .env wholesale, so a .env
+      # aimed at the local MinIO container would silently redirect every
+      # production video into a container that is not even running here.
+      # Anything controlling WHERE DATA LANDS gets pinned.
+      BRAINROT_S3_ENDPOINT: ${BRAINROT_S3_ENDPOINT}
+      BRAINROT_S3_BUCKET: brainrot-videos
+      # Never set for production: presigning must sign against the real R2
+      # endpoint. This exists only so a dev .env's MinIO value cannot leak in.
+      BRAINROT_S3_PUBLIC_ENDPOINT: ''
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       - ./channels:/app/channels:ro # production config, re-read every tick
