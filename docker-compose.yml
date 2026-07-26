@@ -108,11 +108,19 @@ services:
       # it implicit. youtube.ts also treats "" as unset, so this must be a
       # real integer, not "".
       BRAINROT_YT_UPLOADS_PER_DAY: '6'
-      # Pinned for the same reason as BRAINROT_DEV_VOICE and BRAINROT_RUNS_ROOT:
-      # env_file forwards the host's (dev-pointing) .env wholesale, so a .env
-      # aimed at the local MinIO container would silently redirect every
-      # production video into a container that is not even running here.
-      # Anything controlling WHERE DATA LANDS gets pinned.
+      # BRAINROT_S3_BUCKET and BRAINROT_S3_PUBLIC_ENDPOINT below are pinned
+      # for the same reason as BRAINROT_DEV_VOICE and BRAINROT_RUNS_ROOT:
+      # env_file forwards the host's (dev-pointing) .env wholesale, so
+      # without a pin, a .env aimed at the local MinIO container would
+      # silently redirect every production video into a container that is
+      # not even running here.
+      # BRAINROT_S3_ENDPOINT is NOT pinned by this line, despite appearances:
+      # Compose's ${VAR} interpolation reads from that same host .env, so a
+      # dev .env's MinIO endpoint carries straight through — this line only
+      # documents that the key must be set, it enforces nothing. Pointing
+      # production at the real R2 endpoint is operator discipline: the
+      # deploying host's .env must carry the real BRAINROT_S3_ENDPOINT, never
+      # a MinIO one.
       BRAINROT_S3_ENDPOINT: ${BRAINROT_S3_ENDPOINT}
       BRAINROT_S3_BUCKET: brainrot-videos
       # Never set for production: presigning must sign against the real R2
