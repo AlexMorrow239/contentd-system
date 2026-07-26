@@ -15,6 +15,11 @@ const NAV: { key: NavKey; label: string; path: string }[] = [
  * Build a URL that carries the current database selection. prod is the
  * default, so it is expressed by the ABSENCE of ?db= — that keeps ordinary
  * URLs clean and makes a dev link visibly different in the address bar.
+ *
+ * Built by hand rather than with URLSearchParams: that class serializes as
+ * application/x-www-form-urlencoded, which encodes a space as '+' rather than
+ * '%20'. Do not "simplify" this back to URLSearchParams — layout.test.ts's
+ * encoding case is what catches it.
  */
 export function dbHref(
   path: string,
@@ -22,7 +27,7 @@ export function dbHref(
   extra: Record<string, string> = {},
 ): string {
   const parts: string[] = []
-  if (dbChoice === 'dev') parts.push(`db=dev`)
+  if (dbChoice === 'dev') parts.push('db=dev')
   for (const [key, value] of Object.entries(extra)) {
     if (value !== '') parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
   }
