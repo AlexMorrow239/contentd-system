@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../db/index.js'
@@ -64,5 +64,73 @@ describe('createApp', () => {
     const res = await app.request('/boom')
     expect(res.status).toBe(500)
     expect(await res.text()).toContain('kaboom')
+  })
+})
+
+describe('video streaming', () => {
+  function configWithVideo(bytes: Buffer, videoPathInDb?: string): DashboardConfig {
+    const dir = mkdtempSync(join(tmpdir(), 'brainrot-vid-'))
+    const runsRoot = join(dir, 'runs')
+    const videoDir = join(runsRoot, 'j1', 'assemble')
+    mkdirSync(videoDir, { recursive: true })
+    const videoFile = join(videoDir, 'final.mp4')
+    writeFileSync(videoFile, bytes)
+
+    const prod = join(dir, 'brainrot.db')
+    const db = openDb(prod)
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
+    ).run()
+    db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?)',
+    ).run('j1', videoPathInDb ?? videoFile, '{}', 'ready')
+    db.close()
+
+    return {
+      dbPaths: { prod, dev: join(dir, 'absent.db') },
+      runsRoot,
+      channelsDir: join(dir, 'channels'),
+      port: 8787,
+    }
+  }
+
+  it('serves the whole file when no Range is sent', async () => {
+    const config = configWithVideo(Buffer.from('0123456789'))
+    const res = await createApp({ config }).request('/library/j1/video')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('content-type')).toBe('video/mp4')
+    expect(res.headers.get('accept-ranges')).toBe('bytes')
+    expect(await res.text()).toBe('0123456789')
+  })
+
+  it('serves a 206 partial response so the player can seek', async () => {
+    const config = configWithVideo(Buffer.from('0123456789'))
+    const res = await createApp({ config }).request('/library/j1/video', {
+      headers: { range: 'bytes=2-5' },
+    })
+    expect(res.status).toBe(206)
+    expect(res.headers.get('content-range')).toBe('bytes 2-5/10')
+    expect(res.headers.get('content-length')).toBe('4')
+    expect(await res.text()).toBe('2345')
+  })
+
+  it('404s for a job with no library row', async () => {
+    const config = configWithVideo(Buffer.from('0123456789'))
+    const res = await createApp({ config }).request('/library/nope/video')
+    expect(res.status).toBe(404)
+  })
+
+  it('404s when the file was deleted from disk', async () => {
+    const config = configWithVideo(Buffer.from('0123456789'))
+    rmSync(join(config.runsRoot, 'j1', 'assemble', 'final.mp4'))
+    const res = await createApp({ config }).request('/library/j1/video')
+    expect(res.status).toBe(404)
+  })
+
+  it('403s on a video_path that escapes the runs root', async () => {
+    // A malformed library row must not become an arbitrary file read.
+    const config = configWithVideo(Buffer.from('0123456789'), '/etc/passwd')
+    const res = await createApp({ config }).request('/library/j1/video')
+    expect(res.status).toBe(403)
   })
 })

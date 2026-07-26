@@ -1,13 +1,18 @@
-import { readFileSync } from 'node:fs'
+import { createReadStream, readFileSync, statSync } from 'node:fs'
+import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import type { Database } from 'better-sqlite3'
 import { Hono } from 'hono'
 import { openDbReadonly } from '../db/index.js'
+import type { LibraryState } from '../jobs/library.js'
 import type { DashboardConfig, DbChoice } from './config.js'
 import { resolveDbChoice } from './config.js'
 import { html } from './html.js'
+import { findLibraryVideoPath, libraryChannels, listLibraryEntries } from './queries/library.js'
 import { getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
+import { parseRange, resolveVideoPath } from './video.js'
+import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 
@@ -25,6 +30,7 @@ export interface DashboardDeps {
 const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url))
 
 const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
+const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
   const app = new Hono<{ Variables: DashboardVars }>()
@@ -108,6 +114,75 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         body: renderJobDetailPage(detail, dbChoice),
       }),
     )
+  })
+
+  app.get('/library', (c) => {
+    const db = c.get('db')
+    const dbChoice = c.get('dbChoice')
+    const rawState = c.req.query('state')
+    const state = LIBRARY_STATE_VALUES.includes(rawState as LibraryState)
+      ? (rawState as LibraryState)
+      : undefined
+    const rawChannel = c.req.query('channel')
+    const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
+
+    return c.html(
+      layout({
+        title: 'library',
+        dbChoice,
+        activeNav: 'library',
+        body: renderLibraryPage({
+          entries: listLibraryEntries(db, { state, channel }),
+          channels: libraryChannels(db),
+          filter: { state, channel },
+          dbChoice,
+        }),
+      }),
+    )
+  })
+
+  app.get('/library/:jobId/video', (c) => {
+    const db = c.get('db')
+    const videoPath = findLibraryVideoPath(db, c.req.param('jobId'))
+    if (videoPath === null) return c.text('no library row for this job', 404)
+
+    // The path comes from the database, never the URL — and is still
+    // containment-checked, so a malformed row cannot read outside runs/.
+    const absolute = resolveVideoPath(deps.config.runsRoot, videoPath)
+    if (absolute === null) return c.text('video path outside the runs root', 403)
+
+    let size: number
+    try {
+      size = statSync(absolute).size
+    } catch {
+      return c.text('video file missing on disk', 404)
+    }
+
+    const range = parseRange(c.req.header('range'), size)
+    if (range === null) {
+      const stream = Readable.toWeb(createReadStream(absolute)) as ReadableStream
+      return new Response(stream, {
+        status: 200,
+        headers: {
+          'content-type': 'video/mp4',
+          'content-length': String(size),
+          'accept-ranges': 'bytes',
+        },
+      })
+    }
+
+    const stream = Readable.toWeb(
+      createReadStream(absolute, { start: range.start, end: range.end }),
+    ) as ReadableStream
+    return new Response(stream, {
+      status: 206,
+      headers: {
+        'content-type': 'video/mp4',
+        'content-length': String(range.end - range.start + 1),
+        'content-range': `bytes ${range.start}-${range.end}/${size}`,
+        'accept-ranges': 'bytes',
+      },
+    })
   })
 
   app.notFound((c) => {

@@ -1,0 +1,85 @@
+import type { LibraryState } from '../../jobs/library.js'
+import type { DbChoice } from '../config.js'
+import { html, SafeHtml } from '../html.js'
+import type { LibraryEntry, QcSummary } from '../queries/library.js'
+import { formatTime } from './jobs.js'
+import { dbHref } from './layout.js'
+
+const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
+
+function option(value: string, selected: string | undefined): SafeHtml {
+  return selected === value
+    ? html`<option value="${value}" selected>${value}</option>`
+    : html`<option value="${value}">${value}</option>`
+}
+
+function renderQc(qc: QcSummary): SafeHtml {
+  switch (qc.kind) {
+    case 'ok':
+      return html`<span class="status-done">qc ok</span>`
+    case 'issues':
+      return html`<ul class="error">
+        ${qc.issues.map((issue) => html`<li>${issue}</li>`)}
+      </ul>`
+    case 'unparseable':
+      return html`<span class="warning">unparseable metadata</span>`
+    case 'absent':
+      return html`<span class="muted">no qc block</span>`
+  }
+}
+
+export interface LibraryPageData {
+  entries: LibraryEntry[]
+  channels: string[]
+  filter: { state?: LibraryState; channel?: string }
+  dbChoice: DbChoice
+}
+
+export function renderLibraryPage(data: LibraryPageData): SafeHtml {
+  const hiddenDb =
+    data.dbChoice === 'dev' ? html`<input type="hidden" name="db" value="dev">` : html``
+
+  const filters = html`<form class="filters" method="get" action="/library">
+    ${hiddenDb}
+    <select name="state">
+      <option value="">all states</option>
+      ${LIBRARY_STATES.map((state) => option(state, data.filter.state))}
+    </select>
+    <select name="channel">
+      <option value="">all channels</option>
+      ${data.channels.map((channel) => option(channel, data.filter.channel))}
+    </select>
+    <button type="submit">filter</button>
+  </form>`
+
+  if (data.entries.length === 0) {
+    return html`<h1>library</h1>
+      ${filters}
+      <p class="empty">no library entries match these filters</p>`
+  }
+
+  const rows = data.entries.map(
+    (entry) => html`<tr>
+      <td>
+        <video controls preload="metadata" src="${dbHref(`/library/${entry.jobId}/video`, data.dbChoice)}"></video>
+      </td>
+      <td>
+        <a href="${dbHref(`/jobs/${entry.jobId}`, data.dbChoice)}">${entry.jobId}</a>
+        <div class="muted">${entry.channel}</div>
+      </td>
+      <td>${entry.topic}</td>
+      <td class="status-${entry.state}">${entry.state}</td>
+      <td>${renderQc(entry.qc)}</td>
+      <td>${formatTime(entry.createdAt)}</td>
+    </tr>`,
+  )
+
+  return html`<h1>library</h1>
+    ${filters}
+    <table>
+      <thead>
+        <tr><th>video</th><th>job</th><th>topic</th><th>state</th><th>qc</th><th>created</th></tr>
+      </thead>
+      <tbody>${rows}</tbody>
+    </table>`
+}
