@@ -10,6 +10,7 @@ import { BudgetExceededError } from './costs.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
 import { createJob, runJob } from './runner.js'
+import type { StoreArtifact } from '../stages/store.js'
 
 function setup() {
   const root = mkdtempSync(join(tmpdir(), 'brainrot-run-'))
@@ -501,5 +502,81 @@ describe('runJob', () => {
     )
     expect(captions.status).toBe('done')
     expect(captions.error).toBeNull()
+  })
+})
+
+describe('final gate: library_objects', () => {
+  // Stages identical to buildStages()'s happy path, but the store stage writes
+  // a caller-supplied artifact (or nothing, to simulate a pre-storage job).
+  function stagesWithStore(storeArtifact: StoreArtifact | null): StageDef[] {
+    return STAGE_ORDER.map((name) => ({
+      name,
+      async run(ctx: JobContext) {
+        if (name === 'assemble') {
+          writeFileSync(ctx.artifactPath('assemble', 'final.mp4'), 'FAKEMP4')
+        } else if (name === 'qc') {
+          writeFileSync(
+            ctx.artifactPath('qc', 'qc.json'),
+            JSON.stringify({ passed: true, checks: [] }),
+          )
+        } else if (name === 'store') {
+          if (storeArtifact !== null) {
+            writeFileSync(ctx.artifactPath('store', 'store.json'), JSON.stringify(storeArtifact))
+          }
+        } else {
+          writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
+        }
+      },
+    }))
+  }
+
+  it('records the object row from store.json inside the library transaction', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space' })
+    const artifact: StoreArtifact = { objectKey: 'videos/test/job-1.mp4', bytes: 4096, etag: 'abc' }
+
+    await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
+
+    const objectRow = row<{ objectKey: string; bytes: number; etag: string } | undefined>(
+      db,
+      'SELECT object_key AS objectKey, bytes, etag FROM library_objects WHERE job_id = ?',
+      jobId,
+    )
+    expect(objectRow).toEqual(artifact)
+  })
+
+  // Jobs produced before this plan have no store.json. The gate must stay
+  // survivable for them, exactly as it already tolerates a missing script.json.
+  it('finishes the job with no object row when store.json is absent', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space' })
+
+    const result = await runJob(db, channel, jobId, stagesWithStore(null), { runsRoot })
+
+    expect(result.status).toBe('ready')
+    expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({
+      status: 'done',
+    })
+    expect(
+      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library_objects WHERE job_id = ?', jobId),
+    ).toEqual({ n: 0 })
+  })
+
+  it('is idempotent when the gate runs a second time', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space' })
+    const artifact: StoreArtifact = { objectKey: 'videos/test/job-1.mp4', bytes: 4096, etag: 'abc' }
+
+    await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
+    // Second call: every stage is already 'done', so this re-enters only the
+    // final gate.
+    await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
+
+    expect(
+      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library_objects WHERE job_id = ?', jobId),
+    ).toEqual({ n: 1 })
   })
 })

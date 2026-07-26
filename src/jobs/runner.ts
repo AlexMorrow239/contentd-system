@@ -143,6 +143,19 @@ export async function runJob(
       metadataJson = JSON.stringify(script.platformMeta ?? {})
     }
 
+    // store.json is written by the store stage. Absent for jobs produced
+    // before object storage existed — the gate stays survivable for them, the
+    // same way it already tolerates a missing script.json.
+    const storePath = join(runDir, 'store', 'store.json')
+    let storeArtifact: { objectKey: string; bytes: number; etag: string } | undefined
+    if (existsSync(storePath)) {
+      storeArtifact = JSON.parse(readFileSync(storePath, 'utf8')) as {
+        objectKey: string
+        bytes: number
+        etag: string
+      }
+    }
+
     // Idempotent: a resume that reaches this final window again (all stages already
     // 'done') upserts the same library row and re-marks the job done without a
     // PRIMARY KEY conflict. The upsert + job-done update run in one transaction so
@@ -151,9 +164,20 @@ export async function runJob(
       'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?) ' +
         'ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path, metadata_json=excluded.metadata_json, state=excluded.state',
     )
+    // Same idempotency story as libraryUpsert above, keyed on the FK to library.
+    const objectUpsert = db.prepare(
+      'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?) ' +
+        'ON CONFLICT(job_id) DO UPDATE SET object_key=excluded.object_key, bytes=excluded.bytes, etag=excluded.etag',
+    )
     const markJobDone = db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?')
     db.transaction(() => {
+      // library must be upserted first: library_objects.job_id references it,
+      // and object storage is written after the library row so the FK is
+      // satisfied even on the very first insert.
       libraryUpsert.run(jobId, videoPath, metadataJson, state)
+      if (storeArtifact !== undefined) {
+        objectUpsert.run(jobId, storeArtifact.objectKey, storeArtifact.bytes, storeArtifact.etag)
+      }
       markJobDone.run('done', nowIso(), jobId)
     })()
 
