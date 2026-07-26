@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS library (
   state TEXT NOT NULL CHECK (state IN ('ready','needs-review','published','blocked')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+CREATE TABLE IF NOT EXISTS library_objects (
+  job_id TEXT PRIMARY KEY REFERENCES library(job_id),
+  object_key TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  etag TEXT NOT NULL,
+  uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
 CREATE TABLE IF NOT EXISTS costs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES jobs(id),
   provider TEXT NOT NULL, operation TEXT NOT NULL, usd_micros INTEGER NOT NULL,

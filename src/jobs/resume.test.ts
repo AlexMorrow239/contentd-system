@@ -39,7 +39,7 @@ describe('jobs/pipeline', () => {
   it('cli.ts re-exports the moved helper with identical identity', () => {
     // Re-export, not copy: the loop code and the CLI must share ONE wiring.
     expect(cliStages).toBe(pipelineStages)
-    // The move is verbatim: the six-stage produce order is unchanged.
+    // The move is verbatim: the seven-stage produce order is unchanged.
     expect(pipelineStages().map((s) => s.name)).toEqual([
       'script',
       'voice',
@@ -47,6 +47,7 @@ describe('jobs/pipeline', () => {
       'visuals',
       'assemble',
       'qc',
+      'store',
     ])
   })
 })
@@ -70,7 +71,7 @@ describe('resumeJob', () => {
     vi.unstubAllEnvs()
   })
 
-  // Mirrors createJob's row shape: one jobs row plus six pending stage rows.
+  // Mirrors createJob's row shape: one jobs row plus seven pending stage rows.
   function seedJob(status: string, opts: { channel?: string; id?: string } = {}): string {
     const id = opts.id ?? `job-${status}`
     db.prepare(
@@ -134,7 +135,7 @@ describe('resumeJob', () => {
       stagesFor: () => fakeStages(calls),
     })
     expect(result.status).toBe('ready')
-    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
+    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store'])
     const lib = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as
       { state: string } | undefined
     expect(lib?.state).toBe('ready')
@@ -170,7 +171,7 @@ describe('resumeJob', () => {
     const result = await resumeJob(db, jobId, { runsRoot, channelsDir, stagesFor })
     expect(result.status).toBe('ready')
     expect(result.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
-    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
+    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store'])
     expect(stagesFor).toHaveBeenCalledTimes(1)
     const topic = db.prepare('SELECT status FROM topics WHERE job_id = ?').get(jobId) as {
       status: string
@@ -191,7 +192,7 @@ describe('resumeJob', () => {
     })
     expect(result.status).toBe('ready')
     // the runner's skip-done resume: sunk stages are not re-run
-    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc'])
+    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc', 'store'])
   })
 
   it('running + force proceeds (no claimed topic → silent no-op on the flip)', async () => {
@@ -257,9 +258,9 @@ describe('resumeJob', () => {
       heartbeat,
     })
     expect(result.status).toBe('ready')
-    // progress, not the clock: four stages left to run, four extensions
-    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc'])
-    expect(heartbeat).toHaveBeenCalledTimes(4)
+    // progress, not the clock: five stages left to run, five extensions
+    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc', 'store'])
+    expect(heartbeat).toHaveBeenCalledTimes(5)
   })
 
   it('resumes without a heartbeat (the manual CLI holds no lease)', async () => {

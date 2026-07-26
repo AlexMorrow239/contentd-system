@@ -81,7 +81,7 @@ function buildStages(
 }
 
 describe('createJob', () => {
-  it('inserts a queued job and six pending stages', () => {
+  it('inserts a queued job and seven pending stages', () => {
     const { db } = setup()
     const jobId = createJob(db, testChannel(), { topic: 'space' })
     expect(typeof jobId).toBe('string')
@@ -97,13 +97,13 @@ describe('createJob', () => {
         stage: string
       }[]
     ).map((r) => r.stage)
-    expect(stages).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
+    expect(stages).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store'])
     const pending = row<{ n: number }>(
       db,
       "SELECT COUNT(*) AS n FROM job_stages WHERE job_id = ? AND status = 'pending'",
       jobId,
     )
-    expect(pending).toEqual({ n: 6 })
+    expect(pending).toEqual({ n: 7 })
   })
 })
 
@@ -118,7 +118,7 @@ describe('runJob', () => {
     expect(result.status).toBe('ready')
     expect(result.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
     expect(existsSync(result.videoPath!)).toBe(true)
-    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
+    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store'])
 
     expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({
       status: 'done',
@@ -129,7 +129,7 @@ describe('runJob', () => {
         "SELECT COUNT(*) AS n FROM job_stages WHERE job_id = ? AND status = 'done'",
         jobId,
       ),
-    ).toEqual({ n: 6 })
+    ).toEqual({ n: 7 })
     const lib = row<{ state: string; video_path: string; metadata_json: string }>(
       db,
       'SELECT state, video_path, metadata_json FROM library WHERE job_id = ?',
@@ -219,7 +219,7 @@ describe('runJob', () => {
     const calls: StageName[] = []
     const result = await runJob(db, channel, jobId, buildStages(calls), { runsRoot })
 
-    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc'])
+    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc', 'store'])
     expect(result.status).toBe('ready')
     // script stage was skipped, so script.json was never written → metadata falls back to '{}'
     expect(
@@ -243,9 +243,9 @@ describe('runJob', () => {
     const heartbeat = vi.fn()
     await runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat })
 
-    // The produce lease is kept alive by work, not by the clock: four stages
-    // ran, so four extensions.
-    expect(heartbeat).toHaveBeenCalledTimes(4)
+    // The produce lease is kept alive by work, not by the clock: five stages
+    // ran, so five extensions.
+    expect(heartbeat).toHaveBeenCalledTimes(5)
   })
 
   it('a throwing heartbeat never kills the job', async () => {

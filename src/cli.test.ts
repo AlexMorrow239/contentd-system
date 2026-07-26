@@ -650,7 +650,7 @@ describe('brainrot CLI', () => {
 describe('pipelineStages (in-process)', () => {
   it('returns the fixed stage list', () => {
     const stages = pipelineStages()
-    const order = ['script', 'voice', 'captions', 'visuals', 'assemble', 'qc']
+    const order = ['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store']
     expect(stages.map((s) => s.name)).toEqual(order)
     expect(stages[3]).toBe(visualsVolumeStage)
   })

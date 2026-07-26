@@ -17,6 +17,7 @@ export const DASHBOARD_STAGE_ORDER = [
   'visuals',
   'assemble',
   'qc',
+  'store',
 ] as const
 
 export interface JobListRow {

@@ -2,9 +2,17 @@ import type { Database } from 'better-sqlite3'
 import type { Logger } from 'pino'
 import type { ChannelConfig } from '../config/channel.js'
 
-export type StageName = 'script' | 'voice' | 'captions' | 'visuals' | 'assemble' | 'qc'
+export type StageName = 'script' | 'voice' | 'captions' | 'visuals' | 'assemble' | 'qc' | 'store'
 
-export const STAGE_ORDER: StageName[] = ['script', 'voice', 'captions', 'visuals', 'assemble', 'qc']
+export const STAGE_ORDER: StageName[] = [
+  'script',
+  'voice',
+  'captions',
+  'visuals',
+  'assemble',
+  'qc',
+  'store',
+]
 
 export interface JobContext {
   jobId: string
