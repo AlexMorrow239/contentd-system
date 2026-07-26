@@ -2,8 +2,13 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
-import { PUBLISH_PLATFORMS } from '../publish/types.js'
-import type { PublishChannelConfig } from '../publish/types.js'
+import {
+  instagramOptionsSchema,
+  normalizeInstagramOptions,
+  normalizeYoutubeOptions,
+  youtubeOptionsSchema,
+} from '../publish/platforms/options.js'
+import type { Platform, PublishChannelConfig, PublishTargetConfig } from '../publish/types.js'
 
 export interface CaptionStyle {
   font: string
@@ -60,6 +65,60 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
 const SLOT_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
+const slotsFieldSchema = z
+  .array(z.string().regex(SLOT_RE, 'slots must be zero-padded 24h HH:MM'))
+  .min(1, 'slots must be a non-empty array')
+  .refine((slots) => new Set(slots).size === slots.length, {
+    message: 'slots must not contain duplicates',
+  })
+
+// .strict() is applied AFTER .extend() (not on the base options schema): a
+// non-strict base can be extended freely, and strictness on the final,
+// per-platform shape is what makes an unknown key (e.g. category_id under
+// [publish.instagram]) a load error naming that platform's own field set.
+const youtubeTargetSchema = youtubeOptionsSchema
+  .extend({ slots: slotsFieldSchema.optional() })
+  .strict()
+const instagramTargetSchema = instagramOptionsSchema
+  .extend({ slots: slotsFieldSchema.optional() })
+  .strict()
+
+// .strict() at this level rejects both the removed `platforms = [...]` key
+// and any undeclared platform sub-table (e.g. [publish.tiktok]) — zod's
+// default unknown-key behavior on a strict object covers both without extra
+// code (design spec §4.2). superRefine enforces the two rules zod's static
+// shape cannot express: at least one platform declared, and every declared
+// platform resolves to a non-empty slot list (its own override, or the
+// shared `slots` above it).
+const publishSchema = z
+  .object({
+    slots: slotsFieldSchema.optional(),
+    youtube: youtubeTargetSchema.optional(),
+    instagram: instagramTargetSchema.optional(),
+  })
+  .strict()
+  .superRefine((val, ctx) => {
+    const declared = (['youtube', 'instagram'] as const).filter((p) => val[p] !== undefined)
+    if (declared.length === 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'a [publish] table must declare at least one platform sub-table (e.g. [publish.youtube])',
+      })
+      return
+    }
+    for (const platform of declared) {
+      if (val.slots === undefined && val[platform]?.slots === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `[publish.${platform}] has no slots, and [publish] declares no shared slots to fall back to`,
+        })
+      }
+    }
+  })
+  .optional()
+type RawPublish = z.infer<typeof publishSchema>
+
 const rawSchema = z.object({
   name: z.string(),
   niche: z.array(z.string()),
@@ -84,20 +143,7 @@ const rawSchema = z.object({
       per_source_limit: z.number().int().min(1).max(100).default(DEFAULT_SCOUT.perSourceLimit),
     })
     .optional(),
-  publish: z
-    .object({
-      slots: z
-        .array(z.string().regex(SLOT_RE, 'slots must be zero-padded 24h HH:MM'))
-        .min(1, 'slots must be a non-empty array')
-        .refine((slots) => new Set(slots).size === slots.length, {
-          message: 'slots must not contain duplicates',
-        }),
-      platforms: z.array(z.enum(PUBLISH_PLATFORMS)).default(['youtube']),
-      privacy: z.enum(['public', 'unlisted', 'private']).default('public'),
-      category_id: z.number().int().positive().default(24),
-      made_for_kids: z.boolean().default(false),
-    })
-    .optional(),
+  publish: publishSchema,
   caption_style: z.object({
     font: z.string(),
     font_size_px: z.number(),
@@ -122,6 +168,43 @@ const rawSchema = z.object({
 
 function usdToMicros(usd: number): number {
   return Math.round(usd * 1_000_000)
+}
+
+// superRefine on publishSchema guarantees every declared platform resolves
+// to a defined slot list; this throw is defensive (unreachable in practice),
+// matching the codebase's fail-loudly-not-silently convention rather than a
+// non-null assertion.
+function resolveSlots(
+  shared: string[] | undefined,
+  override: string[] | undefined,
+  platform: Platform,
+): string[] {
+  const slots = override ?? shared
+  if (slots === undefined) {
+    throw new Error(
+      `loadChannelConfig: [publish.${platform}] resolved no slots (unreachable — schema guard)`,
+    )
+  }
+  return [...slots].sort()
+}
+
+function buildTargets(raw: NonNullable<RawPublish>): PublishTargetConfig[] {
+  const targets: PublishTargetConfig[] = []
+  if (raw.youtube) {
+    targets.push({
+      platform: 'youtube',
+      slots: resolveSlots(raw.slots, raw.youtube.slots, 'youtube'),
+      options: normalizeYoutubeOptions(raw.youtube),
+    })
+  }
+  if (raw.instagram) {
+    targets.push({
+      platform: 'instagram',
+      slots: resolveSlots(raw.slots, raw.instagram.slots, 'instagram'),
+      options: normalizeInstagramOptions(raw.instagram),
+    })
+  }
+  return targets.sort((a, b) => (a.platform < b.platform ? -1 : 1))
 }
 
 export function loadChannelConfig(path: string): ChannelConfig {
@@ -165,13 +248,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
     publish: raw.publish
-      ? (Object.freeze({
-          slots: Object.freeze([...raw.publish.slots].sort()),
-          platforms: Object.freeze([...raw.publish.platforms]),
-          privacy: raw.publish.privacy,
-          categoryId: raw.publish.category_id,
-          madeForKids: raw.publish.made_for_kids,
-        }) as PublishChannelConfig)
+      ? (Object.freeze({ targets: Object.freeze(buildTargets(raw.publish)) }) as PublishChannelConfig)
       : null,
   }
 }

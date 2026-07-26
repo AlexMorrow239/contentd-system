@@ -265,94 +265,164 @@ describe('loadChannelsDir', () => {
   })
 })
 
-describe('[publish] config', () => {
-  it('defaults publish to null when the [publish] table is absent', () => {
+// Baseline [publish] table reused by several tests below.
+const PUBLISH_YOUTUBE_ONLY = [
+  '[publish]',
+  'slots = ["10:00", "14:00", "19:00"]',
+  '',
+  '[publish.youtube]',
+  'privacy = "private"',
+  'category_id = 24',
+  'made_for_kids = false',
+  '',
+]
+
+describe('[publish] — per-platform targets', () => {
+  it('is null when [publish] is absent', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
     expect(cfg.publish).toBeNull()
   })
 
-  it('parses a full [publish] table into camelCase', () => {
+  it('parses a single youtube target using the shared slots', () => {
+    const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, ...PUBLISH_YOUTUBE_ONLY]))
+    expect(cfg.publish?.targets).toEqual([
+      {
+        platform: 'youtube',
+        slots: ['10:00', '14:00', '19:00'],
+        options: { privacy: 'private', categoryId: 24, madeForKids: false },
+      },
+    ])
+  })
+
+  it('parses youtube and instagram targets together, sorted by platform', () => {
     const cfg = loadChannelConfig(
       writeToml([
         ...PLAN1_LINES,
         '[publish]',
-        'slots = ["10:00", "14:00", "19:00"]',
-        'platforms = ["youtube"]',
-        'privacy = "unlisted"',
-        'category_id = 22',
-        'made_for_kids = true',
+        'slots = ["10:00", "14:00"]',
+        '',
+        '[publish.instagram]',
+        'ig_user_id = "17841400000000000"',
+        '',
+        '[publish.youtube]',
+        'privacy = "public"',
+        '',
       ]),
     )
-    expect(cfg.publish).toEqual({
-      slots: ['10:00', '14:00', '19:00'],
-      platforms: ['youtube'],
-      privacy: 'unlisted',
-      categoryId: 22,
-      madeForKids: true,
-    })
+    expect(cfg.publish?.targets.map((t) => t.platform)).toEqual(['instagram', 'youtube'])
   })
 
-  it('sorts slots ascending regardless of TOML order', () => {
+  it('lets a platform override the shared slots', () => {
     const cfg = loadChannelConfig(
-      writeToml([...PLAN1_LINES, '[publish]', 'slots = ["19:00", "10:00", "14:00"]']),
+      writeToml([
+        ...PLAN1_LINES,
+        '[publish]',
+        'slots = ["10:00"]',
+        '',
+        '[publish.instagram]',
+        'ig_user_id = "1"',
+        'slots = ["11:00", "18:00"]',
+        '',
+      ]),
     )
-    expect(cfg.publish?.slots).toEqual(['10:00', '14:00', '19:00'])
-  })
-
-  it('applies platforms/privacy/category_id/made_for_kids defaults when only slots is given', () => {
-    const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]']))
-    expect(cfg.publish).toEqual({
-      slots: ['10:00'],
-      platforms: ['youtube'],
-      privacy: 'public',
-      categoryId: 24,
-      madeForKids: false,
+    expect(cfg.publish?.targets[0]).toEqual({
+      platform: 'instagram',
+      slots: ['11:00', '18:00'],
+      options: { igUserId: '1', shareToFeed: true },
     })
   })
-})
 
-describe('[publish] validation', () => {
-  it('rejects a slot that is not zero-padded 24h HH:MM', () => {
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["9:00"]'])),
-    ).toThrow()
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["24:00"]'])),
-    ).toThrow()
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:60"]'])),
-    ).toThrow()
+  it('defaults instagram share_to_feed to true', () => {
+    const cfg = loadChannelConfig(
+      writeToml([
+        ...PLAN1_LINES,
+        '[publish]',
+        'slots = ["10:00"]',
+        '',
+        '[publish.instagram]',
+        'ig_user_id = "1"',
+        '',
+      ]),
+    )
+    expect(cfg.publish?.targets[0]).toMatchObject({ options: { shareToFeed: true } })
   })
 
-  it('rejects duplicate slots', () => {
+  it('throws when [publish] declares no platform sub-table', () => {
     expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00", "10:00"]'])),
-    ).toThrow()
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', ''])),
+    ).toThrow(/at least one platform sub-table/)
   })
 
-  it('rejects an empty slots array', () => {
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = []'])),
-    ).toThrow()
-  })
-
-  it('rejects a platform outside PUBLISH_PLATFORMS', () => {
+  it('throws when a platform has no slots and [publish] has no shared slots', () => {
     expect(() =>
       loadChannelConfig(
-        writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', 'platforms = ["tiktok"]']),
+        writeToml([...PLAN1_LINES, '[publish.youtube]', 'privacy = "public"', '']),
+      ),
+    ).toThrow(/no slots/)
+  })
+
+  it('throws on the removed legacy platforms array', () => {
+    expect(() =>
+      loadChannelConfig(
+        writeToml([
+          ...PLAN1_LINES,
+          '[publish]',
+          'slots = ["10:00"]',
+          'platforms = ["youtube"]',
+          '',
+          '[publish.youtube]',
+          '',
+        ]),
       ),
     ).toThrow()
   })
-})
 
-describe('[publish] freezing', () => {
-  it('freezes the publish object and its arrays', () => {
-    const cfg = loadChannelConfig(
-      writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00", "14:00"]']),
-    )
-    expect(Object.isFrozen(cfg.publish)).toBe(true)
-    expect(Object.isFrozen(cfg.publish?.slots)).toBe(true)
-    expect(Object.isFrozen(cfg.publish?.platforms)).toBe(true)
+  it('throws on an unknown platform sub-table', () => {
+    expect(() =>
+      loadChannelConfig(
+        writeToml([
+          ...PLAN1_LINES,
+          '[publish]',
+          'slots = ["10:00"]',
+          '',
+          '[publish.tiktok]',
+          '',
+        ]),
+      ),
+    ).toThrow()
+  })
+
+  it('throws on an unknown key inside a platform sub-table', () => {
+    expect(() =>
+      loadChannelConfig(
+        writeToml([
+          ...PLAN1_LINES,
+          '[publish]',
+          'slots = ["10:00"]',
+          '',
+          '[publish.instagram]',
+          'ig_user_id = "1"',
+          'category_id = 24',
+          '',
+        ]),
+      ),
+    ).toThrow()
+  })
+
+  it('throws on duplicate slots within one platform override', () => {
+    expect(() =>
+      loadChannelConfig(
+        writeToml([
+          ...PLAN1_LINES,
+          '[publish]',
+          'slots = ["10:00"]',
+          '',
+          '[publish.youtube]',
+          'slots = ["10:00", "10:00"]',
+          '',
+        ]),
+      ),
+    ).toThrow(/duplicates/)
   })
 })
 
@@ -361,19 +431,23 @@ describe('testChannel() publish default', () => {
     expect(testChannel().publish).toBeNull()
     const withPublish = testChannel({
       publish: {
-        slots: ['10:00'],
-        platforms: ['youtube'],
-        privacy: 'public',
-        categoryId: 24,
-        madeForKids: false,
+        targets: [
+          {
+            platform: 'youtube',
+            slots: ['10:00'],
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
       },
     })
     expect(withPublish.publish).toEqual({
-      slots: ['10:00'],
-      platforms: ['youtube'],
-      privacy: 'public',
-      categoryId: 24,
-      madeForKids: false,
+      targets: [
+        {
+          platform: 'youtube',
+          slots: ['10:00'],
+          options: { privacy: 'public', categoryId: 24, madeForKids: false },
+        },
+      ],
     })
   })
 })

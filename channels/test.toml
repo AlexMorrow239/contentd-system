@@ -40,7 +40,8 @@ per_day_usd = 10.0
 # budget/quota day.
 [publish]
 slots = ["10:00", "14:00", "19:00"]
-platforms = ["youtube"]
+
+[publish.youtube]
 privacy = "private"
 category_id = 24
 made_for_kids = false
