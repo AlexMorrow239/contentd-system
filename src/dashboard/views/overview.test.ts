@@ -10,6 +10,7 @@ function data(overrides: Partial<OverviewData> = {}): OverviewData {
     libraryByState: [{ status: 'needs-review', count: 1 }],
     globalSpend: { spentUsdMicros: 2_500_000, capUsdMicros: 12_000_000 },
     channelSpend: [],
+    unattributedUsdMicros: 0,
     leases: [],
     quotaUsed: 1,
     quotaCap: 6,
@@ -88,6 +89,17 @@ describe('renderOverviewPage', () => {
     expect(out).toContain('boom')
     expect(out).toContain('class="warning"')
     expect(out).toContain('$2.50')
+  })
+
+  it('renders the unattributed spend row when it is greater than zero', () => {
+    const out = renderOverviewPage(data({ unattributedUsdMicros: 1_500_000 }), 'prod').value
+    expect(out).toContain('unattributed')
+    expect(out).toContain('$1.50')
+  })
+
+  it('does not render the unattributed spend row when it is zero', () => {
+    const out = renderOverviewPage(data({ unattributedUsdMicros: 0 }), 'prod').value
+    expect(out).not.toContain('unattributed')
   })
 
   it('escapes a hostile topic in the attention list', () => {

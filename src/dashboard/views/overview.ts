@@ -29,6 +29,16 @@ function spendLine(label: string, spend: SpendAgainstCap): SafeHtml {
   </tr>`
 }
 
+function unattributedSpendLine(usdMicros: number): SafeHtml {
+  if (usdMicros <= 0) return html``
+  return html`<tr>
+    <th>unattributed</th>
+    <td class="muted">
+      ${formatUsd(usdMicros)} — scout spend and any channel with no current TOML
+    </td>
+  </tr>`
+}
+
 export function renderOverviewPage(
   data: OverviewData,
   dbChoice: DbChoice,
@@ -105,6 +115,7 @@ export function renderOverviewPage(
           <tbody>
             ${spendLine('global', data.globalSpend)}
             ${data.channelSpend.map((entry) => spendLine(entry.channel, entry))}
+            ${unattributedSpendLine(data.unattributedUsdMicros)}
           </tbody>
         </table>
       </div>

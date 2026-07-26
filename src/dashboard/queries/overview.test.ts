@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
 import type { ChannelConfig } from '../../config/channel.js'
@@ -33,12 +33,12 @@ describe('buildOverview', () => {
 
   beforeEach(() => {
     db = openDb(':memory:')
-    process.env.BRAINROT_GLOBAL_DAILY_USD = '12'
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
   })
 
   afterEach(() => {
     db.close()
-    delete process.env.BRAINROT_GLOBAL_DAILY_USD
+    vi.unstubAllEnvs()
   })
 
   it('counts jobs by status', () => {
@@ -136,6 +136,38 @@ describe('buildOverview', () => {
     expect(data.channelSpend).toEqual([
       { channel: 'space', spentUsdMicros: 250000, capUsdMicros: 2_000_000 },
     ])
+  })
+
+  it('attributes a scout sentinel cost row (no matching jobs row) to unattributedUsdMicros', () => {
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
+    ).run()
+    db.prepare(
+      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
+    ).run()
+    // Scout sentinel: job_id has no matching jobs row. foreign_keys is OFF
+    // in this project by design, so this insert (which mirrors what the
+    // real scout does) succeeds.
+    db.prepare(
+      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('scout:space','anthropic','scout-score',15000)",
+    ).run()
+    const data = buildOverview(db, [channel('space', 2_000_000)], NOW, 6)
+    expect(data.globalSpend.spentUsdMicros).toBe(265000)
+    expect(data.channelSpend).toEqual([
+      { channel: 'space', spentUsdMicros: 250000, capUsdMicros: 2_000_000 },
+    ])
+    expect(data.unattributedUsdMicros).toBe(15000)
+  })
+
+  it('reports unattributedUsdMicros as 0, not negative, when every cost row is attributed', () => {
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
+    ).run()
+    db.prepare(
+      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
+    ).run()
+    const data = buildOverview(db, [channel('space', 2_000_000)], NOW, 6)
+    expect(data.unattributedUsdMicros).toBe(0)
   })
 
   it('flags an expired but unreleased lease', () => {
