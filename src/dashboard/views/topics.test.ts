@@ -1,0 +1,104 @@
+import { describe, expect, it } from 'vitest'
+import type { TopicRow } from '../../scout/topics.js'
+import { renderTopicsPage, topicChannels } from './topics.js'
+
+function topic(overrides: Partial<TopicRow> = {}): TopicRow {
+  return {
+    id: 1,
+    channel: 'space',
+    title: 'Why Venus is hot',
+    rawTitle: 'why venus is hot',
+    source: 'reddit:r/space',
+    url: 'https://reddit.com/r/space/1',
+    dedupeHash: 'abc',
+    score: 82,
+    reason: 'strong hook',
+    status: 'candidate',
+    jobId: null,
+    createdAt: '2026-07-25T10:00:00.000Z',
+    ...overrides,
+  }
+}
+
+describe('topicChannels', () => {
+  it('lists distinct channels alphabetically', () => {
+    expect(
+      topicChannels([topic({ channel: 'space' }), topic({ channel: 'ocean' }), topic({ channel: 'space' })]),
+    ).toEqual(['ocean', 'space'])
+  })
+})
+
+describe('renderTopicsPage', () => {
+  it('sorts by score descending, highest first', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ id: 1, score: 40, title: 'low' }), topic({ id: 2, score: 90, title: 'high' })],
+      channels: ['space'],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out.indexOf('high')).toBeLessThan(out.indexOf('low'))
+  })
+
+  it('links the source url', () => {
+    const out = renderTopicsPage({
+      topics: [topic()],
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).toContain('href="https://reddit.com/r/space/1"')
+    expect(out).toContain('reddit:r/space')
+  })
+
+  it('links a claimed topic to the job that took it', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ status: 'claimed', jobId: 'j9' })],
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).toContain('href="/jobs/j9"')
+  })
+
+  it('shows the scout reason', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ reason: 'strong hook' })],
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).toContain('strong hook')
+  })
+
+  it('escapes a hostile scraped title', () => {
+    // These come straight off Reddit and RSS.
+    const out = renderTopicsPage({
+      topics: [topic({ title: '<script>alert(1)</script>' })],
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).not.toContain('<script>alert(1)</script>')
+  })
+
+  it('escapes a hostile url so it cannot break the attribute', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ url: 'https://x/"onmouseover="alert(1)' })],
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).not.toContain('onmouseover="alert(1)"')
+    expect(out).toContain('&quot;onmouseover=')
+  })
+
+  it('reports an empty queue plainly', () => {
+    const out = renderTopicsPage({
+      topics: [],
+      channels: [],
+      filter: {},
+      dbChoice: 'prod',
+    }).value
+    expect(out).toContain('no topics match')
+  })
+})

@@ -16,11 +16,14 @@ import { findLibraryVideoPath, libraryChannels, listLibraryEntries } from './que
 import { getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
 import { buildPublishGrids } from './queries/publishes.js'
+import { listTopics } from '../scout/topics.js'
+import type { TopicStatus } from '../scout/topics.js'
 import { parseRange, resolveVideoPath } from './video.js'
 import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 import { renderPublishesPage } from './views/publishes.js'
+import { renderTopicsPage, topicChannels } from './views/topics.js'
 
 export interface DashboardVars {
   db: Database
@@ -37,6 +40,7 @@ const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url)
 
 const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
 const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
+const TOPIC_STATUS_VALUES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
   const app = new Hono<{ Variables: DashboardVars }>()
@@ -215,6 +219,32 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           quotaCap: ytUploadsPerDayCap(),
           dbChoice,
           configError: error,
+        }),
+      }),
+    )
+  })
+
+  app.get('/topics', (c) => {
+    const db = c.get('db')
+    const dbChoice = c.get('dbChoice')
+    const rawStatus = c.req.query('status')
+    const status = TOPIC_STATUS_VALUES.includes(rawStatus as TopicStatus)
+      ? (rawStatus as TopicStatus)
+      : undefined
+    const rawChannel = c.req.query('channel')
+    const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
+
+    return c.html(
+      layout({
+        title: 'topics',
+        dbChoice,
+        activeNav: 'topics',
+        body: renderTopicsPage({
+          topics: listTopics(db, { channel, status }),
+          // Unfiltered so the dropdown does not collapse to the current selection.
+          channels: topicChannels(listTopics(db)),
+          filter: { channel, status },
+          dbChoice,
         }),
       }),
     )
