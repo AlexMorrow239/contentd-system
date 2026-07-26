@@ -131,7 +131,7 @@ describe('approveLibrary', () => {
 })
 
 describe('rejectLibrary', () => {
-  it('flips needs-review and ready rows to blocked; published and unknown ids are skipped', () => {
+  it('flips needs-review, ready, and published rows to blocked; unknown ids are skipped', () => {
     const db = openDb(':memory:')
     const a = seedJob(db, { id: 'a' })
     seedLibrary(db, a, { state: 'needs-review' })
@@ -140,8 +140,8 @@ describe('rejectLibrary', () => {
     const c = seedJob(db, { id: 'c' })
     seedLibrary(db, c, { state: 'published' })
 
-    // c is published (immutable history) and 'no-such-job' does not exist: both skipped
-    expect(rejectLibrary(db, [a, b, c, 'no-such-job'])).toBe(2)
+    // 'no-such-job' does not exist: skipped
+    expect(rejectLibrary(db, [a, b, c, 'no-such-job'])).toBe(3)
     const states = db.prepare('SELECT job_id, state FROM library ORDER BY job_id').all() as {
       job_id: string
       state: string
@@ -149,9 +149,25 @@ describe('rejectLibrary', () => {
     expect(states).toEqual([
       { job_id: 'a', state: 'blocked' },
       { job_id: 'b', state: 'blocked' },
-      { job_id: 'c', state: 'published' },
+      { job_id: 'c', state: 'blocked' },
     ])
     expect(rejectLibrary(db, [])).toBe(0)
+    db.close()
+  })
+
+  // Design spec decision 10: a video already published on one platform can
+  // be pulled out of another platform's queue after the fact — 'published'
+  // is no longer immutable history the way it was before cross-posting.
+  it('accepts a published row and flips it to blocked', () => {
+    const db = openDb(':memory:')
+    const jobId = seedJob(db, { id: 'job-1' })
+    seedLibrary(db, jobId, { state: 'published' })
+
+    expect(rejectLibrary(db, [jobId])).toBe(1)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as {
+      state: string
+    }
+    expect(row.state).toBe('blocked')
     db.close()
   })
 })

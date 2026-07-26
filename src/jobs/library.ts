@@ -75,15 +75,18 @@ export function approveLibrary(db: Database, jobIds: string[]): number {
     .run(...jobIds).changes
 }
 
-// Reject retires a row from both waiting states: needs-review (never
-// promoted) or ready (pulled from the pool / an attempt-capped video).
-// published rows are immutable history and never match.
+// Reject retires a row from any of three states: needs-review (never
+// promoted), ready (pulled from the pool / an attempt-capped video), or
+// published (design spec decision 10) — a video already live on one
+// platform can be pulled out of another platform's queue after the fact,
+// since decision 1 keeps 'published' rows eligible everywhere until each
+// platform has its own done row.
 export function rejectLibrary(db: Database, jobIds: string[]): number {
   if (jobIds.length === 0) return 0
   const placeholders = jobIds.map(() => '?').join(', ')
   return db
     .prepare(
-      `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready')`,
+      `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready', 'published')`,
     )
     .run(...jobIds).changes
 }

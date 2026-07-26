@@ -170,24 +170,39 @@ export function consumedSlots(
 // non-auth failure and still counts). `IS NOT` (not `!=`) so a NULL
 // error_kind compares as non-auth instead of making the whole clause
 // unknown.
-export function uploadsUsedToday(db: Database, platform: Platform, day: string): number {
+//
+// `channel` is optional (design spec decision 7, §7): a `scope: 'global'`
+// quota (YouTube) calls this with no channel, counting every channel's
+// usage together; a `scope: 'channel'` quota (Instagram) passes its channel
+// so each account's cap is tracked independently. Appended only when given,
+// so the unfiltered call shape is unchanged.
+export function uploadsUsedToday(
+  db: Database,
+  platform: Platform,
+  day: string,
+  channel?: string,
+): number {
+  const channelClause = channel !== undefined ? 'AND channel = ?' : ''
+  const params = channel !== undefined ? [platform, day, channel] : [platform, day]
   const row = db
     .prepare(
-      'SELECT COUNT(*) AS n FROM publishes WHERE platform = ? AND day = ? ' +
+      `SELECT COUNT(*) AS n FROM publishes WHERE platform = ? AND day = ? ${channelClause} ` +
         "AND (status != 'failed' OR error_kind IS NOT 'auth')",
     )
-    .get(platform, day) as { n: number }
+    .get(...params) as { n: number }
   return row.n
 }
 
-// Eligibility per design spec §6 step 6: 'ready' library rows for jobs on
-// this channel, excluding any job that already has a done/claimed/
-// interrupted row for this platform (it's either published or in
-// flight), and excluding any job at or past MAX_PUBLISH_ATTEMPTS
-// 'rejected' failures (poison-video guard — decision 8; only 'rejected'
-// counts, since auth/quota/transient failures are channel- or
-// platform-wide, not the video's fault). The LEFT JOIN is against a
-// per-job aggregate (grouped by job_id, filtered to this platform) rather
+// Eligibility per design spec §6 step 6 and §3.3 (decision 1, decision 9):
+// 'ready' OR 'published' library rows for jobs on this channel — a video
+// already published on one platform stays in every other platform's pool,
+// since platforms never compete for videos — excluding any job that
+// already has a done/claimed/interrupted row for THIS platform (it's
+// either published here already or in flight), and excluding any job at
+// or past MAX_PUBLISH_ATTEMPTS 'rejected' failures (poison-video guard —
+// decision 8; only 'rejected' counts, since auth/quota/transient failures
+// are channel- or platform-wide, not the video's fault). The LEFT JOIN is
+// against a per-job aggregate (grouped by job_id, filtered to this platform) rather
 // than a raw join against `publishes`, so a job with several rows
 // contributes exactly one joined row — no fan-out to dedupe. Order:
 // fewest failed rows of any kind first (spreads attempts during a
@@ -223,7 +238,7 @@ export function eligibleVideo(
          WHERE platform = ?
          GROUP BY job_id
        ) p ON p.job_id = l.job_id
-       WHERE l.state = 'ready'
+       WHERE l.state IN ('ready', 'published')
          AND j.channel = ?
          AND COALESCE(p.blockingCount, 0) = 0
          AND COALESCE(p.rejectedCount, 0) < ?

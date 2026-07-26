@@ -435,19 +435,44 @@ describe('uploadsUsedToday', () => {
     expect(uploadsUsedToday(db, 'youtube', '2026-07-21')).toBe(0)
     db.close()
   })
+
+  // Design spec decision 7 (quota scope): a scope:'channel' quota (Instagram)
+  // must count only its own channel's usage, distinct from the unfiltered
+  // scope:'global' count (YouTube) that sums across every channel.
+  it('filters to one channel when a channel is given', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'a', { channel: 'chan-a' })
+    seedJob(db, 'b', { channel: 'chan-b' })
+    seedPublish(db, {
+      jobId: 'a',
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'done',
+      day: '2026-07-25',
+    })
+    seedPublish(db, {
+      jobId: 'b',
+      platform: 'instagram',
+      channel: 'chan-b',
+      status: 'done',
+      day: '2026-07-25',
+    })
+
+    expect(uploadsUsedToday(db, 'instagram', '2026-07-25', 'chan-a')).toBe(1)
+    expect(uploadsUsedToday(db, 'instagram', '2026-07-25')).toBe(2)
+    db.close()
+  })
 })
 
 describe('eligibleVideo', () => {
-  it('only considers ready library rows on the given channel', () => {
+  it('only considers ready library rows on the given channel, excluding needs-review and blocked', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-ready', { topic: 'ready topic' })
     seedJob(db, 'job-review')
-    seedJob(db, 'job-published')
     seedJob(db, 'job-blocked')
     seedJob(db, 'job-other-chan', { channel: 'chan-b' })
     seedLibrary(db, 'job-ready', { state: 'ready' })
     seedLibrary(db, 'job-review', { state: 'needs-review' })
-    seedLibrary(db, 'job-published', { state: 'published' })
     seedLibrary(db, 'job-blocked', { state: 'blocked' })
     seedLibrary(db, 'job-other-chan', { state: 'ready' })
 
@@ -458,6 +483,30 @@ describe('eligibleVideo', () => {
       topic: 'ready topic',
     })
     expect(eligibleVideo(db, 'chan-c', 'youtube')).toBeNull()
+    db.close()
+  })
+
+  // Design spec decision 1 (cross-post semantics): a video already
+  // 'published' via one platform must stay in the eligibility pool for
+  // every other platform, since platforms never compete for videos.
+  it('includes a published-state row when the platform has no blocking row of its own', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan' })
+    seedLibrary(db, 'job-1', { state: 'published' })
+
+    const row = eligibleVideo(db, 'chan', 'instagram')
+
+    expect(row?.jobId).toBe('job-1')
+    db.close()
+  })
+
+  it('excludes a published-state row once THIS platform also has a done row', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan' })
+    seedLibrary(db, 'job-1', { state: 'published' })
+    seedPublish(db, { jobId: 'job-1', platform: 'instagram', channel: 'chan', status: 'done' })
+
+    expect(eligibleVideo(db, 'chan', 'instagram')).toBeNull()
     db.close()
   })
 
