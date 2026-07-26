@@ -31,6 +31,30 @@ services:
       retries: 3
       start_period: 30s
 
+  minio:
+    image: minio/minio:latest
+    # profiles keeps this OUT of a production `docker compose up -d`. Start it
+    # explicitly for local work:
+    #   docker compose --profile dev up -d minio
+    profiles: [dev]
+    command: server /data --console-address ":9101"
+    restart: unless-stopped
+    ports:
+      - '9000:9000' # S3 API
+      - '9101:9101' # web console (9001 is already in use on this host)
+    environment:
+      MINIO_ROOT_USER: brainrotdev
+      MINIO_ROOT_PASSWORD: brainrotdev
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      # `mc` ships in the minio image; the image has no curl.
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   brainrot:
     build:
       context: .
@@ -146,3 +170,4 @@ services:
 
 volumes:
   whisperx-cache:
+  minio-data:

@@ -14,6 +14,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:contract": "CONTRACT=1 vitest run",
+    "test:storage": "STORAGE=1 vitest run",
     "brainrot": "tsx src/cli.ts"
   },
   "prettier": {

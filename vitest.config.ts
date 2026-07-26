@@ -2,6 +2,21 @@ import { defineConfig } from 'vitest/config'
 import { SlowFilesFirstSequencer } from './scripts/vitest-sequencer.js'
 
 const contract = process.env.CONTRACT === '1'
+// A third tier alongside CONTRACT: free but infrastructure-dependent (MinIO
+// must be up). Kept out of the default run so `pnpm test` stays hermetic.
+const storage = process.env.STORAGE === '1'
+
+function include(): string[] {
+  if (contract) return ['src/**/*.contract.test.ts']
+  if (storage) return ['src/**/*.storage.test.ts']
+  return ['src/**/*.test.ts', 'remotion/**/*.test.ts']
+}
+
+function exclude(): string[] {
+  const base = ['**/node_modules/**', '**/dist/**']
+  if (contract || storage) return base
+  return [...base, 'src/**/*.contract.test.ts', 'src/**/*.storage.test.ts']
+}
 
 export default defineConfig({
   test: {
@@ -13,11 +28,7 @@ export default defineConfig({
     // 8 leaves headroom for the ffmpeg and Remotion files in sibling workers.
     maxConcurrency: 8,
     sequence: { sequencer: SlowFilesFirstSequencer },
-    include: contract
-      ? ['src/**/*.contract.test.ts']
-      : ['src/**/*.test.ts', 'remotion/**/*.test.ts'],
-    exclude: contract
-      ? ['**/node_modules/**', '**/dist/**']
-      : ['**/node_modules/**', '**/dist/**', 'src/**/*.contract.test.ts'],
+    include: include(),
+    exclude: exclude(),
   },
 })
