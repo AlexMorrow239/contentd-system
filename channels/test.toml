@@ -45,7 +45,3 @@ slots = ["10:00", "14:00", "19:00"]
 privacy = "private"
 category_id = 24
 made_for_kids = false
-
-[publish.instagram]
-ig_user_id = "17841400000000000"
-share_to_feed = true
