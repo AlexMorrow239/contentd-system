@@ -2,6 +2,7 @@ import tseslint from 'typescript-eslint'
 import globals from 'globals'
 import react from 'eslint-plugin-react'
 import reactHooks from 'eslint-plugin-react-hooks'
+import eslintConfigPrettier from 'eslint-config-prettier'
 
 export default tseslint.config(
   {
@@ -74,4 +75,5 @@ export default tseslint.config(
       '@typescript-eslint/require-await': 'off',
     },
   },
+  eslintConfigPrettier,
 )

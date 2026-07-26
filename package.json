@@ -10,9 +10,17 @@
     "build": "tsc --noEmit && tsc -p remotion --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "test": "vitest run",
     "test:contract": "CONTRACT=1 vitest run",
     "brainrot": "tsx src/cli.ts"
+  },
+  "prettier": {
+    "singleQuote": true,
+    "semi": false,
+    "tabWidth": 2,
+    "printWidth": 100
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
@@ -43,9 +51,11 @@
     "@types/react-dom": "^19.2.0",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
+    "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.7.0",
+    "prettier": "^3.9.6",
     "tsx": "^4.23.1",
     "typescript": "^5.9",
     "typescript-eslint": "^8.65.0",

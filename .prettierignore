@@ -1,0 +1,9 @@
+dist
+runs
+runs-dev
+data
+.remotion
+node_modules
+channels-dev
+sandbox
+pnpm-lock.yaml
