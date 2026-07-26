@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS leases (
 CREATE TABLE IF NOT EXISTS publishes (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id TEXT NOT NULL REFERENCES jobs(id),
-  platform TEXT NOT NULL CHECK (platform IN ('youtube')),
+  platform TEXT NOT NULL,
   channel TEXT NOT NULL,
   day TEXT NOT NULL,      -- local YYYY-MM-DD of the slot filled
   slot TEXT NOT NULL,     -- 'HH:MM' from the channel's slots list
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   channel TEXT NOT NULL,
   token_ciphertext BLOB NOT NULL,   -- iv (12B) || gcm tag (16B) || ciphertext
   scopes TEXT NOT NULL,
+  expires_at TEXT,                  -- NULL = no expiry (YouTube's refresh token)
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY (platform, channel)
 );

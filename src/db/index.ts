@@ -3,6 +3,7 @@ import { dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Database } from 'better-sqlite3'
+import { migrate } from './migrate.js'
 
 const schemaPath = fileURLToPath(new URL('./schema.sql', import.meta.url))
 
@@ -21,6 +22,7 @@ export function openDb(dbPath: string): Database {
   // owns integrity; tests insert child rows standalone).
   db.pragma('foreign_keys = OFF')
   db.exec(readFileSync(schemaPath, 'utf8'))
+  migrate(db)
   return db
 }
 
