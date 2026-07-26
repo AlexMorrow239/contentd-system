@@ -1,0 +1,49 @@
+import { existsSync, readFileSync } from 'node:fs'
+import type { Database } from 'better-sqlite3'
+import { objectKeyFor } from '../stages/store.js'
+import type { ObjectStore } from '../storage/types.js'
+
+/**
+ * Uploads finished videos produced before object storage existed. Without it,
+ * every library row predating this plan is YouTube-only — publishMedia.url()
+ * has nothing to presign, so Instagram fails them as 'rejected'.
+ *
+ * Operator command, run outside the publish lease like the others. Rows whose
+ * local file has already been reclaimed are unrecoverable and reported as
+ * skipped rather than failing the whole run.
+ */
+export async function backfillStore(opts: {
+  db: Database
+  store: ObjectStore
+}): Promise<{ uploaded: string[]; skipped: string[] }> {
+  const rows = opts.db
+    .prepare(
+      `SELECT l.job_id AS jobId, l.video_path AS videoPath, j.channel AS channel
+       FROM library l
+       JOIN jobs j ON j.id = l.job_id
+       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
+       WHERE lo.job_id IS NULL
+       ORDER BY l.job_id`,
+    )
+    .all() as { jobId: string; videoPath: string; channel: string }[]
+
+  const upsert = opts.db.prepare(
+    'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?) ' +
+      'ON CONFLICT(job_id) DO UPDATE SET object_key=excluded.object_key, bytes=excluded.bytes, etag=excluded.etag',
+  )
+
+  const uploaded: string[] = []
+  const skipped: string[] = []
+  for (const row of rows) {
+    if (!existsSync(row.videoPath)) {
+      skipped.push(row.jobId)
+      continue
+    }
+    const bytes = readFileSync(row.videoPath)
+    const objectKey = objectKeyFor(row.channel, row.jobId)
+    const put = await opts.store.put(objectKey, bytes, 'video/mp4')
+    upsert.run(row.jobId, objectKey, put.bytes, put.etag)
+    uploaded.push(row.jobId)
+  }
+  return { uploaded, skipped }
+}

@@ -22,11 +22,14 @@ import type { TopicStatus } from './scout/topics.js'
 import { pipelineStages } from './jobs/pipeline.js'
 import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
+import { backfillStore } from './jobs/backfill-store.js'
 import { runInstagramAuthFlow, runYoutubeAuthFlow } from './publish/oauth-flow.js'
 import { parseTokenKey } from './publish/crypto.js'
 import { upsertToken } from './publish/tokens.js'
 import { ADAPTERS } from './publish/platforms/index.js'
-import type { Platform } from './publish/types.js'
+import { preflight } from './publish/preflight.js'
+import { PUBLISH_PLATFORMS, type Platform } from './publish/types.js'
+import { s3ConfigFromEnv, s3Store } from './storage/s3.js'
 import { DEV_VOICE_ENV } from './stages/voice.js'
 
 /**
@@ -458,6 +461,19 @@ library
     console.log(`rejected ${changed} of ${jobIds.length}`)
   })
 
+library
+  .command('backfill-store')
+  .description('upload finished videos that have no stored object yet')
+  .option('--db <path>', 'sqlite db path')
+  .action(async (opts: { db?: string }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    const res = await backfillStore({ db, store: s3Store(s3ConfigFromEnv()) })
+    console.log(`uploaded ${res.uploaded.length}, skipped ${res.skipped.length}`)
+    for (const jobId of res.skipped) {
+      console.log(`  skipped ${jobId}: local video file is gone, nothing to upload`)
+    }
+  })
+
 // Interactive per-channel OAuth grant (design spec §4.2). Thin glue: all flow
 // logic and error taxonomy live in the run*AuthFlow functions; this action
 // only resolves the channel/env inputs around one and persists the result.
@@ -623,6 +639,36 @@ publish
     } finally {
       db.close()
     }
+  })
+
+publish
+  .command('preflight <jobId>')
+  .description('verify a stored video is fetchable and well-formed before Meta sees it')
+  .option('--db <path>', 'sqlite db path')
+  .option('--platform <platform>', 'publish platform', 'instagram')
+  .action(async (jobId: string, opts: { db?: string; platform?: string }) => {
+    const platform = opts.platform ?? 'instagram'
+    if (!PUBLISH_PLATFORMS.includes(platform as Platform)) {
+      console.error(`unknown platform: ${platform}`)
+      process.exitCode = 1
+      return
+    }
+    const db = openDb(resolveDbPath(opts.db))
+    const result = await preflight({
+      db,
+      jobId,
+      platform: platform as Platform,
+      store: s3Store(s3ConfigFromEnv()),
+    })
+    console.log(`object: ${result.objectKey}`)
+    for (const c of result.checks) {
+      console.log(`  ${c.passed ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`)
+    }
+    // Printing the signed URL is this command's purpose — manual verification
+    // in a browser. The publish tick must never log it.
+    console.log(`url: ${result.url}`)
+    console.log(`caption:\n${result.caption}`)
+    if (!result.ok) process.exitCode = 1
   })
 
 const publishes = program.command('publishes')
