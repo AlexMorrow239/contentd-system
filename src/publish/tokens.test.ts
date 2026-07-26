@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { openDb } from '../db/index.js'
-import { loadRefreshToken, upsertToken } from './tokens.js'
+import { loadToken, upsertToken } from './tokens.js'
 
 // AES-256-GCM key sized for crypto.ts's parseTokenKey output; filler bytes
 // are fine — these tests never touch parseTokenKey or a real secret.
 const TEST_KEY = Buffer.alloc(32, 0x42)
 
-describe('upsertToken / loadRefreshToken', () => {
+describe('upsertToken / loadToken', () => {
   it('round-trips a stored refresh token through encrypt/decrypt', () => {
     const db = openDb(':memory:')
     upsertToken(
@@ -17,7 +17,10 @@ describe('upsertToken / loadRefreshToken', () => {
       'https://www.googleapis.com/auth/youtube.upload',
       TEST_KEY,
     )
-    expect(loadRefreshToken(db, 'youtube', 'chan-a', TEST_KEY)).toBe('rt-test-token')
+    expect(loadToken(db, 'youtube', 'chan-a', TEST_KEY)).toEqual({
+      token: 'rt-test-token',
+      expiresAt: null,
+    })
     db.close()
   })
 
@@ -25,7 +28,10 @@ describe('upsertToken / loadRefreshToken', () => {
     const db = openDb(':memory:')
     upsertToken(db, 'youtube', 'chan-a', 'rt-test-token-1', 'scope-a', TEST_KEY)
     upsertToken(db, 'youtube', 'chan-a', 'rt-test-token-2', 'scope-b', TEST_KEY)
-    expect(loadRefreshToken(db, 'youtube', 'chan-a', TEST_KEY)).toBe('rt-test-token-2')
+    expect(loadToken(db, 'youtube', 'chan-a', TEST_KEY)).toEqual({
+      token: 'rt-test-token-2',
+      expiresAt: null,
+    })
     const rows = db.prepare('SELECT scopes FROM oauth_tokens').all() as { scopes: string }[]
     expect(rows).toEqual([{ scopes: 'scope-b' }])
     db.close()
@@ -33,7 +39,7 @@ describe('upsertToken / loadRefreshToken', () => {
 
   it('returns null when no row exists for that platform/channel', () => {
     const db = openDb(':memory:')
-    expect(loadRefreshToken(db, 'youtube', 'no-such-channel', TEST_KEY)).toBeNull()
+    expect(loadToken(db, 'youtube', 'no-such-channel', TEST_KEY)).toBeNull()
     db.close()
   })
 
@@ -44,7 +50,7 @@ describe('upsertToken / loadRefreshToken', () => {
       'UPDATE oauth_tokens SET token_ciphertext = ? WHERE platform = ? AND channel = ?',
     ).run(Buffer.alloc(40, 0xff), 'youtube', 'chan-a')
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-    expect(loadRefreshToken(db, 'youtube', 'chan-a', TEST_KEY)).toBeNull()
+    expect(loadToken(db, 'youtube', 'chan-a', TEST_KEY)).toBeNull()
     expect(stderrSpy).toHaveBeenCalledTimes(1)
     const line = String(stderrSpy.mock.calls[0][0])
     expect(line).toContain('youtube')
@@ -52,5 +58,45 @@ describe('upsertToken / loadRefreshToken', () => {
     expect(line).not.toContain('rt-test-token')
     stderrSpy.mockRestore()
     db.close()
+  })
+
+  describe('expires_at', () => {
+    it('stores and returns a non-null expiry', () => {
+      const db = openDb(':memory:')
+      upsertToken(
+        db,
+        'instagram',
+        'chan',
+        'ig-token',
+        'instagram_content_publish',
+        TEST_KEY,
+        '2026-09-01T00:00:00.000Z',
+      )
+      expect(loadToken(db, 'instagram', 'chan', TEST_KEY)).toEqual({
+        token: 'ig-token',
+        expiresAt: '2026-09-01T00:00:00.000Z',
+      })
+      db.close()
+    })
+
+    it('defaults expiresAt to null when omitted (YouTube has no expiry)', () => {
+      const db = openDb(':memory:')
+      upsertToken(db, 'youtube', 'chan', 'rt-token', 'scope', TEST_KEY)
+      expect(loadToken(db, 'youtube', 'chan', TEST_KEY)).toEqual({
+        token: 'rt-token',
+        expiresAt: null,
+      })
+      db.close()
+    })
+
+    it('an upsert overwrites a prior expiry', () => {
+      const db = openDb(':memory:')
+      upsertToken(db, 'instagram', 'chan', 't1', 'scope', TEST_KEY, '2026-08-01T00:00:00.000Z')
+      upsertToken(db, 'instagram', 'chan', 't2', 'scope', TEST_KEY, '2026-09-01T00:00:00.000Z')
+      expect(loadToken(db, 'instagram', 'chan', TEST_KEY)?.expiresAt).toBe(
+        '2026-09-01T00:00:00.000Z',
+      )
+      db.close()
+    })
   })
 })
