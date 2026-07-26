@@ -6,6 +6,9 @@ import { openDbReadonly } from '../db/index.js'
 import type { DashboardConfig, DbChoice } from './config.js'
 import { resolveDbChoice } from './config.js'
 import { html } from './html.js'
+import { getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
+import type { JobStatus } from './queries/jobs.js'
+import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 
 export interface DashboardVars {
@@ -20,6 +23,8 @@ export interface DashboardDeps {
 }
 
 const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url))
+
+const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
   const app = new Hono<{ Variables: DashboardVars }>()
@@ -50,6 +55,59 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     } finally {
       db.close()
     }
+  })
+
+  app.get('/jobs', (c) => {
+    const db = c.get('db')
+    const dbChoice = c.get('dbChoice')
+    // Unrecognized filter values are dropped rather than rejected: a viewer
+    // must not 400 on a hand-edited URL.
+    const rawStatus = c.req.query('status')
+    const status = JOB_STATUS_VALUES.includes(rawStatus as JobStatus)
+      ? (rawStatus as JobStatus)
+      : undefined
+    const rawChannel = c.req.query('channel')
+    const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
+
+    return c.html(
+      layout({
+        title: 'jobs',
+        dbChoice,
+        activeNav: 'jobs',
+        body: renderJobsPage({
+          jobs: listJobs(db, { channel, status }),
+          channels: jobChannels(db),
+          filter: { channel, status },
+          dbChoice,
+        }),
+      }),
+    )
+  })
+
+  app.get('/jobs/:id', (c) => {
+    const db = c.get('db')
+    const dbChoice = c.get('dbChoice')
+    const detail = getJobDetail(db, c.req.param('id'))
+    if (detail === null) {
+      return c.html(
+        layout({
+          title: 'job not found',
+          dbChoice,
+          activeNav: 'jobs',
+          body: html`<h1>no such job</h1>
+            <p class="muted">${c.req.param('id')} is not in this database.</p>`,
+        }),
+        404,
+      )
+    }
+    return c.html(
+      layout({
+        title: `job ${detail.job.id}`,
+        dbChoice,
+        activeNav: 'jobs',
+        body: renderJobDetailPage(detail, dbChoice),
+      }),
+    )
   })
 
   app.notFound((c) => {
