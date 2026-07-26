@@ -188,21 +188,32 @@ function resolveSlots(
   return [...slots].sort()
 }
 
+// Each target — and its slots array and options object — is frozen
+// individually, not just the outer targets array (loadChannelConfig also
+// freezes `publish` and `publish.targets`). This matches the pre-per-platform
+// convention (see DEFAULT_SCOUT above): defense against accidental mutation
+// of shared config state across jobs/ticks, e.g.
+// `channel.publish.targets[0].slots.push(...)` must fail loudly, not
+// silently corrupt config every subsequent tick reads.
 function buildTargets(raw: NonNullable<RawPublish>): PublishTargetConfig[] {
   const targets: PublishTargetConfig[] = []
   if (raw.youtube) {
-    targets.push({
-      platform: 'youtube',
-      slots: resolveSlots(raw.slots, raw.youtube.slots, 'youtube'),
-      options: normalizeYoutubeOptions(raw.youtube),
-    })
+    targets.push(
+      Object.freeze({
+        platform: 'youtube',
+        slots: Object.freeze(resolveSlots(raw.slots, raw.youtube.slots, 'youtube')),
+        options: Object.freeze(normalizeYoutubeOptions(raw.youtube)),
+      }) as PublishTargetConfig,
+    )
   }
   if (raw.instagram) {
-    targets.push({
-      platform: 'instagram',
-      slots: resolveSlots(raw.slots, raw.instagram.slots, 'instagram'),
-      options: normalizeInstagramOptions(raw.instagram),
-    })
+    targets.push(
+      Object.freeze({
+        platform: 'instagram',
+        slots: Object.freeze(resolveSlots(raw.slots, raw.instagram.slots, 'instagram')),
+        options: Object.freeze(normalizeInstagramOptions(raw.instagram)),
+      }) as PublishTargetConfig,
+    )
   }
   return targets.sort((a, b) => (a.platform < b.platform ? -1 : 1))
 }

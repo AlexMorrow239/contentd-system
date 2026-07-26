@@ -415,6 +415,45 @@ describe('[publish] — per-platform targets', () => {
       ),
     ).toThrow(/duplicates/)
   })
+
+  // Regression (M2): [publish] freezing used to stop at the outer `publish`
+  // object and `publish.targets` array — pre-per-platform-rewrite, this test
+  // also asserted `cfg.publish.slots`/`cfg.publish.platforms` were frozen.
+  // The per-platform rewrite (Task 5) moved slots/options onto each target,
+  // and only the outer two layers stayed frozen — each target object, its
+  // slots array, and its options object were silently mutable, e.g.
+  // `cfg.publish.targets[0].slots.push(...)` succeeded. Assert every layer.
+  it('deep-freezes publish, targets, and each target — object, slots, and options', () => {
+    const cfg = loadChannelConfig(
+      writeToml([
+        ...PLAN1_LINES,
+        '[publish]',
+        'slots = ["10:00", "14:00"]',
+        '',
+        '[publish.instagram]',
+        'ig_user_id = "1"',
+        '',
+        '[publish.youtube]',
+        'privacy = "public"',
+        '',
+      ]),
+    )
+    expect(Object.isFrozen(cfg.publish)).toBe(true)
+    const targets = cfg.publish?.targets ?? []
+    expect(Object.isFrozen(targets)).toBe(true)
+    expect(targets.length).toBeGreaterThan(0)
+    for (const target of targets) {
+      expect(Object.isFrozen(target)).toBe(true)
+      expect(Object.isFrozen(target.slots)).toBe(true)
+      expect(Object.isFrozen(target.options)).toBe(true)
+    }
+    const [first] = targets
+    expect(() => first.slots.push('23:00')).toThrow(TypeError)
+    const options = first.options as unknown as Record<string, unknown>
+    expect(() => {
+      options.someKey = 'x'
+    }).toThrow(TypeError)
+  })
 })
 
 describe('testChannel() publish default', () => {
