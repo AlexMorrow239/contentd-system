@@ -289,7 +289,7 @@ describe('golden-path loop e2e', () => {
       hasCredential: () => true,
       resolveCredential: async () => 'fake-access-token',
       async upload(req) {
-        uploadCalls.push({ videoPath: req.videoPath, meta: req.meta })
+        uploadCalls.push({ videoPath: req.media.localPath!, meta: req.meta })
         return { postId: 'fakeVideoId1', url: 'https://youtube.com/shorts/fakeVideoId1' }
       },
     }

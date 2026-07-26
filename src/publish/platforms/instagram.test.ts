@@ -3,7 +3,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../../db/index.js'
+import { publishMedia } from '../media.js'
 import { loadToken, upsertToken } from '../tokens.js'
+import type { PublishMedia } from '../types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../types.js'
 import { DEFAULT_IG_UPLOADS_PER_DAY, igUploadsPerDayCap } from './quota.js'
 import {
@@ -49,6 +51,11 @@ function tmpVideoFile(bytes = 'fake mp4 bytes'): string {
   return file
 }
 
+// Test media handle backed by a real local file, matching what the tick builds.
+function testMedia(localPath: string): PublishMedia {
+  return publishMedia({ objectKey: null, localPath, store: null })
+}
+
 // Sequenced fake fetch: each call answers with the next canned response,
 // or invokes a handler function for assertions on that call's request. Once
 // `steps` is exhausted, the last entry repeats for every further call — a
@@ -90,7 +97,10 @@ describe('instagramUploadTarget', () => {
       { status: 200, body: { permalink: 'https://instagram.com/reel/media-1' } }, // permalink
     ])
     const target = instagramUploadTarget(impl, () => 0)
-    const result = await target.upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
+    const result = await target.upload(
+      { media: testMedia(tmpVideoFile()), meta, options },
+      'ig-token',
+    )
     expect(result).toEqual({ postId: 'media-1', url: 'https://instagram.com/reel/media-1' })
 
     expect(calls[0].url).toContain(`/${IG_GRAPH_VERSION}/1784140000/media`)
@@ -117,7 +127,10 @@ describe('instagramUploadTarget', () => {
     const videoPath = tmpVideoFile()
     vi.useFakeTimers()
     try {
-      const result = instagramUploadTarget(impl).upload({ videoPath, meta, options }, 'ig-token')
+      const result = instagramUploadTarget(impl).upload(
+        { media: testMedia(videoPath), meta, options },
+        'ig-token',
+      )
       // The real IG_POLL_INTERVAL_MS wait between poll 1 and poll 2 is the
       // only real timer this run schedules — advancing past it lets the
       // rest of the chain (all plain promise microtasks) settle on its own.
@@ -136,7 +149,7 @@ describe('instagramUploadTarget', () => {
       { status: 200, body: { status_code: 'ERROR' } },
     ])
     const err = await instagramUploadTarget(impl, () => 0)
-      .upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
+      .upload({ media: testMedia(tmpVideoFile()), meta, options }, 'ig-token')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('rejected')
@@ -153,7 +166,7 @@ describe('instagramUploadTarget', () => {
     let err: unknown
     try {
       const pending = instagramUploadTarget(impl)
-        .upload({ videoPath, meta, options }, 'ig-token')
+        .upload({ media: testMedia(videoPath), meta, options }, 'ig-token')
         .catch((e: unknown) => e)
       // Fake timers fake Date alongside setTimeout, so the default nowMs
       // (Date.now) advances in lockstep with this one call — it cascades
@@ -173,7 +186,7 @@ describe('instagramUploadTarget', () => {
       { status: 401, body: { error: { code: 190, message: 'expired' } } },
     ])
     const err = await instagramUploadTarget(impl, () => 0)
-      .upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
+      .upload({ media: testMedia(tmpVideoFile()), meta, options }, 'ig-token')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('auth')
@@ -184,7 +197,7 @@ describe('instagramUploadTarget', () => {
       { status: 400, body: { error: { code: 4, message: 'rate limit' } } },
     ])
     const err = await instagramUploadTarget(impl, () => 0)
-      .upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
+      .upload({ media: testMedia(tmpVideoFile()), meta, options }, 'ig-token')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('quota')
@@ -193,7 +206,7 @@ describe('instagramUploadTarget', () => {
   it('maps a 500 to kind transient', async () => {
     const { impl } = fakeFetch([{ status: 500, body: { error: { message: 'server error' } } }])
     const err = await instagramUploadTarget(impl, () => 0)
-      .upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
+      .upload({ media: testMedia(tmpVideoFile()), meta, options }, 'ig-token')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('transient')
@@ -207,7 +220,7 @@ describe('instagramUploadTarget', () => {
       { status: 200, body: {} }, // publish: 200 but no id
     ])
     const err = await instagramUploadTarget(impl, () => 0)
-      .upload({ videoPath: tmpVideoFile(), meta, options }, 'ig-token')
+      .upload({ media: testMedia(tmpVideoFile()), meta, options }, 'ig-token')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishOutcomeUnknownError)
   })
@@ -221,7 +234,7 @@ describe('instagramUploadTarget', () => {
       { status: 500, body: {} }, // permalink fails — must not fail the publish
     ])
     const result = await instagramUploadTarget(impl, () => 0).upload(
-      { videoPath: tmpVideoFile(), meta, options },
+      { media: testMedia(tmpVideoFile()), meta, options },
       'ig-token',
     )
     expect(result).toEqual({ postId: 'media-1', url: '' })
@@ -230,7 +243,7 @@ describe('instagramUploadTarget', () => {
   it('rejects on a missing video file before any network call', async () => {
     const { impl, calls } = fakeFetch([])
     const err = await instagramUploadTarget(impl, () => 0)
-      .upload({ videoPath: '/no/such/file.mp4', meta, options }, 'ig-token')
+      .upload({ media: testMedia('/no/such/file.mp4'), meta, options }, 'ig-token')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('rejected')
@@ -246,7 +259,7 @@ describe('instagramUploadTarget', () => {
       { status: 200, body: { permalink: '' } },
     ])
     await instagramUploadTarget(impl, () => 0).upload(
-      { videoPath: tmpVideoFile(), meta, options },
+      { media: testMedia(tmpVideoFile()), meta, options },
       'ig-token',
     )
     const createUrl = new URL(calls[0].url)

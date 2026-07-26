@@ -1,4 +1,3 @@
-import { readFileSync, statSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { IG_CONTENT_PUBLISH_SCOPE } from '../oauth-flow.js'
 import { renderCaption } from '../platform-meta.js'
@@ -88,18 +87,16 @@ async function createContainer(opts: {
   return body.id
 }
 
-// The file is read HERE rather than by the caller so the multi-MB buffer
-// becomes collectable the moment this returns, instead of staying pinned
-// through the up-to-5-minute poll loop that follows. Buffer<ArrayBuffer>, not
-// the bare `Buffer` alias: an unparameterized annotation widens the generic to
-// Buffer<ArrayBufferLike>, which fetch's BodyInit rejects.
+// Takes the already-resolved bytes rather than a path — upload() fetches them
+// via media.bytes() once, up front, so the multi-MB buffer becomes
+// collectable the moment this returns, instead of staying pinned through the
+// up-to-5-minute poll loop that follows.
 async function uploadBytes(opts: {
   containerId: string
-  videoPath: string
+  bytes: Buffer<ArrayBuffer>
   token: string
   fetchImpl: typeof fetch
 }): Promise<void> {
-  const bytes: Buffer<ArrayBuffer> = readFileSync(opts.videoPath)
   const url = `https://rupload.facebook.com/ig-api-upload/${IG_GRAPH_VERSION}/${opts.containerId}`
   let res: Response
   try {
@@ -108,9 +105,9 @@ async function uploadBytes(opts: {
       headers: {
         Authorization: `OAuth ${opts.token}`,
         offset: '0',
-        file_size: String(bytes.length),
+        file_size: String(opts.bytes.length),
       },
-      body: bytes,
+      body: opts.bytes,
       signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
     })
   } catch (err) {
@@ -232,21 +229,15 @@ export function instagramUploadTarget(
   return {
     platformId: 'instagram',
     async upload(req, token) {
-      // Stat the file before any network call: a missing file must fail
-      // before a container is created that would just sit and expire. Only
-      // the existence check happens here — uploadBytes reads the bytes
-      // themselves, so nothing multi-MB outlives the call that sends it.
-      try {
-        statSync(req.videoPath)
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-          throw new PublishError(
-            `instagramTarget: video file not found at ${req.videoPath}`,
-            'rejected',
-          )
-        }
-        throw err
-      }
+      // Still a byte upload at this point — Task 7 replaces this with a
+      // presigned video_url, which is what Meta actually requires. Resolved
+      // before any network call: a missing video must fail before a container
+      // is created that would just sit and expire.
+      // Cast to Buffer<ArrayBuffer>, not the bare `Buffer` alias PublishMedia
+      // declares: an unparameterized generic is Buffer<ArrayBufferLike>, which
+      // fetch's BodyInit rejects (SharedArrayBuffer-shaped, not assignable) —
+      // a real video buffer is always backed by a plain ArrayBuffer.
+      const bytes = (await req.media.bytes()) as Buffer<ArrayBuffer>
       const caption = renderCaption(req.meta)
       const containerId = await createContainer({
         igUserId: req.options.igUserId,
@@ -255,7 +246,7 @@ export function instagramUploadTarget(
         token,
         fetchImpl,
       })
-      await uploadBytes({ containerId, videoPath: req.videoPath, token, fetchImpl })
+      await uploadBytes({ containerId, bytes, token, fetchImpl })
       await pollUntilFinished({ containerId, token, fetchImpl, nowMs })
       const mediaId = await publishContainer({
         igUserId: req.options.igUserId,

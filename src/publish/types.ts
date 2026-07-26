@@ -64,6 +64,18 @@ export interface PlatformQuota {
   cap(): number
 }
 
+// A lazy handle over one finished video, resolved differently per platform:
+// YouTube sends bytes, Instagram sends Meta a URL to fetch. Laziness is
+// load-bearing — YouTube never signs a URL, Instagram never downloads bytes it
+// will not send, and a library row predating library_objects still publishes to
+// YouTube from its local file while failing legibly on Instagram.
+export interface PublishMedia {
+  readonly objectKey: string | null
+  readonly localPath: string | null
+  bytes(): Promise<Buffer>
+  url(ttlSeconds: number): Promise<string>
+}
+
 // Everything platform-specific the publish tick needs, behind one seam
 // (design spec §5, decision 8). hasCredential is a cheap, non-network check
 // used inside the candidate scan, before any claim; resolveCredential is the
@@ -80,7 +92,7 @@ export interface PublishAdapter<O = unknown> {
   // URL shape against another's post.
   postUrl(postId: string): string | null
   upload(
-    req: { videoPath: string; meta: PlatformMeta; options: O },
+    req: { media: PublishMedia; meta: PlatformMeta; options: O },
     credential: string,
   ): Promise<{ postId: string; url: string }>
 }

@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { renderDescription, renderTags } from '../platform-meta.js'
 import { loadToken } from '../tokens.js'
@@ -124,7 +123,7 @@ export function youtubeTarget(
   return {
     platformId: 'youtube',
     async upload(req, accessToken) {
-      const { videoPath, meta, options } = req
+      const { media, meta, options } = req
       // The same helper resolvePlatformMeta bounds against the 5000-char limit,
       // so the checked form and the sent form cannot drift apart.
       const description = renderDescription(meta.description, meta.hashtags)
@@ -142,22 +141,16 @@ export function youtubeTarget(
         },
       }
 
-      // Read the file BEFORE the initiate POST: the resumable protocol wants
-      // the byte length up front (X-Upload-Content-Length), and a missing file
-      // must fail before any network call rather than after a wasted initiate.
-      // Buffer<ArrayBuffer>, not the bare `Buffer` alias: an unparameterized
-      // annotation widens the generic to Buffer<ArrayBufferLike>, which fetch's
-      // BodyInit rejects (SharedArrayBuffer-shaped, not assignable) even though
-      // readFileSync's own inferred return type satisfies it directly.
-      let bytes: Buffer<ArrayBuffer>
-      try {
-        bytes = readFileSync(videoPath)
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-          throw new PublishError(`youtubeTarget: video file not found at ${videoPath}`, 'rejected')
-        }
-        throw err
-      }
+      // Resolved BEFORE the initiate POST: the resumable protocol wants the
+      // byte length up front (X-Upload-Content-Length), and an unavailable
+      // video must fail before any network call rather than after a wasted
+      // initiate. media.bytes() itself raises a rejected PublishError when
+      // neither the local file nor the object store has it.
+      // Cast to Buffer<ArrayBuffer>, not the bare `Buffer` alias PublishMedia
+      // declares: an unparameterized generic is Buffer<ArrayBufferLike>, which
+      // fetch's BodyInit rejects (SharedArrayBuffer-shaped, not assignable) —
+      // a real video buffer is always backed by a plain ArrayBuffer.
+      const bytes = (await media.bytes()) as Buffer<ArrayBuffer>
 
       let initiateRes: Response
       try {

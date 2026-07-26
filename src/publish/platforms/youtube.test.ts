@@ -3,8 +3,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../../db/index.js'
+import { publishMedia } from '../media.js'
 import { upsertToken } from '../tokens.js'
-import type { PlatformMeta } from '../types.js'
+import type { PlatformMeta, PublishMedia } from '../types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { YoutubeOptions } from './options.js'
 import { DEFAULT_YT_UPLOADS_PER_DAY, ytUploadsPerDayCap } from './quota.js'
@@ -148,6 +149,11 @@ function tempVideoFile(bytes = 'fake video bytes'): string {
   return path
 }
 
+// Test media handle backed by a real local file, matching what the tick builds.
+function testMedia(localPath: string): PublishMedia {
+  return publishMedia({ objectKey: null, localPath, store: null })
+}
+
 const META: PlatformMeta = {
   title: 'A great short',
   description: 'Watch this.',
@@ -173,7 +179,7 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
     ])
     const target = youtubeTarget(impl)
     const res = await target.upload(
-      { videoPath, meta: META, options: YOUTUBE_OPTS },
+      { media: testMedia(videoPath), meta: META, options: YOUTUBE_OPTS },
       'access-token-x',
     )
 
@@ -228,7 +234,7 @@ describe('youtubeTarget upload — resumable two-phase happy path', () => {
     ])
     const target = youtubeTarget(impl)
     await target.upload(
-      { videoPath, meta: META_NO_HASHTAGS, options: YOUTUBE_OPTS },
+      { media: testMedia(videoPath), meta: META_NO_HASHTAGS, options: YOUTUBE_OPTS },
       'access-token-x',
     )
     const body = JSON.parse(calls[0].init!.body as string)
@@ -244,7 +250,7 @@ describe('youtubeTarget upload — error mapping', () => {
       const { impl } = fakeFetch([{ status: 403, body: { error: { errors: [{ reason }] } } }])
       const target = youtubeTarget(impl)
       const err = await target
-        .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
+        .upload({ media: testMedia(tempVideoFile()), meta: META, options: YOUTUBE_OPTS }, 'tok')
         .catch((e: unknown) => e)
       expect(err).toBeInstanceOf(PublishError)
       expect((err as PublishError).kind).toBe('quota')
@@ -257,7 +263,7 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
+      .upload({ media: testMedia(tempVideoFile()), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('auth')
@@ -269,7 +275,7 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
+      .upload({ media: testMedia(tempVideoFile()), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('rejected')
@@ -281,7 +287,7 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
+      .upload({ media: testMedia(tempVideoFile()), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('transient')
@@ -295,7 +301,7 @@ describe('youtubeTarget upload — error mapping', () => {
     }
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath: tempVideoFile(), meta: META, options: YOUTUBE_OPTS }, 'tok')
+      .upload({ media: testMedia(tempVideoFile()), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishError)
     expect((err as PublishError).kind).toBe('transient')
@@ -309,7 +315,7 @@ describe('youtubeTarget upload — error mapping', () => {
     const err = await target
       .upload(
         {
-          videoPath: '/nonexistent/brainrot-yt-missing/video.mp4',
+          media: testMedia('/nonexistent/brainrot-yt-missing/video.mp4'),
           meta: META,
           options: YOUTUBE_OPTS,
         },
@@ -345,7 +351,7 @@ describe('youtubeTarget upload — error mapping', () => {
     }
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath, meta: META, options: YOUTUBE_OPTS }, 'tok')
+      .upload({ media: testMedia(videoPath), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishOutcomeUnknownError)
     expect(err).not.toBeInstanceOf(PublishError)
@@ -360,7 +366,7 @@ describe('youtubeTarget upload — error mapping', () => {
     ])
     const target = youtubeTarget(impl)
     const err = await target
-      .upload({ videoPath, meta: META, options: YOUTUBE_OPTS }, 'tok')
+      .upload({ media: testMedia(videoPath), meta: META, options: YOUTUBE_OPTS }, 'tok')
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(PublishOutcomeUnknownError)
     expect((err as Error).message).toMatch(/no video id/)

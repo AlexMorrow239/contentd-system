@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../../db/index.js'
 import { parseTokenKey } from '../crypto.js'
+import { publishMedia } from '../media.js'
 import { IG_CONTENT_PUBLISH_SCOPE } from '../oauth-flow.js'
 import { loadToken, upsertToken } from '../tokens.js'
 import { IG_TOKEN_REFRESH_WINDOW_MS, instagramAdapter } from './instagram.js'
@@ -30,7 +31,7 @@ describe.skipIf(!CHANNEL || !IG_USER_ID || !VIDEO_PATH)('instagram adapter (cont
       const credential = await adapter.resolveCredential(db, CHANNEL!, key, new Date())
       const result = await adapter.upload(
         {
-          videoPath: VIDEO_PATH!,
+          media: publishMedia({ objectKey: null, localPath: VIDEO_PATH!, store: null }),
           meta: {
             title: 'Contract test',
             description: 'Automated contract test — safe to delete.',

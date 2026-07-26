@@ -4,6 +4,7 @@ import type { TestContext } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { openDb } from '../../db/index.js'
 import { parseTokenKey } from '../crypto.js'
+import { publishMedia } from '../media.js'
 import { loadToken } from '../tokens.js'
 import type { PublishChannelConfig } from '../types.js'
 import { mintAccessToken, youtubeTarget } from './youtube.js'
@@ -73,7 +74,7 @@ describe('youtube adapter (contract)', () => {
       }
       const { postId, url } = await youtubeTarget().upload(
         {
-          videoPath: fixturePath,
+          media: publishMedia({ objectKey: null, localPath: fixturePath, store: null }),
           meta: {
             title: 'brainrot contract test (private, auto-deleted)',
             description: '',

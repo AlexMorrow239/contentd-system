@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { parseTokenKey } from '../publish/crypto.js'
+import { publishMedia } from '../publish/media.js'
 import { ADAPTERS } from '../publish/platforms/index.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import {
@@ -297,7 +298,11 @@ export async function publishNextTick(
       const adapter = adapters[candidate.platform]
       const credential = await adapter.resolveCredential(db, candidate.channel, pickedTokenKey, now)
       uploaded = await adapter.upload(
-        { videoPath: video.videoPath, meta, options: target.options },
+        {
+          media: publishMedia({ objectKey: null, localPath: video.videoPath, store: null }),
+          meta,
+          options: target.options,
+        },
         credential,
       )
     } catch (err) {
