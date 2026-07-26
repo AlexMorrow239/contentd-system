@@ -293,29 +293,43 @@ export function instagramUploadTarget(
   }
 }
 
-// Meta's long-lived-token refresh needs only the current valid token — no
-// app id/secret — unlike the initial grant (runInstagramAuthFlow). Any
-// failure here — network or HTTP — is caught and remapped to a single
-// PublishError('auth') by resolveCredential below (design spec §5): the
-// distinction between "network blip" and "token actually dead" does not
-// change what the operator does next.
+// The token runInstagramAuthFlow mints is a Facebook Login for Business user
+// access token (facebook.com/dialog/oauth + fb_exchange_token), not an
+// Instagram API with Instagram Login token — those are two distinct token
+// families with two distinct refresh mechanisms. graph.instagram.com's
+// ig_refresh_token grant belongs to the latter and does not accept this
+// token. Renewing a Facebook Login for Business long-lived token is the same
+// fb_exchange_token exchange as the initial short-to-long exchange
+// (runInstagramAuthFlow's step 2), re-run with the current long-lived token
+// as the input — Meta's docs only require the input token be non-expired,
+// not short-lived, so this is the correct renewal path. Any failure here —
+// network or HTTP — is caught and remapped to a single PublishError('auth')
+// by resolveCredential below (design spec §5): the distinction between
+// "network blip" and "token actually dead" does not change what the operator
+// does next.
 export async function refreshLongLivedToken(opts: {
   token: string
+  appId: string
+  appSecret: string
   fetchImpl: typeof fetch
 }): Promise<{ token: string; expiresAt: string }> {
-  const url = new URL(`https://graph.facebook.com/${IG_GRAPH_VERSION}/refresh_access_token`)
-  url.searchParams.set('grant_type', 'ig_refresh_token')
-  url.searchParams.set('access_token', opts.token)
+  const url = new URL(`https://graph.facebook.com/${IG_GRAPH_VERSION}/oauth/access_token`)
+  url.searchParams.set('grant_type', 'fb_exchange_token')
+  url.searchParams.set('client_id', opts.appId)
+  url.searchParams.set('client_secret', opts.appSecret)
+  url.searchParams.set('fb_exchange_token', opts.token)
   const res = await opts.fetchImpl(url.toString(), {
     signal: AbortSignal.timeout(IG_UPLOAD_TIMEOUT_MS),
   })
   if (!res.ok) {
     const raw = await res.text().catch(() => '')
-    throw new Error(`refresh_access_token responded ${res.status}: ${raw}`)
+    throw new Error(`oauth/access_token (fb_exchange_token) responded ${res.status}: ${raw}`)
   }
   const body = (await res.json()) as { access_token?: string; expires_in?: number }
   if (!body.access_token || !body.expires_in) {
-    throw new Error('refresh_access_token response missing access_token/expires_in')
+    throw new Error(
+      'oauth/access_token (fb_exchange_token) response missing access_token/expires_in',
+    )
   }
   return {
     token: body.access_token,
@@ -350,9 +364,19 @@ export function instagramAdapter(
       if (stored.expiresAt !== null) {
         const msUntilExpiry = new Date(stored.expiresAt).getTime() - now.getTime()
         if (msUntilExpiry <= IG_TOKEN_REFRESH_WINDOW_MS) {
+          const appId = process.env.IG_APP_ID
+          const appSecret = process.env.IG_APP_SECRET
+          if (!appId || !appSecret) {
+            throw new PublishError('instagramAdapter: IG_APP_ID/IG_APP_SECRET not set', 'auth')
+          }
           let refreshed: { token: string; expiresAt: string }
           try {
-            refreshed = await refreshLongLivedToken({ token: stored.token, fetchImpl })
+            refreshed = await refreshLongLivedToken({
+              token: stored.token,
+              appId,
+              appSecret,
+              fetchImpl,
+            })
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
             throw new PublishError(`instagramAdapter: token refresh failed: ${message}`, 'auth')

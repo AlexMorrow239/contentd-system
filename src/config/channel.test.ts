@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir } from './channel.js'
@@ -44,6 +44,15 @@ describe('loadChannelConfig', () => {
   // pinning content (content contracts are covered by the fixtures below).
   it('every checked-in channels/*.toml loads', () => {
     expect(() => loadChannelsDir('channels')).not.toThrow()
+  })
+
+  // channels-dev/ is gitignored (BRAINROT_CHANNELS_DIR's default), so nothing
+  // in CI ever loads it and it can silently drift out of sync with the
+  // ChannelConfig schema. Skips gracefully where the directory doesn't exist
+  // (e.g. CI); a developer who has it locally gets a loud failure instead.
+  it('loads channels-dev/ when present locally', () => {
+    if (!existsSync('channels-dev')) return
+    expect(() => loadChannelsDir('channels-dev')).not.toThrow()
   })
 
   it('parses a baseline TOML: voice.premium undefined, budget in micros', () => {
