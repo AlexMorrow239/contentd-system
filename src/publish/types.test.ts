@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { PUBLISH_PLATFORMS, PublishError, resolvePlatformMeta } from './types.js'
+import { PUBLISH_PLATFORMS, PublishError, PublishOutcomeUnknownError, resolvePlatformMeta } from './types.js'
 import type { PublishErrorKind } from './types.js'
-import { renderTags, TAGS_MAX_CHARS, tagsPayloadLength } from './platform-meta.js'
+import { renderCaption, renderTags, TAGS_MAX_CHARS, tagsPayloadLength } from './platform-meta.js'
 
 describe('PUBLISH_PLATFORMS', () => {
-  it('is exactly youtube for v1', () => {
-    expect(PUBLISH_PLATFORMS).toEqual(['youtube'])
+  it('is youtube and instagram', () => {
+    expect(PUBLISH_PLATFORMS).toEqual(['youtube', 'instagram'])
+  })
+})
+
+describe('PublishOutcomeUnknownError', () => {
+  it('is a named Error subclass', () => {
+    const err = new PublishOutcomeUnknownError('accepted but unreadable')
+    expect(err).toBeInstanceOf(Error)
+    expect(err.name).toBe('PublishOutcomeUnknownError')
+    expect(err.message).toBe('accepted but unreadable')
   })
 })
 
@@ -172,5 +181,63 @@ describe('resolvePlatformMeta', () => {
       )
       expect(meta.hashtags).toEqual(['#space', '#ok'])
     })
+  })
+})
+
+describe('resolvePlatformMeta — instagram normalization', () => {
+  const mapOf = (entry: Record<string, unknown>) => JSON.stringify({ instagram: entry })
+
+  it('passes a short caption through untouched', () => {
+    const entry = { title: 'Saturn', description: 'It would float.', hashtags: ['#space'] }
+    const meta = resolvePlatformMeta(mapOf(entry), 'instagram', 'fallback topic')
+    expect(meta).toEqual(entry)
+  })
+
+  it('trims the composed caption to 2200 chars', () => {
+    const meta = resolvePlatformMeta(
+      mapOf({ title: 't', description: 'd'.repeat(2300), hashtags: [] }),
+      'instagram',
+      'fallback topic',
+    )
+    const composed = `${meta.title}\n\n${meta.description}`
+    expect(composed.length).toBeLessThanOrEqual(2200)
+  })
+
+  it('caps hashtags at 30', () => {
+    const meta = resolvePlatformMeta(
+      mapOf({ title: 't', description: 'd', hashtags: Array(40).fill('#x') }),
+      'instagram',
+      'fallback topic',
+    )
+    expect(meta.hashtags.length).toBeLessThanOrEqual(30)
+  })
+
+  it('does not apply the youtube 100-char title cap to the display title', () => {
+    // Instagram has no title field on the wire, but meta.title stays populated
+    // for digest/dashboard display; it is still bounded to 100 for consistency.
+    const meta = resolvePlatformMeta(
+      mapOf({ title: 'y'.repeat(150), description: 'd', hashtags: [] }),
+      'instagram',
+      'fallback topic',
+    )
+    expect(meta.title).toHaveLength(100)
+  })
+})
+
+describe('renderCaption', () => {
+  it('joins title, description, and hashtags with blank lines', () => {
+    const caption = renderCaption({
+      title: 'Why Saturn Would Float',
+      description: 'A 45-second tour of the least dense planet.',
+      hashtags: ['#space', '#saturn'],
+    })
+    expect(caption).toBe(
+      'Why Saturn Would Float\n\nA 45-second tour of the least dense planet.\n\n#space #saturn',
+    )
+  })
+
+  it('omits the hashtag block when there are no hashtags', () => {
+    const caption = renderCaption({ title: 'T', description: 'D', hashtags: [] })
+    expect(caption).toBe('T\n\nD')
   })
 })

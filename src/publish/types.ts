@@ -1,3 +1,5 @@
+import type { Database } from 'better-sqlite3'
+import type { InstagramOptions, YoutubeOptions } from './platforms/options.js'
 import {
   normalizePlatformMeta,
   normalizeTitle,
@@ -5,21 +7,13 @@ import {
   type PlatformMeta,
 } from './platform-meta.js'
 
-// One platform's entry out of library.metadata_json's per-platform map —
-// re-exported so this module stays the whole publish type surface.
 export type { PlatformMeta }
 
-// v1 ships YouTube Shorts only; PublishTarget, the publishes table, and the
-// scheduler stay platform-agnostic so TikTok/Instagram are additive later
-// (design spec decision 1).
-export const PUBLISH_PLATFORMS = ['youtube'] as const
+export const PUBLISH_PLATFORMS = ['youtube', 'instagram'] as const
 export type Platform = (typeof PUBLISH_PLATFORMS)[number]
 
 export type PublishErrorKind = 'auth' | 'quota' | 'rejected' | 'transient'
 
-// Thrown only for platform-call failures (mintAccessToken, PublishTarget.upload)
-// — config/validation errors stay plain `Error` per house style. `kind` drives
-// the tick's attempt-failure handling and the digest's per-kind messaging.
 export class PublishError extends Error {
   constructor(
     message: string,
@@ -30,21 +24,57 @@ export class PublishError extends Error {
   }
 }
 
-// Parsed [publish] TOML table for a channel (src/config/channel.ts, Task 5).
-export interface PublishChannelConfig {
-  slots: string[]
-  platforms: Platform[]
-  privacy: 'public' | 'unlisted' | 'private'
-  categoryId: number
-  madeForKids: boolean
+// The platform ACCEPTED the post — it exists on the platform — but its
+// outcome is unreadable (broken success body, no post id). Never a
+// PublishError: no failure kind fits, and marking the row failed would make
+// the same video eligible again at the next slot, publishing it twice. The
+// tick leaves the row 'claimed' so the repair sweep heals it to 'interrupted'.
+// Shared across every adapter — moved here (was youtube.ts-only) once
+// Instagram's media_publish step needed the identical contract.
+export class PublishOutcomeUnknownError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PublishOutcomeUnknownError'
+  }
 }
 
-export interface PublishTarget {
+// One platform's quota descriptor (design spec decision 7): 'global' counts
+// usage across every channel (YouTube: per Google Cloud project); 'channel'
+// counts one channel alone (Instagram: per IG account). cap() reads env at
+// call time and may throw on a malformed value — callers surface that as a
+// bad-env tick outcome, never a crash.
+export interface PlatformQuota {
+  scope: 'global' | 'channel'
+  envVar: string
+  cap(): number
+}
+
+// Everything platform-specific the publish tick needs, behind one seam
+// (design spec §5, decision 8). hasCredential is a cheap, non-network check
+// used inside the candidate scan, before any claim; resolveCredential is the
+// network step (minting/refreshing), called once after the claim.
+export interface PublishAdapter<O = unknown> {
   readonly platformId: Platform
+  readonly quota: PlatformQuota
+  hasCredential(db: Database, channel: string, key: Buffer): boolean
+  resolveCredential(db: Database, channel: string, key: Buffer, now: Date): Promise<string>
   upload(
-    req: { videoPath: string; meta: PlatformMeta; publish: PublishChannelConfig },
-    accessToken: string,
+    req: { videoPath: string; meta: PlatformMeta; options: O },
+    credential: string,
   ): Promise<{ postId: string; url: string }>
+}
+
+// Parsed [publish.<platform>] TOML sub-table for one channel (src/config/channel.ts).
+// slots is already resolved: the platform's own override, or the channel's
+// shared [publish] slots when the platform declares none of its own.
+export type PublishTargetConfig =
+  | { platform: 'youtube'; slots: string[]; options: YoutubeOptions }
+  | { platform: 'instagram'; slots: string[]; options: InstagramOptions }
+
+// Parsed [publish] TOML table for a channel. A channel with no [publish]
+// table at all is `null` on ChannelConfig and never enters the publish pool.
+export interface PublishChannelConfig {
+  targets: PublishTargetConfig[]
 }
 
 // library.metadata_json is the per-platform map the script stage writes
@@ -79,7 +109,7 @@ export function resolvePlatformMeta(
   const entry = (parsed as Record<string, unknown>)[platform]
   const result = platformEntrySchema.safeParse(entry)
   if (!result.success) return fallback
-  const meta = normalizePlatformMeta(result.data)
+  const meta = normalizePlatformMeta(result.data, platform)
   // A title that normalizes away to nothing (whitespace, or only the characters
   // the platform rejects) is a guaranteed 400 — keep the entry's copy, take the
   // topic-derived title.
