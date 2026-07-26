@@ -879,14 +879,34 @@ describe('buildDigest — library rows with no stored object', () => {
     db.close()
   })
 
-  it('ignores needs-review library rows with no stored object', () => {
+  // This line names `backfill-store`, so it must report exactly what that
+  // command uploads — both now read unstoredLibraryJobs (src/jobs/library.ts).
+  // A needs-review row is in scope for both: approving it promotes it straight
+  // into the publish pool, where a missing object is an Instagram failure.
+  it('flags a needs-review library row with no stored object', () => {
     const db = openDb(':memory:')
     seedJob(db, { id: 'j-review', channel: 'chan-a' })
     db.prepare(
       "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-review', '/nonexistent/final.mp4', '{}', 'needs-review')",
     ).run()
     const digest = buildDigest(db, [], ENV_OK)
-    expect(digest).not.toContain('j-review')
+    expect(digest).toContain(
+      '  job j-review (chan-a) has no stored object — run brainrot library backfill-store',
+    )
+    db.close()
+  })
+
+  // The one excluded state: `library reject` deletes the object on purpose
+  // (design spec decision 7), so a blocked row is not missing an upload —
+  // reporting it would invite the operator to resurrect what they discarded.
+  it('ignores blocked library rows, whose object was deliberately deleted', () => {
+    const db = openDb(':memory:')
+    seedJob(db, { id: 'j-blocked', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-blocked', '/nonexistent/final.mp4', '{}', 'blocked')",
+    ).run()
+    const digest = buildDigest(db, [], ENV_OK)
+    expect(digest).not.toContain('j-blocked')
     db.close()
   })
 

@@ -55,17 +55,19 @@ prior stages' artifacts off disk via `ctx.artifactPath(stage, file)`
 drift apart:
 
 ```
-script -> voice -> captions -> visuals -> assemble -> qc
+script -> voice -> captions -> visuals -> assemble -> qc -> store
 ```
 
 `runJob` (`src/jobs/runner.ts`) drives this: it persists per-stage status to
 `job_stages` and **skips any stage already `done`**, which is what makes
 `resumeJob` (`src/jobs/resume.ts`) work — resuming a `failed`/`blocked`/
 `queued` job just re-invokes `runJob` with the same stage list, and completed
-stages are free. The final gate (after all stages succeed) reads `qc.json` and
-`script.json`, upserts a `library` row (`ready` or `needs-review` depending on
-QC), and marks the job `done` — this final window is itself re-run-safe on
-resume (upsert, not insert).
+stages are free. The final gate (after all stages succeed) reads `qc.json`,
+`script.json`, and `store.json`, upserts a `library` row (`ready` or
+`needs-review` depending on QC) plus its `library_objects` row, and marks the
+job `done` — this final window is itself re-run-safe on resume (upsert, not
+insert). A missing `store.json` is tolerated, which is what keeps the gate
+survivable for jobs produced before object storage existed.
 
 A stage failure marks the job `failed`, _except_ a thrown `BudgetExceededError`
 (from `src/jobs/costs.ts`) which marks it `blocked` instead — this is an
@@ -101,6 +103,14 @@ cadence controls throughput, not a loop inside the code. Both:
 - read `channels/*.toml` fresh every tick — via `tryLoadChannelsDir`, before
   the lease: a broken TOML is reported as a `config-error` noop line rather
   than thrown, because a tick that throws prints no JSON line at all.
+- validate the env they depend on before the lease too, as a `bad-env` noop:
+  `publish-next` checks `BRAINROT_TOKEN_KEY` and the quota vars
+  (`badEnvMessage`), `produce-next` checks that object storage is configured
+  (`s3ConfigError`, `src/storage/config.ts`). The latter is a fail-fast, not a
+  duplicate of the `store` stage's own construction: `store` runs **last**, so
+  without the gate an unconfigured deployment pays for a full Remotion render
+  and only then fails the job. Object storage is required to produce — there is
+  no local-only fallback (design spec §3.5).
 
 `produce-next` asks `planTick` (`src/loop/plan-tick.ts`) whether to resume a
 blocked job or claim+produce a new topic; `publish-next` scans due slots

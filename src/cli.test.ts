@@ -146,6 +146,35 @@ describe('brainrot CLI', () => {
     60000,
   )
 
+  // The `store` stage runs last, so an unconfigured deployment would otherwise
+  // pay for a full Remotion render and only then fail. Object storage is
+  // required (design spec §3.5) — so refuse up front, before any job row.
+  it.concurrent(
+    '`produce` exits 1 naming the missing storage keys, before creating a job',
+    async () => {
+      const dbPath = tmpDbPath()
+      const result = await runCli(
+        ['produce', '--channel', 'channels/test.toml', '--topic', 'venus', '--db', dbPath],
+        // Empty, not absent: dotenv does not override a key already present in
+        // the child env, so this holds whether or not the machine has a .env
+        // with real R2 credentials in it.
+        {
+          env: {
+            BRAINROT_S3_ENDPOINT: '',
+            BRAINROT_S3_BUCKET: '',
+            BRAINROT_S3_ACCESS_KEY_ID: '',
+            BRAINROT_S3_SECRET_ACCESS_KEY: '',
+          },
+        },
+      )
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain('BRAINROT_S3_BUCKET')
+      expect(result.stderr).toContain('object storage is not configured')
+      expect(countJobs(dbPath)).toBe(0)
+    },
+    60000,
+  )
+
   // Plan-1-shape channel TOML with no [scout] table: loadChannelsDir parses it,
   // scoutAll skips it (DEFAULT_SCOUT has no sources) — the cheapest full E2E.
   const SCOUTLESS_TOML = [

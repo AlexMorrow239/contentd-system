@@ -77,8 +77,12 @@ services:
     # literals below.
     env_file:
       - .env
-      # required: false so a fresh clone (or a YouTube-only deployment with no
-      # object storage) still starts instead of erroring on a missing file.
+      # required: false so a fresh clone still starts instead of erroring on a
+      # missing file. Note this is only about the FILE being absent — object
+      # storage itself is required to produce at all, YouTube-only included
+      # (README "Object storage"): without the BRAINROT_S3_* keys the produce
+      # tick no-ops with "reason":"bad-env" rather than rendering a video it
+      # cannot durably store.
       - path: .env.production
         required: false
     environment:

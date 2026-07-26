@@ -6,12 +6,15 @@ import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef } from '../jobs/types.js'
 import { claimTopic, markTopicUsedByJob } from '../scout/topics.js'
+// ./config.js, not ./s3.js: validating configuration must not drag the AWS
+// SDK onto this tick's startup path.
+import { s3ConfigError } from '../storage/config.js'
 import { acquireLease, extendLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
 import { planTick } from './plan-tick.js'
 
 export interface TickResult {
   action: 'resumed' | 'produced' | 'noop'
-  reason?: 'lease-held' | 'no-eligible-work' | 'claim-conflict' | 'config-error'
+  reason?: 'lease-held' | 'no-eligible-work' | 'claim-conflict' | 'config-error' | 'bad-env'
   jobId?: string
   topicId?: number
   status?: JobResult['status']
@@ -36,6 +39,18 @@ export async function produceNextTick(
   },
 ): Promise<TickResult> {
   const stagesFor = opts.stagesFor ?? pipelineStages
+  // Object storage is REQUIRED, not optional (design spec §3.5, decision 1:
+  // the cloud copy is the durable one). The check sits here, ahead of the
+  // lease and the render, because the `store` stage runs LAST — without it an
+  // unconfigured deployment discovers the problem only after paying for a
+  // full Remotion render, then fails the job with no library row to show for
+  // it. Same shape as publish-next's badEnvMessage(): one JSON line, exit 0,
+  // a named cause, plus the message on stderr where cron mail will show it.
+  const storageError = s3ConfigError()
+  if (storageError !== undefined) {
+    console.error(`produce-next: ${storageError}`)
+    return { action: 'noop', reason: 'bad-env', error: storageError }
+  }
   // Config load comes BEFORE the lease: a broken channel TOML (or a missing
   // channels dir) blocks the whole tick either way, and burning a lease slot on
   // it would only mean the next firing waits on a lease that was never going to

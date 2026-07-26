@@ -115,6 +115,14 @@ publishing requires this: `graph.instagram.com` rejects direct uploads with
 `The parameter video_url is required` — Meta's servers fetch the video from a
 URL you provide, so a finished video must be reachable over the public internet.
 
+**Object storage is required to produce, including for a YouTube-only setup.**
+The uploaded copy is the durable one — `runs/` is a disposable cache you can
+reclaim at any time — so there is no fallback to local-only storage and no
+"skip the upload" switch: one that silently wrote videos nowhere durable would
+be a worse failure than refusing. With the `BRAINROT_S3_*` keys unset,
+`produce` exits 1 and `produce-next` no-ops with `"reason":"bad-env"`, both
+_before_ rendering rather than after.
+
 1. In the Cloudflare dashboard, create an **R2 bucket** (e.g. `brainrot-videos`).
 2. Create an **R2 API token** scoped to that bucket with **Object Read & Write**.
 3. Fill the `BRAINROT_S3_*` keys in `.env`. The endpoint is

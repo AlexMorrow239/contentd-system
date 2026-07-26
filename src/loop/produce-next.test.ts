@@ -6,6 +6,7 @@ import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../config/channel.js'
 import { openDb } from '../db/index.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
+import { stubStorageEnv } from '../storage/_testkit.js'
 import { createJob } from '../jobs/runner.js'
 import { runCli } from '../testing/run-cli.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
@@ -127,6 +128,12 @@ beforeEach(() => {
   // Deterministic regardless of the developer's shell or .env: the default
   // $25 global cap.
   vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '')
+  // Object storage is required to produce (design spec §3.5), and the tick
+  // refuses before the lease when it is unset. These tests inject their own
+  // stages and never reach a real store, but they must clear the gate — and
+  // they must clear it from stubs rather than the developer's .env, so the
+  // suite behaves the same on a machine with R2 configured and one without.
+  stubStorageEnv()
 })
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -206,6 +213,47 @@ describe('produceNextTick — lease', () => {
     expect(result.status).toBe('ready')
     // freed for the next cron firing: a fresh holder acquires immediately
     expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+})
+
+// Object storage is required, not optional (design spec §3.5, decision 1: the
+// cloud copy is the durable one). The `store` stage runs LAST, so without this
+// gate an unconfigured deployment pays for a full Remotion render and only
+// then fails the job — with no library row to show for it.
+describe('produceNextTick — object storage not configured', () => {
+  it('no-ops with reason bad-env before rendering anything', async () => {
+    const { db, runsRoot } = setup()
+    seedTopic(db)
+    vi.stubEnv('BRAINROT_S3_BUCKET', '')
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // neverStages throws if the pipeline is reached at all: the gate must
+    // refuse before any stage runs, which is the entire point of the fix.
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
+    expect(result.action).toBe('noop')
+    expect(result.reason).toBe('bad-env')
+    expect(result.error).toContain('BRAINROT_S3_BUCKET')
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('BRAINROT_S3_BUCKET'))
+    stderr.mockRestore()
+    db.close()
+  })
+
+  it('leaves the topic unclaimed and takes no lease', async () => {
+    const { db, runsRoot } = setup()
+    const topicId = seedTopic(db)
+    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', '')
+    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
+    // Nothing consumed: the next tick, once configured, produces this topic.
+    const topic = db.prepare('SELECT status FROM topics WHERE id = ?').get(topicId) as {
+      status: string
+    }
+    expect(topic.status).toBe('candidate')
+    // The gate sits ahead of the lease for the same reason the channels-dir
+    // check does: burning a lease slot on it would only make the next firing
+    // wait on a lease that was never going to do work.
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    stderr.mockRestore()
     db.close()
   })
 })

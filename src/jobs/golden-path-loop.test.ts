@@ -13,6 +13,7 @@ import { publishNextTick } from '../loop/publish-next.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { upsertToken } from '../publish/tokens.js'
 import { YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
+import { stubStorageEnv } from '../storage/_testkit.js'
 import type { PlatformMeta, PublishAdapter } from '../publish/types.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
@@ -187,6 +188,9 @@ describe('golden-path loop e2e', () => {
 
     // Determinism regardless of the developer shell: the default global cap.
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '25')
+    // Same reason: the produce tick refuses when object storage is unset, and
+    // this e2e injects its own stages rather than reaching a real store.
+    stubStorageEnv()
 
     const db = openDb(path.join(workspace, 'brainrot.db'))
     const channels = loadChannelsDir(channelsDir)

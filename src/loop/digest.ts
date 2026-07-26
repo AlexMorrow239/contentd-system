@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
 import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } from '../jobs/costs.js'
-import { PUBLISHABLE_LIBRARY_STATES } from '../jobs/library.js'
+import { PUBLISHABLE_LIBRARY_STATES, unstoredLibraryJobs } from '../jobs/library.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { consumedSlots, MAX_PUBLISH_ATTEMPTS } from '../publish/publishes.js'
@@ -484,16 +484,9 @@ export function buildDigest(
   // publishMedia.url() has nothing to presign. The old check here was
   // existsSync on the local path, which is now NORMAL — runs/ is a disposable
   // cache and the bucket is the durable copy — and would fire constantly.
-  const unstored = db
-    .prepare(
-      `SELECT l.job_id AS jobId, j.channel AS channel
-       FROM library l
-       JOIN jobs j ON j.id = l.job_id
-       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
-       WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) AND lo.job_id IS NULL
-       ORDER BY l.job_id`,
-    )
-    .all() as { jobId: string; channel: string }[]
+  // Shared with backfillStore so this line reports exactly the rows the
+  // command it names will upload (src/jobs/library.ts).
+  const unstored = unstoredLibraryJobs(db)
   for (const r of unstored) {
     lines.push(
       `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,

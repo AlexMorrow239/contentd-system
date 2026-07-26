@@ -37,6 +37,8 @@ import { preflight } from './publish/preflight.js'
 import { PUBLISH_PLATFORMS, type Platform } from './publish/types.js'
 // storage/s3.js is imported dynamically at the three commands that need it —
 // a static import puts the AWS SDK on the startup path of every command.
+// storage/config.js carries no SDK import, so this one is free.
+import { s3ConfigError } from './storage/config.js'
 import type { ObjectStore } from './storage/types.js'
 import { DEV_VOICE_ENV } from './stages/voice.js'
 
@@ -145,6 +147,16 @@ program
       dev?: boolean
     }) => {
       applyDevFlag(opts.dev)
+      // Refuse before the render, not after it: the `store` stage runs last,
+      // so an unconfigured deployment would otherwise pay for a full Remotion
+      // render and then fail the job with no library row. Same check the
+      // produce tick makes (src/loop/produce-next.ts).
+      const storageError = s3ConfigError()
+      if (storageError !== undefined) {
+        console.error(storageError)
+        process.exitCode = 1
+        return
+      }
       const runsRoot = resolveRunsRoot(opts.runsRoot)
       const channel = loadChannelConfig(opts.channel)
       const db = openDb(resolveDbPath(opts.db))

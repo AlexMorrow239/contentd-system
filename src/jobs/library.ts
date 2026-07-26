@@ -104,6 +104,40 @@ export function rejectLibrary(db: Database, jobIds: string[]): number {
     .run(...jobIds).changes
 }
 
+// `videoPath` is the local file backfill uploads FROM; the digest ignores it
+// and reports on jobId/channel alone.
+export interface UnstoredLibraryJob {
+  jobId: string
+  channel: string
+  videoPath: string
+}
+
+/**
+ * Library rows with no stored object — exactly the set
+ * `brainrot library backfill-store` will upload.
+ *
+ * One definition rather than two, because the digest's warning line names that
+ * command: when the two predicates disagree, the digest reports a count the
+ * command it recommends does not act on. 'blocked' is the only excluded
+ * state — a rejected video's object was deliberately deleted (design spec
+ * decision 7), and re-uploading it would resurrect what the operator threw
+ * away. 'needs-review' is deliberately IN scope: approving one promotes it
+ * straight into the publish pool, where a missing object is an Instagram
+ * failure, so it is worth uploading and worth reporting before then.
+ */
+export function unstoredLibraryJobs(db: Database): UnstoredLibraryJob[] {
+  return db
+    .prepare(
+      `SELECT l.job_id AS jobId, j.channel AS channel, l.video_path AS videoPath
+       FROM library l
+       JOIN jobs j ON j.id = l.job_id
+       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
+       WHERE lo.job_id IS NULL AND l.state != 'blocked'
+       ORDER BY l.job_id`,
+    )
+    .all() as UnstoredLibraryJob[]
+}
+
 /**
  * Records where a finished video landed in object storage. Idempotent on
  * job_id, which both callers depend on: the final gate's re-runnable window

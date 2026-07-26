@@ -6,54 +6,13 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { s3ConfigFromEnv, type S3Config } from './config.js'
 import { StorageError, type ObjectStore } from './types.js'
 
-export interface S3Config {
-  endpoint: string
-  bucket: string
-  accessKeyId: string
-  secretAccessKey: string
-  region: string
-  publicEndpoint?: string
-}
-
-/**
- * Reads S3/R2 configuration from the environment at CALL time, not module
- * load — the convention igUploadsPerDayCap already sets, so tests and
- * long-lived cron processes observe env changes without a re-import.
- *
- * Throws naming EVERY missing key at once rather than the first: an operator
- * configuring this for the first time should need one round trip, not four.
- * There is deliberately no fallback to fakeStore here (design spec §3.5).
- */
-export function s3ConfigFromEnv(): S3Config {
-  const missing: string[] = []
-  const read = (name: string): string => {
-    const value = process.env[name]?.trim() ?? ''
-    if (value === '') missing.push(name)
-    return value
-  }
-  const endpoint = read('BRAINROT_S3_ENDPOINT')
-  const bucket = read('BRAINROT_S3_BUCKET')
-  const accessKeyId = read('BRAINROT_S3_ACCESS_KEY_ID')
-  const secretAccessKey = read('BRAINROT_S3_SECRET_ACCESS_KEY')
-  if (missing.length > 0) {
-    throw new Error(
-      `object storage is not configured: missing ${missing.join(', ')}. ` +
-        'Set them in .env (see .env.example) — there is no local fallback.',
-    )
-  }
-  const publicEndpoint = process.env.BRAINROT_S3_PUBLIC_ENDPOINT?.trim()
-  return {
-    endpoint,
-    bucket,
-    accessKeyId,
-    secretAccessKey,
-    // R2 ignores region but the SDK requires one; 'auto' is R2's documented value.
-    region: process.env.BRAINROT_S3_REGION?.trim() || 'auto',
-    publicEndpoint: publicEndpoint === '' ? undefined : publicEndpoint,
-  }
-}
+// Re-exported so a caller already pulling in the SDK for a client does not
+// need a second import; ./config.js is the SDK-free entry point for callers
+// that only want to validate configuration.
+export { s3ConfigError, s3ConfigFromEnv, type S3Config } from './config.js'
 
 interface SdkError {
   name?: string
