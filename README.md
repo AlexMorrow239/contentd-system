@@ -100,13 +100,16 @@ pnpm brainrot jobs    # last 20 jobs
 pnpm brainrot costs   # per-day USD totals, last 7 days
 ```
 
-## Publishing (YouTube)
+## Publishing
 
-`ready` library videos upload to YouTube Shorts automatically via the
-`publish-next` tick (see Automation below), on a per-channel schedule
-of local-time slots.
+`ready` library videos upload automatically via the `publish-next` tick (see
+Automation below), on a per-channel schedule of local-time slots, to every
+platform a channel declares — a video is not "done" until every declared
+platform has taken it.
 
-### One-time setup (per Google Cloud project, not per channel)
+### YouTube
+
+#### One-time setup (per Google Cloud project, not per channel)
 
 1. Create (or reuse) a project at
    [console.cloud.google.com](https://console.cloud.google.com).
@@ -123,9 +126,9 @@ of local-time slots.
    YT_CLIENT_SECRET=...
    ```
 
-5. Generate a token-encryption key and add it too. Refresh tokens are
-   stored AES-256-GCM-encrypted in the database — this key never leaves
-   `.env`:
+5. Generate a token-encryption key and add it too. Credentials for every
+   platform are stored AES-256-GCM-encrypted in the database under this one
+   key — this key never leaves `.env`:
 
    ```bash
    node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -135,7 +138,7 @@ of local-time slots.
    BRAINROT_TOKEN_KEY=<paste the 64-hex-char output>
    ```
 
-### Per-channel auth
+#### Per-channel auth
 
 Each YouTube channel is its own brand account and needs its own consent
 grant — run once per channel, and again any time a grant expires or gets
@@ -152,18 +155,62 @@ you picked, so the CLI cannot warn you if you pick wrong. A wrong pick is
 recoverable: re-run the command and pick correctly. The first published
 URL in a wrong channel's digest is usually what surfaces the mistake.
 
+### Instagram
+
+#### One-time setup (per Meta app, not per channel)
+
+1. Create an app at [developers.facebook.com](https://developers.facebook.com)
+   and add the **`instagram_content_publish`** permission (the flow also
+   requests `pages_show_list` and `business_management`, needed to resolve
+   the linked Page).
+2. Leave the app in **development mode** and add yourself as a **role user**
+   (App Roles → Roles) for each Meta/Facebook account that owns a target
+   Instagram account — development mode is enough for the operator's own
+   accounts and needs no App Review.
+3. Add the app id/secret to `.env`:
+
+   ```
+   IG_APP_ID=...
+   IG_APP_SECRET=...
+   ```
+
+4. `BRAINROT_TOKEN_KEY` from the YouTube setup above is reused as-is —
+   Instagram's credential is encrypted with the same key, no second one to
+   generate.
+
+Each target account must be an Instagram **Business or Creator** account
+linked to a Facebook Page — a personal Instagram account cannot be granted
+`instagram_content_publish` regardless of app config.
+
+#### Per-channel auth
+
+```bash
+pnpm brainrot auth instagram --channel example
+```
+
+This opens the system browser to Facebook's consent screen. **Pick the Page
+linked to the channel's Instagram account** — as with YouTube, a wrong pick
+is recoverable by re-running the command.
+
 ### Channel config
 
 Add a `[publish]` table to a channel's TOML to opt it into the publish
-pool — channels without one never publish:
+pool — channels without one never publish. Each platform the channel
+publishes to gets its own `[publish.<platform>]` sub-table; declare both to
+cross-post the same rendered video to both platforms on their own slots:
 
 ```toml
 [publish]
-slots = ["10:00", "14:00", "19:00"]  # machine-local HH:MM, unique
-platforms = ["youtube"]              # only valid value in v1
-privacy = "public"                   # 'public' | 'unlisted' | 'private'
-category_id = 24                     # YouTube category; 24 = Entertainment
+slots = ["10:00", "14:00", "19:00"]
+
+[publish.youtube]
+privacy = "private"
+category_id = 24
 made_for_kids = false
+
+[publish.instagram]
+ig_user_id = "17841400000000000"
+share_to_feed = true
 ```
 
 A slot missed while the machine was asleep fills late the same day; a
@@ -172,13 +219,20 @@ digest reports lapsed slots so cadence can be adjusted.
 
 ### Quota
 
-YouTube's upload quota is per Google Cloud **project**, not per channel:
-10,000 units/day at 1,600 units/upload works out to roughly **6 uploads
-a day, project-wide, across every channel sharing that project**.
-`publish-next` enforces this with a hard pre-upload gate
-(`BRAINROT_YT_UPLOADS_PER_DAY`, default 6). If six a day isn't enough
-headroom for your channel count, request a quota increase at
-<https://support.google.com/youtube/contact/yt_api_form>.
+The two platforms' quotas are scoped differently and enforced independently
+by `publish-next` as a hard pre-upload gate:
+
+- **YouTube** is per Google Cloud **project**, not per channel: 10,000
+  units/day at 1,600 units/upload works out to roughly **6 uploads a day,
+  project-wide, across every channel sharing that project**
+  (`BRAINROT_YT_UPLOADS_PER_DAY`, default 6). If six a day isn't enough
+  headroom for your channel count, request a quota increase at
+  <https://support.google.com/youtube/contact/yt_api_form>.
+- **Instagram** is per IG account, i.e. per channel: default **25 uploads a
+  day per account** (`BRAINROT_IG_UPLOADS_PER_DAY`), well under Meta's
+  documented ~50/24h — the margin absorbs the rolling-24h-vs-calendar-day
+  mismatch at day boundaries. In practice a channel's own publish slots are
+  the real limiter long before this cap is reached.
 
 ## Automation
 
@@ -186,8 +240,8 @@ The production loop is four commands, scheduled inside the container by
 supercronic — there is no host cron and no launchd agent anymore. `scout`
 fills the topic queue, `produce-next` performs one unit of work per tick
 (resume one blocked job or produce one video), `publish-next` uploads one
-`ready` video per tick into its channel's next due slot (see Publishing
-(YouTube) above), and `digest` prints a daily report.
+`ready` video per tick into its channel's next due slot per declared platform
+(see Publishing above), and `digest` prints a daily report.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
@@ -308,24 +362,27 @@ cp channels-dev/<name>.toml channels/<name>.toml   # edit as needed
 
 BRAINROT_DB=data/brainrot.db BRAINROT_CHANNELS_DIR=channels \
   pnpm brainrot auth youtube --channel <name>
+  # (and/or `auth instagram --channel <name>`, for whichever platforms
+  # the channel's [publish] table declares)
 
 docker compose start brainrot
 ```
 
-`auth youtube` is the one command that still runs on the host instead of
-through a container, and the explicit `BRAINROT_DB`/`BRAINROT_CHANNELS_DIR`
-above is what points it at production rather than the host's own dev
-defaults. Two things force it out of the container: `src/publish/oauth-flow.ts:14`
-shells out to macOS `open` to launch the consent screen, which does not exist
-in the Debian image, and the flow binds an ephemeral loopback port that
-Compose has no way to publish in advance (the port isn't chosen until the
-flow starts). Because `data/` is a bind mount shared with the container, the
-AES-256-GCM-encrypted refresh token still lands in the production DB
-regardless of which side wrote it. Running on the host costs nothing in
-validation: `auth youtube` still calls `loadChannelsDir()` against the
-directory it's pointed at, which enforces the basename-equals-`name`
-invariant and rejects duplicate declared names — a malformed promotion fails
-at promotion time, not at the next tick.
+`auth <platform>` is the one command family that still runs on the host
+instead of through a container, and the explicit
+`BRAINROT_DB`/`BRAINROT_CHANNELS_DIR` above is what points it at production
+rather than the host's own dev defaults. Two things force it out of the
+container for every platform: `src/publish/oauth-flow.ts`'s
+`defaultOpenBrowser` shells out to macOS `open` to launch the consent screen,
+which does not exist in the Debian image, and each flow binds an ephemeral
+loopback port that Compose has no way to publish in advance (the port isn't
+chosen until the flow starts). Because `data/` is a bind mount shared with
+the container, the AES-256-GCM-encrypted credential still lands in the
+production DB regardless of which side wrote it. Running on the host costs
+nothing in validation: `auth <platform>` still calls `loadChannelsDir()`
+against the directory it's pointed at, which enforces the
+basename-equals-`name` invariant and rejects duplicate declared names — a
+malformed promotion fails at promotion time, not at the next tick.
 
 ### Recovery
 
@@ -409,7 +466,8 @@ is done — ticks stay paused until you do.
   `jobs.created_at`, which is UTC, so "today" for those flips at midnight
   UTC — 7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern —
   not at local midnight. Expect a fresh quota slot and budget headroom in the
-  early evening. Publish slots and the YouTube per-day upload counter are the
+  early evening. Publish slots and both platforms' per-day upload counters
+  (YouTube's project-wide one and Instagram's per-channel one) are the
   opposite: they key off the **container's** local wall-clock day (`TZ` is
   pinned to `America/Chicago` in `docker-compose.yml`'s `environment:` block
   regardless of the host Mac's own timezone), so they roll

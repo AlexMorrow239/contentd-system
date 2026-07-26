@@ -6,7 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Brainrot Machine: an automated pipeline that turns a topic into a finished,
 QC-checked, word-captioned 9:16 short video, and publishes it to YouTube
-Shorts on a per-channel schedule. Single Node/TypeScript package — not a
+Shorts and/or Instagram Reels — per channel, per declared platform — on a
+per-channel schedule. Single Node/TypeScript package — not a
 multi-package monorepo (`pnpm-workspace.yaml` here only configures
 `allowBuilds`/`minimumReleaseAgeExclude`, it declares no `packages:` list).
 `remotion/` has its own `tsconfig.json` and is type-checked separately but is
@@ -33,7 +34,7 @@ pnpm brainrot topics requeue <id>   # orphaned 'claimed' topic -> 'candidate'; r
 pnpm brainrot library list|approve|reject <jobIds...>
 pnpm brainrot publish retry|mark-done <jobId>
 pnpm brainrot publishes list [--days N]
-pnpm brainrot auth youtube --channel <name>
+pnpm brainrot auth youtube|instagram --channel <name>
 ```
 
 Run a single test file: `pnpm vitest run src/jobs/runner.test.ts`.
@@ -103,14 +104,16 @@ cadence controls throughput, not a loop inside the code. Both:
 
 `produce-next` asks `planTick` (`src/loop/plan-tick.ts`) whether to resume a
 blocked job or claim+produce a new topic; `publish-next` scans due slots
-across channels (`src/publish/slots.ts`), enforces YouTube's per-project daily
-upload quota (`BRAINROT_YT_UPLOADS_PER_DAY`, shared across every channel), and
-picks the candidate furthest behind its cadence.
+across channels and their declared platforms (`src/publish/slots.ts`),
+enforces each platform's own daily upload quota before ordering candidates
+(YouTube's is global — `BRAINROT_YT_UPLOADS_PER_DAY`, shared across every
+channel; Instagram's is per channel — `BRAINROT_IG_UPLOADS_PER_DAY`, one cap
+per IG account), and picks the candidate furthest behind its cadence.
 
-Manual commands (`produce`, `resume`, `auth youtube`, `library approve/reject`,
-`publish retry/mark-done`) deliberately run **outside** these leases — they
-are operator actions that can race a live cron tick if the corresponding loop
-isn't stopped first.
+Manual commands (`produce`, `resume`, `auth <platform>`,
+`library approve/reject`, `publish retry/mark-done`) deliberately run
+**outside** these leases — they are operator actions that can race a live
+cron tick if the corresponding loop isn't stopped first.
 
 ### Config: channel TOML is the unit of everything
 
@@ -122,7 +125,12 @@ depends on: **the file's basename must equal the TOML's `name` field** —
 (`<channelsDir>/<job.channel>.toml`), so a mismatch would silently wedge
 resume. Duplicate declared names are also rejected at load time. A channel
 TOML with no `[publish]` table never enters the publish pool; one with no
-`[scout]` table is never scouted (manual `produce` still works).
+`[scout]` table is never scouted (manual `produce` still works). A `[publish]`
+table holds shared fields (`slots`) plus one `[publish.<platform>]` sub-table
+per platform the channel targets (`youtube`, `instagram`), each validated
+against that platform's own option schema. A channel declaring both
+`[publish.youtube]` and `[publish.instagram]` cross-posts the same rendered
+video to both, each on its own slot schedule.
 
 ### Budget enforcement is layered, not a single check
 
@@ -143,17 +151,30 @@ premium voice, kokoro/edge-tts for the free voice fallback chain).
 job's voice.json wasn't produced by a successful ElevenLabs synth (ElevenLabs
 itself returns word timings directly, no alignment pass needed).
 
-### Publishing: OAuth + encrypted refresh tokens
+### Publishing: OAuth + encrypted credentials, per platform
 
-`src/publish/` holds the YouTube upload path: `oauth-flow.ts` runs the
-one-time interactive per-channel consent grant, `crypto.ts` / `tokens.ts`
-store the refresh token AES-256-GCM-encrypted in `oauth_tokens`
-(`BRAINROT_TOKEN_KEY` never leaves `.env`), `youtube.ts` mints access tokens
-and performs the resumable upload, `slots.ts` computes due publish slots from
-a channel's local-time schedule, and `publishes.ts` is the DAO for the
-`publishes` table's claim/done/failed/interrupted state machine. Refresh
-tokens and other credential material must never reach logs or stdout —
-CLI commands print only confirmations.
+`src/publish/` holds the multi-platform upload path: `oauth-flow.ts` runs the
+one-time interactive per-channel consent grant for each platform
+(`runYoutubeAuthFlow`, `runInstagramAuthFlow` — structurally identical
+loopback-listener-then-browser-consent flows, Instagram's with an extra
+short-lived-to-long-lived token exchange Meta requires), `crypto.ts` /
+`tokens.ts` store the resulting credential AES-256-GCM-encrypted in
+`oauth_tokens` (`BRAINROT_TOKEN_KEY` never leaves `.env`; the table's
+`expires_at` column is NULL for YouTube's non-expiring refresh token and set
+for Instagram's ~60-day long-lived token), `platforms/youtube.ts` and
+`platforms/instagram.ts` each implement upload mechanics and credential
+resolution behind the shared `PublishAdapter` seam (`platforms/index.ts` is
+the one-line-per-platform registry `publish-next` drives generically),
+`slots.ts` computes due publish slots from a channel's local-time schedule,
+and `publishes.ts` is the DAO for the `publishes` table's
+claim/done/failed/interrupted state machine, keyed per (channel, platform).
+The two platforms' credential-resolution shapes differ: YouTube mints a
+fresh access token from its stored refresh token on every tick, while
+Instagram's stored token *is* the access token and is refreshed in place by
+its adapter only when within its expiry window (`IG_TOKEN_REFRESH_WINDOW_MS`)
+— there is no per-tick mint step. Refresh tokens, access tokens, and other
+credential material must never reach logs or stdout — CLI commands print
+only confirmations.
 
 ### The dashboard is read-only, and structurally so
 
