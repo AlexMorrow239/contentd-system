@@ -6,7 +6,8 @@ FROM node:22-bookworm-slim
 #                   passes it to Chrome as a CSS fontFamily. A missing font is a
 #                   SILENT fallback to generic sans, not an error, and QC checks
 #                   frames and duration but never typeface.
-# tzdata          - src/publish/slots.ts is local-wall-clock by design.
+# tzdata          - src/publish/schedule.ts's publish window/pacing is
+#                   local-wall-clock by design.
 # lib*            - Chrome headless shell's runtime dependency closure.
 # python3/g++     - better-sqlite3 and onnxruntime-node build from source when no
 #                   prebuild matches; failing loudly at build beats failing at 3am.

@@ -101,8 +101,10 @@ services:
       WHISPERX_URL: http://whisperx:8585
       # The Dockerfile's `ENV TZ=America/Chicago` is only a default — an
       # env_file value of the same name overrides an image ENV — and the
-      # entire publish-slot design (src/publish/slots.ts) assumes
-      # container-local wall-clock time, so pin it explicitly.
+      # derived publish window (src/publish/schedule.ts: the 09:00-21:00
+      # posting window, the videos_per_day pacing gap, and localDay's
+      # calendar-day boundary) all read the container's wall-clock time, so
+      # pin it explicitly.
       TZ: America/Chicago
       # voice.ts:231 forces the free voice chain only when this is exactly
       # '1'; empty is verified equivalent to unset (safely OFF). Both

@@ -174,9 +174,9 @@ Real Instagram publishing always needs real R2.
 ## Publishing
 
 `ready` library videos upload automatically via the `publish-next` tick (see
-Automation below), on a per-channel schedule of local-time slots, to every
-platform a channel declares — a video is not "done" until every declared
-platform has taken it.
+Automation below), at a per-channel pace derived from `videos_per_day`, to
+every platform a channel declares — a video is not "done" until every
+declared platform has taken it.
 
 ### YouTube
 
@@ -280,11 +280,12 @@ by re-running the command.
 Add a `[publish]` table to a channel's TOML to opt it into the publish
 pool — channels without one never publish. Each platform the channel
 publishes to gets its own `[publish.<platform>]` sub-table; declare both to
-cross-post the same rendered video to both platforms on their own slots:
+cross-post the same rendered video to both platforms:
 
 ```toml
+videos_per_day = 3
+
 [publish]
-slots = ["10:00", "14:00", "19:00"]
 
 [publish.youtube]
 privacy = "private"
@@ -296,35 +297,57 @@ ig_user_id = "17841400000000000"
 share_to_feed = true
 ```
 
-A slot missed while the machine was asleep fills late the same day; a
-slot still open at local midnight lapses with no makeup post — the
-digest reports lapsed slots so cadence can be adjusted.
+`videos_per_day` is the only volume knob: the pipeline produces that many
+videos a day and publishes each one to every platform the channel declares.
+Posting times are derived, not configured — attempts are spread across a
+09:00-21:00 local window with a `12h / videos_per_day` minimum gap, so 3/day
+lands roughly every four hours. The count is a ceiling reached over the day,
+not a guarantee: a machine asleep until 20:00 gets one video out, not three.
+
+Platform limits are enforced for you at config load. YouTube's Data API
+allows about 6 uploads/day per Google Cloud project shared across every
+channel, and Instagram allows 50/day per account — so a channel set declaring
+more than that fails to load with a message naming the offending channels.
+Lower `videos_per_day`; there is nothing to set by hand.
+
+A channel that falls short of its `videos_per_day` count on a given day —
+the machine was asleep, a platform's quota was exhausted, credentials broke —
+has no makeup post; the digest reports any channel that published fewer
+videos than its `videos_per_day` yesterday, with a per-platform split, so the
+shortfall is visible without hunting through logs.
 
 ### Quota
 
-The two platforms' quotas are scoped differently and enforced independently
-by `publish-next` as a hard pre-upload gate:
+The two platforms' quotas are scoped differently and enforced for you at
+config load — a channel set declaring more `videos_per_day` than a platform
+allows fails to load with a message naming the offending channels, before
+`produce` or any loop tick can run at all. `publish-next` re-checks the same
+cap per tick as a backstop.
 
 - **YouTube** is per Google Cloud **project**, not per channel: 10,000
   units/day at 1,600 units/upload works out to roughly **6 uploads a day,
-  project-wide, across every channel sharing that project**
-  (`BRAINROT_YT_UPLOADS_PER_DAY`, default 6). If six a day isn't enough
-  headroom for your channel count, request a quota increase at
-  <https://support.google.com/youtube/contact/yt_api_form>.
-- **Instagram** is per IG account, i.e. per channel: default **25 uploads a
-  day per account** (`BRAINROT_IG_UPLOADS_PER_DAY`), well under Meta's
-  documented ~50/24h — the margin absorbs the rolling-24h-vs-calendar-day
-  mismatch at day boundaries. In practice a channel's own publish slots are
-  the real limiter long before this cap is reached.
+  project-wide, across every channel sharing that project**. If six a day
+  isn't enough headroom for your channel count, request a quota increase at
+  <https://support.google.com/youtube/contact/yt_api_form>, then raise
+  `videos_per_day` accordingly.
+- **Instagram** is per IG account, i.e. per channel: Meta's Content
+  Publishing API allows **50 posts per rolling 24h per account** — a limit no
+  realistic `videos_per_day` comes close to.
+
+There is nothing to tune by hand: lower `videos_per_day` if a channel set
+won't load. `BRAINROT_YT_UPLOADS_PER_DAY` / `BRAINROT_IG_UPLOADS_PER_DAY` env
+overrides still exist, but only as a test escape hatch — they are not an
+operator setting.
 
 ## Automation
 
 The production loop is four commands, scheduled inside the container by
 supercronic — there is no host cron and no launchd agent anymore. `scout`
 fills the topic queue, `produce-next` performs one unit of work per tick
-(resume one blocked job or produce one video), `publish-next` uploads one
-`ready` video per tick into the next due slot among all channels' declared
-platforms (see Publishing above), and `digest` prints a daily report.
+(resume one blocked job or produce one video), `publish-next` picks one
+`ready` video from the channel furthest behind its `videos_per_day` pace and
+fans it out to every platform that channel declares (see Publishing above),
+and `digest` prints a daily report.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
@@ -354,14 +377,18 @@ docker compose logs -f brainrot
 Each tick prints one JSON line, and a `noop` line is normal, not a failure —
 `produce-next` noops with `lease-held`, `no-eligible-work`, `claim-conflict`
 (an operator command won a topic or job mid-tick), or `config-error`;
-`publish-next` with `lease-held`, `no-due-slot`, `platform-quota`,
+`publish-next` with `lease-held`, `not-in-window` (outside the 09:00-21:00
+local posting window), `paced` (inside the window but under the
+`12h / videos_per_day` minimum gap), `daily-count-met`, `no-publish-channel`
+(no channel in the dir declares `[publish]`), `platform-quota`,
 `no-ready-video`, `no-video-file` (the `ready` row's file was pruned from
-`runs/`), `no-auth`, `claim-conflict`, `bad-env` (a malformed
-`BRAINROT_TOKEN_KEY` or `BRAINROT_YT_UPLOADS_PER_DAY`), or `config-error`
-(the channels dir would not load — the message also goes to stderr); `scout`
-with `lease-held` or that same `config-error`. All of those exit `0`. Exit
-`1` means real work failed: a `failed`/`blocked` produce, a `publish-failed`
-upload attempt, or a scout run whose every channel died.
+`runs/`), `no-auth`, `bad-env` (a malformed `BRAINROT_TOKEN_KEY` or
+`BRAINROT_YT_UPLOADS_PER_DAY`), or `config-error` (the channels dir would not
+load — the message also goes to stderr); `scout` with `lease-held` or that
+same `config-error`. All of those exit `0`. Exit `1` means real work failed: a
+`failed`/`blocked` produce, a fan-out with any platform entry not
+`published` (a `publish-failed` tick, or a `published` one carrying a
+`failed`/`unknown`/`skipped` leg), or a scout run whose every channel died.
 
 ### Schedule
 
@@ -393,7 +420,8 @@ open http://127.0.0.1:8787
 Five views: an overview (job health, spend against all three budget caps,
 held leases, YouTube quota), jobs with a per-stage timeline and the raw error
 text, the library with inline video playback, the publish schedule as a
-day-by-slot grid including unfilled slots, and the scout topic queue.
+day-by-ordinal grid including attempts that never happened, and the scout
+topic queue.
 
 Every page takes `?db=dev` to view `data/dev.db` instead of the production
 database; the header says which one you are looking at and dev shows a banner.
@@ -526,9 +554,10 @@ is done — ticks stay paused until you do.
 
 - **A sleeping Mac drops ticks, with no catch-up firing.** launchd used to
   coalesce missed runs after the machine woke up; supercronic does not. A
-  missed publish slot simply stays due for the rest of the local day and
-  fills on the next tick; a slept-through `scout` window is skipped until its
-  next scheduled firing.
+  channel that stayed under its `videos_per_day` count while the machine
+  slept simply stays due — the next `publish-next` tick still finds it behind
+  pace and publishes — but there is no catch-up beyond the day's own ceiling;
+  a slept-through `scout` window is skipped until its next scheduled firing.
 - **Docker Desktop must be set to start at login**, or nothing runs after a
   reboot and there is no alarm that fires — the failure looks identical to an
   idle day.
@@ -548,13 +577,13 @@ is done — ticks stay paused until you do.
   per-channel `videos_per_day` quota both key off the cost ledger /
   `jobs.created_at`, which is UTC, so "today" for those flips at midnight
   UTC — 7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern —
-  not at local midnight. Expect a fresh quota slot and budget headroom in the
-  early evening. Publish slots and both platforms' per-day upload counters
-  (YouTube's project-wide one and Instagram's per-channel one) are the
-  opposite: they key off the **container's** local wall-clock day (`TZ` is
-  pinned to `America/Chicago` in `docker-compose.yml`'s `environment:` block
-  regardless of the host Mac's own timezone), so they roll
-  over at local midnight, not UTC midnight.
+  not at local midnight. Expect a fresh production quota and budget headroom
+  in the early evening. The publish window/pace (`src/publish/schedule.ts`)
+  and both platforms' per-day upload counters (YouTube's project-wide one and
+  Instagram's per-channel one) are the opposite: they key off the
+  **container's** local wall-clock day (`TZ` is pinned to `America/Chicago`
+  in `docker-compose.yml`'s `environment:` block regardless of the host Mac's
+  own timezone), so they roll over at local midnight, not UTC midnight.
   A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
   render from the previous firing is still running — `scout` takes a lease of
   its own (30 min) and prints the same line if a previous run is still going.

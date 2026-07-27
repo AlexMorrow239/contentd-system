@@ -113,12 +113,16 @@ cadence controls throughput, not a loop inside the code. Both:
   no local-only fallback (design spec §3.5).
 
 `produce-next` asks `planTick` (`src/loop/plan-tick.ts`) whether to resume a
-blocked job or claim+produce a new topic; `publish-next` scans due slots
-across channels and their declared platforms (`src/publish/slots.ts`),
-enforces each platform's own daily upload quota before ordering candidates
-(YouTube's is global — `BRAINROT_YT_UPLOADS_PER_DAY`, shared across every
-channel; Instagram's is per channel — `BRAINROT_IG_UPLOADS_PER_DAY`, one cap
-per IG account), and picks the candidate furthest behind its cadence.
+blocked job or claim+produce a new topic; `publish-next` asks
+`src/publish/schedule.ts` which channels are due — inside a 09:00–21:00 local
+window, under their `videos_per_day` count for the day, and past a derived
+`12h / videos_per_day` minimum gap since their last attempt — orders them by
+how far behind that count they are, and fans the chosen video out to every
+declared platform that still wants it. Each platform's real daily cap
+(YouTube's ~6/day per Google Cloud project, shared across channels;
+Instagram's 50/day per account) is enforced twice: once at config load, where
+a channel set declaring more `videos_per_day` than a platform allows is a
+hard error, and once per tick as a backstop.
 
 Manual commands (`produce`, `resume`, `auth <platform>`,
 `library approve/reject`, `publish retry/mark-done`) deliberately run
@@ -136,11 +140,12 @@ depends on: **the file's basename must equal the TOML's `name` field** —
 resume. Duplicate declared names are also rejected at load time. A channel
 TOML with no `[publish]` table never enters the publish pool; one with no
 `[scout]` table is never scouted (manual `produce` still works). A `[publish]`
-table holds shared fields (`slots`) plus one `[publish.<platform>]` sub-table
-per platform the channel targets (`youtube`, `instagram`), each validated
-against that platform's own option schema. A channel declaring both
-`[publish.youtube]` and `[publish.instagram]` cross-posts the same rendered
-video to both, each on its own slot schedule.
+table holds one `[publish.<platform>]` sub-table per platform the channel
+targets (`youtube`, `instagram`), each validated against that platform's own
+option schema — no schedule of its own, since cadence comes from the
+channel's `videos_per_day`. A stale `slots` key at either level is a load
+error naming its replacement. A channel declaring both `[publish.youtube]`
+and `[publish.instagram]` cross-posts the same rendered video to both.
 
 ### Budget enforcement is layered, not a single check
 
@@ -175,9 +180,10 @@ for Instagram's ~60-day long-lived token), `platforms/youtube.ts` and
 `platforms/instagram.ts` each implement upload mechanics and credential
 resolution behind the shared `PublishAdapter` seam (`platforms/index.ts` is
 the one-line-per-platform registry `publish-next` drives generically),
-`slots.ts` computes due publish slots from a channel's local-time schedule,
+`schedule.ts` derives the publish window and minimum gap from `videos_per_day`,
 and `publishes.ts` is the DAO for the `publishes` table's
-claim/done/failed/interrupted state machine, keyed per (channel, platform).
+claim/done/failed/interrupted state machine, keyed per (channel, platform),
+with a `seq` ordinal per local day standing in for the old clock-time slot.
 The two platforms' credential-resolution shapes differ: YouTube mints a
 fresh access token from its stored refresh token on every tick, while
 Instagram's stored token _is_ the access token and is refreshed in place by
