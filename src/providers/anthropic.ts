@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
+import { tagError } from '../errors.js'
 
 export interface LlmUsageCost {
   usdMicros: number
@@ -139,10 +140,12 @@ async function forcedToolCompletion<T>(opts: {
   // Attach the already-billed cost to a thrown error so the caller can ledger
   // this paid-but-unusable response before rethrowing, without changing the
   // error's identity (callers and tests still match on `instanceof z.ZodError`).
-  const withCost = <E>(err: E): E => {
-    ;(err as E & { costUsdMicros?: number }).costUsdMicros = cost.usdMicros
-    return err
-  }
+  const withCost = <E>(err: E): E =>
+    tagError(err, {
+      domain: 'provider',
+      kind: 'invalid',
+      context: { costUsdMicros: cost.usdMicros },
+    })
 
   const toolUse = response.content.find(
     (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit',

@@ -5,6 +5,7 @@ import { z } from 'zod'
 import type Anthropic from '@anthropic-ai/sdk'
 import { structuredCompletion, visionJudgment } from '../anthropic.js'
 import { tmpDir } from '../../testing/tmp.js'
+import { errorCostUsdMicros } from '../errors.js'
 
 const schema = z.object({ answer: z.string(), n: z.number() })
 
@@ -62,7 +63,7 @@ describe('structuredCompletion', () => {
     }).catch((e) => e)
     // Identity is preserved (still a ZodError), and the cost rides along on it.
     expect(err).toBeInstanceOf(z.ZodError)
-    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15) // 3300
+    expect(errorCostUsdMicros(err)).toBe(100 * 3 + 200 * 15) // 3300
   })
 
   it('coerces a JSON-stringified nested value before validating (observed real-model behavior)', async () => {
@@ -135,7 +136,7 @@ describe('structuredCompletion', () => {
       schema,
       client,
     }).catch((e) => e)
-    expect((err as { costUsdMicros?: number }).costUsdMicros).toBe(100 * 3 + 200 * 15) // 3300
+    expect(errorCostUsdMicros(err)).toBe(100 * 3 + 200 * 15) // 3300
   })
 
   it('rejects an unpriced model at zero spend, before the API is called', async () => {
