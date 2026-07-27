@@ -376,7 +376,9 @@ docker compose logs -f brainrot
 
 Each tick prints one JSON line, and a `noop` line is normal, not a failure —
 `produce-next` noops with `lease-held`, `no-eligible-work`, `claim-conflict`
-(an operator command won a topic or job mid-tick), or `config-error`;
+(an operator command won a topic or job mid-tick), `bad-env` (object storage is
+not configured — checked before the lease, so a full render is never paid for
+just to fail at the `store` stage), or `config-error`;
 `publish-next` with `lease-held`, `not-in-window` (outside the 09:00-21:00
 local posting window), `paced` (inside the window but under the
 `12h / videos_per_day` minimum gap), `daily-count-met`, `no-publish-channel`

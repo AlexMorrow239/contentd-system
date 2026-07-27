@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './channel.js'
@@ -445,8 +445,17 @@ describe('videos_per_day validation', () => {
 // loadChannelsDir describe block above is scoped to that callback, so this is
 // a second, top-level helper of the same shape (Record<string, string[]>)
 // rather than a duplicate.
+// Same cleanup pattern as src/loop/publish-next.test.ts and
+// src/db/migrate.test.ts: record every temp dir and remove it after the test,
+// so a full run does not leave one tmpdir per case behind.
+const cleanupDirs: string[] = []
+afterEach(() => {
+  for (const d of cleanupDirs.splice(0)) rmSync(d, { recursive: true, force: true })
+})
+
 function writeChannelsDir(files: Record<string, string[]>): string {
   const dir = mkdtempSync(join(tmpdir(), 'chans-quota-'))
+  cleanupDirs.push(dir)
   for (const [name, lines] of Object.entries(files)) {
     writeFileSync(join(dir, name), lines.join('\n'))
   }

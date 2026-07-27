@@ -262,8 +262,15 @@ export function loadChannelConfig(path: string): ChannelConfig {
  * videos that could never be posted.
  *
  * Deliberately a hard error rather than a clamp: `videos_per_day = 4` must
- * never quietly mean 3. It surfaces at edit time via `brainrot produce`, and
- * as a `config-error` tick line via tryLoadChannelsDir — never silently.
+ * never quietly mean 3.
+ *
+ * It runs on the whole-directory load only, so it surfaces on every surface
+ * that enumerates channels: as a thrown error from `brainrot auth <platform>`
+ * (loadChannelsDir directly), and as a `config-error` line from the surfaces
+ * going through tryLoadChannelsDir — `scout`, `produce-next`, `publish-next`,
+ * `digest`, and the dashboard. NOT from `brainrot produce`, which resolves a
+ * single TOML through loadChannelConfig and never sees the other channels a
+ * 'global' quota is shared with.
  */
 function assertQuotaHeadroom(channels: ChannelConfig[]): void {
   for (const platform of PUBLISH_PLATFORMS) {

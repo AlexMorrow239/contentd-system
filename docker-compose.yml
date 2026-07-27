@@ -120,10 +120,10 @@ services:
       # string as "unset" (falls back to its own $25 default), so this must
       # be a real number, not "".
       BRAINROT_GLOBAL_DAILY_USD: '12'
-      # Pins youtube.ts's own DEFAULT_YT_UPLOADS_PER_DAY (unset in .env
-      # today, so this was already the effective value) rather than leaving
-      # it implicit. youtube.ts also treats "" as unset, so this must be a
-      # real integer, not "".
+      # Pins DEFAULT_YT_UPLOADS_PER_DAY from
+      # src/publish/platforms/quota.ts (unset in .env today, so this was
+      # already the effective value) rather than leaving it implicit. quota.ts
+      # also treats "" as unset, so this must be a real integer, not "".
       BRAINROT_YT_UPLOADS_PER_DAY: '6'
       # BRAINROT_S3_BUCKET and BRAINROT_S3_PUBLIC_ENDPOINT below are pinned
       # for the same reason as BRAINROT_DEV_VOICE and BRAINROT_RUNS_ROOT:
