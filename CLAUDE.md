@@ -169,6 +169,15 @@ the dedupe filter that already lives in `scoutChannel`, and surfaces as
 `droppedMedia`. Dropped items get no `topics` row — re-dropping them next tick
 is free, and the table keeps meaning "things we actually considered".
 
+The same split handles AutoModerator's recurring scheduled threads ("All Space
+Questions thread for week of …", "Basic cosmology questions weekly thread" —
+four in one r/cosmology fetch, all `/u/AutoModerator`, verified 2026-07-27).
+Every week's instance is a distinct `t3_` id, so dedupe never catches them and
+they would cost a scoring slot forever. `feed.ts` reads Atom's `<author><name>`,
+`redditSource` strips the `/u/` prefix, and `scoutChannel` drops them as
+`droppedAutomated`. Keying on the bot account rather than title patterns means
+no per-channel config and no false positives on a human asking a real question.
+
 The ambiguous tail is not guessed at. `app.astrobin.com` is an image host with
 no file extension; `youtu.be` is a media link that can still be a strong
 topic. Rather than maintain a host list for these, the target *host* is

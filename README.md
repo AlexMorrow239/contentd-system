@@ -351,8 +351,15 @@ and `digest` prints a daily report.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
-flag, so mod stickies are indistinguishable from real posts and simply score
-low.
+flag, but it does name the submitting account, so AutoModerator's recurring
+scheduled threads ("Basic cosmology questions weekly thread" and friends) are
+dropped before scoring and counted as `droppedAutomated`. Each week's instance
+is a new post id, so dedupe alone would let them cost a scoring slot forever.
+A sticky posted by a human mod still reaches the scorer and simply scores low.
+
+Reddit rate-limits the public feed to roughly one request per window, so a
+tick that fetched several subreddits back-to-back used to lose every source
+after the first. Each feed fetch now backs off once on a 429 and retries.
 
 Image submissions are dropped before scoring. The scorer only ever sees
 titles, so an astrophotography post reads as a strong topic and scores high,

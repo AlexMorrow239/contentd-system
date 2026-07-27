@@ -6,11 +6,21 @@
  * Entry 4 deliberately has no [link] anchor at all, covering the undefined
  * path.
  */
-function entry(id: string, title: string, contentInner: string): string {
+function entry(id: string, title: string, contentInner: string, author = '/u/someone'): string {
   return (
-    `<entry><id>${id}</id><title>${title}</title>` +
+    `<entry><author><name>${author}</name></author>` +
+    `<id>${id}</id><title>${title}</title>` +
     `<link rel="alternate" href="https://www.reddit.com/r/space/comments/${id.replace('t3_', '')}/x/" />` +
     `<content type="html">${contentInner}</content></entry>`
+  )
+}
+
+/** A recurring AutoModerator thread — new t3_ id every week, forever. */
+export function autoModeratorFeedXml(id: string, title: string): string {
+  return (
+    `<?xml version="1.0" encoding="UTF-8"?><feed xmlns="http://www.w3.org/2005/Atom">` +
+    entry(id, title, '&lt;p&gt;Ask away!&lt;/p&gt;', '/u/AutoModerator') +
+    `</feed>`
   )
 }
 

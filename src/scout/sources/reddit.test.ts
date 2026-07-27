@@ -7,6 +7,7 @@ import {
   IMAGE_TARGET,
   REDDIT_FEED_XML,
   SELF_TARGET,
+  autoModeratorFeedXml,
 } from './_post-kind.fixtures.js'
 
 afterEach(() => {
@@ -195,6 +196,7 @@ describe('redditSource', () => {
         contentHtml: undefined,
         targetUrl: undefined,
         postKind: 'link',
+        author: 'someone',
       },
       {
         title: 'Starship booster catch, third attempt',
@@ -204,6 +206,7 @@ describe('redditSource', () => {
         contentHtml: undefined,
         targetUrl: undefined,
         postKind: 'link',
+        author: 'other',
       },
     ])
   })
@@ -246,6 +249,7 @@ describe('redditSource', () => {
         contentHtml: undefined,
         targetUrl: undefined,
         postKind: 'link',
+        author: undefined,
       },
     ])
 
@@ -265,6 +269,15 @@ describe('redditSource', () => {
       message: expect.stringMatching(/not a recognized RSS 2.0 or Atom feed/),
     })
     expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
+  })
+
+  it('carries the submitting author, normalized off reddit\'s /u/ prefix', async () => {
+    const { impl } = fakeTextFetch(
+      200,
+      autoModeratorFeedXml('t3_auto', 'All Space Questions thread for week of July 26, 2026'),
+    )
+    const got = await redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 })
+    expect(got[0].author).toBe('AutoModerator')
   })
 
   it('annotates each candidate with its submission target and kind', async () => {

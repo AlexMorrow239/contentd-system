@@ -26,10 +26,13 @@ function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): 
 // <entry><id> is the t3_ fullname, exactly as reddit serves it. `target` adds
 // the entity-encoded `[link]` anchor reddit uses to name the submission
 // target — omit it and the candidate classifies 'link' (the fail-open path).
-function redditFeed(posts: { name: string; title: string; target?: string }[]): string {
+function redditFeed(
+  posts: { name: string; title: string; target?: string; author?: string }[],
+): string {
   const entries = posts
     .map(
       (p) => `<entry>
+        <author><name>${p.author ?? '/u/someone'}</name></author>
         <id>${p.name}</id>
         <link href="https://www.reddit.com/r/space/comments/${p.name}/" />
         <title>${p.title}</title>
@@ -108,6 +111,7 @@ describe('scoutChannel', () => {
       channel: 'chan-a',
       fetched: 2,
       droppedMedia: 0,
+      droppedAutomated: 0,
       alreadyKnown: 0,
       scored: 2,
       queued: 1,
@@ -171,6 +175,64 @@ describe('scoutChannel', () => {
     db.close()
   })
 
+  it('drops automated recurring threads before scoring and counts them', async () => {
+    const db = memDb()
+    const channel = scoutedChannel()
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([
+        {
+          name: 't3_auto',
+          title: 'All Space Questions thread for week of July 26, 2026',
+          author: '/u/AutoModerator',
+          target: 'https://www.reddit.com/r/space/comments/t3_auto/x/',
+        },
+        {
+          name: 't3_real',
+          title: 'Jodrell Bank facing closure',
+          target: 'https://www.theguardian.com/science/x',
+        },
+      ]),
+    })
+    const { client, create } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 75, topic: 'Jodrell Bank', reason: 'real news' }]),
+    )
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.droppedAutomated).toBe(1)
+    expect(result.scored).toBe(1)
+    // Every week's thread is a fresh t3_ id, so dedupe never catches it — the
+    // only way it stops costing a scoring slot is to never reach the scorer.
+    const prompt = create.mock.calls[0][0].messages[0].content as string
+    expect(prompt).not.toContain('All Space Questions thread')
+    expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(1)
+    db.close()
+  })
+
+  it('keeps a human-authored post that merely mentions a thread', async () => {
+    const db = memDb()
+    const channel = scoutedChannel()
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([
+        {
+          name: 't3_human',
+          title: 'What will the orbit of starship look like',
+          author: '/u/curious_person',
+          target: 'https://www.reddit.com/r/space/comments/t3_human/x/',
+        },
+      ]),
+    })
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 70, topic: 'Starship orbit', reason: 'good q' }]),
+    )
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.droppedAutomated).toBe(0)
+    expect(result.scored).toBe(1)
+    db.close()
+  })
+
   it('re-runs are free: known hashes are filtered before the Haiku call', async () => {
     const db = memDb()
     const channel = scoutedChannel()
@@ -186,6 +248,7 @@ describe('scoutChannel', () => {
       channel: 'chan-a',
       fetched: 1,
       droppedMedia: 0,
+      droppedAutomated: 0,
       alreadyKnown: 1,
       scored: 0,
       queued: 0,
@@ -493,6 +556,7 @@ describe('scoutAll', () => {
         channel: 'a',
         fetched: 1,
         droppedMedia: 0,
+        droppedAutomated: 0,
         alreadyKnown: 1,
         scored: 0,
         queued: 0,

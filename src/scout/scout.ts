@@ -6,7 +6,7 @@ import { BrainrotError, classify, errorMessage, tagError } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
 import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
-import { redditSource } from './sources/reddit.js'
+import { isAutomatedAuthor, redditSource } from './sources/reddit.js'
 import { rssSource } from './sources/rss.js'
 import { ESTIMATED_SCOUT_COST_MICROS, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
@@ -17,6 +17,7 @@ export interface ScoutChannelResult {
   channel: string
   fetched: number
   droppedMedia: number
+  droppedAutomated: number
   alreadyKnown: number
   scored: number
   queued: number
@@ -132,14 +133,21 @@ export async function scoutChannel(
   // Dropped items get no topics row: re-dropping them next tick is free (the
   // filter is deterministic and pre-LLM), and the table keeps meaning "things
   // we actually considered".
-  const usable = candidates.filter((c) => c.postKind !== 'image')
+  const notMedia = candidates.filter((c) => c.postKind !== 'image')
+
+  // The other thing the scorer cannot see: AutoModerator's recurring scheduled
+  // threads. Each week's instance is a distinct t3_ id, so the dedupe filter
+  // below never catches them — without this they cost a scoring slot every
+  // week, forever, across every subreddit that runs one.
+  const usable = notMedia.filter((c) => !isAutomatedAuthor(c.author))
 
   const result: ScoutChannelResult = {
     channel: channel.name,
-    // fetched stays the raw count, so fetched - droppedMedia - alreadyKnown
-    // reads as scored.
+    // fetched stays the raw count, so
+    // fetched - droppedMedia - droppedAutomated - alreadyKnown reads as scored.
     fetched: candidates.length,
-    droppedMedia: candidates.length - usable.length,
+    droppedMedia: candidates.length - notMedia.length,
+    droppedAutomated: notMedia.length - usable.length,
     alreadyKnown: 0,
     scored: 0,
     queued: 0,
@@ -268,6 +276,7 @@ export async function scoutAll(
         channel: channel.name,
         fetched: 0,
         droppedMedia: 0,
+        droppedAutomated: 0,
         alreadyKnown: 0,
         scored: 0,
         queued: 0,

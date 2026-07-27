@@ -76,9 +76,18 @@ function atomEntries(entries: Record<string, unknown>[], sourceId: string): Tren
     const link = atomLinkHref(entry.link)
     const externalId = text(entry.id) ?? link
     if (title === undefined || externalId === undefined) continue
-    // <content> is a standard Atom element, so reading it belongs here; what
-    // its HTML *means* is source-specific and stays out of this module.
-    out.push({ title, url: link ?? '', sourceId, externalId, contentHtml: text(entry.content) })
+    // <content> and <author><name> are standard Atom elements, so reading them
+    // belongs here; what they *mean* is source-specific and stays out of this
+    // module.
+    const author = text((entry.author as Record<string, unknown> | undefined)?.name)
+    out.push({
+      title,
+      url: link ?? '',
+      sourceId,
+      externalId,
+      contentHtml: text(entry.content),
+      author,
+    })
   }
   return out
 }

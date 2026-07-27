@@ -17,6 +17,25 @@ export function redditLinkTarget(contentHtml: string | undefined): string | unde
   return LINK_ANCHOR.exec(contentHtml)?.[1]
 }
 
+// The feed writes an author as "/u/name". Strip the prefix so the value is the
+// account name a caller would actually compare against.
+export function redditAuthorName(author: string | undefined): string | undefined {
+  if (author === undefined) return undefined
+  const name = author.replace(/^\/u\//, '').trim()
+  return name === '' ? undefined : name
+}
+
+// Reddit's bot account. It posts the recurring scheduled threads — "All Space
+// Questions thread for week of ...", "Basic cosmology questions weekly thread"
+// — which are never viable video topics and, because each week's instance is a
+// distinct t3_ id, are never caught by dedupe. Matched case-insensitively:
+// the name is fixed but its casing in the feed is not guaranteed.
+export const AUTOMATED_AUTHORS = new Set(['automoderator'])
+
+export function isAutomatedAuthor(author: string | undefined): boolean {
+  return author !== undefined && AUTOMATED_AUTHORS.has(author.toLowerCase())
+}
+
 // Reddit blocks default library user agents; a descriptive UA is the
 // documented convention for public feed access.
 export const REDDIT_USER_AGENT =
@@ -100,7 +119,12 @@ export function redditSource(
       // dropped (a source returning a filtered array cannot report that).
       return entries.slice(0, limit).map((candidate) => {
         const targetUrl = redditLinkTarget(candidate.contentHtml)
-        return { ...candidate, targetUrl, postKind: classifyTarget(targetUrl) }
+        return {
+          ...candidate,
+          targetUrl,
+          postKind: classifyTarget(targetUrl),
+          author: redditAuthorName(candidate.author),
+        }
       })
     },
   }

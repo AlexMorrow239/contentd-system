@@ -11,6 +11,10 @@ export interface TrendCandidate {
   // already an article, so it renders to the scorer with no annotation.
   targetUrl?: string
   postKind?: PostKind
+  // Submitting account, without reddit's `/u/` prefix. Reddit only — the Atom
+  // spec puts <author> at feed level for RSS sources, where it names the
+  // publication rather than a person, so it carries no signal there.
+  author?: string
   // Raw Atom <content> body, carried so the reddit source can interpret it.
   // Not consumed downstream of redditSource.
   contentHtml?: string
