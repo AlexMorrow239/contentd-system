@@ -224,8 +224,9 @@ export async function visionJudgment<T>(opts: {
     const ext = path.extname(imagePath).toLowerCase()
     const mediaType = IMAGE_MEDIA_TYPES[ext]
     if (!mediaType) {
-      throw new Error(
+      throw new BrainrotError(
         `visionJudgment: unsupported image extension "${ext}" for "${imagePath}" (expected .png, .jpg, or .jpeg)`,
+        { domain: 'provider', kind: 'invalid' },
       )
     }
     return {

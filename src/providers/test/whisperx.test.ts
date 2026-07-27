@@ -5,6 +5,7 @@ import { writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { alignTranscript } from '../whisperx.js'
 import { tmpDir } from '../../testing/tmp.js'
+import { classify, errorMessage } from '../../errors.js'
 
 let server: http.Server
 let baseUrl: string
@@ -97,6 +98,33 @@ describe('alignTranscript', () => {
       await expect(
         alignTranscript({ baseUrl: hungUrl, wavPath, transcript: 'x', timeoutMs: 200 }),
       ).rejects.toThrow(/whisperx align timed out after 200ms/)
+    } finally {
+      hung.closeAllConnections?.()
+      await new Promise<void>((resolve) => hung.close(() => resolve()))
+    }
+  })
+})
+
+describe('whisperx error classification', () => {
+  it('classifies a timeout as provider/transient', async () => {
+    const wavPath = await tmpWav()
+    // Same hung-server technique as the timeout test above: alignTranscript
+    // does not accept an injectable fetch, so the timeout has to be produced
+    // for real rather than stubbed.
+    const hung = http.createServer(() => {
+      /* intentionally never ends the response */
+    })
+    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve))
+    const hungUrl = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`
+    try {
+      const err = await alignTranscript({
+        baseUrl: hungUrl,
+        wavPath,
+        transcript: 'x',
+        timeoutMs: 200,
+      }).catch((e: unknown) => e)
+      expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
+      expect(errorMessage(err)).toBe('alignTranscript: whisperx align timed out after 200ms')
     } finally {
       hung.closeAllConnections?.()
       await new Promise<void>((resolve) => hung.close(() => resolve()))

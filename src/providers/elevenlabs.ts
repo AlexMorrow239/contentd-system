@@ -1,5 +1,5 @@
 import { encodePcmWav, parseWavDurationMs } from '../media/wav.js'
-import { BrainrotError } from '../errors.js'
+import { BrainrotError, isAbortLike } from '../errors.js'
 import type { WordTiming } from './whisperx.js'
 
 // ElevenLabs bills TTS per character. $0.30 per 1,000 characters is the
@@ -114,21 +114,30 @@ export async function synthWithTimestamps(opts: {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
   } catch (err) {
-    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      throw new Error(`synthWithTimestamps: elevenlabs request timed out after ${TIMEOUT_MS}ms`)
+    if (isAbortLike(err)) {
+      throw new BrainrotError(
+        `synthWithTimestamps: elevenlabs request timed out after ${TIMEOUT_MS}ms`,
+        { domain: 'provider', kind: 'transient', cause: err },
+      )
     }
     throw err
   }
   if (!res.ok) {
     const raw = await res.text().catch(() => '')
-    throw new Error(`synthWithTimestamps: elevenlabs responded ${res.status}: ${raw}`)
+    throw new BrainrotError(`synthWithTimestamps: elevenlabs responded ${res.status}: ${raw}`, {
+      domain: 'provider',
+      kind: res.status === 401 || res.status === 403 ? 'auth' : 'transient',
+    })
   }
 
   const body = (await res.json()) as WithTimestampsResponse
   // A 200 without audio has nothing for the voice stage to fall back to, so it
   // is a hard failure — named so the log says which provider produced it.
   if (typeof body.audio_base64 !== 'string' || body.audio_base64.length === 0) {
-    throw new Error('synthWithTimestamps: elevenlabs response carried no audio_base64')
+    throw new BrainrotError('synthWithTimestamps: elevenlabs response carried no audio_base64', {
+      domain: 'provider',
+      kind: 'invalid',
+    })
   }
   const pcm = Buffer.from(body.audio_base64, 'base64')
   const wavBytes = encodePcmWav([pcm], PCM_SAMPLE_RATE, PCM_CHANNELS)

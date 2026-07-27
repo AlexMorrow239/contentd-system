@@ -3,6 +3,7 @@ import type { StageDef, JobContext } from '../jobs/types.js'
 import type { ScriptArtifact } from './script.js'
 import { narrationText } from './narration-text.js'
 import { alignTranscript, type WordTiming } from '../providers/whisperx.js'
+import { BrainrotError } from '../errors.js'
 
 export interface CaptionsArtifact {
   words: WordTiming[]
@@ -43,7 +44,12 @@ export const captionsStage: StageDef = {
       wavPath: ctx.artifactPath('voice', 'narration.wav'),
       transcript,
     })
-    if (words.length === 0) throw new Error('captions: whisperx returned no word timings')
+    if (words.length === 0) {
+      throw new BrainrotError('captions: whisperx returned no word timings', {
+        domain: 'provider',
+        kind: 'invalid',
+      })
+    }
 
     const artifact: CaptionsArtifact = { words }
     await fs.writeFile(

@@ -4,6 +4,7 @@ import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts'
 import type { StageDef, JobContext } from '../jobs/types.js'
 import type { ScriptArtifact } from './script.js'
 import { assertBudget, recordCost } from '../jobs/costs.js'
+import { BrainrotError } from '../errors.js'
 import { estimateTtsCostMicros, synthWithTimestamps } from '../providers/elevenlabs.js'
 import type { WordTiming } from '../providers/whisperx.js'
 import {
@@ -141,7 +142,12 @@ async function synthChunked(
     sampleRate = pcm.sampleRate
     channels = pcm.channels
   }
-  if (parts.length === 0 || sampleRate <= 0) throw new Error(`${provider} produced no audio`)
+  if (parts.length === 0 || sampleRate <= 0) {
+    throw new BrainrotError(`${provider} produced no audio`, {
+      domain: 'provider',
+      kind: 'invalid',
+    })
+  }
   return { parts, sampleRate, channels: Math.max(1, channels) }
 }
 
@@ -314,8 +320,9 @@ export const voiceStage: StageDef = {
           provider = 'edge-tts'
           voiceId = EDGE_VOICE
         } catch (edgeErr) {
-          throw new Error(
+          throw new BrainrotError(
             `voice synthesis failed: kokoro=${String(kokoroErr)}; edge=${String(edgeErr)}`,
+            { domain: 'provider', kind: 'transient' },
           )
         }
       }
@@ -329,10 +336,11 @@ export const voiceStage: StageDef = {
     const words = countWords(narration)
     const minPlausibleMs = minPlausibleNarrationMs(words)
     if (durationMs < minPlausibleMs) {
-      throw new Error(
+      throw new BrainrotError(
         `voice synthesis produced implausibly short audio: ${durationMs}ms for ${words} words ` +
           `(minimum ${minPlausibleMs}ms at ${MAX_PLAUSIBLE_WORDS_PER_SEC} words/sec); ` +
           `narration was likely truncated by provider "${provider}"`,
+        { domain: 'provider', kind: 'invalid' },
       )
     }
 

@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { BrainrotError, isAbortLike } from '../errors.js'
 
 export interface WordTiming {
   word: string
@@ -28,14 +29,21 @@ export async function alignTranscript(opts: {
       signal: AbortSignal.timeout(timeoutMs),
     })
   } catch (err) {
-    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
-      throw new Error(`alignTranscript: whisperx align timed out after ${timeoutMs}ms`)
+    if (isAbortLike(err)) {
+      throw new BrainrotError(`alignTranscript: whisperx align timed out after ${timeoutMs}ms`, {
+        domain: 'provider',
+        kind: 'transient',
+        cause: err,
+      })
     }
     throw err
   }
   if (!res.ok) {
     const raw = await res.text().catch(() => '')
-    throw new Error(`alignTranscript: whisperx responded ${res.status}: ${raw}`)
+    throw new BrainrotError(`alignTranscript: whisperx responded ${res.status}: ${raw}`, {
+      domain: 'provider',
+      kind: res.status === 401 || res.status === 403 ? 'auth' : 'transient',
+    })
   }
 
   // The 200 body is sidecar output, not a local invariant: casting it blind
@@ -45,7 +53,10 @@ export async function alignTranscript(opts: {
   // timings are not finite rather than emitting NaN (or silently 0) ms.
   const body = (await res.json()) as { words?: { word: string; start: number; end: number }[] }
   if (!Array.isArray(body.words)) {
-    throw new Error(`alignTranscript: malformed response from ${opts.baseUrl}/align`)
+    throw new BrainrotError(`alignTranscript: malformed response from ${opts.baseUrl}/align`, {
+      domain: 'provider',
+      kind: 'invalid',
+    })
   }
   return body.words
     .filter((w) => Number.isFinite(w?.start) && Number.isFinite(w?.end))
