@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import {
+  channelVideoCandidates,
   claimPublish,
   eligibleVideo,
   lastAttemptAt,
@@ -735,6 +736,145 @@ describe('eligibleVideo', () => {
     expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe(nasty)
     expect(eligibleVideo(db, 'chan-a', 'youtube', [nasty])?.jobId).toBe('job-plain')
     expect(db.prepare('SELECT COUNT(*) AS n FROM library').get()).toEqual({ n: 2 })
+    db.close()
+  })
+})
+
+describe('channelVideoCandidates', () => {
+  it('returns nothing for a channel with no publishable library rows', () => {
+    const db = openDb(':memory:')
+    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([])
+    db.close()
+  })
+
+  it('returns a ready video with no platforms blocked', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a', topic: 'ready topic' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([
+      {
+        jobId: 'job-1',
+        videoPath: '/tmp/out.mp4',
+        objectKey: null,
+        metadataJson: '{}',
+        topic: 'ready topic',
+        blockedPlatforms: [],
+      },
+    ])
+    db.close()
+  })
+
+  it('reports a platform with a done row as blocked, leaving the other open', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'published' })
+    const claim = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    markPublishDone(db, claim!.id, 'yt-1', 'https://youtu.be/yt-1', new Date())
+    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual(['youtube'])
+    db.close()
+  })
+
+  it('reports a claimed row as blocking (in flight)', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'instagram',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual(['instagram'])
+    db.close()
+  })
+
+  it('reports a platform at the rejection cap as blocked', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    for (let i = 0; i < MAX_PUBLISH_ATTEMPTS; i++) {
+      const claim = claimPublish(db, {
+        jobId: 'job-1',
+        platform: 'youtube',
+        channel: 'chan-a',
+        day: `2026-07-2${i}`,
+      })
+      markPublishFailed(db, claim!.id, 'bad video', 'rejected', new Date())
+    }
+    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual(['youtube'])
+    db.close()
+  })
+
+  it('does not treat a transient failure as blocking — that video retries', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    const claim = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    markPublishFailed(db, claim!.id, 'network', 'transient', new Date())
+    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual([])
+    db.close()
+  })
+
+  it('omits a video whose every platform is blocked', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'published' })
+    for (const platform of ['youtube', 'instagram'] as const) {
+      const claim = claimPublish(db, { jobId: 'job-1', platform, channel: 'chan-a', day: '2026-07-22' })
+      markPublishDone(db, claim!.id, `${platform}-1`, 'https://example.test/x', new Date())
+    }
+    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([])
+    db.close()
+  })
+
+  it('orders fewest prior failures first, then newest library row', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-old', { channel: 'chan-a' })
+    seedJob(db, 'job-new', { channel: 'chan-a' })
+    seedJob(db, 'job-hurt', { channel: 'chan-a' })
+    seedLibrary(db, 'job-old', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+    seedLibrary(db, 'job-new', { state: 'ready', createdAt: '2026-07-22T00:00:00.000Z' })
+    seedLibrary(db, 'job-hurt', { state: 'ready', createdAt: '2026-07-23T00:00:00.000Z' })
+    const claim = claimPublish(db, {
+      jobId: 'job-hurt',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    markPublishFailed(db, claim!.id, 'network', 'transient', new Date())
+    expect(channelVideoCandidates(db, 'chan-a', 10).map((r) => r.jobId)).toEqual([
+      'job-new',
+      'job-old',
+      'job-hurt',
+    ])
+    db.close()
+  })
+
+  it('honours the limit', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    seedLibrary(db, 'job-2', { state: 'ready' })
+    expect(channelVideoCandidates(db, 'chan-a', 1)).toHaveLength(1)
+    db.close()
+  })
+
+  it('ignores other channels', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-b' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([])
     db.close()
   })
 })

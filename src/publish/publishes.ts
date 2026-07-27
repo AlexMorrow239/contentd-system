@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Platform, PublishErrorKind } from './types.js'
+import { PUBLISH_PLATFORMS } from './types.js'
 import { PUBLISHABLE_LIBRARY_STATES } from '../jobs/library.js'
 
 export type PublishStatus = 'claimed' | 'done' | 'failed' | 'interrupted'
@@ -303,6 +304,103 @@ export function eligibleVideo(
     )
     .get(platform, channel, MAX_PUBLISH_ATTEMPTS, ...excludeJobIds) as EligibleVideo | undefined
   return row === undefined ? null : row
+}
+
+export interface ChannelVideoCandidate extends EligibleVideo {
+  /** Platforms this video can never go to again, per database state alone. */
+  blockedPlatforms: Platform[]
+}
+
+/**
+ * Publishable videos for one channel, newest-relevant first, each carrying
+ * the platforms that database state rules out. Replaces the per-platform
+ * `eligibleVideo` query: one tick now publishes one video to every platform
+ * that still wants it, so selection is per channel and the platform set is an
+ * output rather than an input.
+ *
+ * A platform is blocked when the job already has a done/claimed/interrupted
+ * row for it (published there, or in flight) or has reached
+ * MAX_PUBLISH_ATTEMPTS 'rejected' failures there (poison-video guard — only
+ * 'rejected' counts, since auth/quota/transient failures are channel- or
+ * platform-wide, not the video's fault). A video with every platform blocked
+ * is omitted entirely.
+ *
+ * The three conditions the DAO cannot see — the platform's quota, its
+ * credential, and whether the video file still exists on disk — are the
+ * caller's to apply, which is why this returns a LIST: the tick walks it
+ * until one row survives all three.
+ *
+ * Order: fewest prior failed rows of any kind first (spreads attempts during
+ * a channel-wide outage instead of hammering one video), then newest library
+ * row (fresh trend content over stale), then job id for determinism.
+ */
+export function channelVideoCandidates(
+  db: Database,
+  channel: string,
+  limit: number,
+): ChannelVideoCandidate[] {
+  const rows = db
+    .prepare(
+      `SELECT l.job_id AS jobId, l.video_path AS videoPath, lo.object_key AS objectKey,
+              l.metadata_json AS metadataJson, j.topic AS topic,
+              COALESCE(agg.failedCount, 0) AS failedCount
+       FROM library l
+       JOIN jobs j ON j.id = l.job_id
+       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
+       LEFT JOIN (
+         SELECT job_id, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedCount
+         FROM publishes GROUP BY job_id
+       ) agg ON agg.job_id = l.job_id
+       WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) AND j.channel = ?
+       ORDER BY COALESCE(agg.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC`,
+    )
+    .all(channel) as (EligibleVideo & { failedCount: number })[]
+
+  // Every blocking fact for this channel's jobs, in ONE grouped read rather
+  // than a query per row — the walk below is a Map lookup. Scoped by channel so
+  // an unrelated channel's history is never scanned.
+  const blocking = db
+    .prepare(
+      `SELECT p.job_id AS jobId, p.platform AS platform,
+              SUM(CASE WHEN p.status IN ('done','claimed','interrupted') THEN 1 ELSE 0 END) AS blockingCount,
+              SUM(CASE WHEN p.status = 'failed' AND p.error_kind = 'rejected' THEN 1 ELSE 0 END) AS rejectedCount
+       FROM publishes p
+       JOIN jobs j ON j.id = p.job_id
+       WHERE j.channel = ?
+       GROUP BY p.job_id, p.platform`,
+    )
+    .all(channel) as {
+    jobId: string
+    platform: Platform
+    blockingCount: number
+    rejectedCount: number
+  }[]
+
+  const blockedByJob = new Map<string, Platform[]>()
+  for (const b of blocking) {
+    if (b.blockingCount === 0 && b.rejectedCount < MAX_PUBLISH_ATTEMPTS) continue
+    const list = blockedByJob.get(b.jobId) ?? []
+    list.push(b.platform)
+    blockedByJob.set(b.jobId, list)
+  }
+
+  const out: ChannelVideoCandidate[] = []
+  for (const row of rows) {
+    if (out.length >= limit) break
+    const blockedPlatforms = [...(blockedByJob.get(row.jobId) ?? [])].sort()
+    // Every platform blocked means no caller could ever use this row — dropping
+    // it here keeps the tick's scan budget for rows it can act on.
+    if (blockedPlatforms.length >= PUBLISH_PLATFORMS.length) continue
+    out.push({
+      jobId: row.jobId,
+      videoPath: row.videoPath,
+      objectKey: row.objectKey,
+      metadataJson: row.metadataJson,
+      topic: row.topic,
+      blockedPlatforms,
+    })
+  }
+  return out
 }
 
 // Manual resolution path (design spec §7 `publish retry`): interrupted →
