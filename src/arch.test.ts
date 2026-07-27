@@ -3,8 +3,17 @@ import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { DASHBOARD_STAGE_ORDER } from './dashboard/queries/jobs.js'
+import { classify } from './errors.js'
+import { BudgetExceededError } from './jobs/costs.js'
 import { pipelineStages } from './jobs/pipeline.js'
-import { PUBLISH_PLATFORMS } from './publish/types.js'
+import { ResumeError } from './jobs/resume.js'
+import { PublishError, PublishOutcomeUnknownError, PUBLISH_PLATFORMS } from './publish/types.js'
+import {
+  AllChannelsScoringFailedError,
+  AllSourcesFailedError,
+  ScoutRunFailedError,
+} from './scout/scout.js'
+import { StorageError } from './storage/types.js'
 
 // Every .ts file under src/, as paths relative to src/. Used by the error
 // convention lints below, which are source-text greps rather than import
@@ -83,5 +92,54 @@ describe('error handling conventions', () => {
       if (src.includes(BANNED_IDIOM)) offenders.push(rel)
     }
     expect(offenders).toEqual([])
+  })
+
+  it('declares no Error subclass outside the errors module', async () => {
+    // Every classifiable error extends BrainrotError, which is the only thing
+    // in the repo permitted to extend Error directly. This is the guard that
+    // stops a new module from re-rolling its own hierarchy — which is how ten
+    // classes in four incompatible shapes happened the first time.
+    const offenders: string[] = []
+    for (const file of await srcFiles()) {
+      const rel = relative(SRC_ROOT, file)
+      if (rel === 'errors.ts') continue
+      const src = await readFile(file, 'utf8')
+      if (/\bextends Error\b/.test(src)) offenders.push(rel)
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('imports nothing from src/ into the errors module', async () => {
+    // Every layer imports src/errors.ts, so a dependency here becomes a
+    // dependency everywhere. Only node: builtins are allowed.
+    const src = await readFile(new URL('./errors.ts', import.meta.url), 'utf8')
+    const imports = [...src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
+    expect(imports.filter((s) => s !== undefined && !s.startsWith('node:'))).toEqual([])
+  })
+
+  it('classifies every domain class to its declared domain and kind', () => {
+    // The anti-drift guard for the taxonomy itself. It lives here rather than
+    // in errors.test.ts because it drags publish, storage, jobs and scout into
+    // whatever file holds it — exactly what this file exists to absorb.
+    const cases: [Error, string][] = [
+      [new PublishError('x', 'auth'), 'publish/auth'],
+      [new PublishError('x', 'quota'), 'publish/quota'],
+      [new PublishError('x', 'rejected'), 'publish/rejected'],
+      [new PublishError('x', 'transient'), 'publish/transient'],
+      [new PublishOutcomeUnknownError('x'), 'publish/unknown-outcome'],
+      [new StorageError('x', 'not-found'), 'storage/not-found'],
+      [new StorageError('x', 'auth'), 'storage/auth'],
+      [new StorageError('x', 'transient'), 'storage/transient'],
+      [new BudgetExceededError('x'), 'job/budget'],
+      [new ResumeError('x', 'not-found'), 'job/not-found'],
+      [new ResumeError('x', 'refused'), 'job/refused'],
+      [new ResumeError('x', 'conflict'), 'job/conflict'],
+      [new ScoutRunFailedError('x', []), 'scout/transient'],
+      [new AllSourcesFailedError('x', []), 'scout/transient'],
+      [new AllChannelsScoringFailedError('x', []), 'scout/transient'],
+    ]
+    for (const [err, code] of cases) {
+      expect(classify(err).code).toBe(code)
+    }
   })
 })

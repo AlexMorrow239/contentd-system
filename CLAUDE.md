@@ -155,8 +155,41 @@ and checks, in order: per-video cap (`channel.budget.perVideoUsdMicros`) →
 channel-day cap (UTC) → global-day cap (`BRAINROT_GLOBAL_DAILY_USD`, spans all
 channels). A breach throws `BudgetExceededError` _before_ the call fires.
 Providers that pay for a call that then fails downstream (e.g. a schema-invalid
-LLM response) still have to ledger that spend — see `src/providers/errors.ts`'s
-`ProviderCostError` / `errorCostUsdMicros` duck-typed cost-recovery convention.
+LLM response) still have to ledger that spend. The provider tags the thrown
+error via `tagError` (`src/errors.ts`) with `context: { costUsdMicros }`, which
+leaves the error's identity intact — anthropic keeps throwing a real `ZodError`
+so callers still match `instanceof z.ZodError` — and `src/providers/errors.ts`'s
+`errorCostUsdMicros` reads it back.
+
+### Errors: one vocabulary, two axes
+
+`src/errors.ts` is the single error vocabulary, and it imports nothing from
+`src/` — every layer imports it, so a dependency there becomes a dependency
+everywhere (an arch lint enforces this). It exports `BrainrotError` plus
+`errorMessage` / `classify` / `tagError` / `errorContext` / `isAbortLike`.
+
+Every error carries two axes: a `domain` (`publish`, `storage`, `provider`,
+`config`, `job`, `scout`, `internal`) and a `kind` (`auth`, `quota`, `budget`,
+`invalid`, `not-found`, `rejected`, `conflict`, `refused`, `transient`,
+`unknown-outcome`, `internal`), so a surface can match at either width. There
+is deliberately no `retryable` flag: `transient` retries next tick, `quota`
+tomorrow, `budget` after a cap change, and `unknown-outcome` never — retry
+meaning belongs to each surface.
+
+The concrete classes stay co-located with the domain they describe
+(`PublishError` in `publish/types.ts`, `StorageError` in `storage/types.ts`,
+`BudgetExceededError` in `jobs/costs.ts`, `ResumeError` in `jobs/resume.ts`,
+the scout trio in `scout/scout.ts`) and extend the base. `src/errors.ts` owns
+the vocabulary, not every error object. A subclass narrowing `kind` must use
+`declare readonly kind: ...` — target is ES2022, so a real re-declaration
+overwrites the base assignment with `undefined`.
+
+**Which errors get classified:** a condition an operator can cause or fix. An
+invariant breach — a malformed WAV mid-decode, `planTick` choosing a channel
+absent from the set it was handed — stays a plain `Error` and classifies as
+`internal/internal`, which is accurate. Errors this codebase does not own are
+classified with `tagError`, which attaches a non-enumerable symbol and returns
+the same object, so `instanceof z.ZodError` still narrows.
 
 ### Providers and the sidecar
 
@@ -260,7 +293,12 @@ calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up).
 **Layout rule: a directory with more than 3 test files folds its tests into a
 nested `test/` subdirectory** — `src/loop/test/`, `src/stages/test/`, etc. — so
 the source directory listing stays scannable; a directory with 3 or fewer
-stays flat (`src/config/`, `src/scout/`, the repo root). This is a pure
+stays flat (`src/config/`, `src/scout/`, the repo root). `src/` root is exempt
+from the fold rule regardless of count: its test files are repo-wide concerns
+(`arch.test.ts`'s architecture lints, `cli.test.ts`, `smoke.test.ts`,
+`errors.test.ts`) rather than one module's tests, and folding them would drag
+`scripts/vitest-sequencer.ts` — which lists `src/cli.test.ts` by path — and
+`src/testing/dist-layout.test.ts` along for no readability gain. This is a pure
 file-location rule, orthogonal to file size: a large file that cleanly
 consumes the shared testkit and its module's own `_*.fixtures.ts` does not
 need to be split just for being large (see below).
