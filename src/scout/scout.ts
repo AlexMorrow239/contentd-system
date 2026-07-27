@@ -1,7 +1,8 @@
 import type { Database } from 'better-sqlite3'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ChannelConfig } from '../config/channel.js'
-import { assertGlobalDayBudget, BudgetExceededError, recordCost } from '../jobs/costs.js'
+import { assertGlobalDayBudget, recordCost } from '../jobs/costs.js'
+import { BrainrotError, classify, errorContext, errorMessage, tagError } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
 import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
@@ -24,28 +25,9 @@ export interface ScoutChannelResult {
   scoringError?: string
 }
 
-// Carries the partial ScoutChannelResult across scoutChannel's rethrow so
-// scoutAll can report real fetch/dedupe counts for a channel whose scoring
-// failed. Module-private symbol: the original error identity must survive
-// (callers match on BudgetExceededError / ZodError).
-const PARTIAL_RESULT = Symbol('scout-partial-result')
-
 // A source before construction: the raw config entry the loop builds a source
 // from inside the per-source try, so a throwing constructor is isolated.
 type SourceDescriptor = { kind: 'reddit'; subreddit: string } | { kind: 'rss'; url: string }
-
-function attachPartial(err: unknown, partial: ScoutChannelResult): void {
-  if (err !== null && typeof err === 'object') {
-    ;(err as Record<PropertyKey, unknown>)[PARTIAL_RESULT] = partial
-  }
-}
-
-function readPartial(err: unknown): ScoutChannelResult | undefined {
-  if (err !== null && typeof err === 'object' && PARTIAL_RESULT in err) {
-    return (err as Record<PropertyKey, unknown>)[PARTIAL_RESULT] as ScoutChannelResult
-  }
-  return undefined
-}
 
 // Scoring with the ledger-complete error path: gate first; if the call spent
 // before failing (paid-but-invalid response), record that spend before the
@@ -73,7 +55,21 @@ async function scoreWithLedger(
       recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', spent)
       result.costUsdMicros = spent
     }
-    attachPartial(err, result)
+    // Carry the partial ScoutChannelResult across the rethrow so scoutAll can
+    // report real fetch/dedupe counts for a channel whose scoring failed.
+    // Tagged rather than subclassed: the original error identity must survive
+    // (callers match on BudgetExceededError / ZodError).
+    //
+    // Re-tag with the classification the error already has so tagging never
+    // downgrades a BudgetExceededError to internal/internal. Fields are copied
+    // explicitly, not spread: ErrorInfo also carries `code` and `message`,
+    // which do not belong in an ErrorTag.
+    const info = classify(err)
+    tagError(err, {
+      domain: info.domain,
+      kind: info.kind,
+      context: { ...info.context, partial: result },
+    })
     throw err
   }
 }
@@ -118,7 +114,7 @@ export async function scoutChannel(
         (descriptor.kind === 'reddit'
           ? `reddit:r/${descriptor.subreddit}`
           : `rss:${descriptor.url}`)
-      const entry = `${id}: ${err instanceof Error ? err.message : String(err)}`
+      const entry = `${id}: ${errorMessage(err)}`
       // Spec §4: a failing source "logs a warning" — stderr, since stdout is
       // reserved for the CLI's single JSON line.
       console.error(`scout: source ${entry}`)
@@ -186,13 +182,16 @@ export async function scoutChannel(
 // channel's isolation can absorb. Both carry the per-channel results so the CLI
 // can still print its one JSON line (Global Constraints: JSON even on failure
 // outcomes) before exit 1.
-export class ScoutRunFailedError extends Error {
-  constructor(
-    message: string,
-    public results: ScoutChannelResult[],
-  ) {
-    super(message)
+export class ScoutRunFailedError extends BrainrotError {
+  readonly results: ScoutChannelResult[]
+
+  constructor(message: string, results: ScoutChannelResult[]) {
+    // 'transient' because every cause is one — an expired key, a provider
+    // outage, a source that will be back. The run failing is the signal; the
+    // next scheduled scout is the retry.
+    super(message, { domain: 'scout', kind: 'transient', context: { results } })
     this.name = 'ScoutRunFailedError'
+    this.results = results
   }
 }
 
@@ -245,10 +244,11 @@ export async function scoutAll(
     } catch (err) {
       // Per-channel isolation: one channel's scoring failure (including the
       // global-day budget gate) must not starve the others.
-      const message = err instanceof Error ? err.message : String(err)
-      if (err instanceof BudgetExceededError) budgetBlocked.add(channel.name)
+      const info = classify(err)
+      const message = info.message
+      if (info.kind === 'budget') budgetBlocked.add(channel.name)
       console.error(`scout: channel "${channel.name}" scoring failed: ${message}`)
-      const partial = readPartial(err) ?? {
+      const partial = (errorContext(err).partial as ScoutChannelResult | undefined) ?? {
         channel: channel.name,
         fetched: 0,
         alreadyKnown: 0,

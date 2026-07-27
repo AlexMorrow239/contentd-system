@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
 import { BudgetExceededError } from '../jobs/costs.js'
+import { BrainrotError, classify } from '../errors.js'
 import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig, ScoutConfig } from '../config/channel.js'
 import { testChannel } from '../testing/channel.js'
@@ -9,9 +10,11 @@ import { listTopics } from './topics.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
+  ScoutRunFailedError,
   scoutAll,
   scoutChannel,
 } from './scout.js'
+import type { ScoutChannelResult } from './scout.js'
 import { memDb } from '../testing/db.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
@@ -438,5 +441,20 @@ describe('scoutAll', () => {
     ])
     expect(create).toHaveBeenCalledTimes(1)
     db.close()
+  })
+})
+
+describe('scout error classification', () => {
+  it('classifies the systemic failures as scout/transient, keeping results', () => {
+    const results: ScoutChannelResult[] = []
+    for (const err of [
+      new AllSourcesFailedError('all 3 trend source(s) failed', results),
+      new AllChannelsScoringFailedError('all 2 scouted channel(s) failed', results),
+    ]) {
+      expect(err).toBeInstanceOf(BrainrotError)
+      expect(err).toBeInstanceOf(ScoutRunFailedError)
+      expect(err.results).toBe(results)
+      expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
+    }
   })
 })
