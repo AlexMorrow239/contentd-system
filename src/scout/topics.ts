@@ -149,6 +149,38 @@ export function rejectTopics(db: Database, ids: number[]): number {
     .run(...ids).changes
 }
 
+// Candidates the prune pass can re-check: reddit only (an RSS item has no
+// submission target) and 'candidate' only — a used or claimed topic is
+// already spoken for, and rejecting it would strand a live job.
+export function redditCandidates(db: Database, channel?: string): TopicRow[] {
+  const where = ["status = 'candidate'", "source LIKE 'reddit:%'"]
+  const params: string[] = []
+  if (channel !== undefined) {
+    where.push('channel = ?')
+    params.push(channel)
+  }
+  const rows = db
+    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics WHERE ${where.join(' AND ')} ORDER BY id`)
+    .all(...params) as DbTopicRow[]
+  return rows.map(toTopicRow)
+}
+
+// Backfill only — never touches status, so it is safe to call for a row the
+// caller is about to leave as a candidate.
+export function setTopicTargetUrl(db: Database, id: number, targetUrl: string): void {
+  db.prepare('UPDATE topics SET target_url = ? WHERE id = ?').run(targetUrl, id)
+}
+
+// Same 'candidate'-guarded shape as rejectTopics, with the reason recorded so
+// an operator reading the queue can see which pass rejected it and why.
+export function rejectTopicWithReason(db: Database, id: number, reason: string): number {
+  return db
+    .prepare(
+      "UPDATE topics SET status = 'rejected', reason = ? WHERE id = ? AND status = 'candidate'",
+    )
+    .run(reason, id).changes
+}
+
 // Claim = bind topic to job. Guarded so a rejected/used/claimed topic is
 // never revived even if a caller slips outside the produce lease; the boolean
 // lets produce-next treat a failed claim as the invariant breach it is.

@@ -18,6 +18,7 @@ import {
   markInterruptedDone,
   retryInterrupted,
 } from './publish/publishes.js'
+import { pruneMedia } from './scout/prune-media.js'
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { pipelineStages } from './jobs/pipeline.js'
@@ -436,6 +437,35 @@ topics
         console.error(`unknown topic id ${id}`)
       }
       process.exitCode = 1
+    } finally {
+      db.close()
+    }
+  })
+
+topics
+  .command('prune-media')
+  .description('re-check scouted reddit candidates and reject image-sourced ones')
+  .option('--db <path>', 'sqlite db path')
+  .option('--channel <name>', 'limit to one channel (default: all)')
+  .option('--dry-run', 'report what would change without writing')
+  .action(async (opts: { db?: string; channel?: string; dryRun?: boolean }) => {
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      const dryRun = opts.dryRun === true
+      const result = await pruneMedia(db, { channel: opts.channel, dryRun })
+      // Per-row skips are diagnostics; stdout keeps its single JSON line.
+      for (const s of result.skipped) {
+        console.error(`prune-media: skipped topic ${s.topicId}: ${s.reason}`)
+      }
+      process.stdout.write(
+        JSON.stringify({
+          action: 'prune-media',
+          dryRun,
+          checked: result.checked,
+          rejected: result.rejected,
+          skipped: result.skipped.length,
+        }) + '\n',
+      )
     } finally {
       db.close()
     }
