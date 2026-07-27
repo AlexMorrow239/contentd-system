@@ -43,12 +43,41 @@ function buildSystem(niche: string[]): string {
   ].join(' ')
 }
 
+// A candidate's annotation, when it has one. Only the target HOST is shown,
+// never the full URL: the host is what carries the signal (app.astrobin.com
+// is an image host, theguardian.com is not), and a full URL would spend
+// tokens on per-post ids that mean nothing to the scorer.
+function targetHost(targetUrl: string | undefined): string | undefined {
+  if (targetUrl === undefined) return undefined
+  try {
+    return new URL(targetUrl).hostname
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * One prompt line per candidate. Reddit candidates carry what the title alone
+ * cannot say — whether the post is a story or a link, and where the link
+ * points — which is what lets the scorer penalize an image host it has never
+ * been told about. 'image' needs no branch: scoutChannel drops those before
+ * scoring, and one arriving here would render as a link, the safe direction.
+ */
+export function candidateLine(c: TrendCandidate, index: number): string {
+  const prefix = `${index}. [${c.sourceId}]`
+  if (c.postKind === undefined) return `${prefix} ${c.title}`
+  if (c.postKind === 'self') return `${prefix} (self post) ${c.title}`
+  const host = targetHost(c.targetUrl)
+  const annotation = host === undefined ? '(link)' : `(link -> ${host})`
+  return `${prefix} ${annotation} ${c.title}`
+}
+
 function buildPrompt(
   candidates: TrendCandidate[],
   niche: string[],
   recentTitles: string[],
 ): string {
-  const list = candidates.map((c, i) => `${i}. [${c.sourceId}] ${c.title}`).join('\n')
+  const list = candidates.map((c, i) => candidateLine(c, i)).join('\n')
   const recent = recentTitles.length > 0 ? recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
   return `Score each candidate headline as a video topic for the "${niche.join(', ')}" niche.
 
@@ -62,7 +91,11 @@ For each candidate return:
 - candidateIndex: the number from the list above
 - score: 0 to 100 — how strong a short-form vertical video this makes for the niche (0 = off-niche, stale, or already covered)
 - topic: the headline reframed as a hooky video topic, imperative and concrete
-- reason: one line explaining the score`
+- reason: one line explaining the score
+
+Scoring rules:
+- A candidate whose link target is a photograph, image gallery, or image-hosting page has no narrative substance. Score it low even when the subject is on-niche — a picture is not a story.
+- A self post is the poster's own question or story. Judge it on whether the question has a factual, explainable answer.`
 }
 
 // Pure scoring: no db access here — budget gating and cost ledgering live in

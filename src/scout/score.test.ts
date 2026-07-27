@@ -6,6 +6,7 @@ import {
   ESTIMATED_SCOUT_COST_MICROS,
   SCOUT_MAX_TOKENS,
   SCOUT_MODEL,
+  candidateLine,
   scoreCandidates,
 } from './score.js'
 
@@ -32,6 +33,49 @@ function emit(scores: unknown, usage = { input_tokens: 1000, output_tokens: 500 
     usage,
   }
 }
+
+describe('candidateLine', () => {
+  it('annotates a link candidate with its target host', () => {
+    expect(
+      candidateLine(
+        candidate(0, {
+          title: "Markarian's Chain",
+          postKind: 'link',
+          targetUrl: 'https://app.astrobin.com/u/x?i=y',
+        }),
+        0,
+      ),
+    ).toBe("0. [reddit:r/space] (link -> app.astrobin.com) Markarian's Chain")
+  })
+
+  it('annotates a self post without a host', () => {
+    expect(
+      candidateLine(
+        candidate(1, {
+          title: 'Are the edges of the universe equally far?',
+          postKind: 'self',
+          targetUrl: 'https://www.reddit.com/r/x/comments/y/',
+        }),
+        1,
+      ),
+    ).toBe('1. [reddit:r/space] (self post) Are the edges of the universe equally far?')
+  })
+
+  it('renders an unannotated RSS candidate exactly as before', () => {
+    expect(
+      candidateLine(
+        candidate(2, { title: 'A galaxy assembles', sourceId: 'rss:phys.org' }),
+        2,
+      ),
+    ).toBe('2. [rss:phys.org] A galaxy assembles')
+  })
+
+  it('omits the host when the target is unparseable', () => {
+    expect(
+      candidateLine(candidate(3, { title: 'Odd one', postKind: 'link', targetUrl: 'not a url' }), 3),
+    ).toBe('3. [reddit:r/space] (link) Odd one')
+  })
+})
 
 describe('scout scoring constants', () => {
   it('pins the haiku alias (a PRICE_TABLE key), token ceiling, and cost estimate', () => {
