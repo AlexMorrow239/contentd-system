@@ -29,11 +29,13 @@ const PUBLISHES_COLUMNS =
  * cannot express against an existing database: SQLite can neither widen a
  * CHECK constraint nor retype a column in place.
  *
- * The two are ONE step, not two, because the old CHECK's rebuild would replay
- * a schema.sql that no longer has a `slot` column while its own copy list
- * still names one. Every database carrying the old CHECK also has `slot`, so
- * the slot->seq branch subsumes it — and because the rebuild replays
- * schema.sql, it fixes the CHECK as a side effect.
+ * One branch, not two, because every database carrying the old
+ * `platform IN ('youtube')` CHECK also has the `slot` column — the CHECK
+ * predates the seq migration, so a database old enough to still have it is
+ * necessarily old enough to have `slot` too. The slot->seq mapping therefore
+ * subsumes the old CHECK's rebuild unconditionally, and because the rebuild
+ * replays schema.sql, it fixes the CHECK as a side effect regardless of which
+ * predicate triggered the call.
  *
  * Renaming the old table out of the way lets schema.sql's own CREATE TABLE IF
  * NOT EXISTS rebuild `publishes` at its current shape; every other statement
@@ -45,18 +47,16 @@ const PUBLISHES_COLUMNS =
  * INSERT...SELECT still advances it correctly (verified by the
  * never-reuses-an-id test).
  */
-function rebuildPublishes(db: Database, schemaSql: string, mapSlotToSeq: boolean): void {
+function rebuildPublishes(db: Database, schemaSql: string): void {
   // Historical rows have clock-time slots, not ordinals. Ranking by slot
   // within each (channel, platform, day) reproduces the order they were
   // actually attempted in; `id` is a tiebreak that the old
   // UNIQUE(channel,platform,day,slot) made unreachable, kept for determinism.
-  const copy = mapSlotToSeq
-    ? `INSERT INTO publishes (${PUBLISHES_COLUMNS})
+  const copy = `INSERT INTO publishes (${PUBLISHES_COLUMNS})
        SELECT id, job_id, platform, channel, day,
               ROW_NUMBER() OVER (PARTITION BY channel, platform, day ORDER BY slot, id),
               status, post_id, url, error, error_kind, attempt, created_at, finished_at
        FROM publishes_old`
-    : `INSERT INTO publishes (${PUBLISHES_COLUMNS}) SELECT ${PUBLISHES_COLUMNS} FROM publishes_old`
   db.transaction(() => {
     db.exec('ALTER TABLE publishes RENAME TO publishes_old')
     db.exec(schemaSql)
@@ -84,8 +84,7 @@ export function migrate(db: Database, schemaSql: string): void {
   if (!hasColumn(db, 'oauth_tokens', 'expires_at')) {
     db.exec('ALTER TABLE oauth_tokens ADD COLUMN expires_at TEXT')
   }
-  const needsSeq = hasColumn(db, 'publishes', 'slot')
-  if (needsSeq || publishesHasOldCheck(db)) {
-    rebuildPublishes(db, schemaSql, needsSeq)
+  if (hasColumn(db, 'publishes', 'slot') || publishesHasOldCheck(db)) {
+    rebuildPublishes(db, schemaSql)
   }
 }

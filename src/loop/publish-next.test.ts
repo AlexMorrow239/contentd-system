@@ -1142,11 +1142,17 @@ describe('publishNextTick — the due gate', () => {
 
   it('noops with daily-count-met once videos_per_day videos were attempted', async () => {
     const { db, dir } = dueFixture('brainrot-publish-count-', 1)
+    // createdAt pinned inside the min gap for videosPerDay=1 (a 12h gap) as
+    // measured from `now` below: if the gates were ever reordered to check
+    // pacing before the day count, this fixture would report 'paced' instead
+    // and fail the assertion honestly, rather than passing by coincidence on
+    // whatever the real wall clock happened to be.
     seedAttempt(db, {
       jobId: 'job-old',
       channel: 'test',
       platform: 'youtube',
       day: '2026-07-22',
+      createdAt: new Date(2026, 6, 22, 9, 0).toISOString(),
     })
     const result = await publishNextTick(db, {
       channelsDir: dir,

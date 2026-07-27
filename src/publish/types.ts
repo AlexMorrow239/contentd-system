@@ -25,7 +25,7 @@ export class PublishError extends Error {
 }
 
 // A thrown fetch (network failure, or an aborted/timed-out request) always
-// maps to 'transient' — the tick's next slot is the retry (design spec
+// maps to 'transient' — the retry happens at the next due tick (design spec
 // decision 7). Shared by every adapter's HTTP call sites; `timeoutMs` is the
 // caller's own per-call timeout so the message names the constant that
 // actually fired.
@@ -42,8 +42,8 @@ export function networkError(op: string, timeoutMs: number, err: unknown): Publi
 // The platform ACCEPTED the post — it exists on the platform — but its
 // outcome is unreadable (broken success body, no post id). Never a
 // PublishError: no failure kind fits, and marking the row failed would make
-// the same video eligible again at the next slot, publishing it twice. The
-// tick leaves the row 'claimed' so the repair sweep heals it to 'interrupted'.
+// the same video eligible again at the next due tick, publishing it twice.
+// The tick leaves the row 'claimed' so the repair sweep heals it to 'interrupted'.
 // Shared across every adapter — moved here (was youtube.ts-only) once
 // Instagram's media_publish step needed the identical contract.
 export class PublishOutcomeUnknownError extends Error {
@@ -115,7 +115,7 @@ export interface PublishChannelConfig {
 // metadata existed. Any way that map can fail to yield a valid entry for
 // `platform` — corrupt JSON, a missing key, a malformed entry — falls back
 // to a synthesized meta so old or broken library rows stay publishable
-// instead of blocking their slot forever.
+// instead of permanently blocking their place in the day.
 //
 // This is also the single read-side choke point for platform limits, so every
 // entry leaves here normalized (normalizePlatformMeta): the schema has no

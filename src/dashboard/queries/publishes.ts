@@ -13,9 +13,12 @@ export interface ChannelGrid {
   channel: string
   /**
    * Row headers for the grid: one row per (platform, ordinal) pair, the
-   * ordinals running 1..videos_per_day. Each platform gets its own rows, so a
-   * publish attempt on one platform never overwrites or hides the other's.
-   * Sorted by ordinal first, then platform, for a stable, readable grid.
+   * ordinals running 1..max(videos_per_day, highest seq seen in the window
+   * for that platform) — seq can run ahead of videos_per_day once retries or
+   * failures are counted, so the row count widens rather than clipping a real
+   * publish off the grid. Each platform gets its own rows, so a publish
+   * attempt on one platform never overwrites or hides the other's. Sorted by
+   * ordinal first, then platform, for a stable, readable grid.
    */
   rows: GridRow[]
   /** Newest day first. */
@@ -76,10 +79,14 @@ function windowDays(days: number, now: Date): string[] {
 }
 
 /**
- * The grid's shape comes from CHANNEL CONFIG, not from the publishes table:
- * an attempt that never happened has no row, and inferring the shape from
- * existing rows would hide exactly those gaps. Channels with no [publish]
- * table never enter the publish pool and are omitted entirely.
+ * The grid's row count comes from CHANNEL CONFIG, not solely from the
+ * publishes table: an attempt that never happened has no row, and inferring
+ * the shape purely from existing rows would hide exactly those gaps. It is
+ * only ever widened by the fetched rows (never narrowed), so a publish that
+ * landed past videos_per_day — a retry, or a same-day video beyond the
+ * configured count — still gets a row rather than vanishing from the grid.
+ * Channels with no [publish] table never enter the publish pool and are
+ * omitted entirely.
  */
 export function buildPublishGrids(
   db: Database,
@@ -110,17 +117,32 @@ export function buildPublishGrids(
     for (const row of dbRows) {
       cells.set(cellKey(row.day, row.seq, row.platform), toPublishRow(row))
     }
+    // seq counts every prior row for the (channel, platform, day) — retries
+    // and failures included, not just successes — so it can run ahead of
+    // videos_per_day (e.g. a failed attempt 1 plus a successful retry at
+    // seq 2 plus a same-day third video at seq 3, with videos_per_day = 2).
+    // Row count per platform is therefore the larger of videos_per_day and
+    // the highest seq actually seen in the fetched window, so a live publish
+    // that ran past the configured ordinal still gets a row instead of
+    // silently vanishing from the grid.
+    const maxSeqByPlatform = new Map<Platform, number>()
+    for (const row of dbRows) {
+      const current = maxSeqByPlatform.get(row.platform) ?? 0
+      if (row.seq > current) maxSeqByPlatform.set(row.platform, row.seq)
+    }
     // One row per (platform, ordinal) pair, with the ordinals coming from the
-    // channel's videos_per_day: an attempt that never happened has no
-    // publishes row, and inferring the shape from existing rows would hide
-    // exactly those gaps. Two platforms never collapse into one row, so a
-    // publish on one platform can't hide or overwrite the other's.
-    const rows: GridRow[] = publish.targets.flatMap((target) =>
-      Array.from({ length: channel.videosPerDay }, (_unused, i) => ({
+    // channel's videos_per_day (widened as above): an attempt that never
+    // happened has no publishes row, and inferring the shape from existing
+    // rows alone would hide exactly those gaps. Two platforms never collapse
+    // into one row, so a publish on one platform can't hide or overwrite the
+    // other's.
+    const rows: GridRow[] = publish.targets.flatMap((target) => {
+      const rowCount = Math.max(channel.videosPerDay, maxSeqByPlatform.get(target.platform) ?? 0)
+      return Array.from({ length: rowCount }, (_unused, i) => ({
         platform: target.platform,
         seq: i + 1,
-      })),
-    )
+      }))
+    })
     rows.sort((a, b) => {
       if (a.seq !== b.seq) return a.seq - b.seq
       return a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0

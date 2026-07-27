@@ -28,17 +28,23 @@ export interface PublishRow {
 export const MAX_PUBLISH_ATTEMPTS = 3
 
 /**
- * INSERT a claimed row. Two counts are computed inside one transaction:
+ * INSERT a claimed row. Two reads are computed inside one transaction:
  *
  * - `attempt` = 1 + every prior row for this (jobId, platform) — the
  *   poison-video ordinal.
- * - `seq` = 1 + every prior row for this (channel, platform, day) — the
- *   within-day ordinal that replaced the old clock-time slot. The
- *   UNIQUE (channel, platform, day, seq) constraint is the database-level
- *   backstop against a double-publish when the publish lease fails; a
- *   conflict means a racing tick already took this ordinal, so the
- *   SqliteError from the INSERT (and only the INSERT) is reported as null
- *   rather than propagated.
+ * - `seq` = 1 + the highest seq already used for this (channel, platform,
+ *   day) — the within-day ordinal that replaced the old clock-time slot.
+ *   MAX rather than COUNT: a gap left by a rejected/retired ordinal (e.g.
+ *   rows at seq 1 and 3, seq 2 never landing) would otherwise make every
+ *   later claim that day recompute the same already-taken seq from
+ *   COUNT(*) + 1, hit the UNIQUE constraint, and report `claim-conflict`
+ *   deterministically until the day rolls over. MAX(seq) + 1 always lands on
+ *   an unused ordinal, healing the gap for free. Coalesced to 0 so the first
+ *   claim of the day is still 1. The UNIQUE (channel, platform, day, seq)
+ *   constraint remains the database-level backstop against a double-publish
+ *   when the publish lease fails; a conflict means a racing tick already
+ *   took this ordinal, so the SqliteError from the INSERT (and only the
+ *   INSERT) is reported as null rather than propagated.
  *
  * `.immediate()` (not a deferred BEGIN): the two reads and the INSERT must
  * share one write-locked snapshot, or a writer committing in between
@@ -55,8 +61,8 @@ export function claimPublish(
   const countPriorAttempts = db.prepare(
     'SELECT COUNT(*) AS n FROM publishes WHERE job_id = ? AND platform = ?',
   )
-  const countDayRows = db.prepare(
-    'SELECT COUNT(*) AS n FROM publishes WHERE channel = ? AND platform = ? AND day = ?',
+  const maxDaySeq = db.prepare(
+    'SELECT MAX(seq) AS maxSeq FROM publishes WHERE channel = ? AND platform = ? AND day = ?',
   )
   const insertClaim = db.prepare(
     'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
@@ -64,8 +70,10 @@ export function claimPublish(
   )
   const claim = db.transaction((): { id: number; seq: number } | null => {
     const { n: attempts } = countPriorAttempts.get(opts.jobId, opts.platform) as { n: number }
-    const { n: dayRows } = countDayRows.get(opts.channel, opts.platform, opts.day) as { n: number }
-    const seq = dayRows + 1
+    const { maxSeq } = maxDaySeq.get(opts.channel, opts.platform, opts.day) as {
+      maxSeq: number | null
+    }
+    const seq = (maxSeq ?? 0) + 1
     try {
       const info = insertClaim.run(
         opts.jobId,

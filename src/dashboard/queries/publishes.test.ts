@@ -139,6 +139,36 @@ describe('buildPublishGrids', () => {
     db.close()
   })
 
+  it('regression: exposes a row for a seq that ran past videos_per_day, so a live publish is not hidden', () => {
+    // videos_per_day = 2, but seq counts every prior row (retries and
+    // failures included): attempt 1 failed (seq 1), its retry succeeded
+    // (seq 2), then a second video published (seq 3). Without widening past
+    // videos_per_day, seq 3 has no row to land in and silently vanishes.
+    const db = seed()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
+        "VALUES ('j1','youtube','space','2026-07-25',1,'failed',1)",
+    ).run()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
+        "VALUES ('j1','youtube','space','2026-07-25',2,'done',2)",
+    ).run()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, post_id, url, attempt) ' +
+        "VALUES ('j1','youtube','space','2026-07-25',3,'done','abc','https://y/abc',1)",
+    ).run()
+    const [grid] = buildPublishGrids(db, [channel('space', 2)], 3, now)
+    expect(grid?.rows).toEqual([
+      { platform: 'youtube', seq: 1 },
+      { platform: 'youtube', seq: 2 },
+      { platform: 'youtube', seq: 3 },
+    ])
+    const cell = grid?.cells.get(cellKey('2026-07-25', 3, 'youtube'))
+    expect(cell?.status).toBe('done')
+    expect(cell?.url).toBe('https://y/abc')
+    db.close()
+  })
+
   it('regression: two platforms at the same ordinal each keep their own row and cell', () => {
     // A cross-posting channel writes the same ordinal on both platforms (they
     // are separate UNIQUE partitions), so without a platform-aware cellKey and

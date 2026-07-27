@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import {
@@ -189,17 +189,49 @@ describe('claimPublish seq', () => {
     db.close()
   })
 
-  it('returns null rather than throwing when the computed seq is already taken', () => {
+  it('self-heals a sequence gap: the next claim gets seq 4, not a doomed retry of seq 3', () => {
+    // Rows at seq 1 and 3 (seq 2 never landed — a rejected/retired attempt).
+    // COUNT(*) + 1 would recompute 3, collide with the UNIQUE constraint, and
+    // report claim-conflict for every claim the rest of the day. MAX(seq) + 1
+    // lands on 4, the first genuinely free ordinal.
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a' })
-    // Two rows with a GAP: the count is 2, so the next claim computes seq 3 —
-    // which the seeded row already holds. This is the state a racing tick
-    // leaves behind, and the UNIQUE constraint is the backstop that catches it.
     db.prepare(
       'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) VALUES ' +
         "('job-1','youtube','chan-a','2026-07-22',1,'failed',1)," +
         "('job-1','youtube','chan-a','2026-07-22',3,'done',2)",
     ).run()
+    const claim = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    expect(claim?.seq).toBe(4)
+    db.close()
+  })
+
+  it('returns null rather than throwing when the computed seq is already taken', () => {
+    // MAX(seq) + 1 always lands on an ordinal absent from the table, so a
+    // genuine UNIQUE conflict can only happen when a second writer's INSERT
+    // lands between this transaction's MAX(seq) read and its own INSERT — the
+    // exact race `.immediate()` closes in production. Simulated here by
+    // stubbing the MAX(seq) read to return a stale value (as if the row below
+    // hadn't committed yet when it was read), so the INSERT this call issues
+    // collides with a row that genuinely already holds that seq.
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) VALUES ' +
+        "('job-1','youtube','chan-a','2026-07-22',1,'done',1)",
+    ).run()
+    const originalPrepare = db.prepare.bind(db)
+    const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
+      if (sql.includes('MAX(seq)')) {
+        return { get: () => ({ maxSeq: 0 }) } as unknown as ReturnType<typeof originalPrepare>
+      }
+      return originalPrepare(sql)
+    }) as typeof db.prepare)
     expect(
       claimPublish(db, {
         jobId: 'job-1',
@@ -208,9 +240,10 @@ describe('claimPublish seq', () => {
         day: '2026-07-22',
       }),
     ).toBeNull()
-    // The failed INSERT is rolled back whole: no third row, no half-written
-    // attempt counter.
-    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 2 })
+    // The failed INSERT is rolled back whole: still exactly the one seeded
+    // row, no half-written attempt counter.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 1 })
+    prepareSpy.mockRestore()
     db.close()
   })
 

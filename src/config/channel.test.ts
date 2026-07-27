@@ -388,6 +388,14 @@ describe('[publish] — per-platform targets', () => {
     const first = publish.targets[0]
     expect(Object.isFrozen(first)).toBe(true)
     expect(Object.isFrozen(first.options)).toBe(true)
+    // The regression itself: mutation used to succeed SILENTLY (no throw, the
+    // write simply had no effect under sloppy freezing) rather than being
+    // rejected outright. Strict mode (this file is ESM, always strict) turns
+    // an assignment to a frozen object's property into a thrown TypeError, so
+    // asserting the throw is what actually guards against silent mutation.
+    expect(() => {
+      ;(first.options as unknown as Record<string, unknown>).someKey = 'x'
+    }).toThrow(TypeError)
   })
 })
 

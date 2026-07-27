@@ -17,7 +17,7 @@ export type PlatformMeta = z.infer<typeof platformEntrySchema>
 // YouTube 400s a title over 100 chars or carrying `<`/`>`, and a description
 // body over 5000 chars. Those bounds live only in the script prompt, so a model
 // that overshoots by one word would be rejected identically at all three
-// attempts — three burnt slots and a good video retired by the poison cap.
+// attempts — three burnt attempts and a good video retired by the poison cap.
 // Normalizing on the read side keeps a near-miss publishable.
 export const TITLE_MAX_CHARS = 100
 export const DESCRIPTION_MAX_CHARS = 5000
