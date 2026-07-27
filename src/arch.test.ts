@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { DASHBOARD_STAGE_ORDER } from './dashboard/queries/jobs.js'
 import { pipelineStages } from './jobs/pipeline.js'
+import { PUBLISH_PLATFORMS } from './publish/types.js'
 
 /**
  * Repo-wide architecture lints: assertions about how modules may depend on
@@ -22,5 +23,21 @@ describe('dashboard stage order', () => {
     // It was previously inside dashboard/queries/jobs.test.ts, which is
     // otherwise a set of instant in-memory SQL assertions.
     expect([...DASHBOARD_STAGE_ORDER]).toEqual(pipelineStages().map((s) => s.name))
+  })
+})
+
+describe('publish-next platform agnosticism', () => {
+  it('publish-next.ts contains no youtube/instagram string literal in its own source', async () => {
+    // The tick drives platforms generically through the adapter registry
+    // (src/publish/platforms/index.ts); a platform name appearing in its source
+    // means a special case has crept back in.
+    //
+    // Previously lived inside publish-next.test.ts, which is a behavior file.
+    const { readFile } = await import('node:fs/promises')
+    const src = await readFile(new URL('./loop/publish-next.ts', import.meta.url), 'utf8')
+    for (const platform of PUBLISH_PLATFORMS) {
+      expect(src).not.toContain(`'${platform}'`)
+      expect(src).not.toContain(`"${platform}"`)
+    }
   })
 })

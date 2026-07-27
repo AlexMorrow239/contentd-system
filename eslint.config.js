@@ -67,7 +67,11 @@ export default tseslint.config(
     // Mocking with vi.fn()/untyped fixtures inherently produces `any`-typed
     // values and object methods detached from their instance — these rules
     // catch real bugs in application code but are just noise in tests.
-    files: ['**/*.test.ts'],
+    //
+    // Covers the whole test tier, not just the spec files: src/testing/ is the
+    // shared testkit and `_*.fixtures.ts` are per-module fixtures, both of
+    // which build the same stub adapters and untyped rows the specs do.
+    files: ['**/*.test.ts', 'src/testing/**/*.ts', '**/_*.fixtures.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',

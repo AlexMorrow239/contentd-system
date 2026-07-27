@@ -83,6 +83,17 @@ export interface ChannelTomlOptions {
  *     name (see rejectStaleSlots in src/config/channel.ts), so this builder
  *     must never emit one.
  */
+/**
+ * Overrides replace a default with the same `key = ` prefix rather than
+ * appending beside it. TOML rejects a redefined key outright, so a caller
+ * supplying its own `ig_user_id` must not also get the default one.
+ */
+function mergeTomlKeys(defaults: string[], overrides: string[]): string[] {
+  const keyOf = (line: string) => line.split('=')[0].trim()
+  const overridden = new Set(overrides.map(keyOf))
+  return [...defaults.filter((l) => !overridden.has(keyOf(l))), ...overrides]
+}
+
 export function channelTomlLines(opts: ChannelTomlOptions = {}): string[] {
   const lines = [
     `name = ${JSON.stringify(opts.name ?? 'example')}`,
@@ -112,8 +123,8 @@ export function channelTomlLines(opts: ChannelTomlOptions = {}): string[] {
     for (const platform of opts.platforms) {
       lines.push('', `[publish.${platform}]`)
       // instagramOptionsSchema requires ig_user_id; youtube has no required fields.
-      if (platform === 'instagram') lines.push('ig_user_id = "ig-test-user"')
-      lines.push(...(opts.platformOptions?.[platform] ?? []))
+      const defaults = platform === 'instagram' ? ['ig_user_id = "ig-test-user"'] : []
+      lines.push(...mergeTomlKeys(defaults, opts.platformOptions?.[platform] ?? []))
     }
   }
   if (opts.extra?.length) lines.push('', ...opts.extra)

@@ -68,16 +68,23 @@ export function seedStage(
   db: Database,
   jobId: string,
   stage: string,
-  overrides: Partial<{ status: string; error: string | null; finishedAt: string | null }> = {},
+  overrides: Partial<{
+    status: string
+    error: string | null
+    startedAt: string | null
+    finishedAt: string | null
+  }> = {},
 ): void {
   db.prepare(
-    `INSERT INTO job_stages (job_id, stage, status, error, finished_at) VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO job_stages (job_id, stage, status, error, started_at, finished_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(job_id, stage) DO UPDATE SET status = excluded.status`,
   ).run(
     jobId,
     stage,
     overrides.status ?? 'done',
     overrides.error ?? null,
+    overrides.startedAt ?? null,
     overrides.finishedAt ?? null,
   )
 }
