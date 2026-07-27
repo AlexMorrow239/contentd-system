@@ -155,7 +155,7 @@ describe('buildPublishGrids', () => {
     ).run()
     db.prepare(
       'INSERT INTO publishes (job_id, platform, channel, day, seq, status, post_id, url, attempt) ' +
-        "VALUES ('j1','youtube','space','2026-07-25',3,'done','abc','https://y/abc',1)",
+        "VALUES ('j2','youtube','space','2026-07-25',3,'done','abc','https://y/abc',1)",
     ).run()
     const [grid] = buildPublishGrids(db, [channel('space', 2)], 3, now)
     expect(grid?.rows).toEqual([

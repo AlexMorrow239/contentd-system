@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Database } from 'better-sqlite3'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openDb } from './index.js'
 import { migrate } from './migrate.js'
 
@@ -70,6 +70,28 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY (platform, channel)
 );
+`
+
+// The shape a database that has already run every table migration has, but
+// WITHOUT the partial unique index — i.e. any database opened before the index
+// step existed. Frozen here for the same reason as the fixtures above.
+const CURRENT_SHAPE_NO_INDEX = `
+  CREATE TABLE publishes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, platform TEXT NOT NULL,
+    channel TEXT NOT NULL, day TEXT NOT NULL, seq INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
+    post_id TEXT, url TEXT, error TEXT,
+    error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),
+    attempt INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), finished_at TEXT,
+    UNIQUE (channel, platform, day, seq)
+  );
+  CREATE TABLE oauth_tokens (
+    platform TEXT NOT NULL, channel TEXT NOT NULL, token_ciphertext BLOB NOT NULL,
+    scopes TEXT NOT NULL, expires_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (platform, channel)
+  );
 `
 
 function oldShapeDb(): { db: Database; dir: string } {
@@ -186,24 +208,7 @@ describe('migrate', () => {
     cleanupDirs.push(dir)
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
-    db.exec(`
-      CREATE TABLE publishes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, platform TEXT NOT NULL,
-        channel TEXT NOT NULL, day TEXT NOT NULL, seq INTEGER NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
-        post_id TEXT, url TEXT, error TEXT,
-        error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),
-        attempt INTEGER NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), finished_at TEXT,
-        UNIQUE (channel, platform, day, seq)
-      );
-      CREATE TABLE oauth_tokens (
-        platform TEXT NOT NULL, channel TEXT NOT NULL, token_ciphertext BLOB NOT NULL,
-        scopes TEXT NOT NULL, expires_at TEXT,
-        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-        PRIMARY KEY (platform, channel)
-      );
-    `)
+    db.exec(CURRENT_SHAPE_NO_INDEX)
     expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
   })
 })
@@ -267,5 +272,127 @@ describe('migrate — slot to seq', () => {
       .get()
     expect(found).toBeUndefined()
     db.close()
+  })
+})
+
+function hasLiveIndex(db: Database): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='ux_publishes_live'")
+    .get()
+  return row !== undefined
+}
+
+function insertPublish(db: Database, jobId: string, seq: number, status: string): void {
+  db.prepare(
+    'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
+      "VALUES (?, 'youtube', 'chan-a', '2026-07-22', ?, ?, 1)",
+  ).run(jobId, seq, status)
+}
+
+describe('migrate — one live publish row per (job, platform)', () => {
+  it('creates the index on a fresh database', () => {
+    const db = openDb(':memory:')
+    expect(hasLiveIndex(db)).toBe(true)
+    db.close()
+  })
+
+  it('rejects a second live row for the same (job, platform)', () => {
+    const db = openDb(':memory:')
+    insertPublish(db, 'job-1', 1, 'done')
+    expect(() => insertPublish(db, 'job-1', 2, 'claimed')).toThrow(/UNIQUE/)
+    db.close()
+  })
+
+  it('still admits a claim once the prior attempt has failed', () => {
+    const db = openDb(':memory:')
+    insertPublish(db, 'job-1', 1, 'failed')
+    expect(() => insertPublish(db, 'job-1', 2, 'claimed')).not.toThrow()
+    db.close()
+  })
+
+  it('adds the index to an existing database with no violating rows', () => {
+    const dbPath = oldShapeFile(
+      CURRENT_SHAPE_NO_INDEX,
+      'INSERT INTO publishes (id, job_id, platform, channel, day, seq, status, attempt) VALUES ' +
+        "(1,'job-a','youtube','chan-a','2026-07-22',1,'done',1)," +
+        "(2,'job-a','instagram','chan-a','2026-07-22',1,'done',1)," +
+        "(3,'job-b','youtube','chan-a','2026-07-22',2,'failed',1)," +
+        "(4,'job-b','youtube','chan-a','2026-07-22',3,'claimed',2)",
+    )
+    const db = openDb(dbPath)
+    expect(hasLiveIndex(db)).toBe(true)
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 4 })
+    db.close()
+  })
+
+  it('skips the index and warns when a violating row already exists', () => {
+    const dbPath = oldShapeFile(
+      CURRENT_SHAPE_NO_INDEX,
+      'INSERT INTO publishes (id, job_id, platform, channel, day, seq, status, attempt) VALUES ' +
+        "(1,'job-a','youtube','chan-a','2026-07-22',1,'interrupted',1)," +
+        "(2,'job-a','youtube','chan-a','2026-07-23',1,'done',2)",
+    )
+    const raw = new BetterSqlite3(dbPath)
+    raw.pragma('foreign_keys = OFF')
+    raw.exec(SCHEMA_SQL)
+    const warnings: string[] = []
+
+    expect(() => migrate(raw, SCHEMA_SQL, (m) => warnings.push(m))).not.toThrow()
+
+    expect(hasLiveIndex(raw)).toBe(false)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain('job-a')
+    expect(warnings[0]).toContain('youtube')
+    // Names the command an operator resolves it with, not just the symptom.
+    expect(warnings[0]).toContain('publish mark-done')
+    raw.close()
+  })
+
+  it('creates the index on a later open once the violation is resolved', () => {
+    const dbPath = oldShapeFile(
+      CURRENT_SHAPE_NO_INDEX,
+      'INSERT INTO publishes (id, job_id, platform, channel, day, seq, status, attempt) VALUES ' +
+        "(1,'job-a','youtube','chan-a','2026-07-22',1,'interrupted',1)," +
+        "(2,'job-a','youtube','chan-a','2026-07-23',1,'done',2)",
+    )
+    // openDb's own warn sink, silenced here: the point of this test is that a
+    // violating database still OPENS, and openDb is the path that proves it.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const first = openDb(dbPath)
+    expect(hasLiveIndex(first)).toBe(false)
+    expect(warn).toHaveBeenCalledOnce()
+    first.prepare("UPDATE publishes SET status = 'failed' WHERE id = 1").run()
+    first.close()
+    warn.mockRestore()
+
+    const second = openDb(dbPath)
+    expect(hasLiveIndex(second)).toBe(true)
+    second.close()
+  })
+
+  it('creates the index after a slot-era table rebuild', () => {
+    // The rebuild replaces `publishes` with a new table, and a new table
+    // carries no indexes — so the index step has to run after it, not before.
+    const dbPath = oldShapeFile(
+      OLD_SCHEMA_WITH_SLOT,
+      'INSERT INTO publishes (id, job_id, platform, channel, day, slot, status, attempt) VALUES ' +
+        "(1,'job-a','youtube','chan-a','2026-07-22','10:00','done',1)",
+    )
+    const db = openDb(dbPath)
+    expect(hasLiveIndex(db)).toBe(true)
+    db.close()
+  })
+
+  it('is a no-op on a second open', () => {
+    const dbPath = oldShapeFile(CURRENT_SHAPE_NO_INDEX)
+    const first = openDb(dbPath)
+    first.close()
+    const warnings: string[] = []
+    const second = new BetterSqlite3(dbPath)
+    second.exec(SCHEMA_SQL)
+    expect(() => migrate(second, SCHEMA_SQL, (m) => warnings.push(m))).not.toThrow()
+    expect(warnings).toEqual([])
+    expect(hasLiveIndex(second)).toBe(true)
+    second.close()
   })
 })

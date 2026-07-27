@@ -194,16 +194,20 @@ describe('claimPublish seq', () => {
     // Rows at seq 1 and 3 (seq 2 never landed — a rejected/retired attempt).
     // COUNT(*) + 1 would recompute 3, collide with the UNIQUE constraint, and
     // report claim-conflict for every claim the rest of the day. MAX(seq) + 1
-    // lands on 4, the first genuinely free ordinal.
+    // lands on 4, the first genuinely free ordinal. The gap is a property of
+    // the (channel, platform, day) partition, so the three rows are three
+    // different videos — one job cannot hold two live rows for a platform.
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-a' })
+    seedJob(db, 'job-3', { channel: 'chan-a' })
     db.prepare(
       'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) VALUES ' +
         "('job-1','youtube','chan-a','2026-07-22',1,'failed',1)," +
-        "('job-1','youtube','chan-a','2026-07-22',3,'done',2)",
+        "('job-2','youtube','chan-a','2026-07-22',3,'done',1)",
     ).run()
     const claim = claimPublish(db, {
-      jobId: 'job-1',
+      jobId: 'job-3',
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-22',
@@ -222,9 +226,12 @@ describe('claimPublish seq', () => {
     // collides with a row that genuinely already holds that seq.
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-a' })
+    // A DIFFERENT job holds seq 1, so the collision below is the seq UNIQUE
+    // this test is about and not ux_publishes_live's (job, platform) rule.
     db.prepare(
       'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) VALUES ' +
-        "('job-1','youtube','chan-a','2026-07-22',1,'done',1)",
+        "('job-2','youtube','chan-a','2026-07-22',1,'done',1)",
     ).run()
     const originalPrepare = db.prepare.bind(db)
     const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
@@ -250,6 +257,34 @@ describe('claimPublish seq', () => {
     } finally {
       prepareSpy.mockRestore()
     }
+    db.close()
+  })
+
+  it('refuses a second live claim for the same (job, platform)', () => {
+    // The database-level double-publish backstop (ux_publishes_live, added in
+    // db/migrate.ts). Two lease holders racing each other both read the video
+    // as open in channelVideoCandidates — outside this transaction — so the
+    // second one only stops here, at the INSERT. It maps to the tick's
+    // existing claim-conflict outcome, so no upload is attempted.
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    const first = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    expect(first).not.toBeNull()
+
+    const second = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+
+    expect(second).toBeNull()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 1 })
     db.close()
   })
 

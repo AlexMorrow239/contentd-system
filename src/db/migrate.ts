@@ -65,6 +65,76 @@ function rebuildPublishes(db: Database, schemaSql: string): void {
   }).immediate()
 }
 
+// The statuses that mean "this video has gone, or is going, to this platform"
+// — exactly channelVideoCandidates' blocking set (publish/publishes.ts). One
+// text so the index and that read cannot drift apart.
+const LIVE_PUBLISH_STATUSES = "'claimed','done','interrupted'"
+
+const LIVE_PUBLISH_INDEX = 'ux_publishes_live'
+
+function liveIndexExists(db: Database): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get(LIVE_PUBLISH_INDEX)
+  return row !== undefined
+}
+
+/**
+ * The (job, platform) pairs that already hold more than one live row — i.e.
+ * the rows CREATE UNIQUE INDEX would reject. Empty on every database whose
+ * history is consistent, which is every database that has not actually
+ * double-published.
+ */
+function liveDuplicates(db: Database): { job_id: string; platform: string }[] {
+  return db
+    .prepare(
+      `SELECT job_id, platform FROM publishes WHERE status IN (${LIVE_PUBLISH_STATUSES})
+       GROUP BY job_id, platform HAVING COUNT(*) > 1 ORDER BY job_id, platform`,
+    )
+    .all() as { job_id: string; platform: string }[]
+}
+
+/**
+ * The database-level double-publish backstop (design spec §7): at most one
+ * live publishes row per (job_id, platform), which is the same rule
+ * `channelVideoCandidates` applies when it decides a platform is blocked. With
+ * it, a second lease holder racing the first fails at the INSERT, and
+ * claimPublish's existing SQLITE_CONSTRAINT_UNIQUE → null path reports
+ * `claim-conflict` before any upload happens.
+ *
+ * PROBED, not created blind, and deliberately absent from schema.sql. openDb
+ * execs schema.sql and calls this on EVERY command, so a violating historical
+ * row would make an unguarded CREATE UNIQUE INDEX throw at startup and wedge
+ * the whole CLI — including `publish mark-done` and `publish retry`, the very
+ * commands that resolve the violation. So: violations are reported and the
+ * index is skipped, leaving behavior exactly as it was before this step
+ * existed (lease + blocking read), and the next open after an operator clears
+ * them creates it. A skip is a degraded guarantee; a wedge is an outage.
+ *
+ * Both resolution paths — `retryInterrupted` and `markPublishFailed` — move a
+ * row to 'failed', which is outside the predicate, so the index never blocks a
+ * legitimate retry.
+ */
+function ensureLivePublishIndex(db: Database, onWarn: (message: string) => void): void {
+  if (liveIndexExists(db)) return
+  const dupes = liveDuplicates(db)
+  if (dupes.length > 0) {
+    const pairs = dupes.map((d) => `${d.job_id}/${d.platform}`).join(', ')
+    onWarn(
+      `publishes: skipping unique index ${LIVE_PUBLISH_INDEX} — ${dupes.length} (job, platform) ` +
+        `pair(s) hold more than one live (${LIVE_PUBLISH_STATUSES}) row: ${pairs}. ` +
+        'Resolve each with `brainrot publish mark-done <jobId>` or `brainrot publish retry ' +
+        "<jobId>` (both move the stale row to 'failed'), then reopen to create the index. " +
+        'Until then the publish lease is the only double-publish guard.',
+    )
+    return
+  }
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS ${LIVE_PUBLISH_INDEX} ON publishes (job_id, platform) ` +
+      `WHERE status IN (${LIVE_PUBLISH_STATUSES})`,
+  )
+}
+
 /**
  * Idempotent post-schema migration for changes CREATE TABLE IF NOT EXISTS
  * cannot express against an existing database: SQLite cannot ALTER a CHECK
@@ -79,12 +149,22 @@ function rebuildPublishes(db: Database, schemaSql: string): void {
  * hand-written copy here would silently drift from it the first time a
  * column is added — producing differently-shaped tables on migrated versus
  * freshly-created databases.
+ *
+ * `onWarn` is where a step that declined to apply itself reports why. It goes
+ * to stderr (console.warn), never stdout: every loop tick and CLI command
+ * prints a single JSON line, and a warning must not land in it.
  */
-export function migrate(db: Database, schemaSql: string): void {
+export function migrate(
+  db: Database,
+  schemaSql: string,
+  onWarn: (message: string) => void = (m) => console.warn(m),
+): void {
   if (!hasColumn(db, 'oauth_tokens', 'expires_at')) {
     db.exec('ALTER TABLE oauth_tokens ADD COLUMN expires_at TEXT')
   }
   if (hasColumn(db, 'publishes', 'slot') || publishesHasOldCheck(db)) {
     rebuildPublishes(db, schemaSql)
   }
+  // After the rebuild: a rebuilt table is a new table with no indexes on it.
+  ensureLivePublishIndex(db, onWarn)
 }

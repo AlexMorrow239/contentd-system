@@ -234,11 +234,21 @@ schema exec (and `openDbReadonly` never calls, since it must stay
 write-free). This is deliberately not a migration framework: there is no
 version ledger and no ordered list of numbered steps. Each step instead
 **probes for its own precondition** (`PRAGMA table_info` for an added column,
-a `sqlite_master.sql` substring for a CHECK that cannot be ALTERed) and is a
-no-op when already applied, so it is idempotent and self-healing on a fresh
-database. A step that has to rebuild a table renames the old one aside and
-replays `schema.sql` rather than carrying its own copy of the DDL — schema.sql
-stays the single source of truth for table shape.
+a `sqlite_master.sql` substring for a CHECK that cannot be ALTERed, a
+duplicate-row query for a unique index) and is a no-op when already applied,
+so it is idempotent and self-healing on a fresh database. A step that has to
+rebuild a table renames the old one aside and replays `schema.sql` rather than
+carrying its own copy of the DDL — schema.sql stays the single source of truth
+for table shape.
+
+The one construct schema.sql deliberately does **not** carry is
+`ux_publishes_live`, the partial unique index enforcing one live publishes row
+per (job, platform). Because `openDb` execs schema.sql on every command, DDL
+that can fail on existing _data_ (as `CREATE UNIQUE INDEX` can) would wedge the
+entire CLI rather than one command. It lives in migrate.ts, which probes for
+violating rows first and skips-with-a-warning instead of throwing; schema.sql
+carries the statement as a comment so it still reads as the whole shape. Any
+future data-dependent DDL belongs there for the same reason.
 
 ### Test-only build
 

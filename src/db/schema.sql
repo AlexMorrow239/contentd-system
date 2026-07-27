@@ -60,8 +60,19 @@ CREATE TABLE IF NOT EXISTS publishes (
   attempt INTEGER NOT NULL,   -- 1-based ordinal per (job_id, platform)
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT,
+  -- Bookkeeping only: seq is derived from existing rows, so two racing claims
+  -- get distinct ordinals rather than colliding. The double-publish backstop is
+  -- the partial index below.
   UNIQUE (channel, platform, day, seq)
 );
+-- At most one live (claimed/done/interrupted) row per (job_id, platform) — the
+-- database-level double-publish guard. Created by migrate.ts, NOT here, and
+-- that placement is load-bearing: openDb execs this file on every command, so a
+-- CREATE UNIQUE INDEX here would throw on any database holding a pre-existing
+-- violation and wedge the whole CLI. migrate.ts probes first and reports
+-- instead. See ensureLivePublishIndex there for the full rationale.
+--   CREATE UNIQUE INDEX ux_publishes_live ON publishes (job_id, platform)
+--     WHERE status IN ('claimed','done','interrupted');
 CREATE TABLE IF NOT EXISTS oauth_tokens (
   platform TEXT NOT NULL,
   channel TEXT NOT NULL,

@@ -46,20 +46,26 @@ export const MAX_PUBLISH_ATTEMPTS = 3
  * the day's ordinals distinct — and NOT a double-publish guard. `seq` is
  * derived from the rows that already exist, so two claims for the same (job,
  * platform, day) are serialized by this `.immediate()` transaction and simply
- * receive different ordinals (1 and 2); they never collide. (Under the old
- * design `slot` was CONFIG-derived, so two racing ticks computed the same
+ * receive different ordinals (1 and 2); they never collide on it. (Under the
+ * old design `slot` was CONFIG-derived, so two racing ticks computed the same
  * clock time and the second genuinely conflicted. That property left with the
- * slots.) A conflict is therefore only reachable when a second writer's INSERT
- * lands between this transaction's MAX(seq) read and its own INSERT, and the
- * SqliteError from the INSERT (and only the INSERT) is reported as null rather
- * than propagated.
+ * slots.) A seq conflict is therefore only reachable when a second writer's
+ * INSERT lands between this transaction's MAX(seq) read and its own INSERT.
  *
- * **The publish lease is the sole guard against a double-publish.** Nothing at
- * the database level backstops it: `channelVideoCandidates`' blocking read —
- * the thing that knows a platform already has a done/claimed/interrupted row —
- * runs in the tick, outside this transaction, so two lease holders reading it
- * concurrently would both see the video as open. See §7 of the design spec for
- * the partial-unique-index follow-up that would make this a real backstop.
+ * The double-publish guard is the OTHER constraint this INSERT is subject to:
+ * `ux_publishes_live`, a partial unique index on (job_id, platform) over the
+ * live statuses — the same rule `channelVideoCandidates` applies when it
+ * decides a platform is blocked. That read runs in the tick, outside this
+ * transaction, so two concurrent lease holders would both see the video as
+ * open; the index is what stops the second one here, before any upload. It is
+ * created by `db/migrate.ts` (`ensureLivePublishIndex`), which SKIPS creation
+ * on a database that already holds a violating row rather than wedging every
+ * command — so treat it as defense in depth behind the publish lease, not as a
+ * guarantee the lease can be dropped.
+ *
+ * Either constraint's SqliteError from the INSERT (and only the INSERT) is
+ * reported as null rather than propagated, which the tick renders as its
+ * existing `claim-conflict` outcome.
  *
  * `.immediate()` (not a deferred BEGIN): the two reads and the INSERT must
  * share one write-locked snapshot, or a writer committing in between
