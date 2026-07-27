@@ -198,7 +198,7 @@ export interface PublishRow {
   platform: string
   channel: string
   day: string
-  slot: string
+  seq: number
   status: string
   postId: string | null
   url: string | null
@@ -213,12 +213,15 @@ export function seedPublish(
   db: Database,
   jobId: string,
   overrides: Partial<PublishRow> = {},
-): void {
+): number {
   const row = {
     platform: 'youtube',
     channel: 'chan-a',
-    day: '2026-07-25',
-    slot: '09:00',
+    // The suite's canonical fixture day. Tests that assert on `day` (quota
+    // windows, listPublishes ranges) pass it explicitly; this default only has
+    // to be stable and in the past.
+    day: '2026-07-20',
+    seq: 1,
     status: 'done',
     postId: null,
     url: null,
@@ -234,7 +237,7 @@ export function seedPublish(
     'platform',
     'channel',
     'day',
-    'slot',
+    'seq',
     'status',
     'post_id',
     'url',
@@ -248,7 +251,7 @@ export function seedPublish(
     row.platform,
     row.channel,
     row.day,
-    row.slot,
+    row.seq,
     row.status,
     row.postId,
     row.url,
@@ -261,9 +264,12 @@ export function seedPublish(
     cols.push('created_at')
     vals.push(row.createdAt)
   }
-  db.prepare(
-    `INSERT INTO publishes (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
-  ).run(...vals)
+  const res = db
+    .prepare(
+      `INSERT INTO publishes (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    )
+    .run(...vals)
+  return Number(res.lastInsertRowid)
 }
 
 export function seedCost(

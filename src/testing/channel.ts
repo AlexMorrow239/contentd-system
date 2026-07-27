@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
+import type { Platform } from '../publish/types.js'
 import { tmpDir } from './tmp.js'
 
 /**
@@ -62,30 +63,35 @@ export interface ChannelTomlOptions {
   bgDir?: string | string[]
   bgmDir?: string
   /** Platforms to emit a `[publish.<platform>]` sub-table for. */
-  platforms?: ('youtube' | 'instagram')[]
-  slots?: string[]
-  timezone?: string
+  platforms?: Platform[]
+  /** Lines appended inside the last `[publish.<platform>]` sub-table. */
+  platformOptions?: Partial<Record<Platform, string[]>>
   /** Extra lines appended verbatim, for one-off keys not worth a parameter. */
   extra?: string[]
 }
 
 /**
- * The TOML text for one channel.
+ * The TOML text for one channel. Always a *loadable* config — tests that want
+ * an invalid one build it from `channelTomlLines()` and edit the array.
  *
- * Key ordering is load-bearing, not cosmetic: `bg_dir`/`bgm_dir` are top-level
- * keys, so they must precede every `[section]` header — otherwise TOML nests
- * them under the last-opened table and the config silently loses them.
+ * Two ordering rules are load-bearing, not cosmetic:
+ *   - `bg_dir`/`bgm_dir` are top-level keys, so they must precede every
+ *     `[section]` header, else TOML nests them under the last-opened table and
+ *     the values silently vanish.
+ *   - `[publish]` carries no keys of its own any more; `slots` was removed in
+ *     favor of `videos_per_day` and `loadChannelConfig` now *rejects* it by
+ *     name (see rejectStaleSlots in src/config/channel.ts), so this builder
+ *     must never emit one.
  */
-export function channelToml(opts: ChannelTomlOptions = {}): string {
+export function channelTomlLines(opts: ChannelTomlOptions = {}): string[] {
   const lines = [
     `name = ${JSON.stringify(opts.name ?? 'example')}`,
     `niche = ${JSON.stringify(opts.niche ?? ['space facts', 'astronomy'])}`,
     `script_model = ${JSON.stringify(opts.scriptModel ?? 'claude-sonnet-5')}`,
     `videos_per_day = ${opts.videosPerDay ?? 2}`,
-  ]
-  if (opts.bgDir !== undefined) lines.push(`bg_dir = ${JSON.stringify(opts.bgDir)}`)
-  if (opts.bgmDir !== undefined) lines.push(`bgm_dir = ${JSON.stringify(opts.bgmDir)}`)
-  lines.push(
+    // Required by the schema, so defaulted rather than conditional.
+    `bg_dir = ${JSON.stringify(opts.bgDir ?? 'assets/bg')}`,
+    `bgm_dir = ${JSON.stringify(opts.bgmDir ?? 'assets/bgm')}`,
     '',
     '[voice]',
     'volume = "af_heart"',
@@ -100,20 +106,22 @@ export function channelToml(opts: ChannelTomlOptions = {}): string {
     '[budget]',
     'per_video_usd = 8.0',
     'per_day_usd = 20.0',
-  )
+  ]
   if (opts.platforms?.length) {
     lines.push('', '[publish]')
-    lines.push(`slots = ${JSON.stringify(opts.slots ?? ['09:00'])}`)
-    if (opts.timezone) lines.push(`timezone = ${JSON.stringify(opts.timezone)}`)
     for (const platform of opts.platforms) {
       lines.push('', `[publish.${platform}]`)
       // instagramOptionsSchema requires ig_user_id; youtube has no required fields.
       if (platform === 'instagram') lines.push('ig_user_id = "ig-test-user"')
+      lines.push(...(opts.platformOptions?.[platform] ?? []))
     }
   }
   if (opts.extra?.length) lines.push('', ...opts.extra)
-  lines.push('')
-  return lines.join('\n')
+  return lines
+}
+
+export function channelToml(opts: ChannelTomlOptions = {}): string {
+  return channelTomlLines(opts).join('\n') + '\n'
 }
 
 /** Writes one channel TOML into a fresh temp dir and returns its path. */
@@ -131,10 +139,11 @@ export function writeChannelToml(opts: ChannelTomlOptions = {}): string {
  * field, so passing explicit filenames is what lets a test exercise the
  * mismatch case deliberately.
  */
-export function writeChannelsDir(files: Record<string, string>): string {
+export function writeChannelsDir(files: Record<string, string | string[]>): string {
   const dir = tmpDir('brainrot-channels-')
   mkdirSync(dir, { recursive: true })
-  for (const [filename, contents] of Object.entries(files)) {
+  for (const [filename, body] of Object.entries(files)) {
+    const contents = Array.isArray(body) ? body.join('\n') : body
     writeFileSync(path.join(dir, filename), contents)
   }
   return dir

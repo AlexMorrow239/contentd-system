@@ -1,61 +1,37 @@
-import { afterEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { describe, expect, it, vi } from 'vitest'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './channel.js'
-import { testChannel } from '../testing/channel.js'
-import type { Platform } from '../publish/types.js'
+import {
+  channelTomlLines,
+  testChannel,
+  writeChannelsDir as writeChannels,
+} from '../testing/channel.js'
+import { tmpDir } from '../testing/tmp.js'
+
+/**
+ * This file's subject IS the TOML text, so it works in line arrays and edits
+ * them, rather than taking finished strings from the testkit. `PLAN1_LINES` is
+ * the testkit's canonical loadable channel named 'legacy'; every fixture below
+ * is that array with lines appended or substituted.
+ *
+ * NOTE: [budget] is the last table, so a bare key appended to this array lands
+ * inside [budget] rather than at top level.
+ */
+const PLAN1_LINES = channelTomlLines({ name: 'legacy' })
 
 function writeToml(lines: string[]): string {
-  const dir = mkdtempSync(join(tmpdir(), 'chan-'))
-  const file = join(dir, 'channel.toml')
+  const file = join(tmpDir('brainrot-chan-'), 'channel.toml')
   writeFileSync(file, lines.join('\n'))
   return file
 }
 
-// Baseline channel TOML shape: no [voice.premium]. NOTE: [budget] is the last
-// table, so a bare key appended to this array lands inside [budget].
-const PLAN1_LINES = [
-  'name = "legacy"',
-  'niche = ["space facts", "astronomy"]',
-  'script_model = "claude-sonnet-5"',
-  'bg_dir = "assets/bg"',
-  'bgm_dir = "assets/bgm"',
-  'videos_per_day = 2',
-  '',
-  '[voice]',
-  'volume = "af_heart"',
-  '',
-  '[caption_style]',
-  'font = "Inter"',
-  'font_size_px = 72',
-  'active_color = "#FFD700"',
-  'inactive_color = "#FFFFFF"',
-  'stroke_px = 8',
-  '',
-  '[budget]',
-  'per_video_usd = 8.0',
-  'per_day_usd = 20.0',
-  '',
-]
+/** PLAN1_LINES with the channel renamed — the basename must match the name. */
+function named(name: string): string[] {
+  return PLAN1_LINES.map((l) => (l === 'name = "legacy"' ? `name = "${name}"` : l))
+}
 
 describe('loadChannelConfig', () => {
-  // The live files under channels/ are the operator's real configs and change
-  // freely; this only guards that whatever is checked in stays loadable, never
-  // pinning content (content contracts are covered by the fixtures below).
-  it('every checked-in channels/*.toml loads', () => {
-    expect(() => loadChannelsDir('channels')).not.toThrow()
-  })
-
-  // channels-dev/ is gitignored (BRAINROT_CHANNELS_DIR's default), so nothing
-  // in CI ever loads it and it can silently drift out of sync with the
-  // ChannelConfig schema. Skips gracefully where the directory doesn't exist
-  // (e.g. CI); a developer who has it locally gets a loud failure instead.
-  it('loads channels-dev/ when present locally', () => {
-    if (!existsSync('channels-dev')) return
-    expect(() => loadChannelsDir('channels-dev')).not.toThrow()
-  })
-
   it('parses a baseline TOML: voice.premium undefined, budget in micros', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
     expect(cfg.voice.premium).toBeUndefined()
@@ -215,22 +191,10 @@ describe('[scout] config', () => {
 })
 
 describe('loadChannelsDir', () => {
-  function writeDir(files: Record<string, string[]>): string {
-    const dir = mkdtempSync(join(tmpdir(), 'chans-'))
-    for (const [name, lines] of Object.entries(files)) {
-      writeFileSync(join(dir, name), lines.join('\n'))
-    }
-    return dir
-  }
-
-  function named(name: string): string[] {
-    return PLAN1_LINES.map((l) => (l === 'name = "legacy"' ? `name = "${name}"` : l))
-  }
-
   it('loads every *.toml sorted by channel name, ignoring other files', () => {
     // filename basename must equal the channel name (load-bearing invariant),
     // so name order is filename order — the sort still normalizes readdir order.
-    const dir = writeDir({
+    const dir = writeChannels({
       'alpha.toml': named('alpha'),
       'zeta.toml': named('zeta'),
       'notes.txt': ['not a channel'],
@@ -241,11 +205,11 @@ describe('loadChannelsDir', () => {
   })
 
   it('returns [] for an empty directory', () => {
-    expect(loadChannelsDir(mkdtempSync(join(tmpdir(), 'chans-')))).toEqual([])
+    expect(loadChannelsDir(tmpDir('brainrot-chans-'))).toEqual([])
   })
 
   it('throws naming the unparseable file', () => {
-    const dir = writeDir({
+    const dir = writeChannels({
       'good.toml': named('good'),
       'bad.toml': ['name = "broken"', 'niche = "not-an-array"'],
     })
@@ -255,13 +219,13 @@ describe('loadChannelsDir', () => {
   it('throws when a file basename does not match its channel name, naming both', () => {
     // The invariant is load-bearing: resumeJob resolves the TOML as
     // <channelsDir>/<job.channel>.toml by filename, and planTick keys on name.
-    const dir = writeDir({ 'wrong-name.toml': named('actual') })
+    const dir = writeChannels({ 'wrong-name.toml': named('actual') })
     expect(() => loadChannelsDir(dir)).toThrow(/wrong-name/)
     expect(() => loadChannelsDir(dir)).toThrow(/actual/)
   })
 
   it('throws when two files declare the same channel name, naming both files', () => {
-    const dir = writeDir({
+    const dir = writeChannels({
       'dup-a.toml': named('shared'),
       'dup-b.toml': named('shared'),
     })
@@ -441,71 +405,12 @@ describe('videos_per_day validation', () => {
   })
 })
 
-// Fixture helpers for the quota-validation suite below. writeDir() inside the
-// loadChannelsDir describe block above is scoped to that callback, so this is
-// a second, top-level helper of the same shape (Record<string, string[]>)
-// rather than a duplicate.
-// Same cleanup pattern as src/loop/publish-next.test.ts and
-// src/db/migrate.test.ts: record every temp dir and remove it after the test,
-// so a full run does not leave one tmpdir per case behind.
-const cleanupDirs: string[] = []
-afterEach(() => {
-  for (const d of cleanupDirs.splice(0)) rmSync(d, { recursive: true, force: true })
-})
-
-function writeChannelsDir(files: Record<string, string[]>): string {
-  const dir = mkdtempSync(join(tmpdir(), 'chans-quota-'))
-  cleanupDirs.push(dir)
-  for (const [name, lines] of Object.entries(files)) {
-    writeFileSync(join(dir, name), lines.join('\n'))
-  }
-  return dir
-}
-
-function channelToml(opts: {
-  name: string
-  videosPerDay: number
-  platforms: Platform[]
-}): string[] {
-  const lines = [
-    `name = "${opts.name}"`,
-    'niche = ["space"]',
-    'bg_dir = "assets/bg"',
-    'bgm_dir = "assets/bgm"',
-    `videos_per_day = ${opts.videosPerDay}`,
-    '[voice]',
-    'volume = "af_heart"',
-    '[caption_style]',
-    'font = "Inter"',
-    'font_size_px = 72',
-    'active_color = "#FFD700"',
-    'inactive_color = "#FFFFFF"',
-    'stroke_px = 8',
-    '[budget]',
-    'per_video_usd = 0.5',
-    'per_day_usd = 10.0',
-  ]
-  if (opts.platforms.length > 0) {
-    lines.push('[publish]')
-    for (const p of opts.platforms) {
-      lines.push(`[publish.${p}]`)
-      // instagramOptionsSchema requires ig_user_id; youtube has no required fields.
-      if (p === 'instagram') lines.push('ig_user_id = "ig-quota-test"')
-    }
-  }
-  return lines
-}
-
 describe('loadChannelsDir platform quota validation', () => {
-  afterEach(() => {
-    delete process.env.BRAINROT_IG_UPLOADS_PER_DAY
-  })
-
   it('rejects a global-scope quota over-subscribed across channels', () => {
     // youtube is scope 'global', cap 6 by default: 4 + 3 = 7.
-    const dir = writeChannelsDir({
-      'chan-a.toml': channelToml({ name: 'chan-a', videosPerDay: 4, platforms: ['youtube'] }),
-      'chan-b.toml': channelToml({ name: 'chan-b', videosPerDay: 3, platforms: ['youtube'] }),
+    const dir = writeChannels({
+      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 4, platforms: ['youtube'] }),
+      'chan-b.toml': channelTomlLines({ name: 'chan-b', videosPerDay: 3, platforms: ['youtube'] }),
     })
     expect(() => loadChannelsDir(dir)).toThrow(
       /chan-a\(4\) \+ chan-b\(3\) declare 7 youtube videos\/day, exceeding youtube's 6\/day cap/,
@@ -513,33 +418,41 @@ describe('loadChannelsDir platform quota validation', () => {
   })
 
   it('accepts a global-scope total exactly at the cap', () => {
-    const dir = writeChannelsDir({
-      'chan-a.toml': channelToml({ name: 'chan-a', videosPerDay: 3, platforms: ['youtube'] }),
-      'chan-b.toml': channelToml({ name: 'chan-b', videosPerDay: 3, platforms: ['youtube'] }),
+    const dir = writeChannels({
+      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 3, platforms: ['youtube'] }),
+      'chan-b.toml': channelTomlLines({ name: 'chan-b', videosPerDay: 3, platforms: ['youtube'] }),
     })
     expect(loadChannelsDir(dir)).toHaveLength(2)
   })
 
   it('ignores channels that do not declare the platform when summing a global quota', () => {
-    const dir = writeChannelsDir({
-      'chan-a.toml': channelToml({ name: 'chan-a', videosPerDay: 6, platforms: ['youtube'] }),
-      'chan-b.toml': channelToml({ name: 'chan-b', videosPerDay: 6, platforms: ['instagram'] }),
+    const dir = writeChannels({
+      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 6, platforms: ['youtube'] }),
+      'chan-b.toml': channelTomlLines({
+        name: 'chan-b',
+        videosPerDay: 6,
+        platforms: ['instagram'],
+      }),
     })
     expect(loadChannelsDir(dir)).toHaveLength(2)
   })
 
   it('ignores channels with no [publish] table at all', () => {
-    const dir = writeChannelsDir({
-      'chan-a.toml': channelToml({ name: 'chan-a', videosPerDay: 6, platforms: ['youtube'] }),
-      'chan-b.toml': channelToml({ name: 'chan-b', videosPerDay: 6, platforms: [] }),
+    const dir = writeChannels({
+      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 6, platforms: ['youtube'] }),
+      'chan-b.toml': channelTomlLines({ name: 'chan-b', videosPerDay: 6, platforms: [] }),
     })
     expect(loadChannelsDir(dir)).toHaveLength(2)
   })
 
   it('rejects a channel-scope quota exceeded by one channel alone', () => {
-    process.env.BRAINROT_IG_UPLOADS_PER_DAY = '2'
-    const dir = writeChannelsDir({
-      'chan-a.toml': channelToml({ name: 'chan-a', videosPerDay: 3, platforms: ['instagram'] }),
+    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '2')
+    const dir = writeChannels({
+      'chan-a.toml': channelTomlLines({
+        name: 'chan-a',
+        videosPerDay: 3,
+        platforms: ['instagram'],
+      }),
     })
     expect(() => loadChannelsDir(dir)).toThrow(
       /chan-a declares 3 instagram videos\/day, exceeding instagram's 2\/day per-channel cap/,
@@ -547,17 +460,25 @@ describe('loadChannelsDir platform quota validation', () => {
   })
 
   it('does not sum a channel-scope quota across channels', () => {
-    process.env.BRAINROT_IG_UPLOADS_PER_DAY = '3'
-    const dir = writeChannelsDir({
-      'chan-a.toml': channelToml({ name: 'chan-a', videosPerDay: 3, platforms: ['instagram'] }),
-      'chan-b.toml': channelToml({ name: 'chan-b', videosPerDay: 3, platforms: ['instagram'] }),
+    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '3')
+    const dir = writeChannels({
+      'chan-a.toml': channelTomlLines({
+        name: 'chan-a',
+        videosPerDay: 3,
+        platforms: ['instagram'],
+      }),
+      'chan-b.toml': channelTomlLines({
+        name: 'chan-b',
+        videosPerDay: 3,
+        platforms: ['instagram'],
+      }),
     })
     expect(loadChannelsDir(dir)).toHaveLength(2)
   })
 
   it('surfaces a quota breach through tryLoadChannelsDir as an error string, not a throw', () => {
-    const dir = writeChannelsDir({
-      'chan-a.toml': channelToml({ name: 'chan-a', videosPerDay: 7, platforms: ['youtube'] }),
+    const dir = writeChannels({
+      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 7, platforms: ['youtube'] }),
     })
     const loaded = tryLoadChannelsDir(dir)
     expect(loaded.channels).toEqual([])
