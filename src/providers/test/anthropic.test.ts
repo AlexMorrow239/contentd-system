@@ -6,6 +6,7 @@ import type Anthropic from '@anthropic-ai/sdk'
 import { structuredCompletion, visionJudgment } from '../anthropic.js'
 import { tmpDir } from '../../testing/tmp.js'
 import { errorCostUsdMicros } from '../errors.js'
+import { classify, errorMessage } from '../../errors.js'
 
 const schema = z.object({ answer: z.string(), n: z.number() })
 
@@ -241,7 +242,7 @@ describe('visionJudgment', () => {
     expect(create).not.toHaveBeenCalled()
   })
 
-  it('throws on an unsupported image extension without calling the API', async () => {
+  it('throws on an unsupported image extension without calling the API, classified as provider/invalid', async () => {
     const { dir } = writeImages()
     const gifPath = path.join(dir, 'frame.gif')
     writeFileSync(gifPath, Buffer.from([0x47, 0x49, 0x46]))
@@ -249,16 +250,16 @@ describe('visionJudgment', () => {
       content: [],
       usage: { input_tokens: 1, output_tokens: 1 },
     })
-    await expect(
-      visionJudgment({
-        model: 'claude-sonnet-5',
-        system: 's',
-        prompt: 'p',
-        imagePaths: [gifPath],
-        schema: judgmentSchema,
-        client,
-      }),
-    ).rejects.toThrow(/visionJudgment: unsupported image extension/)
+    const err = await visionJudgment({
+      model: 'claude-sonnet-5',
+      system: 's',
+      prompt: 'p',
+      imagePaths: [gifPath],
+      schema: judgmentSchema,
+      client,
+    }).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/visionJudgment: unsupported image extension/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
     expect(create).not.toHaveBeenCalled()
   })
 

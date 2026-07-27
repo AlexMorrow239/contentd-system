@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { parseWav } from '../../media/wav.js'
-import { classify } from '../../errors.js'
+import { classify, errorMessage } from '../../errors.js'
 import {
   ELEVENLABS_USD_MICROS_PER_1K_CHARS,
   estimateTtsCostMicros,
@@ -161,11 +161,39 @@ describe('synthWithTimestamps', () => {
     }
   })
 
-  it('throws naming the provider when the response carries no audio', async () => {
+  it('throws naming the provider when the response carries no audio, classified as provider/invalid', async () => {
     const { impl } = fakeFetch(200, { alignment: null })
-    await expect(
-      synthWithTimestamps({ voiceId: 'v', modelId: 'm', text: 'x', apiKey: 'k', fetchImpl: impl }),
-    ).rejects.toThrow(/elevenlabs response carried no audio/)
+    const err = await synthWithTimestamps({
+      voiceId: 'v',
+      modelId: 'm',
+      text: 'x',
+      apiKey: 'k',
+      fetchImpl: impl,
+    }).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/elevenlabs response carried no audio/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
+  })
+
+  it('classifies a timed-out/aborted request as provider/transient', async () => {
+    // synthWithTimestamps has no injectable timeoutMs (unlike whisperx's
+    // alignTranscript), and its TIMEOUT_MS is a fixed 120s -- far too slow to
+    // wait out for real in a test. The fetchImpl seam it does expose lets this
+    // simulate the same isAbortLike(err) branch directly: reject with the shape
+    // AbortSignal.timeout() produces on expiry.
+    const impl: typeof fetch = async () => {
+      throw Object.assign(new Error('The operation was aborted due to timeout'), {
+        name: 'TimeoutError',
+      })
+    }
+    const err = await synthWithTimestamps({
+      voiceId: 'v',
+      modelId: 'm',
+      text: 'x',
+      apiKey: 'k',
+      fetchImpl: impl,
+    }).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/elevenlabs request timed out/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
   })
 
   it('throws before any network call when no API key is available, classified as config/invalid', async () => {
@@ -182,16 +210,29 @@ describe('synthWithTimestamps', () => {
     expect(calls).toHaveLength(0)
   })
 
-  it('throws with the HTTP status on a non-2xx response', async () => {
+  it('throws with the HTTP status on a non-2xx response, classified as provider/auth for 401', async () => {
     const { impl } = fakeFetch(401, { detail: { status: 'invalid_api_key' } })
-    await expect(
-      synthWithTimestamps({
-        voiceId: 'v',
-        modelId: 'm',
-        text: 'x',
-        apiKey: 'bad',
-        fetchImpl: impl,
-      }),
-    ).rejects.toThrow(/elevenlabs responded 401/)
+    const err = await synthWithTimestamps({
+      voiceId: 'v',
+      modelId: 'm',
+      text: 'x',
+      apiKey: 'bad',
+      fetchImpl: impl,
+    }).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/elevenlabs responded 401/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'auth' })
+  })
+
+  it('throws with the HTTP status on a non-2xx response, classified as provider/transient for a non-auth status', async () => {
+    const { impl } = fakeFetch(500, { detail: 'internal server error' })
+    const err = await synthWithTimestamps({
+      voiceId: 'v',
+      modelId: 'm',
+      text: 'x',
+      apiKey: 'k',
+      fetchImpl: impl,
+    }).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/elevenlabs responded 500/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
   })
 })

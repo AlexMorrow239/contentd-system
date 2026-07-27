@@ -51,20 +51,36 @@ describe('alignTranscript', () => {
     expect(words).toEqual([{ word: 'hi', startMs: 120, endMs: 340 }])
   })
 
-  it('throws on a non-2xx response', async () => {
+  it('throws on a non-2xx response, classified as provider/transient', async () => {
     const wavPath = await tmpWav()
     responder = () => ({ status: 500, body: JSON.stringify({ detail: 'boom' }) })
-    await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(/500/)
+    const err = await alignTranscript({ baseUrl, wavPath, transcript: 'x' }).catch(
+      (e: unknown) => e,
+    )
+    expect(errorMessage(err)).toMatch(/500/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
   })
 
-  it('throws naming the endpoint when a 200 body has no words array', async () => {
+  it('throws on a 401/403 response, classified as provider/auth', async () => {
+    const wavPath = await tmpWav()
+    responder = () => ({ status: 401, body: JSON.stringify({ detail: 'bad token' }) })
+    const err = await alignTranscript({ baseUrl, wavPath, transcript: 'x' }).catch(
+      (e: unknown) => e,
+    )
+    expect(errorMessage(err)).toMatch(/401/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'auth' })
+  })
+
+  it('throws naming the endpoint when a 200 body has no words array, classified as provider/invalid', async () => {
     const wavPath = await tmpWav()
     // A 200 of an unexpected shape used to surface as "Cannot read properties of
     // undefined (reading 'map')", indistinguishable from a bug in this repo.
     responder = () => ({ status: 200, body: JSON.stringify({ detail: 'model still loading' }) })
-    await expect(alignTranscript({ baseUrl, wavPath, transcript: 'x' })).rejects.toThrow(
-      new RegExp(`malformed response from ${baseUrl}/align`),
+    const err = await alignTranscript({ baseUrl, wavPath, transcript: 'x' }).catch(
+      (e: unknown) => e,
     )
+    expect(errorMessage(err)).toMatch(new RegExp(`malformed response from ${baseUrl}/align`))
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
   })
 
   it('drops words whose timings are not finite rather than emitting NaN ms', async () => {

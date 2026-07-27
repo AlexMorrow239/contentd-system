@@ -19,6 +19,7 @@ import { makeCtx, testScript } from '../../testing/job.js'
 import type { JobContext } from '../../jobs/types.js'
 import { estimateTtsCostMicros, synthWithTimestamps } from '../../providers/elevenlabs.js'
 import { BudgetExceededError } from '../../jobs/costs.js'
+import { classify, errorMessage } from '../../errors.js'
 
 // Canonical mono 16-bit PCM WAV. byteRate = rate*channels*2.
 function buildWav(numSamples: number, sampleRate = 16000): Buffer {
@@ -212,7 +213,7 @@ describe('voiceStage', () => {
     expect(meta.durationMs).toBe(expectedMs)
   })
 
-  it('throws when synthesized audio is implausibly short for the script (truncation guard)', async () => {
+  it('throws when synthesized audio is implausibly short for the script (truncation guard), classified as provider/invalid', async () => {
     const ctx = await ctxWithScript(LONG_SCRIPT)
     // Simulate silent truncation: every chunk comes back as 100ms of audio.
     const generate = vi.fn().mockResolvedValue({
@@ -221,7 +222,9 @@ describe('voiceStage', () => {
     })
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
-    await expect(voiceStage.run(ctx)).rejects.toThrow(/truncat/i)
+    const err = await voiceStage.run(ctx).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/truncat/i)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
   })
 
   it('falls back to edge-tts when kokoro throws', async () => {
@@ -273,7 +276,7 @@ describe('voiceStage', () => {
     expect(parseWavDurationMs(wav)).toBe(texts.length * 12000 + HOOK_PAUSE_MS)
   })
 
-  it('throws when both kokoro and edge-tts fail', async () => {
+  it('throws when both kokoro and edge-tts fail, classified as provider/transient', async () => {
     const ctx = await ctxWithScript()
     vi.mocked(KokoroTTS.from_pretrained).mockRejectedValue(new Error('no model'))
     vi.mocked(MsEdgeTTS).mockImplementation(function () {
@@ -285,7 +288,41 @@ describe('voiceStage', () => {
       }
     })
 
-    await expect(voiceStage.run(ctx)).rejects.toThrow(/voice synthesis failed/)
+    const err = await voiceStage.run(ctx).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/voice synthesis failed/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
+  })
+
+  it('classifies a "produced no audio" chunk failure as provider/invalid (observed via the kokoro-fails-then-edge-succeeds fallback log)', async () => {
+    // synthChunked's own "<provider> produced no audio" throw (sampleRate <= 0
+    // after synthesizing every chunk) is not exported and never escapes
+    // voiceStage.run directly: when kokoro hits it, the outer catch swallows it
+    // and falls through to edge-tts, and if edge-tts then succeeds (as here) no
+    // error propagates to the caller at all -- it is only visible on the
+    // ctx.log.warn call that logs the fallback. Capture that call to verify the
+    // swallowed error still carries the right classification.
+    const ctx = await ctxWithScript()
+    const warn = vi.fn()
+    ctx.log = { ...ctx.log, warn }
+    // sampling_rate: 0 makes synthChunked's own `sampleRate <= 0` check fire on
+    // the very first (hook) chunk, before any body chunk is even requested.
+    const generate = vi.fn(async () => ({
+      audio: new Float32Array(1000),
+      sampling_rate: 0,
+    }))
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
+    const setMetadata = vi.fn().mockResolvedValue(undefined)
+    const toStream = vi.fn(() => ({ audioStream: Readable.from([ONE_SECOND_WAV]) }))
+    vi.mocked(MsEdgeTTS).mockImplementation(function () {
+      return { setMetadata, toStream }
+    })
+
+    await voiceStage.run(ctx) // succeeds via the edge-tts fallback
+
+    expect(warn).toHaveBeenCalledTimes(1)
+    const [logObj] = warn.mock.calls[0] as [{ err: unknown }]
+    expect(errorMessage(logObj.err)).toMatch(/kokoro produced no audio/)
+    expect(classify(logObj.err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
   })
 })
 

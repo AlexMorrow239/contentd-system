@@ -7,6 +7,7 @@ import { alignTranscript } from '../../providers/whisperx.js'
 import { captionsStage } from '../captions.js'
 import { makeCtx } from '../../testing/job.js'
 import type { JobContext } from '../../jobs/types.js'
+import { classify, errorMessage } from '../../errors.js'
 
 const SCRIPT = {
   hook: 'Hook here',
@@ -57,10 +58,12 @@ describe('captionsStage', () => {
     )
   })
 
-  it('throws when the aligner returns no words', async () => {
+  it('throws when the aligner returns no words, classified as provider/invalid', async () => {
     const ctx = await ctxWithScript()
     vi.mocked(alignTranscript).mockResolvedValue([])
-    await expect(captionsStage.run(ctx)).rejects.toThrow(/no word timings/)
+    const err = await captionsStage.run(ctx).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/no word timings/)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
   })
 
   it('copies provider timings from voice/timings.json and never calls whisperx', async () => {
