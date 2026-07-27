@@ -1,4 +1,5 @@
 import { XMLParser } from 'fast-xml-parser'
+import { BrainrotError } from '../../errors.js'
 import type { TrendCandidate } from './types.js'
 
 // Shared RSS 2.0 / Atom parsing. Both the generic rssSource and the keyless
@@ -97,5 +98,8 @@ export function parseFeedCandidates(
   if (doc.feed !== undefined) {
     return atomEntries(asArray(doc.feed.entry), sourceId)
   }
-  throw new Error(`${label} is not a recognized RSS 2.0 or Atom feed`)
+  throw new BrainrotError(`${label} is not a recognized RSS 2.0 or Atom feed`, {
+    domain: 'scout',
+    kind: 'transient',
+  })
 }

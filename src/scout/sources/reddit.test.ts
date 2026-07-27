@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { classify } from '../../errors.js'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
 import { REDDIT_USER_AGENT, redditSource } from './reddit.js'
 
@@ -113,9 +114,9 @@ describe('redditSource', () => {
   it('throws with the HTTP status on a non-2xx feed response', async () => {
     const { impl } = fakeTextFetch(429, '')
     const source = redditSource('space', impl)
-    await expect(source.fetch({ limit: 25, timeoutMs: 10_000 })).rejects.toThrow(
-      /r\/space responded 429/,
-    )
+    const err = await source.fetch({ limit: 25, timeoutMs: 10_000 }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/r\/space responded 429/) })
+    expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
   })
 
   it('skips entries missing a title or an id, and an entryless feed yields []', async () => {
@@ -150,9 +151,13 @@ describe('redditSource', () => {
   it('throws when the response is not a feed at all', async () => {
     // e.g. reddit serving an HTML interstitial instead of the feed
     const { impl } = fakeTextFetch(200, '<html><body>over 18?</body></html>')
-    await expect(
-      redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 }),
-    ).rejects.toThrow(/not a recognized RSS 2.0 or Atom feed/)
+    const err = await redditSource('space', impl)
+      .fetch({ limit: 25, timeoutMs: 10_000 })
+      .catch((e: unknown) => e)
+    expect(err).toMatchObject({
+      message: expect.stringMatching(/not a recognized RSS 2.0 or Atom feed/),
+    })
+    expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
   })
 
   it('rejects when the fetch times out, so the orchestrator can isolate it', async () => {

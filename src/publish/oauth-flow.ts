@@ -6,6 +6,7 @@ import https from 'node:https'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { BrainrotError } from '../errors.js'
 import { YT_UPLOAD_SCOPE } from './platforms/youtube.js'
 
 // Alex sits through this once per channel; 5 minutes covers a slow account
@@ -159,12 +160,16 @@ export async function runYoutubeAuthFlow(opts: {
     }).toString(),
   })
   if (!tokenRes.ok) {
-    throw new Error(`runYoutubeAuthFlow: token endpoint responded ${tokenRes.status}`)
+    throw new BrainrotError(`runYoutubeAuthFlow: token endpoint responded ${tokenRes.status}`, {
+      domain: 'publish',
+      kind: 'auth',
+    })
   }
   const body = (await tokenRes.json()) as { refresh_token?: string; scope?: string }
   if (!body.refresh_token) {
-    throw new Error(
+    throw new BrainrotError(
       'runYoutubeAuthFlow: no refresh_token in response; remove prior grant at myaccount.google.com/permissions and retry',
+      { domain: 'publish', kind: 'auth' },
     )
   }
   return { refreshToken: body.refresh_token, scopes: body.scope ?? YT_UPLOAD_SCOPE }
@@ -298,11 +303,17 @@ export async function runInstagramAuthFlow(opts: {
   })
   if (!shortRes.ok) {
     const raw = await shortRes.text().catch(() => '')
-    throw new Error(`runInstagramAuthFlow: code exchange responded ${shortRes.status}: ${raw}`)
+    throw new BrainrotError(
+      `runInstagramAuthFlow: code exchange responded ${shortRes.status}: ${raw}`,
+      { domain: 'publish', kind: 'auth' },
+    )
   }
   const shortBody = (await shortRes.json()) as { access_token?: string }
   if (!shortBody.access_token) {
-    throw new Error('runInstagramAuthFlow: code exchange returned no access_token')
+    throw new BrainrotError('runInstagramAuthFlow: code exchange returned no access_token', {
+      domain: 'publish',
+      kind: 'auth',
+    })
   }
 
   // Step 2: exchange the short-lived token for a ~60-day long-lived token.
@@ -313,11 +324,17 @@ export async function runInstagramAuthFlow(opts: {
   const longRes = await fetchImpl(longUrl.toString())
   if (!longRes.ok) {
     const raw = await longRes.text().catch(() => '')
-    throw new Error(`runInstagramAuthFlow: long-lived exchange responded ${longRes.status}: ${raw}`)
+    throw new BrainrotError(
+      `runInstagramAuthFlow: long-lived exchange responded ${longRes.status}: ${raw}`,
+      { domain: 'publish', kind: 'auth' },
+    )
   }
   const longBody = (await longRes.json()) as { access_token?: string; expires_in?: number }
   if (!longBody.access_token || !longBody.expires_in) {
-    throw new Error('runInstagramAuthFlow: long-lived exchange returned no access_token/expires_in')
+    throw new BrainrotError(
+      'runInstagramAuthFlow: long-lived exchange returned no access_token/expires_in',
+      { domain: 'publish', kind: 'auth' },
+    )
   }
   return {
     token: longBody.access_token,

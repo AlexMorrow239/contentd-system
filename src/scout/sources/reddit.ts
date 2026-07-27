@@ -1,3 +1,4 @@
+import { BrainrotError } from '../../errors.js'
 import { parseFeedCandidates } from './feed.js'
 import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
 
@@ -24,7 +25,10 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
         signal: AbortSignal.timeout(timeoutMs),
       })
       if (!res.ok) {
-        throw new Error(`redditSource: r/${subreddit} responded ${res.status}`)
+        throw new BrainrotError(`redditSource: r/${subreddit} responded ${res.status}`, {
+          domain: 'scout',
+          kind: 'transient',
+        })
       }
       // The feed has no server-side limit parameter — cap client-side.
       const entries = parseFeedCandidates(await res.text(), id, `redditSource: r/${subreddit}`)

@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { BrainrotError } from '../errors.js'
 import type { ObjectStore } from '../storage/types.js'
 import { IG_PRESIGN_TTL_SECONDS } from './platforms/instagram.js'
 import { renderCaption } from './platform-meta.js'
@@ -58,11 +59,15 @@ export async function preflight(opts: {
     | undefined
 
   if (row === undefined) {
-    throw new Error(`preflight: no library row for job ${opts.jobId}`)
+    throw new BrainrotError(`preflight: no library row for job ${opts.jobId}`, {
+      domain: 'publish',
+      kind: 'not-found',
+    })
   }
   if (row.objectKey === null || row.bytes === null) {
-    throw new Error(
+    throw new BrainrotError(
       `preflight: job ${opts.jobId} has no stored object — run \`brainrot resume ${opts.jobId}\` or \`brainrot library backfill-store\``,
+      { domain: 'publish', kind: 'not-found' },
     )
   }
 

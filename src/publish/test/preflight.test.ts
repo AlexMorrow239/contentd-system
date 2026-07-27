@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
+import { classify, errorMessage } from '../../errors.js'
 import { fakeStore } from '../../storage/fake.js'
 import { preflight } from '../preflight.js'
 import { tmpDir } from '../../testing/tmp.js'
@@ -125,13 +126,27 @@ describe('preflight', () => {
     db.prepare(
       "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('job-2','p','{}','ready')",
     ).run()
-    await expect(
-      preflight({
+    const err = await preflight({
+      db,
+      jobId: 'job-2',
+      platform: 'instagram',
+      store: fakeStore(tmpDir('pf-none-')),
+    }).catch((e: unknown) => e)
+    expect(errorMessage(err)).toMatch(/backfill-store/)
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'not-found' })
+  })
+
+  describe('preflight error classification', () => {
+    it('classifies a missing library row as publish/not-found', async () => {
+      const db = memDb()
+      const err = await preflight({
         db,
-        jobId: 'job-2',
+        jobId: 'no-such-job',
         platform: 'instagram',
-        store: fakeStore(tmpDir('pf-none-')),
-      }),
-    ).rejects.toThrow(/backfill-store/)
+        store: fakeStore(tmpDir('pf-missing-')),
+      }).catch((e: unknown) => e)
+      expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'not-found' })
+      expect(errorMessage(err)).toBe('preflight: no library row for job no-such-job')
+    })
   })
 })

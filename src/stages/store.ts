@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
-import { errorMessage } from '../errors.js'
+import { BrainrotError, errorMessage } from '../errors.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import type { ObjectStore } from '../storage/types.js'
 
@@ -45,7 +45,10 @@ export function storeStage(store?: ObjectStore): StageDef {
         // a different first-hour failure than a genuinely missing file, and
         // should not send the operator hunting for a render bug.
         const message = errorMessage(err)
-        throw new Error(`store: no rendered video at ${finalPath}: ${message}`)
+        throw new BrainrotError(`store: no rendered video at ${finalPath}: ${message}`, {
+          domain: 'job',
+          kind: 'not-found',
+        })
       }
 
       const objectKey = objectKeyFor(ctx.channel.name, ctx.jobId)
@@ -56,11 +59,15 @@ export function storeStage(store?: ObjectStore): StageDef {
       // stage failure that names the mismatch.
       const head = await active.head(objectKey)
       if (head === null) {
-        throw new Error(`store: object ${objectKey} missing immediately after upload`)
+        throw new BrainrotError(`store: object ${objectKey} missing immediately after upload`, {
+          domain: 'storage',
+          kind: 'transient',
+        })
       }
       if (head.bytes !== bytes.length) {
-        throw new Error(
+        throw new BrainrotError(
           `store: byte count mismatch for ${objectKey} — uploaded ${bytes.length}, store reports ${head.bytes}`,
+          { domain: 'storage', kind: 'transient' },
         )
       }
 

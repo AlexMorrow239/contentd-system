@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { classify } from '../../../errors.js'
 import { loadToken, upsertToken } from '../../tokens.js'
 import type { PublishMedia } from '../../types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../../types.js'
@@ -350,7 +351,22 @@ describe('refreshLongLivedToken', () => {
 
   it('throws on a non-ok response', async () => {
     const fetchImpl: typeof fetch = async () => new Response('', { status: 400 })
-    await expect(refreshLongLivedToken({ token: 't', fetchImpl })).rejects.toThrow(/responded 400/)
+    const err = await refreshLongLivedToken({ token: 't', fetchImpl }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/responded 400/) })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
+  })
+
+  it('throws when the response is missing access_token/expires_in', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    const err = await refreshLongLivedToken({ token: 't', fetchImpl }).catch((e: unknown) => e)
+    expect(err).toMatchObject({
+      message: 'refresh_access_token (ig_refresh_token) response missing access_token/expires_in',
+    })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
   })
 })
 

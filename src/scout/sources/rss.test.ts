@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { classify } from '../../errors.js'
 import { rssSource } from './rss.js'
 import type { FetchLike } from './types.js'
 
@@ -286,15 +287,21 @@ describe('rssSource single-item normalization', () => {
 describe('rssSource error paths', () => {
   it('throws with the HTTP status on a non-2xx response', async () => {
     const { impl } = fakeFetch(404, 'Not Found')
-    await expect(rssSource('https://feeds.example.com/gone.xml', impl).fetch(OPTS)).rejects.toThrow(
-      /responded 404/,
-    )
+    const err = await rssSource('https://feeds.example.com/gone.xml', impl)
+      .fetch(OPTS)
+      .catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/responded 404/) })
+    expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
   })
 
   it('throws on a document that is neither RSS nor Atom', async () => {
     const { impl } = fakeFetch(200, '<html><body>maintenance page</body></html>')
-    await expect(
-      rssSource('https://feeds.example.com/space.xml', impl).fetch(OPTS),
-    ).rejects.toThrow(/not a recognized RSS 2.0 or Atom feed/)
+    const err = await rssSource('https://feeds.example.com/space.xml', impl)
+      .fetch(OPTS)
+      .catch((e: unknown) => e)
+    expect(err).toMatchObject({
+      message: expect.stringMatching(/not a recognized RSS 2.0 or Atom feed/),
+    })
+    expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
   })
 })

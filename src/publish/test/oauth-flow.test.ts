@@ -2,6 +2,7 @@ import http from 'node:http'
 import https from 'node:https'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { classify } from '../../errors.js'
 import {
   AUTH_FLOW_TIMEOUT_MS,
   createSelfSignedHttpsServer,
@@ -86,17 +87,39 @@ describe('runYoutubeAuthFlow', () => {
       await fetch(`${redirectUri}/?code=test-auth-code&state=${state}`)
     }
 
-    await expect(
-      runYoutubeAuthFlow({
-        clientId: 'test-client-id',
-        clientSecret: 'test-client-secret',
-        listenPort: 0,
-        openBrowser,
-        fetchImpl,
-      }),
-    ).rejects.toThrow(
-      'runYoutubeAuthFlow: no refresh_token in response; remove prior grant at myaccount.google.com/permissions and retry',
-    )
+    const err = await runYoutubeAuthFlow({
+      clientId: 'test-client-id',
+      clientSecret: 'test-client-secret',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({
+      message:
+        'runYoutubeAuthFlow: no refresh_token in response; remove prior grant at myaccount.google.com/permissions and retry',
+    })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
+  })
+
+  it('rejects with the response status when the token endpoint responds non-ok', async () => {
+    const fetchImpl: typeof fetch = async () => new Response('', { status: 400 })
+
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}/?code=test-auth-code&state=${state}`)
+    }
+
+    const err = await runYoutubeAuthFlow({
+      clientId: 'test-client-id',
+      clientSecret: 'test-client-secret',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: 'runYoutubeAuthFlow: token endpoint responded 400' })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
   })
 
   it('rejects when the redirect state does not match the one sent to Google', async () => {
@@ -314,15 +337,108 @@ describe('runInstagramAuthFlow', () => {
     }
     const fetchImpl: typeof fetch = async () =>
       new Response(JSON.stringify({ error_message: 'Invalid redirect_uri' }), { status: 400 })
-    await expect(
-      runInstagramAuthFlow({
-        appId: 'a',
-        appSecret: 'b',
-        listenPort: 0,
-        openBrowser,
-        fetchImpl,
-        createServer: fakeHttpServer,
-      }),
-    ).rejects.toThrow(/code exchange responded 400.*Invalid redirect_uri/s)
+    const err = await runInstagramAuthFlow({
+      appId: 'a',
+      appSecret: 'b',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+      createServer: fakeHttpServer,
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/code exchange responded 400.*Invalid redirect_uri/s) })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
+  })
+
+  it('rejects when the code exchange responds with no access_token', async () => {
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}?code=test-auth-code&state=${state}`)
+    }
+    const fetchImpl: typeof fetch = async () =>
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    const err = await runInstagramAuthFlow({
+      appId: 'a',
+      appSecret: 'b',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+      createServer: fakeHttpServer,
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({
+      message: 'runInstagramAuthFlow: code exchange returned no access_token',
+    })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
+  })
+
+  it('rejects with the response status when the long-lived exchange responds non-ok', async () => {
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}?code=test-auth-code&state=${state}`)
+    }
+    let callIndex = 0
+    const fetchImpl: typeof fetch = async () => {
+      callIndex++
+      if (callIndex === 1) {
+        return new Response(JSON.stringify({ access_token: 'short-lived-token' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response('server unavailable', { status: 503 })
+    }
+    const err = await runInstagramAuthFlow({
+      appId: 'a',
+      appSecret: 'b',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+      createServer: fakeHttpServer,
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({
+      message: expect.stringMatching(/long-lived exchange responded 503.*server unavailable/s),
+    })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
+  })
+
+  it('rejects when the long-lived exchange responds with no access_token/expires_in', async () => {
+    const openBrowser = async (url: string) => {
+      const consentUrl = new URL(url)
+      const state = consentUrl.searchParams.get('state')
+      const redirectUri = consentUrl.searchParams.get('redirect_uri')
+      await fetch(`${redirectUri}?code=test-auth-code&state=${state}`)
+    }
+    let callIndex = 0
+    const fetchImpl: typeof fetch = async () => {
+      callIndex++
+      if (callIndex === 1) {
+        return new Response(JSON.stringify({ access_token: 'short-lived-token' }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const err = await runInstagramAuthFlow({
+      appId: 'a',
+      appSecret: 'b',
+      listenPort: 0,
+      openBrowser,
+      fetchImpl,
+      createServer: fakeHttpServer,
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({
+      message: 'runInstagramAuthFlow: long-lived exchange returned no access_token/expires_in',
+    })
+    expect(classify(err)).toMatchObject({ domain: 'publish', kind: 'auth' })
   })
 })

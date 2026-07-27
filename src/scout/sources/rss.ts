@@ -1,3 +1,4 @@
+import { BrainrotError } from '../../errors.js'
 import { parseFeedCandidates } from './feed.js'
 import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
 
@@ -8,7 +9,10 @@ export function rssSource(feedUrl: string, fetchImpl: FetchLike = fetch): TrendS
     async fetch(opts: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
       const res = await fetchImpl(feedUrl, { signal: AbortSignal.timeout(opts.timeoutMs) })
       if (!res.ok) {
-        throw new Error(`rssSource: ${feedUrl} responded ${res.status}`)
+        throw new BrainrotError(`rssSource: ${feedUrl} responded ${res.status}`, {
+          domain: 'scout',
+          kind: 'transient',
+        })
       }
       const candidates = parseFeedCandidates(await res.text(), id, `rssSource: ${feedUrl}`)
       // Feeds have no server-side limit parameter — cap client-side to honor

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import pino from 'pino'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { classify } from '../../errors.js'
 import type { JobContext, StageName } from '../../jobs/types.js'
 import { fakeStore } from '../../storage/fake.js'
 import type { ObjectStore } from '../../storage/types.js'
@@ -77,7 +78,11 @@ describe('storeStage', () => {
   })
 
   it('fails when assemble produced no final.mp4', async () => {
-    await expect(storeStage(store).run(makeCtx())).rejects.toThrow(/no rendered video/)
+    const err = await storeStage(store)
+      .run(makeCtx())
+      .catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/no rendered video/) })
+    expect(classify(err)).toMatchObject({ domain: 'job', kind: 'not-found' })
   })
 
   // Regression test: a permissions error reading a bind-mounted runs/ inside
@@ -111,7 +116,11 @@ describe('storeStage', () => {
         return { bytes: 1, contentType: 'video/mp4' }
       },
     }
-    await expect(storeStage(lying).run(makeCtx())).rejects.toThrow(/byte count/)
+    const err = await storeStage(lying)
+      .run(makeCtx())
+      .catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/byte count/) })
+    expect(classify(err)).toMatchObject({ domain: 'storage', kind: 'transient' })
   })
 
   it('fails when the object is absent immediately after upload', async () => {
@@ -122,7 +131,11 @@ describe('storeStage', () => {
         return null
       },
     }
-    await expect(storeStage(vanishing).run(makeCtx())).rejects.toThrow(/missing immediately/)
+    const err = await storeStage(vanishing)
+      .run(makeCtx())
+      .catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/missing immediately/) })
+    expect(classify(err)).toMatchObject({ domain: 'storage', kind: 'transient' })
   })
 
   it('is named store', () => {

@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { errorMessage } from '../../errors.js'
+import { BrainrotError, errorMessage } from '../../errors.js'
 import { IG_CONTENT_PUBLISH_SCOPE } from '../oauth-flow.js'
 import { renderCaption } from '../platform-meta.js'
 import { loadToken, upsertToken } from '../tokens.js'
@@ -261,12 +261,16 @@ export async function refreshLongLivedToken(opts: {
   })
   if (!res.ok) {
     const raw = await res.text().catch(() => '')
-    throw new Error(`refresh_access_token (ig_refresh_token) responded ${res.status}: ${raw}`)
+    throw new BrainrotError(
+      `refresh_access_token (ig_refresh_token) responded ${res.status}: ${raw}`,
+      { domain: 'publish', kind: 'auth' },
+    )
   }
   const body = (await res.json()) as { access_token?: string; expires_in?: number }
   if (!body.access_token || !body.expires_in) {
-    throw new Error(
+    throw new BrainrotError(
       'refresh_access_token (ig_refresh_token) response missing access_token/expires_in',
+      { domain: 'publish', kind: 'auth' },
     )
   }
   return {
