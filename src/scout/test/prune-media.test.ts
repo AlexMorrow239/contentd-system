@@ -212,6 +212,39 @@ describe('pruneMedia', () => {
     db.close()
   })
 
+  it('reports each row as it resolves, so a minutes-long run is legible', async () => {
+    const db = memDb()
+    const image = seedRedditTopic(db)
+    const kept = seedRedditTopic(db, 't3_bbb2', {
+      title: 'second',
+      dedupeHash: dedupeHash(SOURCE, 't3_bbb2'),
+    })
+    let call = 0
+    const impl: FetchLike = async () => {
+      call += 1
+      return new Response(
+        call === 1
+          ? permalinkFeedXml('t3_aaa1', 'https://i.redd.it/x.jpeg')
+          : permalinkFeedXml('t3_bbb2', 'https://www.theguardian.com/science/x'),
+        { status: 200 },
+      )
+    }
+    const seen: { index: number; total: number; topicId: number; outcome: string }[] = []
+
+    await pruneMedia(db, { fetchImpl: impl, delayMs: 0, onProgress: (p) => seen.push(p) })
+
+    expect(seen).toEqual([
+      { index: 1, total: 2, topicId: image, outcome: 'image -> reject (https://i.redd.it/x.jpeg)' },
+      {
+        index: 2,
+        total: 2,
+        topicId: kept,
+        outcome: 'kept (https://www.theguardian.com/science/x)',
+      },
+    ])
+    db.close()
+  })
+
   it('scopes to one channel when asked', async () => {
     const db = memDb()
     seedRedditTopic(db)

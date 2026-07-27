@@ -452,11 +452,15 @@ topics
     const db = openDb(resolveDbPath(opts.db))
     try {
       const dryRun = opts.dryRun === true
-      const result = await pruneMedia(db, { channel: opts.channel, dryRun })
-      // Per-row skips are diagnostics; stdout keeps its single JSON line.
-      for (const s of result.skipped) {
-        console.error(`prune-media: skipped topic ${s.topicId}: ${s.reason}`)
-      }
+      // Reddit's rate limit forces ~20s per row, so this runs for minutes.
+      // Report each row as it resolves — on stderr, so stdout keeps its single
+      // JSON line — rather than going silent until the end and looking hung.
+      const result = await pruneMedia(db, {
+        channel: opts.channel,
+        dryRun,
+        onProgress: (p) =>
+          console.error(`prune-media: [${p.index}/${p.total}] topic ${p.topicId}: ${p.outcome}`),
+      })
       process.stdout.write(
         JSON.stringify({
           action: 'prune-media',

@@ -32,6 +32,10 @@ export interface PruneMediaOpts {
   dryRun?: boolean
   fetchImpl?: FetchLike
   delayMs?: number
+  // Per-row progress. At ~20s a row this command runs for minutes, and one
+  // that prints nothing for that long reads as hung. The CLI sends these to
+  // stderr, keeping stdout's single-JSON-line contract intact.
+  onProgress?: (progress: { index: number; total: number; topicId: number; outcome: string }) => void
 }
 
 function sleep(ms: number): Promise<void> {
@@ -69,10 +73,12 @@ export async function pruneMedia(
   const rows = redditCandidates(db, opts.channel)
   const result: PruneMediaResult = { checked: 0, rejected: 0, skipped: [] }
 
-  for (const [i, row] of rows.entries()) {
-    if (i > 0) await sleep(delayMs)
-    result.checked += 1
-    let target: string | undefined
+  // Resolve one row to its submission target, or to the reason it could not
+  // be resolved. Split out so the loop below has exactly one place to record
+  // an outcome and report progress, rather than a `continue` per failure mode.
+  async function resolveTarget(
+    row: (typeof rows)[number],
+  ): Promise<{ target: string } | { skip: string }> {
     try {
       const get = (): Promise<Response> =>
         fetchImpl(permalinkFeedUrl(row.url), {
@@ -86,41 +92,45 @@ export async function pruneMedia(
         await sleep(delayMs * PRUNE_RETRY_MULTIPLIER)
         res = await get()
       }
-      if (!res.ok) {
-        result.skipped.push({ topicId: row.id, reason: `http-${res.status}` })
-        continue
-      }
+      if (!res.ok) return { skip: `http-${res.status}` }
       const entries = parseFeedCandidates(await res.text(), row.source, `prune-media: ${row.url}`)
       // Comments are t1_; the submission is the only t3_ entry, and the only
       // one carrying a [link] anchor.
       const submission = entries.find((e) => e.externalId.startsWith('t3_'))
-      if (submission === undefined) {
-        result.skipped.push({ topicId: row.id, reason: 'no-submission-entry' })
-        continue
-      }
+      if (submission === undefined) return { skip: 'no-submission-entry' }
       // Identity check: dedupe_hash is sha256(source + externalId), so
       // recomputing it from the feed's own id proves this feed describes this
       // row. Without it a redirected or recycled permalink could attach one
       // post's target to another post's row — and then reject it.
       if (dedupeHash(row.source, submission.externalId) !== row.dedupeHash) {
-        result.skipped.push({ topicId: row.id, reason: 'identity-mismatch' })
-        continue
+        return { skip: 'identity-mismatch' }
       }
-      target = redditLinkTarget(submission.contentHtml)
+      const target = redditLinkTarget(submission.contentHtml)
+      return target === undefined ? { skip: 'no-link-anchor' } : { target }
     } catch (err) {
-      result.skipped.push({ topicId: row.id, reason: errorMessage(err) })
-      continue
+      return { skip: errorMessage(err) }
     }
+  }
 
-    if (target === undefined) {
-      result.skipped.push({ topicId: row.id, reason: 'no-link-anchor' })
-      continue
+  for (const [i, row] of rows.entries()) {
+    if (i > 0) await sleep(delayMs)
+    result.checked += 1
+    const resolved = await resolveTarget(row)
+
+    let outcome: string
+    if ('skip' in resolved) {
+      result.skipped.push({ topicId: row.id, reason: resolved.skip })
+      outcome = `skipped (${resolved.skip})`
+    } else {
+      const isImage = classifyTarget(resolved.target) === 'image'
+      if (isImage) result.rejected += 1
+      if (opts.dryRun !== true) {
+        setTopicTargetUrl(db, row.id, resolved.target)
+        if (isImage) rejectTopicWithReason(db, row.id, PRUNE_REJECT_REASON)
+      }
+      outcome = isImage ? `image -> reject (${resolved.target})` : `kept (${resolved.target})`
     }
-    const isImage = classifyTarget(target) === 'image'
-    if (isImage) result.rejected += 1
-    if (opts.dryRun === true) continue
-    setTopicTargetUrl(db, row.id, target)
-    if (isImage) rejectTopicWithReason(db, row.id, PRUNE_REJECT_REASON)
+    opts.onProgress?.({ index: i + 1, total: rows.length, topicId: row.id, outcome })
   }
   return result
 }
