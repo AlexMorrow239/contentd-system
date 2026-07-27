@@ -107,10 +107,13 @@ function badEnvMessage(): string | undefined {
   return undefined
 }
 
-// How many pruned ready videos one candidate may step over before the tick
-// gives up on its channel. Reaching it is pathological (a wholesale runs/
-// prune), and giving up is harmless: the next tick starts the scan over.
-const MAX_VIDEO_FILE_SCANS = 50
+// How many candidate rows the tick asks the DAO for per channel — the ceiling
+// on how many videos it may reject (pruned bytes, quota, missing credential)
+// before giving up on that channel this tick. The DAO already omits videos
+// every declared platform blocks, so reaching this is pathological (a wholesale
+// runs/ prune with no stored objects), and giving up is harmless: the next tick
+// starts the scan over.
+const MAX_VIDEO_CANDIDATES = 50
 
 /**
  * Selects ONE video and fans it out to every platform that still wants it: env
@@ -292,10 +295,17 @@ export async function publishNextTick(
       const channel = channels.find((c) => c.name === candidate.channel)
       if (channel === undefined || channel.publish === null) continue
       const declared = channel.publish.targets
-      // MAX_VIDEO_FILE_SCANS bounds the walk: a wholesale runs/ prune with no
-      // stored objects is the only way to reach it, and giving up is harmless —
-      // the next tick starts the scan over.
-      for (const video of channelVideoCandidates(db, channel.name, MAX_VIDEO_FILE_SCANS)) {
+      // The declared platform list goes to the DAO as plain data: it is what
+      // makes "every platform blocked" mean every platform THIS channel targets,
+      // so a single-platform channel's finished videos stop consuming the
+      // MAX_VIDEO_CANDIDATES budget the moment they are published.
+      const declaredPlatforms = declared.map((t) => t.platform)
+      for (const video of channelVideoCandidates(
+        db,
+        channel.name,
+        declaredPlatforms,
+        MAX_VIDEO_CANDIDATES,
+      )) {
         // Bytes-reachable pre-flight: a local file OR a stored object. A pruned
         // runs/ tree is normal (the bucket is the durable copy); a row with
         // NEITHER would burn a quota unit on a failure the adapter can only
@@ -385,8 +395,12 @@ export async function publishNextTick(
 
       const meta = resolvePlatformMeta(video.metadataJson, platform, video.topic)
 
-      // The UNIQUE(channel, platform, day, seq) constraint is the real guard; a
-      // conflict here means a racing tick won this ordinal.
+      // The publish lease above is the only guard against publishing this video
+      // twice: `seq` is derived from existing rows, so UNIQUE(channel, platform,
+      // day, seq) keeps the day's ordinals distinct but cannot detect a racing
+      // tick claiming the same (job, platform) — it just hands out the next
+      // ordinal. A null here means a writer's INSERT landed between this claim's
+      // MAX(seq) read and its own INSERT (see claimPublish's doc comment).
       const claim = claimPublish(db, {
         jobId: video.jobId,
         platform,

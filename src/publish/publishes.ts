@@ -1,7 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Platform, PublishErrorKind } from './types.js'
-import { PUBLISH_PLATFORMS } from './types.js'
 import { PUBLISHABLE_LIBRARY_STATES } from '../jobs/library.js'
 
 export type PublishStatus = 'claimed' | 'done' | 'failed' | 'interrupted'
@@ -41,11 +40,26 @@ export const MAX_PUBLISH_ATTEMPTS = 3
  *   COUNT(*) + 1, hit the UNIQUE constraint, and report `claim-conflict`
  *   deterministically until the day rolls over. MAX(seq) + 1 always lands on
  *   an unused ordinal, healing the gap for free. Coalesced to 0 so the first
- *   claim of the day is still 1. The UNIQUE (channel, platform, day, seq)
- *   constraint remains the database-level backstop against a double-publish
- *   when the publish lease fails; a conflict means a racing tick already
- *   took this ordinal, so the SqliteError from the INSERT (and only the
- *   INSERT) is reported as null rather than propagated.
+ *   claim of the day is still 1.
+ *
+ * UNIQUE (channel, platform, day, seq) is a BOOKKEEPING invariant — it keeps
+ * the day's ordinals distinct — and NOT a double-publish guard. `seq` is
+ * derived from the rows that already exist, so two claims for the same (job,
+ * platform, day) are serialized by this `.immediate()` transaction and simply
+ * receive different ordinals (1 and 2); they never collide. (Under the old
+ * design `slot` was CONFIG-derived, so two racing ticks computed the same
+ * clock time and the second genuinely conflicted. That property left with the
+ * slots.) A conflict is therefore only reachable when a second writer's INSERT
+ * lands between this transaction's MAX(seq) read and its own INSERT, and the
+ * SqliteError from the INSERT (and only the INSERT) is reported as null rather
+ * than propagated.
+ *
+ * **The publish lease is the sole guard against a double-publish.** Nothing at
+ * the database level backstops it: `channelVideoCandidates`' blocking read —
+ * the thing that knows a platform already has a done/claimed/interrupted row —
+ * runs in the tick, outside this transaction, so two lease holders reading it
+ * concurrently would both see the video as open. See §7 of the design spec for
+ * the partial-unique-index follow-up that would make this a real backstop.
  *
  * `.immediate()` (not a deferred BEGIN): the two reads and the INSERT must
  * share one write-locked snapshot, or a writer committing in between
@@ -252,18 +266,46 @@ export interface ChannelVideoCandidate extends PublishableVideo {
   blockedPlatforms: Platform[]
 }
 
+// The per-(job, platform) blocking aggregate, as a SQL fragment shared by the
+// two reads below: the candidate query counts how many of the channel's
+// declared platforms it rules out, and the reporting query names them. One
+// text, so the two can never disagree about what "blocked" means.
+//
+// A platform is blocked when the job already has a done/claimed/interrupted
+// row for it (published there, or in flight) or has reached
+// MAX_PUBLISH_ATTEMPTS 'rejected' failures there (poison-video guard — only
+// 'rejected' counts, since auth/quota/transient failures are channel- or
+// platform-wide, not the video's fault).
+const BLOCKING_AGGREGATE = `SELECT job_id, platform,
+          SUM(CASE WHEN status IN ('done','claimed','interrupted') THEN 1 ELSE 0 END) AS blockingCount,
+          SUM(CASE WHEN status = 'failed' AND error_kind = 'rejected' THEN 1 ELSE 0 END) AS rejectedCount
+   FROM publishes` as const
+// Keeps only the blocked (job, platform) pairs. Applied as a WHERE against the
+// aggregate wrapped as a subquery, so both reads can name its output columns by
+// alias. The `?` binds MAX_PUBLISH_ATTEMPTS.
+const BLOCKED_PREDICATE = 'blockingCount > 0 OR rejectedCount >= ?'
+
 /**
  * Publishable videos for one channel, newest-relevant first, each carrying
  * the platforms that database state rules out. Selection is per channel, not
  * per platform, because one tick publishes one video to every platform that
  * still wants it — so the platform set is an output rather than an input.
  *
- * A platform is blocked when the job already has a done/claimed/interrupted
- * row for it (published there, or in flight) or has reached
- * MAX_PUBLISH_ATTEMPTS 'rejected' failures there (poison-video guard — only
- * 'rejected' counts, since auth/quota/transient failures are channel- or
- * platform-wide, not the video's fault). A video with every platform blocked
- * is omitted entirely.
+ * `platforms` is the channel's declared target list, passed as plain data (a
+ * `Platform[]`, never a ChannelConfig — this stays a config-free DAO). It is
+ * used for one thing: a video every one of THOSE platforms blocks is omitted,
+ * because no caller could ever act on it. The count of platforms the codebase
+ * knows about is irrelevant here — a YouTube-only channel's video that already
+ * published to YouTube is finished, even though `instagram` exists as a
+ * platform. Returning it anyway would let already-published rows crowd the
+ * caller's limited candidate budget until a genuinely publishable video (which
+ * sorts behind them the moment it carries one failure) never surfaced at all.
+ * An empty `platforms` therefore returns nothing: every row is vacuously
+ * fully-blocked.
+ *
+ * `blockedPlatforms` itself is NOT filtered by `platforms` — it reports every
+ * platform database state rules out, so a caller can distinguish "not declared"
+ * from "declared but blocked".
  *
  * The three conditions the DAO cannot see — the platform's quota, its
  * credential, and whether the video file still exists on disk — are the
@@ -272,18 +314,24 @@ export interface ChannelVideoCandidate extends PublishableVideo {
  *
  * Order: fewest prior failed rows of any kind first (spreads attempts during
  * a channel-wide outage instead of hammering one video), then newest library
- * row (fresh trend content over stale), then job id for determinism.
+ * row (fresh trend content over stale), then job id for determinism. Bounded
+ * by a SQL LIMIT, not a JS truncation: the fully-blocked drop test is
+ * expressible against `platforms`, so a channel's whole publish history (every
+ * `metadata_json` included) never has to be loaded to return `limit` rows.
  */
 export function channelVideoCandidates(
   db: Database,
   channel: string,
+  platforms: readonly Platform[],
   limit: number,
 ): ChannelVideoCandidate[] {
+  // `platform IN ()` is a syntax error, and the answer is [] regardless.
+  if (platforms.length === 0) return []
+  const platformParams = platforms.map(() => '?').join(', ')
   const rows = db
     .prepare(
       `SELECT l.job_id AS jobId, l.video_path AS videoPath, lo.object_key AS objectKey,
-              l.metadata_json AS metadataJson, j.topic AS topic,
-              COALESCE(agg.failedCount, 0) AS failedCount
+              l.metadata_json AS metadataJson, j.topic AS topic
        FROM library l
        JOIN jobs j ON j.id = l.job_id
        LEFT JOIN library_objects lo ON lo.job_id = l.job_id
@@ -291,56 +339,52 @@ export function channelVideoCandidates(
          SELECT job_id, SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedCount
          FROM publishes GROUP BY job_id
        ) agg ON agg.job_id = l.job_id
+       LEFT JOIN (
+         SELECT job_id, COUNT(*) AS blockedCount FROM (
+           ${BLOCKING_AGGREGATE} WHERE platform IN (${platformParams})
+           GROUP BY job_id, platform
+         ) WHERE ${BLOCKED_PREDICATE}
+         GROUP BY job_id
+       ) blk ON blk.job_id = l.job_id
        WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) AND j.channel = ?
-       ORDER BY COALESCE(agg.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC`,
+             AND COALESCE(blk.blockedCount, 0) < ?
+       ORDER BY COALESCE(agg.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
+       LIMIT ?`,
     )
-    .all(channel) as (PublishableVideo & { failedCount: number })[]
+    .all(...platforms, MAX_PUBLISH_ATTEMPTS, channel, platforms.length, limit) as PublishableVideo[]
+  if (rows.length === 0) return []
 
-  // Every blocking fact for this channel's jobs, in ONE grouped read rather
-  // than a query per row — the walk below is a Map lookup. Scoped by channel so
-  // an unrelated channel's history is never scanned.
+  // Every blocking fact for the rows actually returned, in ONE grouped read
+  // rather than a query per row — the walk below is a Map lookup. Keyed by the
+  // selected job ids (already channel-scoped by the query above), so the read
+  // is bounded by `limit` no matter how long the channel's history grows.
+  const jobParams = rows.map(() => '?').join(', ')
   const blocking = db
     .prepare(
-      `SELECT p.job_id AS jobId, p.platform AS platform,
-              SUM(CASE WHEN p.status IN ('done','claimed','interrupted') THEN 1 ELSE 0 END) AS blockingCount,
-              SUM(CASE WHEN p.status = 'failed' AND p.error_kind = 'rejected' THEN 1 ELSE 0 END) AS rejectedCount
-       FROM publishes p
-       JOIN jobs j ON j.id = p.job_id
-       WHERE j.channel = ?
-       GROUP BY p.job_id, p.platform`,
+      `SELECT job_id AS jobId, platform FROM (
+         ${BLOCKING_AGGREGATE} WHERE job_id IN (${jobParams}) GROUP BY job_id, platform
+       ) WHERE ${BLOCKED_PREDICATE}`,
     )
-    .all(channel) as {
+    .all(...rows.map((r) => r.jobId), MAX_PUBLISH_ATTEMPTS) as {
     jobId: string
     platform: Platform
-    blockingCount: number
-    rejectedCount: number
   }[]
 
   const blockedByJob = new Map<string, Platform[]>()
   for (const b of blocking) {
-    if (b.blockingCount === 0 && b.rejectedCount < MAX_PUBLISH_ATTEMPTS) continue
     const list = blockedByJob.get(b.jobId) ?? []
     list.push(b.platform)
     blockedByJob.set(b.jobId, list)
   }
 
-  const out: ChannelVideoCandidate[] = []
-  for (const row of rows) {
-    if (out.length >= limit) break
-    const blockedPlatforms = [...(blockedByJob.get(row.jobId) ?? [])].sort()
-    // Every platform blocked means no caller could ever use this row — dropping
-    // it here keeps the tick's scan budget for rows it can act on.
-    if (blockedPlatforms.length >= PUBLISH_PLATFORMS.length) continue
-    out.push({
-      jobId: row.jobId,
-      videoPath: row.videoPath,
-      objectKey: row.objectKey,
-      metadataJson: row.metadataJson,
-      topic: row.topic,
-      blockedPlatforms,
-    })
-  }
-  return out
+  return rows.map((row) => ({
+    jobId: row.jobId,
+    videoPath: row.videoPath,
+    objectKey: row.objectKey,
+    metadataJson: row.metadataJson,
+    topic: row.topic,
+    blockedPlatforms: [...(blockedByJob.get(row.jobId) ?? [])].sort(),
+  }))
 }
 
 // Manual resolution path (design spec §7 `publish retry`): interrupted →

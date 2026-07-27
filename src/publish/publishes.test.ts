@@ -15,6 +15,7 @@ import {
   uploadsUsedToday,
   videosPublishedToday,
 } from './publishes.js'
+import { PUBLISH_PLATFORMS } from './types.js'
 
 // Raw-insert seed: publishes.job_id references jobs(id) (FKs are OFF, but
 // every fixture stays realistic — channelVideoCandidates' JOIN through jobs
@@ -232,18 +233,23 @@ describe('claimPublish seq', () => {
       }
       return originalPrepare(sql)
     })
-    expect(
-      claimPublish(db, {
-        jobId: 'job-1',
-        platform: 'youtube',
-        channel: 'chan-a',
-        day: '2026-07-22',
-      }),
-    ).toBeNull()
-    // The failed INSERT is rolled back whole: still exactly the one seeded
-    // row, no half-written attempt counter.
-    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 1 })
-    prepareSpy.mockRestore()
+    // try/finally, not an inline restore: a throwing assertion below would
+    // otherwise leak the db.prepare spy into every later test in this file.
+    try {
+      expect(
+        claimPublish(db, {
+          jobId: 'job-1',
+          platform: 'youtube',
+          channel: 'chan-a',
+          day: '2026-07-22',
+        }),
+      ).toBeNull()
+      // The failed INSERT is rolled back whole: still exactly the one seeded
+      // row, no half-written attempt counter.
+      expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 1 })
+    } finally {
+      prepareSpy.mockRestore()
+    }
     db.close()
   })
 
@@ -566,7 +572,7 @@ describe('uploadsUsedToday', () => {
 describe('channelVideoCandidates', () => {
   it('returns nothing for a channel with no publishable library rows', () => {
     const db = openDb(':memory:')
-    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([])
     db.close()
   })
 
@@ -574,7 +580,7 @@ describe('channelVideoCandidates', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a', topic: 'ready topic' })
     seedLibrary(db, 'job-1', { state: 'ready' })
-    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([
       {
         jobId: 'job-1',
         videoPath: '/tmp/out.mp4',
@@ -595,7 +601,9 @@ describe('channelVideoCandidates', () => {
     seedLibrary(db, 'job-ready', { state: 'ready' })
     seedLibrary(db, 'job-review', { state: 'needs-review' })
     seedLibrary(db, 'job-blocked', { state: 'blocked' })
-    expect(channelVideoCandidates(db, 'chan-a', 10).map((r) => r.jobId)).toEqual(['job-ready'])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10).map((r) => r.jobId)).toEqual(
+      ['job-ready'],
+    )
     db.close()
   })
 
@@ -609,7 +617,9 @@ describe('channelVideoCandidates', () => {
     db.prepare(
       "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('job-1', 'videos/chan-a/job-1.mp4', 10, 'e')",
     ).run()
-    expect(channelVideoCandidates(db, 'chan-a', 10)[0].objectKey).toBe('videos/chan-a/job-1.mp4')
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].objectKey).toBe(
+      'videos/chan-a/job-1.mp4',
+    )
     db.close()
   })
 
@@ -624,7 +634,9 @@ describe('channelVideoCandidates', () => {
       day: '2026-07-22',
     })
     markPublishDone(db, claim!.id, 'yt-1', 'https://youtu.be/yt-1', new Date())
-    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual(['youtube'])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
+      ['youtube'],
+    )
     db.close()
   })
 
@@ -638,7 +650,9 @@ describe('channelVideoCandidates', () => {
       channel: 'chan-a',
       day: '2026-07-22',
     })
-    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual(['instagram'])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
+      ['instagram'],
+    )
     db.close()
   })
 
@@ -655,7 +669,9 @@ describe('channelVideoCandidates', () => {
       })
       markPublishFailed(db, claim!.id, 'bad video', 'rejected', new Date())
     }
-    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual(['youtube'])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
+      ['youtube'],
+    )
     db.close()
   })
 
@@ -670,7 +686,9 @@ describe('channelVideoCandidates', () => {
       day: '2026-07-22',
     })
     markPublishFailed(db, claim!.id, 'network', 'transient', new Date())
-    expect(channelVideoCandidates(db, 'chan-a', 10)[0].blockedPlatforms).toEqual([])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
+      [],
+    )
     db.close()
   })
 
@@ -687,7 +705,85 @@ describe('channelVideoCandidates', () => {
       })
       markPublishDone(db, claim!.id, `${platform}-1`, 'https://example.test/x', new Date())
     }
-    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([])
+    db.close()
+  })
+
+  // "Every platform" means every platform the CHANNEL declares, not every
+  // platform the codebase knows about. A single-platform channel's published
+  // video is finished even though a second platform exists in PUBLISH_PLATFORMS.
+  it('omits a video published to the only platform the channel declares', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'published' })
+    const claim = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    markPublishDone(db, claim!.id, 'yt-1', 'https://youtu.be/yt-1', new Date())
+    expect(channelVideoCandidates(db, 'chan-a', ['youtube'], 10)).toEqual([])
+    // Still open — and still reported blocked on youtube — for a channel that
+    // also declares instagram.
+    expect(
+      channelVideoCandidates(db, 'chan-a', ['youtube', 'instagram'], 10)[0].blockedPlatforms,
+    ).toEqual(['youtube'])
+    db.close()
+  })
+
+  // Regression (final-review Fix 1): the drop test used to compare against the
+  // GLOBAL platform count, so on a youtube-only channel an already-published
+  // video (blockedPlatforms ['youtube'], 1 < 2) was still returned and still
+  // consumed one of the caller's `limit` slots. Because ordering is
+  // failedCount ASC first, a genuinely publishable video carrying one
+  // 'transient' failure sorts BEHIND every zero-failure row — so once a
+  // channel accumulated `limit` published rows (~17 days at 3/day) it was
+  // never returned at all, and the tick reported no-ready-video while a
+  // publishable video sat in the library.
+  it('returns a once-failed video that published rows would otherwise crowd out', () => {
+    const db = openDb(':memory:')
+    const limit = 5
+    // limit + 1 already-published videos, all newer than the failed one, each
+    // done on the channel's only declared platform.
+    for (let i = 0; i <= limit; i++) {
+      const jobId = `job-done-${i}`
+      seedJob(db, jobId, { channel: 'chan-a' })
+      seedLibrary(db, jobId, {
+        state: 'published',
+        createdAt: `2026-07-2${i}T00:00:00.000Z`,
+      })
+      const claim = claimPublish(db, {
+        jobId,
+        platform: 'youtube',
+        channel: 'chan-a',
+        day: `2026-07-2${i}`,
+      })
+      markPublishDone(db, claim!.id, `yt-${i}`, `https://youtu.be/yt-${i}`, new Date())
+    }
+    seedJob(db, 'job-hurt', { channel: 'chan-a' })
+    seedLibrary(db, 'job-hurt', { state: 'ready', createdAt: '2026-07-10T00:00:00.000Z' })
+    const hurt = claimPublish(db, {
+      jobId: 'job-hurt',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-19',
+    })
+    markPublishFailed(db, hurt!.id, 'network', 'transient', new Date())
+
+    expect(channelVideoCandidates(db, 'chan-a', ['youtube'], limit).map((r) => r.jobId)).toEqual([
+      'job-hurt',
+    ])
+    db.close()
+  })
+
+  // A channel declaring no platform has nothing to publish, and `platform IN ()`
+  // is not valid SQL — so this is an explicit early return, asserted.
+  it('returns nothing when no platforms are declared', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    expect(channelVideoCandidates(db, 'chan-a', [], 10)).toEqual([])
     db.close()
   })
 
@@ -706,11 +802,9 @@ describe('channelVideoCandidates', () => {
       day: '2026-07-22',
     })
     markPublishFailed(db, claim!.id, 'network', 'transient', new Date())
-    expect(channelVideoCandidates(db, 'chan-a', 10).map((r) => r.jobId)).toEqual([
-      'job-new',
-      'job-old',
-      'job-hurt',
-    ])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10).map((r) => r.jobId)).toEqual(
+      ['job-new', 'job-old', 'job-hurt'],
+    )
     db.close()
   })
 
@@ -720,7 +814,7 @@ describe('channelVideoCandidates', () => {
     seedJob(db, 'job-2', { channel: 'chan-a' })
     seedLibrary(db, 'job-1', { state: 'ready' })
     seedLibrary(db, 'job-2', { state: 'ready' })
-    expect(channelVideoCandidates(db, 'chan-a', 1)).toHaveLength(1)
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 1)).toHaveLength(1)
     db.close()
   })
 
@@ -728,7 +822,7 @@ describe('channelVideoCandidates', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-b' })
     seedLibrary(db, 'job-1', { state: 'ready' })
-    expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([])
+    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([])
     db.close()
   })
 })
