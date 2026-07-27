@@ -21,9 +21,10 @@ cp .env.example .env          # provider keys — see README for which are requi
 docker compose up -d whisperx # caption-alignment sidecar (captions + ElevenLabs-fallback)
 
 pnpm build                    # tsc --noEmit on both src/ and remotion/ — no emit, type-check only
-pnpm test                     # vitest run — mocked providers, real ffmpeg/Remotion
+pnpm test                     # vitest run — mocked providers, real ffmpeg/Remotion (~20s warm)
                                # a globalSetup esbuilds src/ -> dist/ first (~19ms);
                                # CLI tests spawn `node dist/cli.js` via src/testing/run-cli.ts
+pnpm test:coverage            # same run + v8 coverage -> coverage/ (report-only, no thresholds)
 pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one LLM call
 
 pnpm brainrot produce --channel channels/<name>.toml --topic "..."
@@ -296,19 +297,26 @@ Conventions:
   by nature (proving module A must not load module B means loading B), so they
   are kept out of behavior files that would otherwise be instant.
 
-**Performance.** Wall clock is set by the slowest single file, since the suite
-already parallelizes ~5.7×; `src/jobs/golden-path.test.ts` is the floor at ~40s
-(one indivisible e2e render). `scripts/vitest-sequencer.ts` starts the known-slow
-files first because Vitest orders by byte size, which is uncorrelated with
-runtime here — `remotion/remotion.test.ts` is 36 lines and bundles a Remotion
-composition. `src/testing/sequencer.test.ts` fails if an entry in that list stops
-matching a real file, so it cannot silently rot again.
+**Performance.** The suite runs ~20s wall / ~105s CPU for 848 tests (warm; a
+first run after `pnpm install` is slower while the Remotion webpack cache in
+`node_modules/.cache` fills). Wall clock is set by the slowest single file, not
+by the total — `src/jobs/golden-path.test.ts` is the floor at ~16s, one
+indivisible e2e render. That also means CPU spent anywhere shows up everywhere:
+cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
+`golden-path`, `assemble` and `remotion` too, purely by ending the contention.
 
-When a test asserts on *selection* rather than on encoded output, give it cheap
-inputs — `visuals-volume.test.ts` went from 45.9s to ~5s by handing its six
-selection tests a 0.2s 320×180 source and a 100ms narration instead of the full
-2s clip the one output-contract test needs. Fixtures that several tests share
-are encoded once in `beforeAll` and copied (`qc.test.ts`'s `goodClip`).
+`scripts/vitest-sequencer.ts` starts the known-slow files first because Vitest
+orders by byte size, which is uncorrelated with runtime here —
+`remotion/remotion.test.ts` is 36 lines and bundles a Remotion composition.
+`src/testing/sequencer.test.ts` fails if an entry in that list stops matching a
+real file, so it cannot silently rot again.
+
+When a test asserts on _selection_ rather than on encoded output, give it cheap
+inputs: `visuals-volume.test.ts` went 36s → 9.7s by handing its six selection
+tests a 0.2s 320×180 source and a 100ms narration, instead of the 2s clip the
+one output-contract test actually needs. Fixtures several tests share are
+encoded once in `beforeAll` and copied — `qc.test.ts` re-encoded the same
+1080×1920 clip five times (28s → 7.4s).
 
 ### Test-only build
 

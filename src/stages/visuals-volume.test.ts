@@ -29,13 +29,20 @@ const SELECTION_CLIP = { seconds: 0.2, size: '320x180' }
 async function encodeClip(file: string, spec: { seconds: number; size: string }): Promise<void> {
   // Non-1080x1920 on purpose: forces the stage's crop path.
   await execa('ffmpeg', [
-    '-f', 'lavfi',
-    '-i', `testsrc2=duration=${spec.seconds}:size=${spec.size}:rate=30`,
-    '-f', 'lavfi',
-    '-i', `sine=frequency=440:duration=${spec.seconds}`,
-    '-c:v', 'libx264',
-    '-pix_fmt', 'yuv420p',
-    '-c:a', 'aac',
+    '-f',
+    'lavfi',
+    '-i',
+    `testsrc2=duration=${spec.seconds}:size=${spec.size}:rate=30`,
+    '-f',
+    'lavfi',
+    '-i',
+    `sine=frequency=440:duration=${spec.seconds}`,
+    '-c:v',
+    'libx264',
+    '-pix_fmt',
+    'yuv420p',
+    '-c:a',
+    'aac',
     file,
     '-y',
   ])

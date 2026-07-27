@@ -89,7 +89,11 @@ export interface LibraryRow {
   createdAt: string | null
 }
 
-export function seedLibrary(db: Database, jobId: string, overrides: Partial<LibraryRow> = {}): void {
+export function seedLibrary(
+  db: Database,
+  jobId: string,
+  overrides: Partial<LibraryRow> = {},
+): void {
   const row = {
     videoPath: `/runs/${jobId}/assemble/final.mp4`,
     metadataJson: '{}',
@@ -156,7 +160,18 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     createdAt: null,
     ...overrides,
   }
-  const cols = ['channel', 'title', 'raw_title', 'source', 'url', 'dedupe_hash', 'score', 'reason', 'status', 'job_id']
+  const cols = [
+    'channel',
+    'title',
+    'raw_title',
+    'source',
+    'url',
+    'dedupe_hash',
+    'score',
+    'reason',
+    'status',
+    'job_id',
+  ]
   const vals: unknown[] = [
     row.channel,
     row.title,
@@ -194,7 +209,11 @@ export interface PublishRow {
   finishedAt: string | null
 }
 
-export function seedPublish(db: Database, jobId: string, overrides: Partial<PublishRow> = {}): void {
+export function seedPublish(
+  db: Database,
+  jobId: string,
+  overrides: Partial<PublishRow> = {},
+): void {
   const row = {
     platform: 'youtube',
     channel: 'chan-a',
@@ -211,12 +230,32 @@ export function seedPublish(db: Database, jobId: string, overrides: Partial<Publ
     ...overrides,
   }
   const cols = [
-    'job_id', 'platform', 'channel', 'day', 'slot', 'status',
-    'post_id', 'url', 'error', 'error_kind', 'attempt', 'finished_at',
+    'job_id',
+    'platform',
+    'channel',
+    'day',
+    'slot',
+    'status',
+    'post_id',
+    'url',
+    'error',
+    'error_kind',
+    'attempt',
+    'finished_at',
   ]
   const vals: unknown[] = [
-    jobId, row.platform, row.channel, row.day, row.slot, row.status,
-    row.postId, row.url, row.error, row.errorKind, row.attempt, row.finishedAt,
+    jobId,
+    row.platform,
+    row.channel,
+    row.day,
+    row.slot,
+    row.status,
+    row.postId,
+    row.url,
+    row.error,
+    row.errorKind,
+    row.attempt,
+    row.finishedAt,
   ]
   if (row.createdAt !== null) {
     cols.push('created_at')
@@ -241,7 +280,12 @@ export function seedCost(
   if (createdAt === null) {
     db.prepare(
       'INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES (?, ?, ?, ?)',
-    ).run(jobId, overrides.provider ?? 'anthropic', overrides.operation ?? 'script', overrides.usdMicros ?? 1000)
+    ).run(
+      jobId,
+      overrides.provider ?? 'anthropic',
+      overrides.operation ?? 'script',
+      overrides.usdMicros ?? 1000,
+    )
   } else {
     db.prepare(
       'INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, ?, ?, ?, ?)',
