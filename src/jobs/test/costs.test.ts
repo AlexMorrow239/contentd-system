@@ -15,6 +15,7 @@ import {
   recordCost,
 } from '../costs.js'
 import { tmpDir } from '../../testing/tmp.js'
+import { BrainrotError, classify } from '../../errors.js'
 
 function tempDb() {
   const dir = tmpDir('brainrot-costs-')
@@ -302,5 +303,22 @@ describe('globalDailyCapMicros + assertGlobalDayBudget', () => {
     expect(caught).not.toBeInstanceOf(BudgetExceededError)
     expect((caught as Error).message).toMatch(/BRAINROT_GLOBAL_DAILY_USD/)
     db.close()
+  })
+})
+
+describe('BudgetExceededError classification', () => {
+  it('is a BrainrotError classified job/budget, keeping its reason field', () => {
+    const err = new BudgetExceededError('per-video cap 500000 exceeded')
+    expect(err).toBeInstanceOf(BrainrotError)
+    expect(err).toBeInstanceOf(BudgetExceededError)
+    expect(err.name).toBe('BudgetExceededError')
+    expect(err.reason).toBe('per-video cap 500000 exceeded')
+    expect(err.message).toBe('per-video cap 500000 exceeded')
+    expect(classify(err)).toMatchObject({
+      domain: 'job',
+      kind: 'budget',
+      code: 'job/budget',
+      message: 'per-video cap 500000 exceeded',
+    })
   })
 })

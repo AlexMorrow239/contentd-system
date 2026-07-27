@@ -1,13 +1,19 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
+import { BrainrotError } from '../errors.js'
 
 // Operator-level safety net across ALL channels (design spec §5).
 const DEFAULT_GLOBAL_DAILY_USD = 25
 
-export class BudgetExceededError extends Error {
-  constructor(public reason: string) {
-    super(reason)
+export class BudgetExceededError extends BrainrotError {
+  // Not a `declare`: `reason` is a genuinely new own field, not a narrowing of
+  // a base one. It duplicates `message` by design — callers read it by name.
+  readonly reason: string
+
+  constructor(reason: string) {
+    super(reason, { domain: 'job', kind: 'budget' })
     this.name = 'BudgetExceededError'
+    this.reason = reason
   }
 }
 

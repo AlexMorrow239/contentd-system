@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
+import { BrainrotError } from '../errors.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
@@ -23,7 +24,12 @@ export interface TickResult {
 
 // The topic slipped away between planning and claiming. Its own class so the
 // claim transaction's rollback throw stays distinguishable from a real crash.
-class ClaimConflictError extends Error {}
+class ClaimConflictError extends BrainrotError {
+  constructor(message: string) {
+    super(message, { domain: 'job', kind: 'conflict' })
+    this.name = 'ClaimConflictError'
+  }
+}
 
 /**
  * One unit of work per invocation: resume the planner's blocked job, or claim
