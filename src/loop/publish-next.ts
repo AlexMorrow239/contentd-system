@@ -25,7 +25,7 @@ import {
   PublishOutcomeUnknownError,
   resolvePlatformMeta,
 } from '../publish/types.js'
-import type { Platform, PublishAdapter } from '../publish/types.js'
+import type { Platform, PublishAdapter, PublishTargetConfig } from '../publish/types.js'
 import type { ObjectStore } from '../storage/types.js'
 import { acquireLease, extendLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
 
@@ -36,8 +36,16 @@ export interface PublishAttemptResult {
    * 'unknown' is the platform-accepted-but-unreadable case: the row stays
    * 'claimed' for the repair sweep, never 'failed', because marking it failed
    * would publish the same video twice.
+   *
+   * 'skipped' means this platform was never attempted at all: the fan-out
+   * stopped because a mid-fan-out lease heartbeat (`extendLease`) came back
+   * `false`, meaning this holder was already evicted by a takeover. A second
+   * live process may already be claiming platforms for this same video, so
+   * continuing could claim (and publish) the same platform twice under two
+   * holders. No `publishes` row exists for a 'skipped' entry — nothing was
+   * claimed for it.
    */
-  status: 'published' | 'failed' | 'unknown'
+  status: 'published' | 'failed' | 'unknown' | 'skipped'
   seq?: number
   postId?: string
   url?: string
@@ -60,7 +68,11 @@ export interface PublishTickResult {
     | 'config-error'
   channel?: string
   jobId?: string
-  /** One entry per platform attempted, in the channel's target order. */
+  /**
+   * One entry per platform the fan-out reached, in the channel's target
+   * order — including a trailing 'skipped' run for platforms the fan-out
+   * abandoned after losing the lease (see PublishAttemptResult['status']).
+   */
   results?: PublishAttemptResult[]
   error?: string
   wouldPublish?: {
@@ -271,7 +283,7 @@ export async function publishNextTick(
       | {
           channel: ChannelConfig
           video: ChannelVideoCandidate
-          platforms: Platform[]
+          targets: PublishTargetConfig[]
           tokenKey: Buffer
         }
       | undefined
@@ -279,7 +291,7 @@ export async function publishNextTick(
     for (const candidate of ordered) {
       const channel = channels.find((c) => c.name === candidate.channel)
       if (channel === undefined || channel.publish === null) continue
-      const declared = channel.publish.targets.map((t) => t.platform)
+      const declared = channel.publish.targets
       // MAX_VIDEO_FILE_SCANS bounds the walk: a wholesale runs/ prune with no
       // stored objects is the only way to reach it, and giving up is harmless —
       // the next tick starts the scan over.
@@ -292,8 +304,9 @@ export async function publishNextTick(
           if (firstReason === undefined) firstReason = 'no-video-file'
           continue
         }
-        const open: Platform[] = []
-        for (const platform of declared) {
+        const open: PublishTargetConfig[] = []
+        for (const target of declared) {
+          const platform = target.platform
           if (video.blockedPlatforms.includes(platform)) continue
           if (!underQuota(platform, channel.name)) {
             if (firstReason === undefined) firstReason = 'platform-quota'
@@ -308,13 +321,13 @@ export async function publishNextTick(
             if (firstReason === undefined) firstReason = 'no-auth'
             continue
           }
-          open.push(platform)
+          open.push(target)
         }
         if (open.length === 0) continue
         // `open` is non-empty only if the credential gate above ran
         // hasCredential, which it can only do with a key in hand — so the cast
         // records an invariant the control flow already proved.
-        picked = { channel, video, platforms: open, tokenKey: tokenKey as Buffer }
+        picked = { channel, video, targets: open, tokenKey: tokenKey as Buffer }
         break
       }
       if (picked !== undefined) break
@@ -327,7 +340,8 @@ export async function publishNextTick(
         : { action: 'noop', reason: firstReason }
     }
 
-    const { channel: pickedChannel, video, platforms, tokenKey: pickedTokenKey } = picked
+    const { channel: pickedChannel, video, targets, tokenKey: pickedTokenKey } = picked
+    const platforms = targets.map((t) => t.platform)
 
     if (dryRun) {
       // The preview shows one title, so it shows the first platform's — each
@@ -346,20 +360,29 @@ export async function publishNextTick(
     }
 
     const results: PublishAttemptResult[] = []
-    for (const [index, platform] of platforms.entries()) {
+    for (const [index, target] of targets.entries()) {
+      const platform = target.platform
       // Heartbeat before every platform after the first: Instagram's
       // container-create-then-poll can outlast the 30-minute lease, and losing
       // it mid-fan-out would let a second tick publish the same video again.
-      if (index > 0) extendLease(db, 'publish', holder, PUBLISH_LEASE_TTL_MS)
-
-      // Resolved BEFORE the claim: nothing may throw between the claim and the
-      // upload, or a thrown row sits 'claimed' until the sweep heals it.
-      const target = pickedChannel.publish?.targets.find((t) => t.platform === platform)
-      if (target === undefined) {
-        throw new Error(
-          `publishNextTick: channel ${pickedChannel.name} missing ${platform} target at claim time`,
-        )
+      if (index > 0 && !extendLease(db, 'publish', holder, PUBLISH_LEASE_TTL_MS)) {
+        // `false` means this holder was already evicted by a takeover (see
+        // extendLease's doc comment in lease.ts) — a second live process may
+        // already be claiming platforms for this same video. Stop the
+        // fan-out here rather than claim (and possibly publish) a platform
+        // that tick has also picked up; the legs already collected above are
+        // still reported truthfully, and every remaining platform is recorded
+        // as 'skipped' so it does not silently vanish from the JSON line.
+        for (const remaining of targets.slice(index)) {
+          results.push({
+            platform: remaining.platform,
+            status: 'skipped',
+            error: 'publish lease lost mid-fan-out (evicted by a takeover); not attempted',
+          })
+        }
+        break
       }
+
       const meta = resolvePlatformMeta(video.metadataJson, platform, video.topic)
 
       // The UNIQUE(channel, platform, day, seq) constraint is the real guard; a
@@ -449,8 +472,8 @@ export async function publishNextTick(
 
     return {
       // A partial fan-out still published a video, so it is not a failed tick —
-      // the per-platform entries carry the failures, and the CLI exits 1 when
-      // any of them is 'failed'.
+      // the per-platform entries carry the failures/unknowns/skips, and
+      // publishExitCode below decides the CLI's exit code from them.
       action: results.some((r) => r.status === 'published') ? 'published' : 'publish-failed',
       channel: pickedChannel.name,
       jobId: video.jobId,
@@ -459,4 +482,22 @@ export async function publishNextTick(
   } finally {
     if (!dryRun) releaseLease(db, 'publish', holder)
   }
+}
+
+/**
+ * Pure exit-code decision for the `publish-next` CLI command, extracted so it
+ * is unit-testable without a subprocess: the CLI tests for this command are
+ * subprocess-only and cannot force a partial fan-out without real
+ * credentials. `action: 'publish-failed'` always exits 1 (every attempted
+ * platform failed outright). Otherwise, ANY result entry that is not
+ * 'published' — 'failed', 'unknown', or 'skipped' — exits 1: each of those
+ * means a `publishes` row needs operator attention (a live post whose
+ * outcome is unreadable, a platform abandoned mid-fan-out, or an outright
+ * failure). Every noop and dry-run reason carries no `results` at all, so
+ * they fall through to 0.
+ */
+export function publishExitCode(result: PublishTickResult): number {
+  if (result.action === 'publish-failed') return 1
+  if (result.results?.some((r) => r.status !== 'published')) return 1
+  return 0
 }

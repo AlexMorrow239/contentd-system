@@ -8,7 +8,7 @@ import { loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './config
 import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from './scout/scout.js'
 import { acquireLease, releaseLease } from './loop/lease.js'
 import { produceNextTick } from './loop/produce-next.js'
-import { publishNextTick } from './loop/publish-next.js'
+import { publishExitCode, publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
 import { openDb } from './db/index.js'
 import {
@@ -351,11 +351,11 @@ program
           force: opts.force,
         })
         // One cron-greppable JSON line. Exit 1 when ANY platform in the fan-out
-        // failed — a partial success still needs to be visible to cron — while
-        // every noop and dry-run preview stays a benign exit 0.
+        // is not 'published' — failed, unknown, or skipped all need operator
+        // attention — a partial success still needs to be visible to cron —
+        // while every noop and dry-run preview stays a benign exit 0.
         process.stdout.write(JSON.stringify(result) + '\n')
-        const anyFailed = result.results?.some((r) => r.status === 'failed') ?? false
-        process.exitCode = result.action === 'publish-failed' || anyFailed ? 1 : 0
+        process.exitCode = publishExitCode(result)
       } finally {
         db.close()
       }

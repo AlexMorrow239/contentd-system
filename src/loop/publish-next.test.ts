@@ -20,7 +20,8 @@ import { YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
 import { PublishError, PublishOutcomeUnknownError } from '../publish/types.js'
 import { fakeStore } from '../storage/fake.js'
 import { acquireLease, extendLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
-import { publishNextTick } from './publish-next.js'
+import { publishExitCode, publishNextTick } from './publish-next.js'
+import type { PublishTickResult } from './publish-next.js'
 
 // Spies claimPublish so the claim-conflict test can force a `null` return
 // (a racing-tick claim collision the publish lease makes unreachable in a
@@ -1558,6 +1559,51 @@ describe('publishNextTick — fan-out across every declared platform', () => {
     db.close()
   })
 
+  // Regression test for the double-publish bug: leg 1 (instagram) runs past
+  // the lease TTL, a takeover tick claims the lease, and THEN leg 1's
+  // heartbeat comes back `false` because this holder was already evicted.
+  // Continuing to leg 2 (youtube) here — ignoring the `false` — would let
+  // this holder claim and upload youtube out from under the new holder,
+  // posting it twice. The fan-out must stop instead: report instagram's real
+  // success, never call youtube's upload, and leave no youtube row behind.
+  it('stops the fan-out and reports the rest skipped when a mid-fan-out heartbeat reports eviction', async () => {
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-evicted-')
+    const youtubeUpload = vi.fn(adapters.youtube.upload)
+    const watched: Record<Platform, PublishAdapter> = {
+      ...adapters,
+      youtube: { ...adapters.youtube, upload: youtubeUpload },
+    }
+    // Only one extendLease call happens in a two-platform fan-out (before the
+    // second leg, instagram then youtube by target order) — make that one
+    // call report eviction.
+    vi.mocked(extendLease).mockReturnValueOnce(false)
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: watched,
+      now: FANOUT_NOW,
+    })
+    expect(result.action).toBe('published')
+    expect(result.results).toEqual([
+      {
+        platform: 'instagram',
+        status: 'published',
+        seq: 1,
+        postId: 'ig-1',
+        url: 'https://instagram.test/ig-1',
+      },
+      {
+        platform: 'youtube',
+        status: 'skipped',
+        error: expect.stringContaining('lease'),
+      },
+    ])
+    expect(youtubeUpload).not.toHaveBeenCalled()
+    // No publishes row at all for the skipped platform — nothing was claimed
+    // for it, so there is nothing for the sweep to heal either.
+    expect(listPublishes(db).find((r) => r.platform === 'youtube')).toBeUndefined()
+    db.close()
+  })
+
   it('dry-run previews the video and every platform it would reach, writing nothing', async () => {
     const { db, dir, jobId, adapters } = fanOutFixture('brainrot-publish-fanout-dryrun-')
     const result = await publishNextTick(db, {
@@ -1616,6 +1662,94 @@ describe('publishNextTick — fan-out across every declared platform', () => {
     ])
     expect(seen).toEqual(['archived video bytes', 'archived video bytes'])
     db.close()
+  })
+})
+
+describe('publishExitCode (in-process)', () => {
+  it('is 0 when every result published', () => {
+    const result: PublishTickResult = {
+      action: 'published',
+      channel: 'test',
+      jobId: 'job-1',
+      results: [
+        { platform: 'instagram', status: 'published', seq: 1 },
+        { platform: 'youtube', status: 'published', seq: 1 },
+      ],
+    }
+    expect(publishExitCode(result)).toBe(0)
+  })
+
+  it('is 1 when any result is failed', () => {
+    const result: PublishTickResult = {
+      action: 'published',
+      channel: 'test',
+      jobId: 'job-1',
+      results: [
+        { platform: 'instagram', status: 'published', seq: 1 },
+        { platform: 'youtube', status: 'failed', error: 'bad video' },
+      ],
+    }
+    expect(publishExitCode(result)).toBe(1)
+  })
+
+  it('is 1 when any result is unknown', () => {
+    const result: PublishTickResult = {
+      action: 'published',
+      channel: 'test',
+      jobId: 'job-1',
+      results: [
+        { platform: 'instagram', status: 'unknown', error: 'no id in response' },
+        { platform: 'youtube', status: 'published', seq: 1 },
+      ],
+    }
+    expect(publishExitCode(result)).toBe(1)
+  })
+
+  it('is 1 when any result is skipped', () => {
+    const result: PublishTickResult = {
+      action: 'published',
+      channel: 'test',
+      jobId: 'job-1',
+      results: [
+        { platform: 'instagram', status: 'published', seq: 1 },
+        { platform: 'youtube', status: 'skipped', error: 'lease lost mid-fan-out' },
+      ],
+    }
+    expect(publishExitCode(result)).toBe(1)
+  })
+
+  it('is 1 when the action is publish-failed', () => {
+    const result: PublishTickResult = {
+      action: 'publish-failed',
+      channel: 'test',
+      jobId: 'job-1',
+      results: [{ platform: 'youtube', status: 'failed', error: 'nope' }],
+    }
+    expect(publishExitCode(result)).toBe(1)
+  })
+
+  it('is 0 for every noop/dry-run reason', () => {
+    const reasons: PublishTickResult[] = [
+      { action: 'noop', reason: 'lease-held' },
+      { action: 'noop', reason: 'no-publish-channel' },
+      { action: 'noop', reason: 'not-in-window' },
+      { action: 'noop', reason: 'paced' },
+      { action: 'noop', reason: 'daily-count-met' },
+      { action: 'noop', reason: 'platform-quota' },
+      { action: 'noop', reason: 'no-ready-video' },
+      { action: 'noop', reason: 'no-video-file' },
+      { action: 'noop', reason: 'no-auth' },
+      { action: 'noop', reason: 'bad-env' },
+      { action: 'noop', reason: 'config-error' },
+      { action: 'dry-run', wouldPublish: null },
+      {
+        action: 'dry-run',
+        wouldPublish: { channel: 'test', jobId: 'job-1', title: 't', platforms: ['youtube'] },
+      },
+    ]
+    for (const result of reasons) {
+      expect(publishExitCode(result)).toBe(0)
+    }
   })
 })
 
