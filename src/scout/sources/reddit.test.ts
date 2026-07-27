@@ -193,20 +193,20 @@ describe('redditSource', () => {
         url: 'https://www.reddit.com/r/space/comments/abc/jwst_finds_water_ice/',
         sourceId: 'reddit:r/space',
         externalId: 't3_abc',
-        contentHtml: undefined,
         targetUrl: undefined,
         postKind: 'link',
         author: 'someone',
+        automated: false,
       },
       {
         title: 'Starship booster catch, third attempt',
         url: 'https://www.reddit.com/r/space/comments/def/starship_booster_catch/',
         sourceId: 'reddit:r/space',
         externalId: 't3_def',
-        contentHtml: undefined,
         targetUrl: undefined,
         postKind: 'link',
         author: 'other',
+        automated: false,
       },
     ])
   })
@@ -246,10 +246,10 @@ describe('redditSource', () => {
         url: 'https://www.reddit.com/r/space/comments/ok/c/',
         sourceId: 'reddit:r/space',
         externalId: 't3_ok',
-        contentHtml: undefined,
         targetUrl: undefined,
         postKind: 'link',
         author: undefined,
+        automated: false,
       },
     ])
 

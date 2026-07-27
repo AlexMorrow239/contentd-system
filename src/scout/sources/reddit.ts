@@ -58,7 +58,9 @@ export const REDDIT_USER_AGENT =
 // delay every tick and still not cover the other-caller case.
 export const REDDIT_RETRY_DELAY_MS = 20_000
 
-function sleep(ms: number): Promise<void> {
+// Shared with prune-media.ts, which paces its own reddit refetches on the
+// same rate limit.
+export function sleep(ms: number): Promise<void> {
   return ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms))
 }
 
@@ -117,13 +119,15 @@ export function redditSource(
       const entries = parseFeedCandidates(await res.text(), id, `redditSource: r/${subreddit}`)
       // Annotate only — dropping is the scout's call, so it can count what it
       // dropped (a source returning a filtered array cannot report that).
-      return entries.slice(0, limit).map((candidate) => {
-        const targetUrl = redditLinkTarget(candidate.contentHtml)
+      return entries.slice(0, limit).map(({ contentHtml, author, ...candidate }) => {
+        const targetUrl = redditLinkTarget(contentHtml)
+        const name = redditAuthorName(author)
         return {
           ...candidate,
           targetUrl,
           postKind: classifyTarget(targetUrl),
-          author: redditAuthorName(candidate.author),
+          author: name,
+          automated: isAutomatedAuthor(name),
         }
       })
     },

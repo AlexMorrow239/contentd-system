@@ -1,8 +1,8 @@
 import type { Database } from 'better-sqlite3'
 import { errorMessage } from '../errors.js'
 import { parseFeedCandidates } from './sources/feed.js'
-import { classifyTarget } from './sources/post-kind.js'
-import { fetchRedditFeed, redditLinkTarget } from './sources/reddit.js'
+import { classifyTarget, isMediaPostKind } from './sources/post-kind.js'
+import { fetchRedditFeed, redditLinkTarget, sleep } from './sources/reddit.js'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash } from './sources/types.js'
 import type { FetchLike } from './sources/types.js'
 import { redditCandidates, rejectTopicWithReason, setTopicTargetUrl } from './topics.js'
@@ -36,10 +36,6 @@ export interface PruneMediaOpts {
   // that prints nothing for that long reads as hung. The CLI sends these to
   // stderr, keeping stdout's single-JSON-line contract intact.
   onProgress?: (progress: { index: number; total: number; topicId: number; outcome: string }) => void
-}
-
-function sleep(ms: number): Promise<void> {
-  return ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 // A stored permalink ends in '/', which the feed suffix replaces rather than
@@ -118,7 +114,7 @@ export async function pruneMedia(
       result.skipped.push({ topicId: row.id, reason: resolved.skip })
       outcome = `skipped (${resolved.skip})`
     } else {
-      const isImage = classifyTarget(resolved.target) === 'image'
+      const isImage = isMediaPostKind(classifyTarget(resolved.target))
       if (isImage) result.rejected += 1
       if (opts.dryRun !== true) {
         setTopicTargetUrl(db, row.id, resolved.target)

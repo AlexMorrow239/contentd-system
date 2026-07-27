@@ -6,7 +6,8 @@ import { BrainrotError, classify, errorMessage, tagError } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
 import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
-import { isAutomatedAuthor, redditSource } from './sources/reddit.js'
+import { isMediaPostKind } from './sources/post-kind.js'
+import { redditSource } from './sources/reddit.js'
 import { rssSource } from './sources/rss.js'
 import { ESTIMATED_SCOUT_COST_MICROS, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
@@ -133,13 +134,13 @@ export async function scoutChannel(
   // Dropped items get no topics row: re-dropping them next tick is free (the
   // filter is deterministic and pre-LLM), and the table keeps meaning "things
   // we actually considered".
-  const notMedia = candidates.filter((c) => c.postKind !== 'image')
+  const notMedia = candidates.filter((c) => !isMediaPostKind(c.postKind))
 
   // The other thing the scorer cannot see: AutoModerator's recurring scheduled
   // threads. Each week's instance is a distinct t3_ id, so the dedupe filter
   // below never catches them — without this they cost a scoring slot every
   // week, forever, across every subreddit that runs one.
-  const usable = notMedia.filter((c) => !isAutomatedAuthor(c.author))
+  const usable = notMedia.filter((c) => c.automated !== true)
 
   const result: ScoutChannelResult = {
     channel: channel.name,

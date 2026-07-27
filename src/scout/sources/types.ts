@@ -15,6 +15,10 @@ export interface TrendCandidate {
   // spec puts <author> at feed level for RSS sources, where it names the
   // publication rather than a person, so it carries no signal there.
   author?: string
+  // Whether `author` is a bot account whose posts are never viable topics
+  // (e.g. reddit's AutoModerator). Set by the source, same as postKind, so
+  // scoutChannel can decide without importing source-specific author logic.
+  automated?: boolean
   // Raw Atom <content> body, carried so the reddit source can interpret it.
   // Not consumed downstream of redditSource.
   contentHtml?: string
