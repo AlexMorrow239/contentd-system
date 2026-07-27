@@ -23,14 +23,21 @@ function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): 
 }
 
 // Reddit .rss fixture: the public Atom feed redditSource reads keylessly.
-// <entry><id> is the t3_ fullname, exactly as reddit serves it.
-function redditFeed(posts: { name: string; title: string }[]): string {
+// <entry><id> is the t3_ fullname, exactly as reddit serves it. `target` adds
+// the entity-encoded `[link]` anchor reddit uses to name the submission
+// target — omit it and the candidate classifies 'link' (the fail-open path).
+function redditFeed(posts: { name: string; title: string; target?: string }[]): string {
   const entries = posts
     .map(
       (p) => `<entry>
         <id>${p.name}</id>
         <link href="https://www.reddit.com/r/space/comments/${p.name}/" />
         <title>${p.title}</title>
+        ${
+          p.target === undefined
+            ? ''
+            : `<content type="html">&lt;a href=&quot;${p.target}&quot;&gt;[link]&lt;/a&gt;</content>`
+        }
       </entry>`,
     )
     .join('\n')
@@ -100,6 +107,7 @@ describe('scoutChannel', () => {
     expect(result).toEqual({
       channel: 'chan-a',
       fetched: 2,
+      droppedMedia: 0,
       alreadyKnown: 0,
       scored: 2,
       queued: 1,
@@ -128,6 +136,41 @@ describe('scoutChannel', () => {
     db.close()
   })
 
+  it('drops image candidates before scoring and counts them', async () => {
+    const db = memDb()
+    const channel = scoutedChannel()
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([
+        {
+          name: 't3_img',
+          title: 'Milky way over Yosemite',
+          target: 'https://i.redd.it/u0g9ashc6mfh1.jpeg',
+        },
+        {
+          name: 't3_art',
+          title: 'Jodrell Bank facing closure',
+          target: 'https://www.theguardian.com/science/x',
+        },
+      ]),
+    })
+    const { client, create } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 75, topic: 'Jodrell Bank', reason: 'real news' }]),
+    )
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.fetched).toBe(2)
+    expect(result.droppedMedia).toBe(1)
+    expect(result.scored).toBe(1)
+    // The photo never reached Haiku: the single scored candidate is the article.
+    const prompt = create.mock.calls[0][0].messages[0].content as string
+    expect(prompt).toContain('Jodrell Bank facing closure')
+    expect(prompt).not.toContain('Milky way over Yosemite')
+    // ...and left no topics row behind, so the table means "what we considered".
+    expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(1)
+    db.close()
+  })
+
   it('re-runs are free: known hashes are filtered before the Haiku call', async () => {
     const db = memDb()
     const channel = scoutedChannel()
@@ -142,6 +185,7 @@ describe('scoutChannel', () => {
     expect(second).toEqual({
       channel: 'chan-a',
       fetched: 1,
+      droppedMedia: 0,
       alreadyKnown: 1,
       scored: 0,
       queued: 0,
@@ -448,6 +492,7 @@ describe('scoutAll', () => {
       {
         channel: 'a',
         fetched: 1,
+        droppedMedia: 0,
         alreadyKnown: 1,
         scored: 0,
         queued: 0,

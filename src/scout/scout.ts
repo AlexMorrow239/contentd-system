@@ -16,6 +16,7 @@ import type { NewTopic } from './topics.js'
 export interface ScoutChannelResult {
   channel: string
   fetched: number
+  droppedMedia: number
   alreadyKnown: number
   scored: number
   queued: number
@@ -122,9 +123,23 @@ export async function scoutChannel(
     }
   }
 
+  // Policy lives here, not in the source: redditSource annotates, the scout
+  // decides. An image post is a photograph with no narrative substance — the
+  // scorer sees only titles, so "Milky way over Yosemite" reads as a strong
+  // topic and scored 89. Dropping pre-scoring also means Haiku is never paid
+  // to rate one.
+  //
+  // Dropped items get no topics row: re-dropping them next tick is free (the
+  // filter is deterministic and pre-LLM), and the table keeps meaning "things
+  // we actually considered".
+  const usable = candidates.filter((c) => c.postKind !== 'image')
+
   const result: ScoutChannelResult = {
     channel: channel.name,
+    // fetched stays the raw count, so fetched - droppedMedia - alreadyKnown
+    // reads as scored.
     fetched: candidates.length,
+    droppedMedia: candidates.length - usable.length,
     alreadyKnown: 0,
     scored: 0,
     queued: 0,
@@ -135,12 +150,12 @@ export async function scoutChannel(
 
   // Hash-filter BEFORE scoring: known items never reach Haiku again, so scout
   // re-runs are free and rejected topics stay rejected without re-spend.
-  const hashes = candidates.map((c) => dedupeHash(c.sourceId, c.externalId))
+  const hashes = usable.map((c) => dedupeHash(c.sourceId, c.externalId))
   const known = knownHashes(db, channel.name, hashes)
-  const fresh = candidates
+  const fresh = usable
     .map((candidate, i) => ({ candidate, hash: hashes[i] }))
     .filter((f) => !known.has(f.hash))
-  result.alreadyKnown = candidates.length - fresh.length
+  result.alreadyKnown = usable.length - fresh.length
   if (fresh.length === 0) return result
 
   result.scored = fresh.length
@@ -251,6 +266,7 @@ export async function scoutAll(
       const partial = (info.context.partial as ScoutChannelResult | undefined) ?? {
         channel: channel.name,
         fetched: 0,
+        droppedMedia: 0,
         alreadyKnown: 0,
         scored: 0,
         queued: 0,
