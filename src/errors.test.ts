@@ -168,6 +168,13 @@ describe('errors', () => {
     it('is a no-op on a non-object without throwing', () => {
       expect(tagError('boom', { domain: 'scout', kind: 'transient' })).toBe('boom')
     })
+
+    it('returns a frozen error untagged instead of throwing', () => {
+      const err = Object.freeze(new Error('frozen'))
+      expect(() => tagError(err, { domain: 'scout', kind: 'transient' })).not.toThrow()
+      expect(tagError(err, { domain: 'scout', kind: 'transient' })).toBe(err)
+      expect(classify(err)).toMatchObject({ domain: 'internal', kind: 'internal' })
+    })
   })
 
   describe('errorContext', () => {

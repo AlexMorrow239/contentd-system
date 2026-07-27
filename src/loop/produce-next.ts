@@ -30,6 +30,9 @@ export interface TickResult {
 
 // The topic slipped away between planning and claiming. Its own class so the
 // claim transaction's rollback throw stays distinguishable from a real crash.
+// Module-private by design, so its `job`/`conflict` classification is
+// currently untested — it can't be imported into arch.test.ts's
+// classification lint without exporting it for no other reason.
 class ClaimConflictError extends BrainrotError {
   constructor(message: string) {
     super(message, { domain: 'job', kind: 'conflict' })

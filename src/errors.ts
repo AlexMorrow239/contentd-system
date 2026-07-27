@@ -118,15 +118,26 @@ export function errorMessage(err: unknown): string {
  *
  * Prefer throwing a `BrainrotError` when you own the error. Reach for this
  * only when you don't.
+ *
+ * Unlike `classify`, this is NOT total: `Object.defineProperty` throws on a
+ * frozen or sealed object, which would otherwise replace the original error
+ * inside the caller's own catch block. Tagging is best-effort — on failure
+ * this silently returns `err` untagged rather than throwing, since no SDK
+ * currently in this tree freezes its error objects and a dropped tag is far
+ * cheaper than losing the error being classified.
  */
 export function tagError<E>(err: E, tag: ErrorTag): E {
   if (err !== null && typeof err === 'object') {
-    Object.defineProperty(err, TAG, {
-      value: tag,
-      configurable: true,
-      enumerable: false,
-      writable: true,
-    })
+    try {
+      Object.defineProperty(err, TAG, {
+        value: tag,
+        configurable: true,
+        enumerable: false,
+        writable: true,
+      })
+    } catch {
+      // Best-effort: see docstring above.
+    }
   }
   return err
 }

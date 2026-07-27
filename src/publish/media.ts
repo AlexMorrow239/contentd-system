@@ -50,13 +50,12 @@ export function publishMedia(opts: {
       try {
         return await opts.store.get(opts.objectKey)
       } catch (err) {
-        const info = classify(err)
-        const message = info.message
+        const { message, kind: infoKind } = classify(err)
         // Only a genuinely absent object is unretryable; an outage or a bad
         // credential — including an unclassified throw, which is always
         // unexpected rather than a confirmed absence — is the next tick's
         // problem, not this video's fault.
-        const kind = info.kind === 'not-found' ? 'rejected' : 'transient'
+        const kind = infoKind === 'not-found' ? 'rejected' : 'transient'
         throw new PublishError(
           `publishMedia: object ${opts.objectKey} could not be read: ${message}`,
           kind,
