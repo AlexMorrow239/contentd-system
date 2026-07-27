@@ -354,6 +354,22 @@ both read through their public feeds. Reddit's feed carries no `stickied`
 flag, so mod stickies are indistinguishable from real posts and simply score
 low.
 
+Image submissions are dropped before scoring. The scorer only ever sees
+titles, so an astrophotography post reads as a strong topic and scores high,
+producing a video with a picture where its story should be. The feed names the
+submission target in each entry's `[link]` anchor, which is enough to drop the
+unambiguous cases (reddit-hosted media, imgur, galleries, image file
+extensions) without paying to score them. Hosts that are less clear-cut — an
+astrophotography site with no file extension, a YouTube explainer — are not
+guessed at: the target host goes into the scoring prompt so the model can weigh
+it. Each tick reports how many it dropped as `droppedMedia`.
+
+To clean image-sourced topics scouted before this existed, run
+`pnpm brainrot topics prune-media` (add `--dry-run` first to see what it would
+do). It re-fetches each candidate's permalink and rejects the ones whose target
+is an image. Like the other manual commands it runs outside the scout lease, so
+stop the loop first if a tick may be live.
+
 ### Start
 
 ```bash
@@ -429,7 +445,8 @@ Every page takes `?db=dev` to view `data/dev.db` instead of the production
 database; the header says which one you are looking at and dev shows a banner.
 
 The dashboard **never writes**. Its connection opens read-only, so
-`library approve/reject`, `topics requeue/reject` and `publish retry/mark-done`
+`library approve/reject`, `topics requeue/reject/prune-media` and
+`publish retry/mark-done`
 remain CLI-only — those race a live cron tick, and a button is not the right
 affordance for that. The `./data` mount is read-write on purpose: SQLite must
 create the `-shm` file to read a WAL database, so the read-only guarantee lives

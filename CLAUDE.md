@@ -32,6 +32,7 @@ pnpm brainrot scout | produce-next | publish-next | digest
 pnpm brainrot jobs | costs
 pnpm brainrot topics list|reject <ids...>
 pnpm brainrot topics requeue <id>   # orphaned 'claimed' topic -> 'candidate'; refuses while a live job holds it
+pnpm brainrot topics prune-media [--channel <name>] [--dry-run]  # re-check reddit candidates, reject image-sourced ones
 pnpm brainrot library list|approve|reject <jobIds...>
 pnpm brainrot publish retry|mark-done <jobId>
 pnpm brainrot publishes list [--days N]
@@ -147,6 +148,41 @@ option schema — no schedule of its own, since cadence comes from the
 channel's `videos_per_day`. A stale `slots` key at either level is a load
 error naming its replacement. A channel declaring both `[publish.youtube]`
 and `[publish.instagram]` cross-posts the same rendered video to both.
+
+### The scout filters media before it reaches the scorer
+
+The scorer sees titles, not posts, so an astrophotography submission reads as
+a strong topic — "Milky way over Yosemite with a climber on El Capitan" scored
+89 — and the resulting video has a picture where its story should be.
+
+Reddit candidates therefore carry a `postKind` derived from the submission
+target, which the feed exposes as the `[link]` anchor inside each entry's Atom
+`<content>` (the entry's own `<link>` is the comments permalink, identical for
+a photo and a story). `sources/post-kind.ts` classifies that target as
+`image`, `self`, or `link`.
+
+The split of duties matters: `redditSource` **annotates**, `scoutChannel`
+**decides**. A source that filtered internally could not report how many it
+dropped, and widening `TrendSource.fetch` to return a count would impose the
+concern on `rssSource`, which has nothing to drop. So the drop sits next to
+the dedupe filter that already lives in `scoutChannel`, and surfaces as
+`droppedMedia`. Dropped items get no `topics` row — re-dropping them next tick
+is free, and the table keeps meaning "things we actually considered".
+
+The ambiguous tail is not guessed at. `app.astrobin.com` is an image host with
+no file extension; `youtu.be` is a media link that can still be a strong
+topic. Rather than maintain a host list for these, the target *host* is
+rendered into the scoring prompt (`candidateLine`) with a rule that a
+photograph is not a story. The classifier itself fails open — an absent or
+unparseable target is `link`, never `image` — because dropping is the
+destructive outcome and needs positive evidence.
+
+`topics.url` is the comments permalink, so `target_url` was added to record
+what a post actually points at. Rows predating it are recovered by
+`brainrot topics prune-media`, which re-fetches each permalink's `.rss`
+(**not** `.json` — that 403s unauthenticated) and verifies identity by
+rehashing the feed's own `t3_` id against the row's `dedupe_hash` before
+touching anything.
 
 ### Budget enforcement is layered, not a single check
 
@@ -291,9 +327,10 @@ the default hermetic run, `*.contract.test.ts` (`CONTRACT=1`, real paid API
 calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up).
 
 **Layout rule: a directory with more than 3 test files folds its tests into a
-nested `test/` subdirectory** — `src/loop/test/`, `src/stages/test/`, etc. — so
-the source directory listing stays scannable; a directory with 3 or fewer
-stays flat (`src/config/`, `src/scout/`, the repo root). `src/` root is exempt
+nested `test/` subdirectory** — `src/loop/test/`, `src/stages/test/`,
+`src/scout/test/`, etc. — so the source directory listing stays scannable; a
+directory with 3 or fewer stays flat (`src/config/`, `src/scout/sources/`, the
+repo root). `src/` root is exempt
 from the fold rule regardless of count: its test files are repo-wide concerns
 (`arch.test.ts`'s architecture lints, `cli.test.ts`, `smoke.test.ts`,
 `errors.test.ts`) rather than one module's tests, and folding them would drag
@@ -354,11 +391,11 @@ Conventions:
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~18s wall / ~94s CPU for 922 tests across 72
+**Performance.** The suite runs ~35s wall / ~200s CPU for 1018 tests across 77
 files (warm; a first run after `pnpm install` is slower while the Remotion
 webpack cache in `node_modules/.cache` fills). Wall clock is set by the slowest
 single file, not by the total — `src/jobs/test/golden-path.test.ts` is the floor at
-~14s, one indivisible e2e render. That also means CPU spent anywhere shows up
+~13s, one indivisible e2e render. That also means CPU spent anywhere shows up
 everywhere: cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
 `golden-path`, `assemble` and `remotion` too, purely by ending the contention.
 
