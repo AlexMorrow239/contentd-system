@@ -1,5 +1,5 @@
 import { vi } from 'vitest'
-import type { S3Config } from './config.js'
+import type { S3Config } from '../storage/config.js'
 
 /**
  * Shared scaffolding for the storage test tier (STORAGE=1, see vitest.config.ts).
@@ -60,8 +60,27 @@ export async function ensureBucket(config: S3Config): Promise<void> {
  * configured and one without. Paired with vi.unstubAllEnvs() in afterEach.
  */
 export function stubStorageEnv(): void {
-  vi.stubEnv('BRAINROT_S3_ENDPOINT', 'https://test.invalid')
-  vi.stubEnv('BRAINROT_S3_BUCKET', 'test-bucket')
-  vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', 'test-ak')
-  vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', 'test-sk')
+  for (const [k, v] of Object.entries(storageEnvVars())) vi.stubEnv(k, v)
+}
+
+/**
+ * The same values as an env record, for `runCli(args, { env })`.
+ *
+ * A spawned CLI cannot see vi.stubEnv, so a subprocess test that needs to get
+ * PAST the storage gate has to pass these explicitly. Inheriting the
+ * developer's real .env instead makes the test pass only on a machine that has
+ * one — which is exactly how `produce --channel /no/such/file` came to assert
+ * ENOENT while actually failing the storage gate on a clean checkout.
+ *
+ * The mirror case — asserting the gate itself fires — passes these keys as
+ * EMPTY strings rather than omitting them, because dotenv will not override a
+ * key already present in the child env.
+ */
+export function storageEnvVars(): Record<string, string> {
+  return {
+    BRAINROT_S3_ENDPOINT: 'https://test.invalid',
+    BRAINROT_S3_BUCKET: 'test-bucket',
+    BRAINROT_S3_ACCESS_KEY_ID: 'test-ak',
+    BRAINROT_S3_SECRET_ACCESS_KEY: 'test-sk',
+  }
 }

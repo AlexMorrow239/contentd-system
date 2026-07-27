@@ -17,7 +17,7 @@
  * lands on the repo root, so Remotion bundles from real source, not a copy.
  */
 import { build } from 'esbuild'
-import { copyFileSync, readdirSync, statSync } from 'node:fs'
+import { copyFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,11 +38,47 @@ function entryPoints(dir: string = SRC, acc: string[] = []): string[] {
   return acc
 }
 
+/** Every emitted file, as a dist-relative path. */
+function expectedOutputs(sources: string[]): Set<string> {
+  const out = new Set(sources.map((f) => path.relative(SRC, f).replace(/\.ts$/, '.js')))
+  out.add(path.join('db', 'schema.sql')) // copied below, not emitted
+  return out
+}
+
+/**
+ * Deletes dist/ files that no longer correspond to anything under src/.
+ *
+ * A blanket rmSync(DIST) is not an option — it would race any subprocess
+ * already spawned from the tree — but leaving deletions behind forever means a
+ * module renamed in src/ keeps a stale twin in dist/ that still imports and
+ * still runs. Removing only the orphans is safe: nothing current can be
+ * executing a file that no longer has a source.
+ */
+function pruneOrphans(expected: Set<string>, dir: string = DIST): void {
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return // first run: dist/ does not exist yet
+  }
+  for (const name of entries) {
+    const full = path.join(dir, name)
+    if (statSync(full).isDirectory()) {
+      pruneOrphans(expected, full)
+      if (readdirSync(full).length === 0) rmSync(full, { recursive: true, force: true })
+    } else if (!expected.has(path.relative(DIST, full))) {
+      rmSync(full, { force: true })
+    }
+  }
+}
+
 export async function buildTestCli(): Promise<void> {
   // Deliberately no rmSync(DIST): esbuild overwrites in place, and clearing the
-  // tree would race any already-running subprocess spawned from it.
+  // tree would race any already-running subprocess spawned from it. Orphans
+  // are pruned individually below instead.
+  const sources = entryPoints()
   await build({
-    entryPoints: entryPoints(),
+    entryPoints: sources,
     outbase: SRC,
     outdir: DIST,
     platform: 'node',
@@ -51,4 +87,5 @@ export async function buildTestCli(): Promise<void> {
   })
   // db/index.ts reads this via import.meta.url; esbuild only emits JS.
   copyFileSync(path.join(SRC, 'db', 'schema.sql'), path.join(DIST, 'db', 'schema.sql'))
+  pruneOrphans(expectedOutputs(sources))
 }

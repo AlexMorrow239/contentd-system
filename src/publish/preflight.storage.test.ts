@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db/index.js'
-import { ensureBucket, minioConfig } from '../storage/_testkit.js'
+import { ensureBucket, minioConfig } from '../testing/storage.js'
 import { s3Store } from '../storage/s3.js'
 import { runCli } from '../testing/run-cli.js'
 

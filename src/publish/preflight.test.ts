@@ -1,11 +1,9 @@
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../db/index.js'
 import { fakeStore } from '../storage/fake.js'
 import { preflight } from './preflight.js'
+import { tmpDir } from '../testing/tmp.js'
 
 const VIDEO = Buffer.concat([
   Buffer.from([0, 0, 0, 24]),
@@ -41,7 +39,7 @@ describe('preflight', () => {
   it('passes every check for a well-formed stored object', async () => {
     const db = openDb(':memory:')
     seed(db)
-    const store = fakeStore(mkdtempSync(path.join(tmpdir(), 'pf-ok-')))
+    const store = fakeStore(tmpDir('pf-ok-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
     const res = await preflight({
       db,
@@ -57,7 +55,7 @@ describe('preflight', () => {
   it('fails when the URL returns a non-200', async () => {
     const db = openDb(':memory:')
     seed(db)
-    const store = fakeStore(mkdtempSync(path.join(tmpdir(), 'pf-403-')))
+    const store = fakeStore(tmpDir('pf-403-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
     const res = await preflight({
       db,
@@ -73,7 +71,7 @@ describe('preflight', () => {
   it('fails on a wrong content type', async () => {
     const db = openDb(':memory:')
     seed(db)
-    const store = fakeStore(mkdtempSync(path.join(tmpdir(), 'pf-ct-')))
+    const store = fakeStore(tmpDir('pf-ct-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
     const res = await preflight({
       db,
@@ -89,7 +87,7 @@ describe('preflight', () => {
   it('fails on a byte-length mismatch against library_objects', async () => {
     const db = openDb(':memory:')
     seed(db)
-    const store = fakeStore(mkdtempSync(path.join(tmpdir(), 'pf-len-')))
+    const store = fakeStore(tmpDir('pf-len-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
     const res = await preflight({
       db,
@@ -105,7 +103,7 @@ describe('preflight', () => {
   it('fails when the body is not an MP4', async () => {
     const db = openDb(':memory:')
     seed(db)
-    const store = fakeStore(mkdtempSync(path.join(tmpdir(), 'pf-magic-')))
+    const store = fakeStore(tmpDir('pf-magic-'))
     const notMp4 = Buffer.alloc(VIDEO.length, 1)
     await store.put('videos/example/job-1.mp4', notMp4, 'video/mp4')
     const res = await preflight({
@@ -132,7 +130,7 @@ describe('preflight', () => {
         db,
         jobId: 'job-2',
         platform: 'instagram',
-        store: fakeStore(mkdtempSync(path.join(tmpdir(), 'pf-none-'))),
+        store: fakeStore(tmpDir('pf-none-')),
       }),
     ).rejects.toThrow(/backfill-store/)
   })

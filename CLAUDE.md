@@ -250,11 +250,71 @@ violating rows first and skips-with-a-warning instead of throwing; schema.sql
 carries the statement as a comment so it still reads as the whole shape. Any
 future data-dependent DDL belongs there for the same reason.
 
+### Test layout and conventions
+
+Tests are colocated (`src/**/*.test.ts`, plus `remotion/**`), in three tiers:
+the default hermetic run, `*.contract.test.ts` (`CONTRACT=1`, real paid API
+calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up).
+
+**`src/testing/` is the one shared testkit.** It is excluded from the `dist/`
+build, so nothing in it can reach production. Use it rather than re-rolling
+fixtures locally:
+
+- `tmp.ts` — `tmpDir(prefix)`. **The only way to make a temp dir.** It registers
+  for cleanup; `setup.ts` sweeps after each file. Thirteen files used to
+  `mkdtempSync` and never clean up, and on macOS those are not auto-reaped.
+- `channel.ts` — `testChannel(overrides)` for the parsed config;
+  `channelToml`/`writeChannelToml`/`writeChannelsDir` for the on-disk TOML.
+  In `channelToml`, `bg_dir`/`bgm_dir` must stay ahead of every `[section]`
+  header or TOML nests them under the last table and the values vanish.
+- `job.ts` — `makeCtx(opts)`, `testScript`, `seedVoiceJson`/`seedWordsJson`/
+  `seedScriptJson`.
+- `db.ts` — `memDb()`/`fileDb()` (both auto-closed) and one seed builder per
+  table, each `(db, id?, overrides?)`.
+- `cli.ts`, `run-cli.ts`, `storage.ts` — subprocess and object-storage scaffolding.
+
+Conventions:
+
+- **Env only via `vi.stubEnv`.** `setup.ts` registers a global
+  `afterEach(vi.unstubAllEnvs)`, so no file needs its own. When the code under
+  test writes `process.env` itself (`applyDevFlag`), stub the key to `undefined`
+  first — that registers it so the global unstub reverts the write.
+- **A spawned CLI cannot see `vi.stubEnv`.** Pass what it needs through
+  `runCli(args, { env })`. Inheriting the developer's `.env` instead is how two
+  tests came to assert `ENOENT` while actually failing the storage gate, and to
+  fail on any checkout without a `.env` — see `storageEnvVars()`.
+- One top-level `describe` named after the symbol under test. `it(`, never
+  `test(`. Helpers at the top of the file or in a colocated `_*.fixtures.ts` —
+  never buried between describes.
+- Conditional tiers use `describe.skipIf`/`it.skipIf`. A bare `return` reports
+  a **pass** for work that never ran.
+- Split large files as `<module>.<facet>.test.ts` (see `cli.<subcommand>`).
+  Files split for speed as well as clarity: `it.concurrent` batches at
+  `maxConcurrency` within a single file, so 28 spawns in one file queued 8 at a
+  time in one worker.
+- Repo-wide architecture lints go in `src/arch.test.ts`. They are import-heavy
+  by nature (proving module A must not load module B means loading B), so they
+  are kept out of behavior files that would otherwise be instant.
+
+**Performance.** Wall clock is set by the slowest single file, since the suite
+already parallelizes ~5.7×; `src/jobs/golden-path.test.ts` is the floor at ~40s
+(one indivisible e2e render). `scripts/vitest-sequencer.ts` starts the known-slow
+files first because Vitest orders by byte size, which is uncorrelated with
+runtime here — `remotion/remotion.test.ts` is 36 lines and bundles a Remotion
+composition. `src/testing/sequencer.test.ts` fails if an entry in that list stops
+matching a real file, so it cannot silently rot again.
+
+When a test asserts on *selection* rather than on encoded output, give it cheap
+inputs — `visuals-volume.test.ts` went from 45.9s to ~5s by handing its six
+selection tests a 0.2s 320×180 source and a 100ms narration instead of the full
+2s clip the one output-contract test needs. Fixtures that several tests share
+are encoded once in `beforeAll` and copied (`qc.test.ts`'s `goodClip`).
+
 ### Test-only build
 
 `scripts/build-test-cli.ts` transpiles `src/` into a mirrored `dist/` tree via
 a Vitest `globalSetup`, so the CLI subprocess tests can spawn `node dist/cli.js`
-(~0.34s) instead of `pnpm exec tsx src/cli.ts` (~1.15s). It is transpile-only,
+instead of `pnpm exec tsx src/cli.ts`. It is transpile-only,
 never `--bundle`: bundling flattens the module graph and breaks
 `import.meta.url`-relative asset lookups. There are four in this codebase —
 `src/cli.ts`, `src/db/index.ts`, `src/stages/assemble.ts`, and

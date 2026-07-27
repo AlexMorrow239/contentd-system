@@ -1,11 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdtempSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import { alignTranscript } from './whisperx.js'
+import { tmpDir } from '../testing/tmp.js'
 
 let server: http.Server
 let baseUrl: string
@@ -34,7 +33,7 @@ beforeEach(async () => {
 afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())))
 
 async function tmpWav(): Promise<string> {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-wx-'))
+  const dir = tmpDir('brainrot-wx-')
   const p = path.join(dir, 'narration.wav')
   await writeFile(p, Buffer.from('RIFFxxxxWAVEdummy'))
   return p

@@ -1,43 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../db/index.js'
-import { DEFAULT_SCOUT } from '../config/channel.js'
-import type { ChannelConfig } from '../config/channel.js'
 import { BudgetExceededError } from './costs.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
 import { createJob, runJob } from './runner.js'
 import type { StoreArtifact } from '../stages/store.js'
+import { testChannel } from '../testing/channel.js'
+import { fileDb } from '../testing/db.js'
 
+/** A real on-disk db plus a runs root beside it; both cleaned up per file. */
 function setup() {
-  const root = mkdtempSync(join(tmpdir(), 'brainrot-run-'))
-  const db = openDb(join(root, 'data', 'brainrot.db'))
+  const { db, root } = fileDb('data/brainrot.db')
   return { db, runsRoot: join(root, 'runs') }
-}
-
-function testChannel(): ChannelConfig {
-  return {
-    name: 'test',
-    niche: ['space'],
-    videosPerDay: 2,
-    voice: { volume: 'af_heart' },
-    captionStyle: {
-      font: 'Inter',
-      fontSizePx: 72,
-      activeColor: '#FFD700',
-      inactiveColor: '#FFFFFF',
-      strokePx: 8,
-    },
-    bgDir: ['assets/bg'],
-    bgmDir: 'assets/bgm',
-    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
-    scriptModel: 'claude-sonnet-5',
-    scout: { ...DEFAULT_SCOUT },
-    publish: null,
-  }
 }
 
 function row<T>(db: Database, sql: string, ...params: unknown[]): T {

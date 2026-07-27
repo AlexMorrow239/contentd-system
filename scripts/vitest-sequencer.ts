@@ -2,19 +2,45 @@ import { BaseSequencer } from 'vitest/node'
 import type { TestSpecification } from 'vitest/node'
 
 /**
- * Vitest orders files by byte size. That puts golden-path.test.ts late — it is
- * a small file holding one indivisible ~15s test — so the whole run ends up
- * waiting on it after everything else has finished. Start the known-slow files
- * first instead, longest first, so the tail packs behind them.
+ * Vitest orders files by byte size, which correlates poorly with runtime here:
+ * the slowest files are small ones holding a handful of ffmpeg/Remotion tests.
+ * Left alone, the run ends up waiting on them after everything else finished.
+ * Start the known-slow files first instead, longest first, so the tail packs
+ * behind them.
+ *
+ * Ordered by measured wall time, slowest first. Re-measure with:
+ *   pnpm vitest run --reporter=json --outputFile=/tmp/t.json
+ *
+ * This list had gone stale: it was missing remotion/remotion.test.ts — 36
+ * lines holding a real Remotion bundle, so byte-size ordering scheduled it
+ * dead last, the exact failure this sequencer exists to prevent — along with
+ * golden-path-loop and every CLI-spawning file. src/testing/sequencer.test.ts
+ * now fails if an entry stops matching a real file, so a rename cannot
+ * silently re-stale it.
  *
  * Suffix matching, not exact paths: moduleId is an absolute path.
  */
-const SLOW_FIRST = [
-  'src/jobs/golden-path.test.ts',
-  'src/stages/visuals-volume.test.ts',
-  'src/stages/qc.test.ts',
-  'src/stages/assemble.test.ts',
-  'src/cli.test.ts',
+export const SLOW_FIRST = [
+  'src/jobs/golden-path.test.ts', // one indivisible e2e render — the suite's floor
+  'src/stages/assemble.test.ts', // real Remotion render
+  'remotion/remotion.test.ts', // bundle() + selectComposition
+  'src/jobs/golden-path-loop.test.ts', // scout -> produce -> publish e2e
+  // Every CLI-spawning file: a cold `node dist/cli.js` costs seconds, not the
+  // ~0.34s the runCli docstring claims, because the entry point pulls in the
+  // whole pipeline. cli.test.ts is deliberately absent — it is now pure
+  // in-process parsers; the subprocess tests moved to cli.<subcommand>.
+  'src/cli.publish.test.ts',
+  'src/cli.topics.test.ts',
+  'src/cli.scout.test.ts',
+  'src/cli.produce.test.ts',
+  'src/cli.digest.test.ts',
+  'src/testing/run-cli.test.ts',
+  'src/loop/produce-next.test.ts',
+  'src/jobs/resume.test.ts',
+  'src/loop/publish-next.test.ts',
+  'src/media/ffmpeg.test.ts', // real ffmpeg encodes
+  'src/stages/qc.test.ts', // ffmpeg analysis passes
+  'src/stages/visuals-volume.test.ts', // ffmpeg crop+loop
 ]
 
 function rank(spec: TestSpecification): number {

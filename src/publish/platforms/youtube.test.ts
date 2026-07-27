@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { openDb } from '../../db/index.js'
 import { publishMedia } from '../media.js'
@@ -16,6 +15,7 @@ import {
   youtubeAdapter,
   youtubeTarget,
 } from './youtube.js'
+import { tmpDir } from '../../testing/tmp.js'
 
 const TEST_KEY = Buffer.alloc(32, 0x42)
 
@@ -143,7 +143,7 @@ describe('mintAccessToken', () => {
 })
 
 function tempVideoFile(bytes = 'fake video bytes'): string {
-  const dir = mkdtempSync(join(tmpdir(), 'brainrot-yt-'))
+  const dir = tmpDir('brainrot-yt-')
   const path = join(dir, 'video.mp4')
   writeFileSync(path, bytes)
   return path

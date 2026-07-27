@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { recordCost } from '../jobs/costs.js'
-import { testChannel } from '../stages/_testkit.js'
+import { testChannel } from '../testing/channel.js'
 import { planTick, RESUME_MIN_HEADROOM_USD_MICROS } from './plan-tick.js'
 
 const NOOP = { kind: 'noop', reason: 'no-eligible-work' } as const

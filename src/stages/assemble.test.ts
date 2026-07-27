@@ -1,60 +1,28 @@
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execa } from 'execa'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import pino from 'pino'
-import { openDb } from '../db/index.js'
 import { probe } from '../media/ffmpeg.js'
 import { assembleStage } from './assemble.js'
-import { DEFAULT_SCOUT } from '../config/channel.js'
-import type { ChannelConfig } from '../config/channel.js'
+import { testChannel } from '../testing/channel.js'
+import { makeCtx, seedVoiceJson } from '../testing/job.js'
+import { tmpDir } from '../testing/tmp.js'
 import type { JobContext } from '../jobs/types.js'
 
-const cleanup: string[] = []
-function tmp(prefix: string): string {
-  const d = mkdtempSync(path.join(tmpdir(), prefix))
-  cleanup.push(d)
-  return d
-}
-
-function makeChannel(bgmDir: string): ChannelConfig {
-  return {
-    name: 'testchan',
-    niche: ['space'],
-    videosPerDay: 2,
-    voice: { volume: 'af_heart' },
-    captionStyle: {
-      font: 'Inter',
-      fontSizePx: 72,
-      activeColor: '#FFD700',
-      inactiveColor: '#FFFFFF',
-      strokePx: 8,
-    },
-    bgDir: [tmp('brainrot-bg-')],
-    bgmDir,
-    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
-    scriptModel: 'claude-sonnet-5',
-    scout: { ...DEFAULT_SCOUT },
-    publish: null,
-  }
-}
-
-function makeCtx(runDir: string, channel: ChannelConfig): JobContext {
-  return {
-    jobId: 'job-assemble',
-    db: openDb(':memory:'),
-    channel,
+/** bgmDir is the only channel field these tests vary; empty dir -> no bgm. */
+function assembleCtx(bgmDir = tmpDir('brainrot-bgm-')): JobContext {
+  return makeCtx({
+    channel: testChannel({
+      name: 'testchan',
+      bgDir: [tmpDir('brainrot-bg-')],
+      bgmDir,
+    }),
     topic: 'test topic',
-    runDir,
-    artifactPath(stage, file) {
-      const p = path.join(runDir, stage, file)
-      mkdirSync(path.dirname(p), { recursive: true })
-      return p
-    },
-    log: pino({ level: 'silent' }),
-  }
+    jobId: 'job-assemble',
+    runDir: tmpDir('brainrot-run-'),
+  })
 }
 
 async function codecs(file: string): Promise<{ video?: string; audio?: string }> {
@@ -73,14 +41,9 @@ async function codecs(file: string): Promise<{ video?: string; audio?: string }>
   }
 }
 
-afterAll(() => {
-  for (const d of cleanup) rmSync(d, { recursive: true, force: true })
-})
-
 describe('assembleStage', () => {
   it('renders a 1080x1920@30 H.264+AAC final.mp4 (~1s)', async () => {
-    const channel = makeChannel(tmp('brainrot-bgm-')) // empty bgm dir -> no bgm
-    const ctx = makeCtx(tmp('brainrot-run-'), channel)
+    const ctx = assembleCtx()
 
     // Real tiny fixtures.
     await execa('ffmpeg', [
@@ -103,10 +66,7 @@ describe('assembleStage', () => {
       ctx.artifactPath('voice', 'narration.wav'),
       '-y',
     ])
-    writeFileSync(
-      ctx.artifactPath('voice', 'voice.json'),
-      JSON.stringify({ provider: 'kokoro', voiceId: 'af_heart', durationMs: 1000 }),
-    )
+    seedVoiceJson(ctx, 1000)
     writeFileSync(
       ctx.artifactPath('captions', 'words.json'),
       JSON.stringify({
@@ -163,10 +123,7 @@ describe('assembleStage', () => {
 function seedRenderInputs(ctx: JobContext): void {
   // bundle/render are mocked below: file CONTENTS are never decoded, so junk
   // bytes stand in for real media. Only the stage's fs reads/copies must work.
-  writeFileSync(
-    ctx.artifactPath('voice', 'voice.json'),
-    JSON.stringify({ provider: 'kokoro', voiceId: 'af_heart', durationMs: 1000 }),
-  )
+  seedVoiceJson(ctx, 1000)
   writeFileSync(
     ctx.artifactPath('captions', 'words.json'),
     JSON.stringify({ words: [{ word: 'hello', startMs: 0, endMs: 400 }] }),
@@ -196,7 +153,7 @@ describe('assembleStage bundle robustness', () => {
   })
 
   it('retries bundle() after a rejection instead of memoizing the failure', async () => {
-    const serveUrl = tmp('brainrot-serveurl-')
+    const serveUrl = tmpDir('brainrot-serveurl-')
     const bundleMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('esbuild exploded'))
@@ -206,7 +163,7 @@ describe('assembleStage bundle robustness', () => {
     vi.resetModules()
     const { assembleStage: freshStage } = await import('./assemble.js')
 
-    const ctx = makeCtx(tmp('brainrot-run-'), makeChannel(tmp('brainrot-bgm-')))
+    const ctx = assembleCtx()
     seedRenderInputs(ctx)
 
     await expect(freshStage.run(ctx)).rejects.toThrow('esbuild exploded')
@@ -217,18 +174,18 @@ describe('assembleStage bundle robustness', () => {
   })
 
   it('passes a cwd-independent entry point to bundle()', async () => {
-    const bundleMock = vi.fn().mockResolvedValue(tmp('brainrot-serveurl-'))
+    const bundleMock = vi.fn().mockResolvedValue(tmpDir('brainrot-serveurl-'))
     vi.doMock('@remotion/bundler', () => ({ bundle: bundleMock }))
     mockRenderer()
     vi.resetModules()
     const { assembleStage: freshStage } = await import('./assemble.js')
 
-    const ctx = makeCtx(tmp('brainrot-run-'), makeChannel(tmp('brainrot-bgm-')))
+    const ctx = assembleCtx()
     seedRenderInputs(ctx)
 
     // Simulate the CLI being launched from anywhere but the repo root.
     const repoCwd = process.cwd()
-    process.chdir(tmp('brainrot-elsewhere-'))
+    process.chdir(tmpDir('brainrot-elsewhere-'))
     try {
       await freshStage.run(ctx)
     } finally {

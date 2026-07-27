@@ -1,10 +1,10 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import type Anthropic from '@anthropic-ai/sdk'
 import { structuredCompletion, visionJudgment } from './anthropic.js'
+import { tmpDir } from '../testing/tmp.js'
 
 const schema = z.object({ answer: z.string(), n: z.number() })
 
@@ -169,7 +169,7 @@ describe('visionJudgment', () => {
     pngB64: string
     jpgB64: string
   } {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'brainrot-vision-'))
+    const dir = tmpDir('brainrot-vision-')
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03])
     const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0x04, 0x05, 0x06])
     const pngPath = path.join(dir, 'scene-01.png')

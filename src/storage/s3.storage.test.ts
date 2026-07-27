@@ -1,4 +1,4 @@
-import { ensureBucket, minioConfig } from './_testkit.js'
+import { ensureBucket, minioConfig } from '../testing/storage.js'
 import { describeObjectStore } from './conformance.js'
 import { s3Store } from './s3.js'
 

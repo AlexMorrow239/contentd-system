@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { localDay } from '../publish/schedule.js'
 import { upsertToken } from '../publish/tokens.js'
-import { testChannel } from '../stages/_testkit.js'
+import { testChannel } from '../testing/channel.js'
 import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from './digest.js'
 
 const HOUR_MS = 3_600_000

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { s3ConfigError, s3ConfigFromEnv } from './config.js'
 
 const KEYS = [
@@ -11,35 +11,24 @@ const KEYS = [
 ] as const
 
 // Shared by every describe block below: each test starts from a clean slate
-// with these keys unset, and the real environment is restored afterward.
-const saved = new Map<string, string | undefined>()
-
+// with these keys unset. Restoring is src/testing/setup.ts's global
+// vi.unstubAllEnvs() — stubbing to undefined deletes the key and is undone
+// there, which is what the hand-rolled save/restore Map used to do.
 beforeEach(() => {
-  for (const k of KEYS) {
-    saved.set(k, process.env[k])
-    delete process.env[k]
-  }
-})
-
-afterEach(() => {
-  for (const k of KEYS) {
-    const v = saved.get(k)
-    if (v === undefined) delete process.env[k]
-    else process.env[k] = v
-  }
+  for (const k of KEYS) vi.stubEnv(k, undefined)
 })
 
 describe('s3ConfigFromEnv', () => {
   function setRequired(): void {
-    process.env.BRAINROT_S3_ENDPOINT = 'https://acct.r2.cloudflarestorage.com'
-    process.env.BRAINROT_S3_BUCKET = 'brainrot-videos'
-    process.env.BRAINROT_S3_ACCESS_KEY_ID = 'ak'
-    process.env.BRAINROT_S3_SECRET_ACCESS_KEY = 'sk'
+    vi.stubEnv('BRAINROT_S3_ENDPOINT', 'https://acct.r2.cloudflarestorage.com')
+    vi.stubEnv('BRAINROT_S3_BUCKET', 'brainrot-videos')
+    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', 'ak')
+    vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', 'sk')
   }
 
   it('reads every key from the environment', () => {
     setRequired()
-    process.env.BRAINROT_S3_REGION = 'us-east-1'
+    vi.stubEnv('BRAINROT_S3_REGION', 'us-east-1')
     expect(s3ConfigFromEnv()).toEqual({
       endpoint: 'https://acct.r2.cloudflarestorage.com',
       bucket: 'brainrot-videos',
@@ -57,7 +46,7 @@ describe('s3ConfigFromEnv', () => {
 
   it('carries publicEndpoint through when set', () => {
     setRequired()
-    process.env.BRAINROT_S3_PUBLIC_ENDPOINT = 'http://localhost:9000'
+    vi.stubEnv('BRAINROT_S3_PUBLIC_ENDPOINT', 'http://localhost:9000')
     expect(s3ConfigFromEnv().publicEndpoint).toBe('http://localhost:9000')
   })
 
@@ -71,7 +60,7 @@ describe('s3ConfigFromEnv', () => {
 
   it('treats an empty string as unset', () => {
     setRequired()
-    process.env.BRAINROT_S3_BUCKET = '   '
+    vi.stubEnv('BRAINROT_S3_BUCKET', '   ')
     expect(() => s3ConfigFromEnv()).toThrow(/BRAINROT_S3_BUCKET/)
   })
 })
@@ -81,10 +70,10 @@ describe('s3ConfigFromEnv', () => {
 // it (the store stage runs last). s3ConfigError is how the tick asks.
 describe('s3ConfigError', () => {
   it('returns undefined when every required key is set', () => {
-    process.env.BRAINROT_S3_ENDPOINT = 'https://acct.r2.cloudflarestorage.com'
-    process.env.BRAINROT_S3_BUCKET = 'brainrot-videos'
-    process.env.BRAINROT_S3_ACCESS_KEY_ID = 'ak'
-    process.env.BRAINROT_S3_SECRET_ACCESS_KEY = 'sk'
+    vi.stubEnv('BRAINROT_S3_ENDPOINT', 'https://acct.r2.cloudflarestorage.com')
+    vi.stubEnv('BRAINROT_S3_BUCKET', 'brainrot-videos')
+    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', 'ak')
+    vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', 'sk')
     expect(s3ConfigError()).toBeUndefined()
   })
 

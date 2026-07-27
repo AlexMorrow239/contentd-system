@@ -1,12 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import type { ChannelConfig } from '../config/channel.js'
 import { createJob } from './runner.js'
-import { testChannel } from '../stages/_testkit.js'
+import { testChannel } from '../testing/channel.js'
 import {
   assertBudget,
   assertGlobalDayBudget,
@@ -16,9 +14,10 @@ import {
   globalDaySpentMicros,
   recordCost,
 } from './costs.js'
+import { tmpDir } from '../testing/tmp.js'
 
 function tempDb() {
-  const dir = mkdtempSync(join(tmpdir(), 'brainrot-costs-'))
+  const dir = tmpDir('brainrot-costs-')
   return openDb(join(dir, 'brainrot.db'))
 }
 

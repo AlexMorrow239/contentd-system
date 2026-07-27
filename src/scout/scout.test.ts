@@ -4,7 +4,7 @@ import { openDb } from '../db/index.js'
 import { BudgetExceededError } from '../jobs/costs.js'
 import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig, ScoutConfig } from '../config/channel.js'
-import { testChannel } from '../stages/_testkit.js'
+import { testChannel } from '../testing/channel.js'
 import type { FetchLike } from './sources/types.js'
 import { listTopics } from './topics.js'
 import {

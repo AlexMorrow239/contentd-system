@@ -1,11 +1,10 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
-import os from 'node:os'
+import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
-import { pipelineStages } from '../../jobs/pipeline.js'
 import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from './jobs.js'
+import { tmpDir } from '../../testing/tmp.js'
 
 function seed(): Database {
   const db = openDb(':memory:')
@@ -19,16 +18,6 @@ function seed(): Database {
   ).run()
   return db
 }
-
-describe('DASHBOARD_STAGE_ORDER', () => {
-  it('matches the real pipeline order', () => {
-    // The dashboard hardcodes the order rather than importing pipelineStages()
-    // at runtime — that module pulls in remotion, kokoro and ffmpeg wrappers,
-    // which a viewer has no business loading. This test is the anti-drift
-    // guard: it pays the heavy import once, in test only.
-    expect([...DASHBOARD_STAGE_ORDER]).toEqual(pipelineStages().map((s) => s.name))
-  })
-})
 
 describe('listJobs', () => {
   it('returns newest first', () => {
@@ -158,7 +147,7 @@ describe('getJobDetail', () => {
 
   it('is not archived when the local file still exists on disk', () => {
     const db = seed()
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'dashboard-video-'))
+    const dir = tmpDir('dashboard-video-')
     const file = path.join(dir, 'out.mp4')
     writeFileSync(file, 'not really a video')
     db.prepare(

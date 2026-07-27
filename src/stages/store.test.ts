@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { JobContext, StageName } from '../jobs/types.js'
 import { fakeStore } from '../storage/fake.js'
 import type { ObjectStore } from '../storage/types.js'
-import { testChannel } from './_testkit.js'
+import { testChannel } from '../testing/channel.js'
 import { storeStage } from './store.js'
 
 const VIDEO = Buffer.from('pretend this is an mp4', 'utf8')

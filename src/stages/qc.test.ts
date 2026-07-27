@@ -1,71 +1,46 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { execa } from 'execa'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { copyFileSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import pino from 'pino'
-import { openDb } from '../db/index.js'
 import { qcStage } from './qc.js'
-import { testChannel, testScript } from './_testkit.js'
+import { testChannel } from '../testing/channel.js'
+import { makeCtx, seedScriptJson, seedVoiceJson, seedWordsJson } from '../testing/job.js'
+import { tmpDir } from '../testing/tmp.js'
 import type { ChannelConfig } from '../config/channel.js'
 import type { JobContext } from '../jobs/types.js'
 import type { QcResult } from './qc.js'
 
-const cleanup: string[] = []
-function tmp(prefix: string): string {
-  const d = mkdtempSync(path.join(tmpdir(), prefix))
-  cleanup.push(d)
-  return d
-}
-
-// Local ctx builder (not _testkit's makeCtx): qc tests control the runDir and
-// budget overrides, and seed artifacts directly instead of running earlier
-// stages. The channel comes from testChannel() so new required ChannelConfig
-// fields stay centralized in the testkit.
-function makeCtx(runDir: string, channelOverrides: Partial<ChannelConfig> = {}): JobContext {
-  return {
-    jobId: 'job-qc',
-    db: openDb(':memory:'),
+/**
+ * qc seeds stage artifacts directly rather than running earlier stages, so it
+ * pins its own jobId and runDir through makeCtx's options bag.
+ */
+function qcCtx(channelOverrides: Partial<ChannelConfig> = {}): JobContext {
+  return makeCtx({
     channel: testChannel(channelOverrides),
     topic: 'test topic',
-    runDir,
-    artifactPath(stage, file) {
-      const p = path.join(runDir, stage, file)
-      mkdirSync(path.dirname(p), { recursive: true })
-      return p
-    },
-    log: pino({ level: 'silent' }),
-  }
+    jobId: 'job-qc',
+    runDir: tmpDir('brainrot-run-'),
+  })
 }
 
-function seedVoice(ctx: JobContext, durationMs = 1000): void {
-  writeFileSync(
-    ctx.artifactPath('voice', 'voice.json'),
-    JSON.stringify({ provider: 'kokoro', voiceId: 'af_heart', durationMs }),
-  )
-}
-function seedWords(ctx: JobContext): void {
-  writeFileSync(
-    ctx.artifactPath('captions', 'words.json'),
-    JSON.stringify({
-      words: [
-        { word: 'a', startMs: 0, endMs: 300 },
-        { word: 'b', startMs: 300, endMs: 650 },
-        { word: 'c', startMs: 650, endMs: 1000 },
-      ],
-    }),
-  )
-}
-const SENTENCE =
-  'Venus spins backwards compared to every other planet orbiting our star and nobody really knows why.'
-// `sentences` counts the hook plus the segments, matching how narrationText joins them.
-function seedScript(ctx: JobContext, sentences: number, text = SENTENCE): void {
-  writeFileSync(
-    ctx.artifactPath('script', 'script.json'),
-    JSON.stringify(
-      testScript({ hook: text, segments: Array.from({ length: sentences - 1 }, () => text) }),
-    ),
-  )
+/**
+ * goodClip was re-encoded by five of the seven tests. Encoding a 1080x1920
+ * H.264 clip is the single most expensive fixture in the suite, so it is built
+ * once per worker and copied into place. blackClip and silentFrozenClip are
+ * used once each and stay inline.
+ *
+ * The five tests share content but not the file, and none of them mutates it
+ * — qcStage only reads final.mp4 (three ffprobe/ffmpeg analysis passes).
+ */
+let goodSource: string
+
+beforeAll(async () => {
+  goodSource = path.join(tmpDir('brainrot-qc-fixtures-'), 'good.mp4')
+  await goodClip(goodSource)
+}, 120000)
+
+function placeGoodClip(ctx: JobContext): void {
+  copyFileSync(goodSource, ctx.artifactPath('assemble', 'final.mp4'))
 }
 
 async function goodClip(file: string, seconds = 2): Promise<void> {
@@ -145,16 +120,12 @@ const CHECKS = [
   'file-size',
 ]
 
-afterAll(() => {
-  for (const d of cleanup) rmSync(d, { recursive: true, force: true })
-})
-
 describe('qcStage', () => {
   it('passes a good clip (injectable minMs keeps the fixture short)', async () => {
-    const ctx = makeCtx(tmp('brainrot-run-'))
-    await goodClip(ctx.artifactPath('assemble', 'final.mp4'))
-    seedVoice(ctx)
-    seedWords(ctx)
+    const ctx = qcCtx()
+    placeGoodClip(ctx)
+    seedVoiceJson(ctx)
+    seedWordsJson(ctx)
 
     await qcStage({ minMs: 1000 }).run(ctx)
 
@@ -164,10 +135,10 @@ describe('qcStage', () => {
   }, 120000)
 
   it('fails black-frames on an all-black clip', async () => {
-    const ctx = makeCtx(tmp('brainrot-run-'))
+    const ctx = qcCtx()
     await blackClip(ctx.artifactPath('assemble', 'final.mp4'))
-    seedVoice(ctx)
-    seedWords(ctx)
+    seedVoiceJson(ctx)
+    seedWordsJson(ctx)
 
     await qcStage({ minMs: 1000 }).run(ctx)
 
@@ -177,9 +148,9 @@ describe('qcStage', () => {
   }, 120000)
 
   it('fails captions-present when words.json is missing', async () => {
-    const ctx = makeCtx(tmp('brainrot-run-'))
-    await goodClip(ctx.artifactPath('assemble', 'final.mp4'))
-    seedVoice(ctx)
+    const ctx = qcCtx()
+    placeGoodClip(ctx)
+    seedVoiceJson(ctx)
     // no words.json
 
     await qcStage({ minMs: 1000 }).run(ctx)
@@ -190,11 +161,11 @@ describe('qcStage', () => {
   }, 120000)
 
   it('fails narration-complete when the voice track is too short for the script', async () => {
-    const ctx = makeCtx(tmp('brainrot-run-'))
-    await goodClip(ctx.artifactPath('assemble', 'final.mp4'))
-    seedVoice(ctx) // 1000ms
-    seedWords(ctx)
-    seedScript(ctx, 10) // 160 narration words -> needs >= 32000ms
+    const ctx = qcCtx()
+    placeGoodClip(ctx)
+    seedVoiceJson(ctx) // 1000ms
+    seedWordsJson(ctx)
+    seedScriptJson(ctx, 10) // 160 narration words -> needs >= 32000ms
 
     await qcStage({ minMs: 1000 }).run(ctx)
 
@@ -208,11 +179,11 @@ describe('qcStage', () => {
   }, 120000)
 
   it('passes narration-complete when the voice track is long enough', async () => {
-    const ctx = makeCtx(tmp('brainrot-run-'))
-    await goodClip(ctx.artifactPath('assemble', 'final.mp4'))
-    seedVoice(ctx) // 1000ms
-    seedWords(ctx)
-    seedScript(ctx, 1, 'Venus spins backwards.') // 3 words -> needs >= 600ms
+    const ctx = qcCtx()
+    placeGoodClip(ctx)
+    seedVoiceJson(ctx) // 1000ms
+    seedWordsJson(ctx)
+    seedScriptJson(ctx, 1, 'Venus spins backwards.') // 3 words -> needs >= 600ms
 
     await qcStage({ minMs: 1000 }).run(ctx)
 
@@ -222,10 +193,10 @@ describe('qcStage', () => {
   }, 120000)
 
   it('fails audio-level and frozen-frames on a silent, static clip', async () => {
-    const ctx = makeCtx(tmp('brainrot-run-'))
+    const ctx = qcCtx()
     await silentFrozenClip(ctx.artifactPath('assemble', 'final.mp4'))
-    seedVoice(ctx)
-    seedWords(ctx)
+    seedVoiceJson(ctx)
+    seedWordsJson(ctx)
 
     await qcStage({ minMs: 1000 }).run(ctx)
 
@@ -236,10 +207,10 @@ describe('qcStage', () => {
   }, 120000)
 
   it('runs exactly the fixed check list, in order', async () => {
-    const ctx = makeCtx(tmp('brainrot-run-'))
-    await goodClip(ctx.artifactPath('assemble', 'final.mp4'))
-    seedVoice(ctx)
-    seedWords(ctx)
+    const ctx = qcCtx()
+    placeGoodClip(ctx)
+    seedVoiceJson(ctx)
+    seedWordsJson(ctx)
 
     await qcStage({ minMs: 1000 }).run(ctx)
 

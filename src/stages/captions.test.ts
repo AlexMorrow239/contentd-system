@@ -5,7 +5,7 @@ vi.mock('../providers/whisperx.js', () => ({ alignTranscript: vi.fn() }))
 
 import { alignTranscript } from '../providers/whisperx.js'
 import { captionsStage } from './captions.js'
-import { makeCtx } from './_testkit.js'
+import { makeCtx } from '../testing/job.js'
 import type { JobContext } from '../jobs/types.js'
 
 const SCRIPT = {

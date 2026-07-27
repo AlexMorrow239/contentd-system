@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { bodyText, HOOK_PAUSE_MS, narrationText, narrationWordCount } from './narration-text.js'
 import type { ScriptArtifact } from './script.js'
-import { testScript } from './_testkit.js'
+import { testScript } from '../testing/job.js'
 
 describe('narrationText', () => {
   it('keeps the story composition byte-identical (hook + segments, blank-line joined)', () => {

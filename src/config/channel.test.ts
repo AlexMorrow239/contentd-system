@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './channel.js'
-import { testChannel } from '../stages/_testkit.js'
+import { testChannel } from '../testing/channel.js'
 import type { Platform } from '../publish/types.js'
 
 function writeToml(lines: string[]): string {

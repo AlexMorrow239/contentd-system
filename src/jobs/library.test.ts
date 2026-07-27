@@ -1,6 +1,3 @@
-import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
@@ -16,6 +13,7 @@ import {
 } from './library.js'
 import type { LibraryState } from './library.js'
 import { runCli } from '../testing/run-cli.js'
+import { tmpDir } from '../testing/tmp.js'
 
 // Raw-insert seed: the DAO only ever writes library.state, so tests control
 // every other column — the owning jobs row included — directly.
@@ -225,7 +223,7 @@ describe('deleteRejectedObjects', () => {
 
   it('is a no-op for an empty object list', async () => {
     const db = openDb(':memory:')
-    const store = fakeStore(mkdtempSync(path.join(tmpdir(), 'brainrot-reject-')))
+    const store = fakeStore(tmpDir('brainrot-reject-'))
     const res = await deleteRejectedObjects({ db, objects: [], store })
     expect(res).toEqual({ deleted: [], failed: [] })
     db.close()
@@ -238,7 +236,7 @@ describe('deleteRejectedObjects', () => {
     seedObjectRow(db, a, 'videos/chan-a/a.mp4')
     seedObjectRow(db, b, 'videos/chan-a/b.mp4')
 
-    const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-reject-'))
+    const dir = tmpDir('brainrot-reject-')
     const store = fakeStore(dir)
     await store.put('videos/chan-a/a.mp4', Buffer.from('a'), 'video/mp4')
     await store.put('videos/chan-a/b.mp4', Buffer.from('b'), 'video/mp4')
@@ -266,7 +264,7 @@ describe('deleteRejectedObjects', () => {
     seedObjectRow(db, b, 'videos/chan-a/b.mp4')
     seedObjectRow(db, c, 'videos/chan-a/c.mp4')
 
-    const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-reject-'))
+    const dir = tmpDir('brainrot-reject-')
     const inner = fakeStore(dir)
     await inner.put('videos/chan-a/a.mp4', Buffer.from('a'), 'video/mp4')
     await inner.put('videos/chan-a/b.mp4', Buffer.from('b'), 'video/mp4')
@@ -301,7 +299,7 @@ describe('deleteRejectedObjects', () => {
     const jobId = seedJob(db, { id: 'job-1' })
     seedObjectRow(db, jobId, 'videos/chan-a/job-1.mp4')
 
-    const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-reject-'))
+    const dir = tmpDir('brainrot-reject-')
     const inner = fakeStore(dir)
     await inner.put('videos/chan-a/job-1.mp4', Buffer.from('x'), 'video/mp4')
     const store = storeThatFailsToDelete(inner, 'videos/chan-a/job-1.mp4')

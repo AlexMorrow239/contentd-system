@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync, mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { openDb, openDbReadonly } from './index.js'
+import { tmpDir } from '../testing/tmp.js'
 
 function tempDbPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'brainrot-db-'))
+  const dir = tmpDir('brainrot-db-')
   return join(dir, 'nested', 'brainrot.db') // 'nested' does not exist yet
 }
 
@@ -83,7 +83,7 @@ describe('openDbReadonly', () => {
   it('throws on a missing file instead of creating one', () => {
     // A viewer that conjures the database it failed to find reports zeroes
     // instead of "missing", which is worse than an error.
-    const path = join(mkdtempSync(join(tmpdir(), 'brainrot-ro-')), 'absent.db')
+    const path = join(tmpDir('brainrot-ro-'), 'absent.db')
     expect(() => openDbReadonly(path)).toThrow()
     expect(existsSync(path)).toBe(false)
   })

@@ -13,6 +13,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:contract": "CONTRACT=1 vitest run",
     "test:storage": "STORAGE=1 vitest run",
     "brainrot": "tsx src/cli.ts"
@@ -53,6 +54,7 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.0",
+    "@vitest/coverage-v8": "4.1.10",
     "esbuild": "^0.28.1",
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
