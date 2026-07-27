@@ -1,6 +1,7 @@
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { BrainrotError } from '../errors.js'
 import { cropToVertical, loopToDuration, probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 
@@ -42,8 +43,9 @@ export const visualsVolumeStage: StageDef = {
     const bgDirs = ctx.channel.bgDir
     const all = listMp4sRecursively(bgDirs)
     if (all.length === 0) {
-      throw new Error(
+      throw new BrainrotError(
         `visuals: no .mp4 background clips found under bgDir(s): ${bgDirs.join(', ')}`,
+        { domain: 'config', kind: 'invalid' },
       )
     }
 

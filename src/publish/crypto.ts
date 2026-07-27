@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
+import { BrainrotError } from '../errors.js'
 
 const IV_LENGTH = 12
 const AUTH_TAG_LENGTH = 16
@@ -8,7 +9,10 @@ const AUTH_TAG_LENGTH = 16
 // before any token work is attempted — never a bare crash on a bad .env value.
 export function parseTokenKey(hex: string | undefined): Buffer {
   if (hex === undefined || !/^[0-9a-fA-F]{64}$/.test(hex)) {
-    throw new Error('BRAINROT_TOKEN_KEY must be 64 hex characters')
+    throw new BrainrotError('BRAINROT_TOKEN_KEY must be 64 hex characters', {
+      domain: 'config',
+      kind: 'invalid',
+    })
   }
   return Buffer.from(hex, 'hex')
 }

@@ -1,3 +1,5 @@
+import { BrainrotError } from '../errors.js'
+
 export type DbChoice = 'prod' | 'dev'
 
 export interface DashboardConfig {
@@ -23,8 +25,9 @@ export function resolveDashboardConfig(env: NodeJS.ProcessEnv = process.env): Da
   if (rawPort !== undefined) {
     const parsed = Number(rawPort)
     if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-      throw new Error(
+      throw new BrainrotError(
         `invalid BRAINROT_DASHBOARD_PORT: ${JSON.stringify(rawPort)} (expected a port 1-65535)`,
+        { domain: 'config', kind: 'invalid' },
       )
     }
     port = parsed

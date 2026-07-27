@@ -7,6 +7,8 @@
  * client.
  */
 
+import { BrainrotError } from '../errors.js'
+
 export interface S3Config {
   endpoint: string
   bucket: string
@@ -59,7 +61,9 @@ function missingMessage(missing: string[]): string {
  */
 export function s3ConfigFromEnv(): S3Config {
   const { config, missing } = readConfig()
-  if (missing.length > 0) throw new Error(missingMessage(missing))
+  if (missing.length > 0) {
+    throw new BrainrotError(missingMessage(missing), { domain: 'config', kind: 'invalid' })
+  }
   return config
 }
 

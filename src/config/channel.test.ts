@@ -8,6 +8,7 @@ import {
   writeChannelsDir as writeChannels,
 } from '../testing/channel.js'
 import { tmpDir } from '../testing/tmp.js'
+import { classify } from '../errors.js'
 
 /**
  * This file's subject IS the TOML text, so it works in line arrays and edits
@@ -483,5 +484,20 @@ describe('loadChannelsDir platform quota validation', () => {
     const loaded = tryLoadChannelsDir(dir)
     expect(loaded.channels).toEqual([])
     expect(loaded.error).toMatch(/exceeding youtube's 6\/day cap/)
+  })
+})
+
+describe('config error classification', () => {
+  it('classifies a channel-name/basename mismatch as config/invalid', () => {
+    const dir = writeChannels({ 'wrong-name.toml': named('other') })
+    const err = (() => {
+      try {
+        loadChannelsDir(dir)
+        return undefined
+      } catch (e: unknown) {
+        return e
+      }
+    })()
+    expect(classify(err)).toMatchObject({ domain: 'config', kind: 'invalid' })
   })
 })

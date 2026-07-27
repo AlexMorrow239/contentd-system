@@ -1,3 +1,4 @@
+import { BrainrotError } from '../../errors.js'
 import type { Platform, PlatformQuota } from '../types.js'
 
 // YouTube quota is per Google Cloud project (~10k units/day, 1600/upload),
@@ -27,8 +28,9 @@ export function uploadsPerDayCap(envVar: string, fallback: number): number {
   // Integer-only: the tick gates on `used >= cap`, so a fractional 1.5 would
   // permit 2 uploads — a cap that silently rounds itself up.
   if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(
+    throw new BrainrotError(
       `invalid ${envVar}: ${JSON.stringify(raw)} (expected a positive integer number of uploads)`,
+      { domain: 'config', kind: 'invalid' },
     )
   }
   return n

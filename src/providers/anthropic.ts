@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
-import { tagError } from '../errors.js'
+import { BrainrotError, tagError } from '../errors.js'
 
 export interface LlmUsageCost {
   usdMicros: number
@@ -94,7 +94,12 @@ async function forcedToolCompletion<T>(opts: {
   // must fail at zero spend, not after a real call whose cost can never reach the
   // ledger.
   const price = PRICE_TABLE[opts.model]
-  if (!price) throw new Error(`${opts.label}: no price table entry for model "${opts.model}"`)
+  if (!price) {
+    throw new BrainrotError(`${opts.label}: no price table entry for model "${opts.model}"`, {
+      domain: 'config',
+      kind: 'invalid',
+    })
+  }
 
   // Zod v4 native JSON Schema. `reused: 'inline'` inlines any reused sub-schema so
   // the tool input_schema has no $ref (the Anthropic tool API does not resolve $ref).

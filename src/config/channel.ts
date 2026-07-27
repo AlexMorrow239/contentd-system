@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
-import { errorMessage } from '../errors.js'
+import { BrainrotError, errorMessage } from '../errors.js'
 import {
   instagramOptionsSchema,
   normalizeInstagramOptions,
@@ -285,18 +285,20 @@ function assertQuotaHeadroom(channels: ChannelConfig[]): void {
       const total = declaring.reduce((sum, c) => sum + c.videosPerDay, 0)
       if (total > cap) {
         const breakdown = declaring.map((c) => `${c.name}(${c.videosPerDay})`).join(' + ')
-        throw new Error(
+        throw new BrainrotError(
           `${breakdown} declare ${total} ${platform} videos/day, exceeding ${platform}'s ` +
             `${cap}/day cap (shared across all channels) — lower videos_per_day`,
+          { domain: 'config', kind: 'invalid' },
         )
       }
       continue
     }
     for (const c of declaring) {
       if (c.videosPerDay > cap) {
-        throw new Error(
+        throw new BrainrotError(
           `${c.name} declares ${c.videosPerDay} ${platform} videos/day, exceeding ` +
             `${platform}'s ${cap}/day per-channel cap — lower videos_per_day`,
+          { domain: 'config', kind: 'invalid' },
         )
       }
     }
@@ -325,7 +327,10 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
     try {
       return { file, path, cfg: loadChannelConfig(path) }
     } catch (err) {
-      throw new Error(`failed to load channel config ${path}: ${(err as Error).message}`)
+      throw new BrainrotError(
+        `failed to load channel config ${path}: ${(err as Error).message}`,
+        { domain: 'config', kind: 'invalid' },
+      )
     }
   })
   // Duplicate names first: two files claiming one name would make resume's
@@ -336,15 +341,19 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
   for (const { file, cfg } of parsed) {
     const prior = declaredBy.get(cfg.name)
     if (prior !== undefined) {
-      throw new Error(`duplicate channel name "${cfg.name}" declared by both ${prior} and ${file}`)
+      throw new BrainrotError(
+        `duplicate channel name "${cfg.name}" declared by both ${prior} and ${file}`,
+        { domain: 'config', kind: 'invalid' },
+      )
     }
     declaredBy.set(cfg.name, file)
   }
   for (const { file, path, cfg } of parsed) {
     const base = basename(file, '.toml')
     if (base !== cfg.name) {
-      throw new Error(
+      throw new BrainrotError(
         `channel config ${path}: filename basename "${base}" must equal channel name "${cfg.name}" (rename to ${cfg.name}.toml)`,
+        { domain: 'config', kind: 'invalid' },
       )
     }
   }
