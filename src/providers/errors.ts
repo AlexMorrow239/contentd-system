@@ -10,19 +10,10 @@ import { errorContext } from '../errors.js'
  * (`tagError(err, { ..., context: { costUsdMicros } })`), which keeps the
  * error's identity intact so callers still match `instanceof z.ZodError`.
  *
- * The own-property fallback below is defensive, for a foreign error that
- * happens to carry a numeric `costUsdMicros` of its own. Nothing in this repo
- * writes that property any more.
- *
  * This keeps its own name rather than being inlined at call sites: the name is
  * what documents the ledger obligation.
  */
 export function errorCostUsdMicros(err: unknown): number | undefined {
-  const tagged = errorContext(err).costUsdMicros
-  if (typeof tagged === 'number' && Number.isFinite(tagged)) return tagged
-  if (err !== null && typeof err === 'object' && 'costUsdMicros' in err) {
-    const cost = (err as { costUsdMicros?: unknown }).costUsdMicros
-    if (typeof cost === 'number' && Number.isFinite(cost)) return cost
-  }
-  return undefined
+  const cost = errorContext(err).costUsdMicros
+  return typeof cost === 'number' && Number.isFinite(cost) ? cost : undefined
 }

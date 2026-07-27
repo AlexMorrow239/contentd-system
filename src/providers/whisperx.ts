@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises'
-import { BrainrotError, isAbortLike } from '../errors.js'
+import { BrainrotError, isAbortLike, isAuthStatus } from '../errors.js'
 
 export interface WordTiming {
   word: string
@@ -42,7 +42,7 @@ export async function alignTranscript(opts: {
     const raw = await res.text().catch(() => '')
     throw new BrainrotError(`alignTranscript: whisperx responded ${res.status}: ${raw}`, {
       domain: 'provider',
-      kind: res.status === 401 || res.status === 403 ? 'auth' : 'transient',
+      kind: isAuthStatus(res.status) ? 'auth' : 'transient',
     })
   }
 

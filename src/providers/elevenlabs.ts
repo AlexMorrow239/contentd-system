@@ -1,5 +1,5 @@
 import { encodePcmWav, parseWavDurationMs } from '../media/wav.js'
-import { BrainrotError, isAbortLike } from '../errors.js'
+import { BrainrotError, isAbortLike, isAuthStatus } from '../errors.js'
 import type { WordTiming } from './whisperx.js'
 
 // ElevenLabs bills TTS per character. $0.30 per 1,000 characters is the
@@ -126,7 +126,7 @@ export async function synthWithTimestamps(opts: {
     const raw = await res.text().catch(() => '')
     throw new BrainrotError(`synthWithTimestamps: elevenlabs responded ${res.status}: ${raw}`, {
       domain: 'provider',
-      kind: res.status === 401 || res.status === 403 ? 'auth' : 'transient',
+      kind: isAuthStatus(res.status) ? 'auth' : 'transient',
     })
   }
 

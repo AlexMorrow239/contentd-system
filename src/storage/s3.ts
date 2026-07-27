@@ -8,7 +8,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { s3ConfigFromEnv, type S3Config } from './config.js'
 import { StorageError, type ObjectStore } from './types.js'
-import { errorMessage } from '../errors.js'
+import { errorMessage, isAuthStatus } from '../errors.js'
 
 // Re-exported so a caller already pulling in the SDK for a client does not
 // need a second import; ./config.js is the SDK-free entry point for callers
@@ -27,7 +27,7 @@ function mapS3Error(op: string, err: unknown): StorageError {
   if (name === 'NoSuchKey' || name === 'NotFound' || status === 404) {
     return new StorageError(`${op}: object not found`, 'not-found')
   }
-  if (status === 401 || status === 403) {
+  if (isAuthStatus(status)) {
     return new StorageError(`${op}: ${status} auth error`, 'auth')
   }
   const message = errorMessage(err)

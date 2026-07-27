@@ -216,3 +216,12 @@ export function errorContext(err: unknown): Readonly<Record<string, unknown>> {
 export function isAbortLike(err: unknown): boolean {
   return err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
 }
+
+/**
+ * True for HTTP status codes indicating expired, invalid, or missing
+ * credentials. Replaces the `status === 401 || status === 403` check
+ * duplicated across elevenlabs.ts, whisperx.ts and s3.ts's mapS3Error.
+ */
+export function isAuthStatus(status: number | undefined): boolean {
+  return status === 401 || status === 403
+}

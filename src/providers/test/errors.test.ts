@@ -12,13 +12,12 @@ describe('errorCostUsdMicros', () => {
     expect(errorCostUsdMicros(err)).toBe(42)
   })
 
-  it('reads cost from a legacy own-property, for a foreign error with no tag', () => {
-    const err = Object.assign(new Error('legacy shape'), { costUsdMicros: 42 })
-    expect(errorCostUsdMicros(err)).toBe(42)
-  })
-
-  it('rejects a non-finite legacy own-property', () => {
-    const err = Object.assign(new Error('bad legacy shape'), { costUsdMicros: Infinity })
+  it('rejects a non-finite tagged cost', () => {
+    const err = tagError(new Error('bad shape'), {
+      domain: 'provider',
+      kind: 'invalid',
+      context: { costUsdMicros: Infinity },
+    })
     expect(errorCostUsdMicros(err)).toBeUndefined()
   })
 

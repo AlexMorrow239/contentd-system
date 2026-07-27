@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ChannelConfig } from '../config/channel.js'
 import { assertGlobalDayBudget, recordCost } from '../jobs/costs.js'
-import { BrainrotError, classify, errorContext, errorMessage, tagError } from '../errors.js'
+import { BrainrotError, classify, errorMessage, tagError } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
 import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
@@ -248,7 +248,7 @@ export async function scoutAll(
       const message = info.message
       if (info.kind === 'budget') budgetBlocked.add(channel.name)
       console.error(`scout: channel "${channel.name}" scoring failed: ${message}`)
-      const partial = (errorContext(err).partial as ScoutChannelResult | undefined) ?? {
+      const partial = (info.context.partial as ScoutChannelResult | undefined) ?? {
         channel: channel.name,
         fetched: 0,
         alreadyKnown: 0,
