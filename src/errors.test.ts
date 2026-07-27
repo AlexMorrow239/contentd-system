@@ -109,6 +109,44 @@ describe('errors', () => {
       expect(info.code).toBe('provider/invalid')
       expect(info.context).toEqual({ costUsdMicros: 3300 })
     })
+
+    it('merges a tag context onto an already-classified BrainrotError', () => {
+      // The scout use case: a BudgetExceededError is thrown, then tagged
+      // with partial scout-progress before being re-thrown/caught upstream.
+      const err = new BrainrotError('budget exceeded', {
+        domain: 'job',
+        kind: 'budget',
+        context: { a: 1 },
+      })
+      tagError(err, { domain: 'job', kind: 'budget', context: { b: 2 } })
+      expect(classify(err).context).toEqual({ a: 1, b: 2 })
+    })
+
+    it("keeps the error's own context on a tag context key collision", () => {
+      const err = new BrainrotError('budget exceeded', {
+        domain: 'job',
+        kind: 'budget',
+        context: { a: 1 },
+      })
+      tagError(err, { domain: 'job', kind: 'budget', context: { a: 99, b: 2 } })
+      expect(classify(err).context).toEqual({ a: 1, b: 2 })
+    })
+
+    it("never lets a tag override a BrainrotError's own domain/kind", () => {
+      const err = new BrainrotError('budget exceeded', {
+        domain: 'job',
+        kind: 'budget',
+        context: { a: 1 },
+      })
+      // A tag with a completely different domain/kind must not leak through —
+      // only its context may enrich the classification.
+      tagError(err, { domain: 'publish', kind: 'auth', context: { b: 2 } })
+      const info = classify(err)
+      expect(info.domain).toBe('job')
+      expect(info.kind).toBe('budget')
+      expect(info.code).toBe('job/budget')
+      expect(info.context).toEqual({ a: 1, b: 2 })
+    })
   })
 
   describe('tagError', () => {

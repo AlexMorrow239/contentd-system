@@ -146,17 +146,26 @@ const EMPTY_CONTEXT: Readonly<Record<string, unknown>> = Object.freeze({})
  * unknown. A `BrainrotError` reports its own fields; a tagged foreign error
  * reports the tag's; everything else is `internal/internal`.
  *
- * A BrainrotError's own fields win over a tag, so tagging one is a no-op.
+ * `domain`/`kind` always come from the BrainrotError's own fields — a tag can
+ * never override an error's classification. A tag's `context` DOES merge in,
+ * though: tagging an already-thrown `BrainrotError` (e.g. scout tagging a
+ * `BudgetExceededError` with its partial progress before re-throwing) is how
+ * that extra context reaches `errorContext()`. On a key collision the error's
+ * own `context` wins, since it is the more authoritative, original source.
  */
 export function classify(err: unknown): ErrorInfo {
   const message = errorMessage(err)
   if (err instanceof BrainrotError) {
+    const tag = readErrorTag(err)
     return {
       domain: err.domain,
       kind: err.kind,
       code: err.code,
       message,
-      context: err.context,
+      context:
+        tag?.context === undefined
+          ? err.context
+          : Object.freeze({ ...tag.context, ...err.context }),
     }
   }
   const tag = readErrorTag(err)

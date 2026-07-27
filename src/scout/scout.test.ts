@@ -373,6 +373,18 @@ describe('scoutAll', () => {
     // Still reported per channel — the operator sees why nothing was scored.
     expect(results.map((r) => r.channel)).toEqual(['a', 'b'])
     expect(results.every((r) => r.scoringError?.includes('global-day'))).toBe(true)
+    // Regression guard: the budget gate fires INSIDE scoreWithLedger, after
+    // fetch/dedupe already ran — so each channel made real progress (fetched
+    // one candidate, queued it for scoring) before being blocked. That
+    // progress rides to scoutAll as a `partial` ScoutChannelResult tagged
+    // onto the (already-classified) BudgetExceededError. classify() used to
+    // discard a tag entirely once the thrown value was already a
+    // BrainrotError, which silently zeroed these counts back to the
+    // no-progress fallback — exactly the data the scout CLI's stdout JSON
+    // line reports to cron.
+    expect(results.every((r) => r.fetched === 1)).toBe(true)
+    expect(results.every((r) => r.scored === 1)).toBe(true)
+    expect(results.every((r) => r.alreadyKnown === 0)).toBe(true)
     stderrSpy.mockRestore()
     db.close()
   })
@@ -407,6 +419,11 @@ describe('scoutAll', () => {
     // counts only the channel that hit a real error.
     expect(failed.results[0].scoringError).not.toContain('global-day')
     expect(failed.results[1].scoringError).toContain('global-day')
+    // "b" still fetched and queued its one candidate for scoring before the
+    // global-day gate blocked it — that real progress must survive onto the
+    // result, not read back as zeros.
+    expect(failed.results[1].fetched).toBe(1)
+    expect(failed.results[1].scored).toBe(1)
     expect(failed.message).toBe(
       'all 1 scouted channel(s) failed in scoring (1 more budget-blocked)',
     )
