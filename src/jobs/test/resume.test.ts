@@ -11,6 +11,7 @@ import { pipelineStages } from '../pipeline.js'
 import { claimJobForResume, ResumeError, resumeJob } from '../resume.js'
 import { runCli } from '../../testing/run-cli.js'
 import { memDb } from '../../testing/db.js'
+import { BrainrotError, classify, errorMessage } from '../../errors.js'
 
 // Real minimal channel TOML (plan-1 shape; [scout] is optional): resumeJob
 // loads the channel from disk, so the fixture must round-trip loadChannelConfig.
@@ -272,6 +273,33 @@ describe('resumeJob', () => {
       stagesFor: () => fakeStages(),
     })
     expect(result.status).toBe('ready')
+  })
+
+  describe('ResumeError kinds', () => {
+    it('classifies a missing job as job/not-found', async () => {
+      const err = await resumeJob(db, 'no-such-job', { runsRoot, channelsDir }).catch(
+        (e: unknown) => e,
+      )
+      expect(err).toBeInstanceOf(BrainrotError)
+      expect(classify(err)).toMatchObject({ domain: 'job', kind: 'not-found' })
+      expect(errorMessage(err)).toBe('job not found: no-such-job')
+    })
+
+    it('classifies an already-done job as job/refused', async () => {
+      seedJob('done')
+      const err = await resumeJob(db, 'job-done', { runsRoot, channelsDir }).catch(
+        (e: unknown) => e,
+      )
+      expect(classify(err)).toMatchObject({ domain: 'job', kind: 'refused' })
+    })
+
+    it('classifies a live running job as job/conflict', async () => {
+      seedJob('running')
+      const err = await resumeJob(db, 'job-running', { runsRoot, channelsDir }).catch(
+        (e: unknown) => e,
+      )
+      expect(classify(err)).toMatchObject({ domain: 'job', kind: 'conflict' })
+    })
   })
 })
 

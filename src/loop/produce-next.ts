@@ -15,7 +15,13 @@ import { planTick } from './plan-tick.js'
 
 export interface TickResult {
   action: 'resumed' | 'produced' | 'noop'
-  reason?: 'lease-held' | 'no-eligible-work' | 'claim-conflict' | 'config-error' | 'bad-env'
+  reason?:
+    | 'lease-held'
+    | 'no-eligible-work'
+    | 'claim-conflict'
+    | 'resume-refused'
+    | 'config-error'
+    | 'bad-env'
   jobId?: string
   topicId?: number
   status?: JobResult['status']
@@ -115,12 +121,21 @@ export async function produceNextTick(
           heartbeat,
         })
       } catch (err) {
-        // A ResumeError is a refusal, not a crash: an operator's `resume` (or
-        // `topics reject`) won the job between planning and claiming it. Report
-        // the benign, self-healing race the way publish-next does — one JSON
-        // line, exit 0 — instead of a stack trace every cron firing.
+        // A ResumeError is a refusal, not a crash — one JSON line, exit 0,
+        // instead of a stack trace every cron firing. But the three kinds are
+        // NOT the same outcome, and reporting them identically hid a
+        // permanently stuck job behind a benign label:
+        //   'conflict'  — an operator's `resume` (or `topics reject`) won the
+        //                 job between planning and claiming it. Self-healing;
+        //                 the next tick simply plans again.
+        //   otherwise   — the job or its channel TOML is gone, or the job is
+        //                 already done. No tick heals that, so it must not
+        //                 wear the race's label. Carry the message out so the
+        //                 operator sees WHICH job and WHICH file.
         if (err instanceof ResumeError) {
-          return { action: 'noop', reason: 'claim-conflict' }
+          return err.kind === 'conflict'
+            ? { action: 'noop', reason: 'claim-conflict' }
+            : { action: 'noop', reason: 'resume-refused', error: err.message }
         }
         throw err
       }

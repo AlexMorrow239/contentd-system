@@ -395,7 +395,7 @@ describe('produceNextTick — lost claims', () => {
     const jobId = createJob(db, channel, { topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(
-      new ResumeError(`job ${jobId} was picked up by another process`),
+      new ResumeError(`job ${jobId} was picked up by another process`, 'conflict'),
     )
     const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
     expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
@@ -415,6 +415,65 @@ describe('produceNextTick — lost claims', () => {
     // A throw mid-flight still releases the lease on the way out (the finally),
     // so one crash cannot wedge the loop until the TTL expires.
     expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    db.close()
+  })
+})
+
+describe('produceNextTick — resume refusal routing', () => {
+  it('reports a real claim race as claim-conflict', async () => {
+    const { db, runsRoot } = setup()
+    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+    vi.mocked(resumeJob).mockRejectedValueOnce(
+      new ResumeError(`job ${jobId} was picked up by another process`, 'conflict'),
+    )
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
+    db.close()
+  })
+
+  it('reports a missing channel TOML as resume-refused, carrying the reason', async () => {
+    // Previously reported as `claim-conflict`, which reads as a benign
+    // self-healing race — it is not: no tick can heal a deleted TOML.
+    const { db, runsRoot } = setup()
+    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+    vi.mocked(resumeJob).mockRejectedValueOnce(
+      new ResumeError('channel config not found: channels/gone.toml', 'not-found'),
+    )
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'resume-refused',
+      error: 'channel config not found: channels/gone.toml',
+    })
+    db.close()
+  })
+
+  it('reports an already-done job as resume-refused', async () => {
+    const { db, runsRoot } = setup()
+    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+    vi.mocked(resumeJob).mockRejectedValueOnce(
+      new ResumeError(`job ${jobId} is already done; nothing to resume`, 'refused'),
+    )
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result.reason).toBe('resume-refused')
+    db.close()
+  })
+
+  it('still rethrows a non-ResumeError', async () => {
+    const { db, runsRoot } = setup()
+    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+    vi.mocked(resumeJob).mockRejectedValueOnce(new Error('disk on fire'))
+    await expect(
+      produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages }),
+    ).rejects.toThrow('disk on fire')
     db.close()
   })
 })

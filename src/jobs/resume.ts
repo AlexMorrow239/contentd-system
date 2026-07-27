@@ -2,15 +2,32 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../config/channel.js'
+import { BrainrotError } from '../errors.js'
 import { markTopicUsedByJob } from '../scout/topics.js'
 import { pipelineStages } from './pipeline.js'
 import { runJob } from './runner.js'
 import type { JobResult } from './runner.js'
 import type { StageDef } from './types.js'
 
-// A refusal to resume (missing job, non-resumable status, missing channel
-// TOML) — distinct from a crash so the CLI prints just the reason and exits 1.
-export class ResumeError extends Error {}
+// A refusal to resume — distinct from a crash so the CLI prints just the
+// reason and exits 1. The kind separates the three genuinely different
+// outcomes the five throw sites below cover:
+//   'not-found' — the job or its channel TOML is gone; no tick heals this
+//   'refused'   — a precondition says don't (already done)
+//   'conflict'  — another process holds it; the next tick simply retries
+// produce-next routes on this: only 'conflict' is the benign self-healing
+// race it used to report for all three.
+export type ResumeErrorKind = 'not-found' | 'refused' | 'conflict'
+
+export class ResumeError extends BrainrotError {
+  // See PublishError: `declare` is mandatory under useDefineForClassFields.
+  declare readonly kind: ResumeErrorKind
+
+  constructor(message: string, kind: ResumeErrorKind) {
+    super(message, { domain: 'job', kind })
+    this.name = 'ResumeError'
+  }
+}
 
 /**
  * Atomic resume claim: flip the job to 'running' only if it is still in a
@@ -50,10 +67,10 @@ export async function resumeJob(
   const job = db.prepare('SELECT channel, status FROM jobs WHERE id = ?').get(jobId) as
     { channel: string; status: string } | undefined
   if (!job) {
-    throw new ResumeError(`job not found: ${jobId}`)
+    throw new ResumeError(`job not found: ${jobId}`, 'not-found')
   }
   if (job.status === 'done') {
-    throw new ResumeError(`job ${jobId} is already done; nothing to resume`)
+    throw new ResumeError(`job ${jobId} is already done; nothing to resume`, 'refused')
   }
   // 'queued' IS resumable: a crash (or SQLITE_BUSY) between produce-next's
   // claim transaction committing and runJob's first status write strands the
@@ -64,11 +81,14 @@ export async function resumeJob(
   if (job.status === 'running' && !opts.force) {
     // 'running' usually means a live process holds the job; --force is the
     // operator asserting that process crashed (the digest flags such zombies).
-    throw new ResumeError(`job ${jobId} is running; pass --force if no live process holds it`)
+    throw new ResumeError(
+      `job ${jobId} is running; pass --force if no live process holds it`,
+      'conflict',
+    )
   }
   const channelPath = join(opts.channelsDir, `${job.channel}.toml`)
   if (!existsSync(channelPath)) {
-    throw new ResumeError(`channel config not found: ${channelPath}`)
+    throw new ResumeError(`channel config not found: ${channelPath}`, 'not-found')
   }
   const channel = loadChannelConfig(channelPath)
   // The runner's skip-done-stages resume recovers the sunk cost; the stage
@@ -80,7 +100,7 @@ export async function resumeJob(
   // rather than double-spend; runJob's own later flip to 'running' is then a
   // same-value no-op.
   if (!claimJobForResume(db, jobId, opts.force ?? false)) {
-    throw new ResumeError(`job ${jobId} was picked up by another process`)
+    throw new ResumeError(`job ${jobId} was picked up by another process`, 'conflict')
   }
   const result = await runJob(db, channel, jobId, stages, {
     runsRoot: opts.runsRoot,
