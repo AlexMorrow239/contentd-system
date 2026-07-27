@@ -2,6 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classify } from '../../errors.js'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
 import { REDDIT_USER_AGENT, redditSource } from './reddit.js'
+import {
+  ARTICLE_TARGET,
+  IMAGE_TARGET,
+  REDDIT_FEED_XML,
+  SELF_TARGET,
+} from './_post-kind.fixtures.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -88,18 +94,26 @@ describe('redditSource', () => {
     const { impl } = fakeTextFetch(200, RSS_FIXTURE)
     const source = redditSource('space', impl)
     const candidates = await source.fetch({ limit: 25, timeoutMs: 10_000 })
+    // No <content> in this fixture, so there is no [link] anchor to read:
+    // targetUrl stays undefined and the classifier fails open to 'link'.
     expect(candidates).toEqual([
       {
         title: 'JWST finds water ice in a protoplanetary disk',
         url: 'https://www.reddit.com/r/space/comments/abc/jwst_finds_water_ice/',
         sourceId: 'reddit:r/space',
         externalId: 't3_abc',
+        contentHtml: undefined,
+        targetUrl: undefined,
+        postKind: 'link',
       },
       {
         title: 'Starship booster catch, third attempt',
         url: 'https://www.reddit.com/r/space/comments/def/starship_booster_catch/',
         sourceId: 'reddit:r/space',
         externalId: 't3_def',
+        contentHtml: undefined,
+        targetUrl: undefined,
+        postKind: 'link',
       },
     ])
   })
@@ -139,6 +153,9 @@ describe('redditSource', () => {
         url: 'https://www.reddit.com/r/space/comments/ok/c/',
         sourceId: 'reddit:r/space',
         externalId: 't3_ok',
+        contentHtml: undefined,
+        targetUrl: undefined,
+        postKind: 'link',
       },
     ])
 
@@ -158,6 +175,33 @@ describe('redditSource', () => {
       message: expect.stringMatching(/not a recognized RSS 2.0 or Atom feed/),
     })
     expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
+  })
+
+  it('annotates each candidate with its submission target and kind', async () => {
+    const { impl } = fakeTextFetch(200, REDDIT_FEED_XML)
+    const got = await redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 })
+
+    expect(got.map((c) => c.postKind)).toEqual(['image', 'self', 'link', 'link'])
+    expect(got.map((c) => c.targetUrl)).toEqual([
+      IMAGE_TARGET,
+      SELF_TARGET,
+      ARTICLE_TARGET,
+      undefined,
+    ])
+  })
+
+  it('returns image candidates rather than dropping them — the scout decides', async () => {
+    const { impl } = fakeTextFetch(200, REDDIT_FEED_XML)
+    const got = await redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 })
+    expect(got).toHaveLength(4)
+  })
+
+  it('leaves the dedupe hash untouched by annotation', async () => {
+    const { impl } = fakeTextFetch(200, REDDIT_FEED_XML)
+    const got = await redditSource('space', impl).fetch({ limit: 25, timeoutMs: 10_000 })
+    expect(dedupeHash(got[1].sourceId, got[1].externalId)).toBe(
+      dedupeHash('reddit:r/space', 't3_bbb2'),
+    )
   })
 
   it('rejects when the fetch times out, so the orchestrator can isolate it', async () => {

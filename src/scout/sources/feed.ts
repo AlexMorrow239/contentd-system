@@ -76,7 +76,9 @@ function atomEntries(entries: Record<string, unknown>[], sourceId: string): Tren
     const link = atomLinkHref(entry.link)
     const externalId = text(entry.id) ?? link
     if (title === undefined || externalId === undefined) continue
-    out.push({ title, url: link ?? '', sourceId, externalId })
+    // <content> is a standard Atom element, so reading it belongs here; what
+    // its HTML *means* is source-specific and stays out of this module.
+    out.push({ title, url: link ?? '', sourceId, externalId, contentHtml: text(entry.content) })
   }
   return out
 }

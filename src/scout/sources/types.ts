@@ -1,10 +1,19 @@
 import { createHash } from 'node:crypto'
+import type { PostKind } from './post-kind.js'
 
 export interface TrendCandidate {
   title: string
   url: string
   sourceId: string
   externalId: string
+  // Reddit only: the submission target (the feed's `[link]` anchor) and what
+  // it points at. Optional because rssSource has neither — an RSS item is
+  // already an article, so it renders to the scorer with no annotation.
+  targetUrl?: string
+  postKind?: PostKind
+  // Raw Atom <content> body, carried so the reddit source can interpret it.
+  // Not consumed downstream of redditSource.
+  contentHtml?: string
 }
 
 export interface TrendSourceFetchOpts {

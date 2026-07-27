@@ -1,6 +1,21 @@
 import { BrainrotError } from '../../errors.js'
 import { parseFeedCandidates } from './feed.js'
+import { classifyTarget } from './post-kind.js'
 import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
+
+// Reddit renders the submission target as an anchor whose text is literally
+// "[link]", in both the subreddit feed and a permalink's comment feed. The
+// href is the only place the target appears — the entry's own <link> is the
+// comments permalink, which is identical for an image post and a text post.
+//
+// fast-xml-parser has already entity-decoded the <content> body, so this
+// matches plain HTML, not the encoded form on the wire.
+const LINK_ANCHOR = /href="([^"]+)"[^>]*>\s*\[link\]/
+
+export function redditLinkTarget(contentHtml: string | undefined): string | undefined {
+  if (contentHtml === undefined) return undefined
+  return LINK_ANCHOR.exec(contentHtml)?.[1]
+}
 
 // Reddit blocks default library user agents; a descriptive UA is the
 // documented convention for public feed access.
@@ -32,7 +47,12 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
       }
       // The feed has no server-side limit parameter — cap client-side.
       const entries = parseFeedCandidates(await res.text(), id, `redditSource: r/${subreddit}`)
-      return entries.slice(0, limit)
+      // Annotate only — dropping is the scout's call, so it can count what it
+      // dropped (a source returning a filtered array cannot report that).
+      return entries.slice(0, limit).map((candidate) => {
+        const targetUrl = redditLinkTarget(candidate.contentHtml)
+        return { ...candidate, targetUrl, postKind: classifyTarget(targetUrl) }
+      })
     },
   }
 }
