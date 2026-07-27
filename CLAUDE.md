@@ -289,20 +289,28 @@ Conventions:
   never buried between describes.
 - Conditional tiers use `describe.skipIf`/`it.skipIf`. A bare `return` reports
   a **pass** for work that never ran.
-- Split large files as `<module>.<facet>.test.ts` (see `cli.<subcommand>`).
-  Files split for speed as well as clarity: `it.concurrent` batches at
-  `maxConcurrency` within a single file, so 28 spawns in one file queued 8 at a
-  time in one worker.
+- Split large files as `<module>.<facet>.test.ts` — `cli.<subcommand>`,
+  `publish-next.<phase>`, `publishes.<concern>`, `digest.<section>`. Keep
+  subprocess tests in their own `*.cli.test.ts` rather than beside in-process
+  ones: `it.concurrent` batches at `maxConcurrency` within a single file, so 28
+  spawns in one file queued 8 at a time in one worker.
+- A `_<module>.fixtures.ts` holds what only that module needs, and **delegates
+  row SQL to `src/testing/db.ts`** rather than re-issuing INSERTs. That is what
+  lets a module keep an ergonomic local call shape (digest ages rows via
+  `isoAgo`; the publish tick wants a video file the candidate scan can `stat`)
+  without a second copy of the schema.
 - Repo-wide architecture lints go in `src/arch.test.ts`. They are import-heavy
   by nature (proving module A must not load module B means loading B), so they
   are kept out of behavior files that would otherwise be instant.
+- The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
+  and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~20s wall / ~105s CPU for 848 tests (warm; a
-first run after `pnpm install` is slower while the Remotion webpack cache in
-`node_modules/.cache` fills). Wall clock is set by the slowest single file, not
-by the total — `src/jobs/golden-path.test.ts` is the floor at ~16s, one
-indivisible e2e render. That also means CPU spent anywhere shows up everywhere:
-cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
+**Performance.** The suite runs ~18s wall / ~94s CPU for 922 tests across 89
+files (warm; a first run after `pnpm install` is slower while the Remotion
+webpack cache in `node_modules/.cache` fills). Wall clock is set by the slowest
+single file, not by the total — `src/jobs/golden-path.test.ts` is the floor at
+~14s, one indivisible e2e render. That also means CPU spent anywhere shows up
+everywhere: cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
 `golden-path`, `assemble` and `remotion` too, purely by ending the contention.
 
 `scripts/vitest-sequencer.ts` starts the known-slow files first because Vitest

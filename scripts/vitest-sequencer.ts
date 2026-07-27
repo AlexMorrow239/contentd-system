@@ -23,24 +23,26 @@ import type { TestSpecification } from 'vitest/node'
 export const SLOW_FIRST = [
   'src/jobs/golden-path.test.ts', // one indivisible e2e render — the suite's floor
   'src/stages/assemble.test.ts', // real Remotion render
+  'src/stages/visuals-volume.test.ts', // ffmpeg crop+loop
+  'src/stages/qc.test.ts', // ffmpeg analysis passes
   'remotion/remotion.test.ts', // bundle() + selectComposition
   'src/jobs/golden-path-loop.test.ts', // scout -> produce -> publish e2e
   // Every CLI-spawning file: a cold `node dist/cli.js` costs seconds, not the
-  // ~0.34s the runCli docstring claims, because the entry point pulls in the
-  // whole pipeline. cli.test.ts is deliberately absent — it is now pure
-  // in-process parsers; the subprocess tests moved to cli.<subcommand>.
-  'src/cli.publish.test.ts',
-  'src/cli.topics.test.ts',
+  // ~0.34s the runCli docstring once claimed, because the entry point pulls in
+  // the whole pipeline. Note which files are ABSENT: cli.test.ts and
+  // publish-next.test.ts are now pure in-process suites, their subprocess
+  // tests having moved to cli.<subcommand>.test.ts and
+  // publish-next.cli.test.ts. produce-next.test.ts still spawns, so it stays.
   'src/cli.scout.test.ts',
-  'src/cli.produce.test.ts',
-  'src/cli.digest.test.ts',
+  'src/cli.publish.test.ts',
   'src/testing/run-cli.test.ts',
-  'src/loop/produce-next.test.ts',
+  'src/cli.produce.test.ts',
+  'src/cli.topics.test.ts',
+  'src/cli.digest.test.ts',
   'src/jobs/resume.test.ts',
-  'src/loop/publish-next.test.ts',
+  'src/loop/publish-next.cli.test.ts',
+  'src/loop/produce-next.test.ts',
   'src/media/ffmpeg.test.ts', // real ffmpeg encodes
-  'src/stages/qc.test.ts', // ffmpeg analysis passes
-  'src/stages/visuals-volume.test.ts', // ffmpeg crop+loop
 ]
 
 function rank(spec: TestSpecification): number {
