@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { StorageError, type ObjectStore } from '../storage/types.js'
+import { classify, errorMessage } from '../errors.js'
+import type { ObjectStore } from '../storage/types.js'
 import { PublishError, type PublishMedia } from './types.js'
 
 /**
@@ -49,13 +50,13 @@ export function publishMedia(opts: {
       try {
         return await opts.store.get(opts.objectKey)
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+        const info = classify(err)
+        const message = info.message
         // Only a genuinely absent object is unretryable; an outage or a bad
-        // credential — including a non-StorageError throw, which is always
+        // credential — including an unclassified throw, which is always
         // unexpected rather than a confirmed absence — is the next tick's
         // problem, not this video's fault.
-        const kind =
-          err instanceof StorageError && err.kind === 'not-found' ? 'rejected' : 'transient'
+        const kind = info.kind === 'not-found' ? 'rejected' : 'transient'
         throw new PublishError(
           `publishMedia: object ${opts.objectKey} could not be read: ${message}`,
           kind,
@@ -79,7 +80,7 @@ export function publishMedia(opts: {
       try {
         return await opts.store.presignGet(opts.objectKey, ttlSeconds)
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+        const message = errorMessage(err)
         throw new PublishError(
           `publishMedia: could not presign ${opts.objectKey}: ${message}`,
           'transient',

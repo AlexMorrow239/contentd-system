@@ -4,8 +4,8 @@ import type { Database } from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import pino from 'pino'
 import type { ChannelConfig } from '../config/channel.js'
+import { classify } from '../errors.js'
 import type { StoreArtifact } from '../stages/store.js'
-import { BudgetExceededError } from './costs.js'
 import { upsertLibraryObject } from './library.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
@@ -103,10 +103,7 @@ export async function runJob(
       try {
         options.heartbeat()
       } catch (err) {
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err) },
-          'lease heartbeat failed',
-        )
+        log.warn(classify(err), 'lease heartbeat failed')
       }
     }
     markStageRunning.run('running', nowIso(), jobId, stage.name)
@@ -114,11 +111,17 @@ export async function runJob(
       await stage.run(ctx)
       markStageDone.run('done', nowIso(), jobId, stage.name)
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      markStageFailed.run('failed', message, nowIso(), jobId, stage.name)
+      const info = classify(err)
+      markStageFailed.run('failed', info.message, nowIso(), jobId, stage.name)
+      // A stage failure used to log nothing at all, which made a failed render
+      // silent unless you queried job_stages. Inert by default — LOG_LEVEL is
+      // 'silent' unless set. Note pino writes to STDOUT, so setting LOG_LEVEL
+      // on a cron tick already interleaves with the one-JSON-line contract;
+      // this adds one line to that pre-existing hazard, it does not create it.
+      log.error({ ...info, stage: stage.name }, 'stage failed')
       // A budget breach is an enforcement outcome, not a crash: park the job
       // 'blocked' with the budget reason so operators can tell the two apart.
-      const jobStatus = err instanceof BudgetExceededError ? 'blocked' : 'failed'
+      const jobStatus = info.kind === 'budget' ? 'blocked' : 'failed'
       db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?').run(
         jobStatus,
         nowIso(),
@@ -181,8 +184,7 @@ export async function runJob(
       videoPath: existsSync(videoPath) ? videoPath : undefined,
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    log.error({ err: message }, 'final gate failed')
+    log.error(classify(err), 'final gate failed')
     db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?').run(
       'failed',
       nowIso(),

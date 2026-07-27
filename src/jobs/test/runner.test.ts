@@ -9,6 +9,7 @@ import { createJob, runJob } from '../runner.js'
 import type { StoreArtifact } from '../../stages/store.js'
 import { testChannel } from '../../testing/channel.js'
 import { fileDb } from '../../testing/db.js'
+import { tagError } from '../../errors.js'
 
 /** A real on-disk db plus a runs root beside it; both cleaned up per file. */
 function setup() {
@@ -482,6 +483,48 @@ describe('runJob', () => {
     )
     expect(captions.status).toBe('done')
     expect(captions.error).toBeNull()
+  })
+
+  describe('stage failure classification', () => {
+    it('parks a job blocked on any budget-kind failure, not just BudgetExceededError', async () => {
+      // The old check was `instanceof BudgetExceededError`. The kind check is
+      // deliberately wider: an error tagged job/budget means the same thing.
+      const { db, runsRoot } = setup()
+      const channel = testChannel()
+      const jobId = createJob(db, channel, { topic: 'space' })
+      const stages = [
+        {
+          name: 'script' as StageName,
+          run: () => {
+            throw tagError(new Error('global day cap reached'), {
+              domain: 'job',
+              kind: 'budget',
+            })
+          },
+        },
+      ]
+      const result = await runJob(db, channel, jobId, stages, { runsRoot })
+      expect(result.status).toBe('blocked')
+      const row = db.prepare('SELECT error FROM job_stages WHERE job_id = ? AND stage = ?')
+        .get(jobId, 'script') as { error: string }
+      expect(row.error).toBe('global day cap reached')
+    })
+
+    it('parks a job failed on an unclassified throw', async () => {
+      const { db, runsRoot } = setup()
+      const channel = testChannel()
+      const jobId = createJob(db, channel, { topic: 'space' })
+      const stages = [
+        {
+          name: 'script' as StageName,
+          run: () => {
+            throw new Error('boom')
+          },
+        },
+      ]
+      const result = await runJob(db, channel, jobId, stages, { runsRoot })
+      expect(result.status).toBe('failed')
+    })
   })
 })
 

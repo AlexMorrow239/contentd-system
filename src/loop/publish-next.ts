@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
+import { classify, errorMessage } from '../errors.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { publishMedia } from '../publish/media.js'
 import { ADAPTERS } from '../publish/platforms/index.js'
@@ -19,12 +20,7 @@ import {
 import type { ChannelVideoCandidate } from '../publish/publishes.js'
 import { channelNotDueReason, localDay, orderChannels } from '../publish/schedule.js'
 import type { ChannelCandidate, NotDueReason } from '../publish/schedule.js'
-import {
-  PUBLISH_PLATFORMS,
-  PublishError,
-  PublishOutcomeUnknownError,
-  resolvePlatformMeta,
-} from '../publish/types.js'
+import { PUBLISH_PLATFORMS, resolvePlatformMeta, toPublishFailureKind } from '../publish/types.js'
 import type { Platform, PublishAdapter, PublishTargetConfig } from '../publish/types.js'
 import type { ObjectStore } from '../storage/types.js'
 import { acquireLease, extendLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
@@ -443,16 +439,15 @@ export async function publishNextTick(
           credential,
         )
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        if (err instanceof PublishOutcomeUnknownError) {
+        const info = classify(err)
+        if (info.kind === 'unknown-outcome') {
           // The platform ACCEPTED the post and only its answer was unreadable.
           // Marking it failed would return the video to the pool and publish it
           // twice, so it stays 'claimed' for the sweep.
-          results.push({ platform, status: 'unknown', seq: claim.seq, error: message })
+          results.push({ platform, status: 'unknown', seq: claim.seq, error: info.message })
         } else {
-          const kind = err instanceof PublishError ? err.kind : 'transient'
-          markPublishFailed(db, claim.id, message, kind, nowFn())
-          results.push({ platform, status: 'failed', seq: claim.seq, error: message })
+          markPublishFailed(db, claim.id, info.message, toPublishFailureKind(info), nowFn())
+          results.push({ platform, status: 'failed', seq: claim.seq, error: info.message })
         }
         continue
       }
@@ -466,7 +461,7 @@ export async function publishNextTick(
       try {
         markPublishDone(db, claim.id, uploaded.postId, uploaded.url, nowFn())
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
+        const message = errorMessage(err)
         results.push({
           platform,
           status: 'unknown',
