@@ -1,8 +1,8 @@
-import tseslint from 'typescript-eslint'
-import globals from 'globals'
+import eslintConfigPrettier from 'eslint-config-prettier'
 import react from 'eslint-plugin-react'
 import reactHooks from 'eslint-plugin-react-hooks'
-import eslintConfigPrettier from 'eslint-config-prettier'
+import globals from 'globals'
+import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
   {
@@ -15,6 +15,7 @@ export default tseslint.config(
       'node_modules',
       'channels-dev',
       'sandbox',
+      '.claude/worktrees',
     ],
   },
   {
