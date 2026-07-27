@@ -8,6 +8,7 @@ import { parseTokenKey } from '../publish/crypto.js'
 import { claimPublish, markPublishDone } from '../publish/publishes.js'
 import { upsertToken } from '../publish/tokens.js'
 import { runCli } from '../testing/run-cli.js'
+import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import type { Platform, PublishAdapter } from '../publish/types.js'
 import { YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
@@ -48,11 +49,13 @@ afterAll(() => {
 })
 
 // Plan-1-shape channel TOML plus an optional [publish] table (spec §3.3).
-// `instagram: true` adds a second [publish.instagram] target sharing the
-// same slots, for the cross-platform/quota-pre-filter tests below.
+// `publish: true` declares [publish.youtube]; `instagram: true` adds a second
+// [publish.instagram] target, for the cross-platform/quota tests below.
+// Cadence carries no clock times at all now — `videosPerDay` is the whole
+// schedule, so it is what these fixtures tune.
 function channelToml(opts: {
   name: string
-  slots?: string[]
+  publish?: boolean
   instagram?: boolean
   videosPerDay?: number
 }): string {
@@ -77,14 +80,8 @@ function channelToml(opts: {
     'per_video_usd = 8.0',
     'per_day_usd = 20.0',
   ]
-  if (opts.slots !== undefined) {
-    lines.push(
-      '',
-      '[publish]',
-      `slots = [${opts.slots.map((s) => `"${s}"`).join(', ')}]`,
-      '',
-      '[publish.youtube]',
-    )
+  if (opts.publish) {
+    lines.push('', '[publish]', '', '[publish.youtube]')
     if (opts.instagram) {
       lines.push('', '[publish.instagram]', 'ig_user_id = "ig-test"')
     }
@@ -94,15 +91,15 @@ function channelToml(opts: {
 
 function writeChannel(
   dir: string,
-  opts: { name: string; slots?: string[]; instagram?: boolean; videosPerDay?: number },
+  opts: { name: string; publish?: boolean; instagram?: boolean; videosPerDay?: number },
 ): void {
   writeFileSync(join(dir, `${opts.name}.toml`), channelToml(opts))
 }
 
 // The candidate scan pre-flights video_path with existsSync (a pruned runs/
-// tree must never burn a slot), so a publishable fixture needs a real file
-// on disk. `videoExists: false` seeds the pruned case: the library row still
-// points at a path, but nothing is there.
+// tree must never burn a quota unit), so a publishable fixture needs a real
+// file on disk. `videoExists: false` seeds the pruned case: the library row
+// still points at a path, but nothing is there.
 let videoRoot: string | undefined
 let jobSeq = 0
 function seedReadyVideo(
@@ -150,27 +147,54 @@ function seedToken(db: Database, channel: string): void {
   upsertToken(db, 'youtube', channel, 'rt-test-token', YT_UPLOAD_SCOPE, key)
 }
 
-function seedConsumedSlot(
+/**
+ * A pre-existing publish row, for tests that need the day count or the
+ * last-attempt clock already populated. `createdAt` must be given whenever the
+ * test asserts on pacing — the column's default is the real wall clock, which
+ * an injected `now` does not control.
+ */
+function seedAttempt(
   db: Database,
-  opts: { channel: string; platform: Platform; day: string; slot: string; status?: string },
+  opts: {
+    jobId: string
+    channel: string
+    platform: Platform
+    day: string
+    seq?: number
+    status?: string
+    createdAt?: string
+  },
 ): void {
   db.prepare(
-    'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) VALUES (?, ?, ?, ?, ?, ?, 1)',
+    "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', 'seeded attempt', 'done')",
+  ).run(opts.jobId, opts.channel)
+  db.prepare(
+    'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, created_at) ' +
+      "VALUES (?, ?, ?, ?, ?, ?, 1, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ','now')))",
   ).run(
-    `consumed-${opts.channel}-${opts.slot}`,
+    opts.jobId,
     opts.platform,
     opts.channel,
     opts.day,
-    opts.slot,
+    opts.seq ?? 1,
     opts.status ?? 'done',
+    opts.createdAt ?? null,
   )
 }
 
+// Rows on a channel the channels dir does not declare: they burn the platform's
+// GLOBAL quota without touching any candidate channel's own day count or
+// pacing clock. That separation is what lets a quota test stay a quota test.
 function seedQuotaRows(db: Database, opts: { count: number; status?: string }): void {
   for (let i = 0; i < opts.count; i++) {
-    db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) VALUES (?, 'youtube', 'quota-chan', '2026-07-22', ?, ?, 1)",
-    ).run(`quota-job-${i}`, `0${i}:00`, opts.status ?? 'done')
+    seedAttempt(db, {
+      jobId: `quota-job-${i}`,
+      channel: 'quota-chan',
+      platform: 'youtube',
+      day: '2026-07-22',
+      seq: i + 1,
+      status: opts.status ?? 'done',
+    })
   }
 }
 
@@ -221,19 +245,21 @@ afterEach(() => {
 })
 
 describe('publishNextTick — gates', () => {
-  it('no-ops with reason no-due-slot when no channel has publishing configured', async () => {
+  // A channels dir where nothing declares [publish] produces no candidate and
+  // no per-channel reason to report: there is no channel whose gate closed.
+  it('no-ops with no reason when no channel has publishing configured', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-nodue-')
     writeChannel(channelsDir, { name: 'chan-a' })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'no-due-slot' })
+    expect(result).toEqual({ action: 'noop' })
     db.close()
   })
 
   it('no-ops with reason platform-quota once the default cap of 6 is met', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-quota-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedQuotaRows(db, { count: 6 })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
@@ -246,7 +272,7 @@ describe('publishNextTick — gates', () => {
     // videosPerDay lowered to match the cap this test stubs to 1 below —
     // loadChannelsDir now rejects a channel declaring more youtube
     // videos/day than the (possibly env-overridden) cap allows.
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'], videosPerDay: 1 })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true, videosPerDay: 1 })
     seedQuotaRows(db, { count: 1 })
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
@@ -254,10 +280,11 @@ describe('publishNextTick — gates', () => {
     db.close()
   })
 
-  it('no-ops with reason no-ready-video when the channel has a due slot but an empty library', async () => {
+  it('no-ops with reason no-ready-video when the channel is due but its library is empty', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-novideo-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    seedToken(db, 'chan-a')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({ action: 'noop', reason: 'no-ready-video' })
     db.close()
@@ -266,7 +293,7 @@ describe('publishNextTick — gates', () => {
   it('no-ops with reason no-auth when the YouTube client credentials are unset', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-noauth-env-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     vi.stubEnv('YT_CLIENT_ID', '')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
@@ -277,7 +304,7 @@ describe('publishNextTick — gates', () => {
   it('no-ops with reason no-auth when no oauth token row exists for the channel', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-noauth-token-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({ action: 'noop', reason: 'no-auth' })
@@ -290,7 +317,7 @@ describe('publishNextTick — gates', () => {
   it('no-ops with reason bad-env on a malformed BRAINROT_TOKEN_KEY, naming the variable but never its value', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-badkey-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     const badKey = 'ab'.repeat(31) + 'a' // 63 hex chars: one short of a 32-byte key
     vi.stubEnv('BRAINROT_TOKEN_KEY', badKey)
@@ -309,7 +336,7 @@ describe('publishNextTick — gates', () => {
   it('no-ops with reason bad-env on an unparseable BRAINROT_YT_UPLOADS_PER_DAY', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-badcap-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', 'six')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
@@ -325,8 +352,8 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
   it('skips a blocked channel and previews the next eligible one', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-iter-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
-    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    writeChannel(channelsDir, { name: 'chan-b', publish: true })
     const jobId = seedReadyVideo(db, { channel: 'chan-b', topic: 'Chan B topic' })
     seedToken(db, 'chan-b')
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
@@ -335,7 +362,6 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       wouldPublish: {
         channel: 'chan-b',
         platform: 'youtube',
-        slot: '14:00',
         jobId,
         title: 'Chan B topic',
       },
@@ -346,11 +372,12 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
   it('reports the first candidate blocker when every channel is blocked', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-blocked-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
-    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    writeChannel(channelsDir, { name: 'chan-b', publish: true })
     seedReadyVideo(db, { channel: 'chan-b' })
-    // chan-b has a video but no token; chan-a has no video at all. chan-a
-    // sorts first (tied fraction, tied slot, channel ASC) so its blocker wins.
+    seedToken(db, 'chan-a')
+    // chan-b has a video but no token; chan-a is authorized but has no video.
+    // chan-a sorts first (tied fraction, channel ASC) so its blocker wins.
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
     expect(result).toEqual({ action: 'dry-run', wouldPublish: null, reason: 'no-ready-video' })
     db.close()
@@ -358,12 +385,12 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
 
   // A pruned runs/ tree leaves a 'ready' library row pointing at nothing.
   // Without the pre-flight the claim happens first and the ENOENT comes back
-  // as 'rejected' — three burnt slots and three quota units before the
+  // as 'rejected' — three burnt attempts and three quota units before the
   // poison cap retires the row.
   it('skips a ready video whose file is gone and reports no-video-file', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-nofile-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a', videoExists: false })
     seedToken(db, 'chan-a')
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
@@ -374,8 +401,8 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
   it('falls through to a channel whose file is present when an earlier one is pruned', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-nofile-fallthrough-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
-    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    writeChannel(channelsDir, { name: 'chan-b', publish: true })
     seedReadyVideo(db, { channel: 'chan-a', videoExists: false })
     seedToken(db, 'chan-a')
     const jobB = seedReadyVideo(db, { channel: 'chan-b', topic: 'Chan B topic' })
@@ -386,7 +413,6 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       wouldPublish: {
         channel: 'chan-b',
         platform: 'youtube',
-        slot: '14:00',
         jobId: jobB,
         title: 'Chan B topic',
       },
@@ -401,7 +427,7 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
   it('publishes an older ready video when the newest one on the channel is pruned', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-shadow-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const older = seedReadyVideo(db, {
       channel: 'chan-a',
       topic: 'Older topic',
@@ -428,7 +454,7 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       channel: 'chan-a',
       platform: 'youtube',
       jobId: older,
-      slot: '14:00',
+      seq: 1,
       postId: 'yt-old',
       url: 'https://youtube.com/shorts/yt-old',
     })
@@ -438,7 +464,7 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
   it('reports no-video-file only once every ready video on the channel is pruned', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-shadow-all-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, {
       channel: 'chan-a',
       createdAt: '2026-07-20T00:00:00.000Z',
@@ -459,13 +485,16 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
   it('picks the emptier channel over the fuller one regardless of name order', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-fair-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['09:00', '14:00'] })
-    writeChannel(channelsDir, { name: 'chan-b', slots: ['14:00'] })
-    seedConsumedSlot(db, {
+    // chan-a at 3/day (a 4h gap) so its 09:00 attempt is 5h05m behind NOW and
+    // therefore NOT paced — the ordering, not the gap, is what this asserts.
+    writeChannel(channelsDir, { name: 'chan-a', publish: true, videosPerDay: 3 })
+    writeChannel(channelsDir, { name: 'chan-b', publish: true })
+    seedAttempt(db, {
+      jobId: 'chan-a-earlier',
       channel: 'chan-a',
       platform: 'youtube',
       day: '2026-07-22',
-      slot: '09:00',
+      createdAt: new Date(2026, 6, 22, 9, 0).toISOString(),
     })
     seedReadyVideo(db, { channel: 'chan-a', topic: 'Chan A topic' })
     seedToken(db, 'chan-a')
@@ -477,7 +506,6 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       wouldPublish: {
         channel: 'chan-b',
         platform: 'youtube',
-        slot: '14:00',
         jobId: jobB,
         title: 'Chan B topic',
       },
@@ -490,7 +518,7 @@ describe('publishNextTick — publish', () => {
   it('publishes the eligible video: publishes row done, library flipped, result fields set', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-happy-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const jobId = seedReadyVideo(db, {
       channel: 'chan-a',
       metadataJson: JSON.stringify({
@@ -512,7 +540,7 @@ describe('publishNextTick — publish', () => {
       channel: 'chan-a',
       platform: 'youtube',
       jobId,
-      slot: '14:00',
+      seq: 1,
       postId: 'yt123',
       url: 'https://youtube.com/shorts/yt123',
     })
@@ -539,7 +567,7 @@ describe('publishNextTick — publish', () => {
   it('marks a rejected upload failed, keeps the video ready, and reports publish-failed', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-fail-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const { PublishError } = await import('../publish/types.js')
@@ -556,7 +584,7 @@ describe('publishNextTick — publish', () => {
       channel: 'chan-a',
       platform: 'youtube',
       jobId,
-      slot: '14:00',
+      seq: 1,
       error: 'upload: invalid metadata',
     })
     const row = db
@@ -576,7 +604,7 @@ describe('publishNextTick — publish', () => {
   it('maps a non-PublishError from the adapter to error_kind transient', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-transient-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const target = fakeAdapter(async () => {
@@ -602,7 +630,7 @@ describe('publishNextTick — publish', () => {
   it('leaves the row claimed when the finalize write throws after a live upload', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-finalize-throw-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const target = fakeAdapter(async () => ({
@@ -642,7 +670,7 @@ describe('publishNextTick — publish', () => {
   it('leaves the row claimed when the adapter reports an unknown outcome', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-unknown-outcome-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const target = fakeAdapter(async () => {
@@ -660,7 +688,7 @@ describe('publishNextTick — publish', () => {
       channel: 'chan-a',
       platform: 'youtube',
       jobId,
-      slot: '14:00',
+      seq: 1,
       error: 'youtubeTarget: accepted the upload but its success body carried no video id',
     })
     const row = db
@@ -680,7 +708,7 @@ describe('publishNextTick — publish', () => {
   it('stamps finished_at when the write happens, not when the tick started', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-finished-at-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     // A clock that advances between the tick's planning read and the
@@ -702,10 +730,10 @@ describe('publishNextTick — publish', () => {
     db.close()
   })
 
-  it('no-ops with reason claim-conflict when a racing tick already claimed the slot', async () => {
+  it('no-ops with reason claim-conflict when a racing tick already took the ordinal', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-conflict-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     vi.mocked(claimPublish).mockReturnValueOnce(null)
@@ -720,9 +748,9 @@ describe('publishNextTick — lease and sweep', () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-lease-')
     // Deliberately an empty library: the lease gate must short-circuit BEFORE
-    // due-slot/candidate work even runs, so this fixture stays safe (no
+    // any due/candidate work runs, so this fixture stays safe (no
     // mintAccessToken/network reachable) whether or not the gate is wired yet.
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     acquireLease(db, 'publish', 'pid:other', PUBLISH_LEASE_TTL_MS)
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({ action: 'noop', reason: 'lease-held' })
@@ -732,7 +760,7 @@ describe('publishNextTick — lease and sweep', () => {
   it('releases the lease after a successful publish', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-release-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const target = fakeAdapter(async () => ({
@@ -747,7 +775,7 @@ describe('publishNextTick — lease and sweep', () => {
   it('releases the lease when the tick throws mid-flight', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-throw-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     // A throw from inside the leased window (here: the claim write) must still
@@ -769,15 +797,17 @@ describe('publishNextTick — lease and sweep', () => {
   it('sweeps a stale claimed row to interrupted before planning the tick', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-sweep-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['09:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     // Seed the stale claim RELATIVE to NOW (65 min ago > 30-min TTL) so the
-    // age is identical in every timezone the suite runs in.
+    // age is identical in every timezone the suite runs in. 65 min is also
+    // inside the 6h min gap for videos_per_day = 2, so the planning half then
+    // reports 'paced' — the point of the test is that the sweep ran first.
     db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) ' +
-        "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', '09:00', 'claimed', 1, ?)",
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, created_at) ' +
+        "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', 1, 'claimed', 1, ?)",
     ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'no-due-slot' })
+    expect(result).toEqual({ action: 'noop', reason: 'paced' })
     const row = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as {
       status: string
     }
@@ -788,12 +818,14 @@ describe('publishNextTick — lease and sweep', () => {
   it('dry-run never acquires the lease, never sweeps, and writes nothing', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-dryrun-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     // Old enough that a real sweep WOULD flip it — proving dry-run skipped it.
+    // 26h back (not 65 min) so it also sits outside the channel's min gap and
+    // the tick still reaches its preview.
     db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) ' +
-        "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-21', '09:00', 'claimed', 1, ?)",
-    ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, created_at) ' +
+        "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-21', 1, 'claimed', 1, ?)",
+    ).run(new Date(NOW().getTime() - 26 * 3_600_000).toISOString())
     const jobId = seedReadyVideo(db, { channel: 'chan-a', topic: 'Preview me' })
     seedToken(db, 'chan-a')
     const result = await publishNextTick(db, { channelsDir, now: NOW, dryRun: true })
@@ -802,7 +834,6 @@ describe('publishNextTick — lease and sweep', () => {
       wouldPublish: {
         channel: 'chan-a',
         platform: 'youtube',
-        slot: '14:00',
         jobId,
         title: 'Preview me',
       },
@@ -812,7 +843,7 @@ describe('publishNextTick — lease and sweep', () => {
       status: string
     }
     expect(stale.status).toBe('claimed')
-    // no new row for today's slot, no lease taken
+    // no new row for today, no lease taken
     const count = (
       db.prepare("SELECT COUNT(*) AS n FROM publishes WHERE day = '2026-07-22'").get() as {
         n: number
@@ -861,8 +892,8 @@ describe('publishNextTick — config errors', () => {
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
     await publishNextTick(db, { channelsDir: brokenDir, now: NOW })
-    // Never acquired, not merely released: a broken config cannot burn a lease
-    // slot, and the sweep it would have run never touches rows either.
+    // Never acquired, not merely released: a broken config cannot take a lease,
+    // and the sweep it would have run never touches rows either.
     expect(db.prepare("SELECT * FROM leases WHERE name = 'publish'").get()).toBeUndefined()
     expect(acquireLease(db, 'publish', 'pid:probe', PUBLISH_LEASE_TTL_MS)).toBe(true)
     stderr.mockRestore()
@@ -872,7 +903,7 @@ describe('publishNextTick — config errors', () => {
   it('a healthy channels dir is unaffected: the tick publishes as before', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-healthy-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     const target = fakeAdapter(async () => ({
@@ -891,16 +922,15 @@ describe('publishNextTick — config errors', () => {
 })
 
 describe('cross-platform candidates', () => {
-  it('builds one candidate per due slot per target, across platforms', async () => {
-    // Channel with both youtube and instagram targets, both due now, with a
-    // ready video: the candidate set spans both platforms — verified via
-    // dry-run so no claim mutates state. No stored token for either platform
-    // on a fresh db means neither can be picked, but the fact that BOTH
-    // platforms were considered (not just youtube) is what this test guards
-    // against, checked via the reason.
+  it('walks every declared target of a due channel, not just the first', async () => {
+    // Channel with both youtube and instagram targets and a ready video: the
+    // scan spans both platforms — verified via dry-run so no claim mutates
+    // state. No stored token for either platform on a fresh db means neither
+    // can be picked, but the fact that BOTH platforms were considered (not
+    // just the first) is what this test guards, checked via the reason.
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-crossplatform-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
     seedReadyVideo(db, { channel: 'chan' })
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, { channelsDir, now, dryRun: true })
@@ -914,17 +944,12 @@ describe('quota pre-filter', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-quota-prefilter-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
     seedReadyVideo(db, { channel: 'chan' })
-    // A prior youtube upload today, on a different slot, so it counts toward
-    // the global youtube quota (cap 1) without consuming the 10:00 slot.
-    seedConsumedSlot(db, {
-      channel: 'chan',
-      platform: 'youtube',
-      day: '2026-07-22',
-      slot: '09:00',
-      status: 'done',
-    })
+    // A prior youtube upload today on ANOTHER channel: it counts toward the
+    // global youtube quota (cap 1) without touching chan's own day count or
+    // pacing clock.
+    seedQuotaRows(db, { count: 1 })
     const instagramTarget = fakeAdapter(async () => ({ postId: 'p1', url: 'https://ig/p1' }))
     const igAdapter: PublishAdapter = {
       platformId: 'instagram',
@@ -949,15 +974,9 @@ describe('quota pre-filter', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-quota-allcapped-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], videosPerDay: 1 })
+    writeChannel(channelsDir, { name: 'chan', publish: true, videosPerDay: 1 })
     seedReadyVideo(db, { channel: 'chan' })
-    seedConsumedSlot(db, {
-      channel: 'chan',
-      platform: 'youtube',
-      day: '2026-07-22',
-      slot: '09:00',
-      status: 'done',
-    })
+    seedQuotaRows(db, { count: 1 })
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, { channelsDir, now })
     expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
@@ -974,16 +993,11 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-store-qualify-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
-    // Push youtube over its (capped-to-1) quota so only the instagram
-    // candidate for this slot survives the pre-filter.
-    seedConsumedSlot(db, {
-      channel: 'chan',
-      platform: 'youtube',
-      day: '2026-07-22',
-      slot: '09:00',
-      status: 'done',
-    })
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
+    // Push youtube over its (capped-to-1) quota — on another channel, so
+    // chan's own day count and pacing clock stay clear — leaving instagram as
+    // the only target that can be picked.
+    seedQuotaRows(db, { count: 1 })
     const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
     seedObjectKey(db, jobId, 'videos/chan/job.mp4')
     const storeDir = tmpDir('brainrot-publish-fakestore-')
@@ -1008,14 +1022,8 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-store-noqualify-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
-    seedConsumedSlot(db, {
-      channel: 'chan',
-      platform: 'youtube',
-      day: '2026-07-22',
-      slot: '09:00',
-      status: 'done',
-    })
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
+    seedQuotaRows(db, { count: 1 })
     seedReadyVideo(db, { channel: 'chan', videoExists: false })
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, {
@@ -1039,14 +1047,8 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-store-unconfigured-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
-    seedConsumedSlot(db, {
-      channel: 'chan',
-      platform: 'youtube',
-      day: '2026-07-22',
-      slot: '09:00',
-      status: 'done',
-    })
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
+    seedQuotaRows(db, { count: 1 })
     const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
     seedObjectKey(db, jobId, 'videos/chan/job.mp4')
     const now = () => new Date(2026, 6, 22, 10, 0)
@@ -1077,14 +1079,8 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-nolog-url-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
-    seedConsumedSlot(db, {
-      channel: 'chan',
-      platform: 'youtube',
-      day: '2026-07-22',
-      slot: '09:00',
-      status: 'done',
-    })
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
+    seedQuotaRows(db, { count: 1 })
     const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
     seedObjectKey(db, jobId, 'videos/chan/job.mp4')
     const storeDir = tmpDir('brainrot-publish-fakestore-nolog-')
@@ -1109,6 +1105,143 @@ describe('publishNextTick — media resolved from object storage', () => {
   })
 })
 
+describe('publishNextTick — the due gate', () => {
+  // Shared fixture for the pacing cases: one channel, one ready+authorized
+  // video, so the only thing under test is WHEN the tick fires.
+  function dueFixture(prefix: string, videosPerDay?: number): { db: Database; dir: string } {
+    const db = openDb(':memory:')
+    const dir = tmpDir(prefix)
+    writeChannel(dir, { name: 'test', publish: true, videosPerDay })
+    seedReadyVideo(db, { channel: 'test' })
+    seedToken(db, 'test')
+    return { db, dir }
+  }
+
+  // fakeAdapter hardcodes cap: () => 6; the real descriptor is substituted here
+  // so BRAINROT_YT_UPLOADS_PER_DAY still governs, which the --force quota case
+  // below depends on.
+  function publishingAdapters(): Partial<Record<Platform, PublishAdapter>> {
+    const base = fakeAdapter(async () => ({
+      postId: 'yt-due',
+      url: 'https://youtube.com/shorts/yt-due',
+    }))
+    return { youtube: { ...base, quota: PLATFORM_QUOTAS.youtube } }
+  }
+
+  it('noops with not-in-window before 09:00 local', async () => {
+    const { db, dir } = dueFixture('brainrot-publish-window-')
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: publishingAdapters(),
+      now: () => new Date(2026, 6, 22, 8, 30),
+    })
+    expect(result).toEqual({ action: 'noop', reason: 'not-in-window' })
+    db.close()
+  })
+
+  it('noops with daily-count-met once videos_per_day videos were attempted', async () => {
+    const { db, dir } = dueFixture('brainrot-publish-count-', 1)
+    seedAttempt(db, {
+      jobId: 'job-old',
+      channel: 'test',
+      platform: 'youtube',
+      day: '2026-07-22',
+    })
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: publishingAdapters(),
+      now: () => new Date(2026, 6, 22, 19, 0),
+    })
+    expect(result).toEqual({ action: 'noop', reason: 'daily-count-met' })
+    db.close()
+  })
+
+  it('noops with paced inside the min gap', async () => {
+    // videos_per_day = 3 -> a 4h gap. Last attempt 10:00 local, now 12:00.
+    const { db, dir } = dueFixture('brainrot-publish-paced-', 3)
+    seedAttempt(db, {
+      jobId: 'job-old',
+      channel: 'test',
+      platform: 'youtube',
+      day: '2026-07-22',
+      createdAt: new Date(2026, 6, 22, 10, 0).toISOString(),
+    })
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: publishingAdapters(),
+      now: () => new Date(2026, 6, 22, 12, 0),
+    })
+    expect(result).toEqual({ action: 'noop', reason: 'paced' })
+    db.close()
+  })
+
+  it('is due again once the min gap has elapsed', async () => {
+    const { db, dir } = dueFixture('brainrot-publish-gap-elapsed-', 3)
+    seedAttempt(db, {
+      jobId: 'job-old',
+      channel: 'test',
+      platform: 'youtube',
+      day: '2026-07-22',
+      createdAt: new Date(2026, 6, 22, 10, 0).toISOString(),
+    })
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: publishingAdapters(),
+      now: () => new Date(2026, 6, 22, 14, 0),
+    })
+    expect(result.action).toBe('published')
+    db.close()
+  })
+
+  it('--force publishes despite window, gap, and count', async () => {
+    const { db, dir } = dueFixture('brainrot-publish-force-', 1)
+    seedAttempt(db, {
+      jobId: 'job-old',
+      channel: 'test',
+      platform: 'youtube',
+      day: '2026-07-22',
+    })
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: publishingAdapters(),
+      force: true,
+      now: () => new Date(2026, 6, 22, 3, 0),
+    })
+    expect(result.action).toBe('published')
+    db.close()
+  })
+
+  it('--force still respects the platform quota', async () => {
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const { db, dir } = dueFixture('brainrot-publish-force-quota-', 1)
+    seedAttempt(db, {
+      jobId: 'job-old',
+      channel: 'test',
+      platform: 'youtube',
+      day: '2026-07-22',
+    })
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: publishingAdapters(),
+      force: true,
+      now: () => new Date(2026, 6, 22, 12, 0),
+    })
+    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    db.close()
+  })
+
+  it('reports the seq of the row it claimed', async () => {
+    const { db, dir } = dueFixture('brainrot-publish-seq-')
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: publishingAdapters(),
+      now: () => new Date(2026, 6, 22, 10, 0),
+    })
+    expect(result.seq).toBe(1)
+    db.close()
+  })
+})
+
 describe('publish-next.ts names no platform', () => {
   it('contains no youtube/instagram string literal in its own source', async () => {
     const { readFile } = await import('node:fs/promises')
@@ -1122,19 +1255,20 @@ describe('publish-next.ts names no platform', () => {
 
 describe('publish-next CLI', () => {
   it.concurrent(
-    '`publish-next --help` prints usage with --db/--channels-dir/--dry-run',
+    '`publish-next --help` prints usage with --db/--channels-dir/--dry-run/--force',
     async () => {
       const result = await runCli(['publish-next', '--help'])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('--db')
       expect(result.stdout).toContain('--channels-dir')
       expect(result.stdout).toContain('--dry-run')
+      expect(result.stdout).toContain('--force')
     },
     60000,
   )
 
   it.concurrent(
-    '`publish-next` with no due slot prints one noop JSON line and exits 0',
+    '`publish-next` with no publishing channel prints one noop JSON line and exits 0',
     async () => {
       const root = tmpDir('brainrot-publish-cli-')
       const channelsDir = tmpDir('brainrot-publish-cli-channels-')
@@ -1148,13 +1282,13 @@ describe('publish-next CLI', () => {
       ])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
-      expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-due-slot' })
+      expect(JSON.parse(result.stdout)).toEqual({ action: 'noop' })
     },
     60000,
   )
 
   it.concurrent(
-    '`publish-next --dry-run` with no due slot prints one dry-run JSON line and exits 0',
+    '`publish-next --dry-run` with no publishing channel prints one dry-run JSON line and exits 0',
     async () => {
       const root = tmpDir('brainrot-publish-cli-dry-')
       const channelsDir = tmpDir('brainrot-publish-cli-dry-channels-')
@@ -1172,7 +1306,6 @@ describe('publish-next CLI', () => {
       expect(JSON.parse(result.stdout)).toEqual({
         action: 'dry-run',
         wouldPublish: null,
-        reason: 'no-due-slot',
       })
     },
     60000,

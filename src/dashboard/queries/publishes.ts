@@ -6,28 +6,26 @@ import { localDay } from '../../publish/schedule.js'
 
 export interface GridRow {
   platform: Platform
-  slot: string
+  seq: number
 }
 
 export interface ChannelGrid {
   channel: string
   /**
-   * Row headers for the grid: one row per distinct (platform, slot) pair
-   * declared by any target. Targets can each have their own slot list (e.g.
-   * youtube at 10:00/14:00/19:00, instagram at 10:00/18:00) — even when two
-   * platforms share the same time-of-day, each gets its own row, so a
+   * Row headers for the grid: one row per (platform, ordinal) pair, the
+   * ordinals running 1..videos_per_day. Each platform gets its own rows, so a
    * publish attempt on one platform never overwrites or hides the other's.
-   * Sorted by slot time first, then platform, for a stable, readable grid.
+   * Sorted by ordinal first, then platform, for a stable, readable grid.
    */
   rows: GridRow[]
   /** Newest day first. */
   days: string[]
-  /** Keyed by cellKey(day, slot, platform). Absent means the slot was never filled. */
+  /** Keyed by cellKey(day, seq, platform). Absent means that ordinal was never reached. */
   cells: Map<string, PublishRow>
 }
 
-export function cellKey(day: string, slot: string, platform: Platform): string {
-  return `${day} ${slot} ${platform}`
+export function cellKey(day: string, seq: number, platform: Platform): string {
+  return `${day} ${String(seq)} ${platform}`
 }
 
 interface DbPublishRow {
@@ -36,7 +34,7 @@ interface DbPublishRow {
   platform: Platform
   channel: string
   day: string
-  slot: string
+  seq: number
   status: PublishStatus
   post_id: string | null
   url: string | null
@@ -54,7 +52,7 @@ function toPublishRow(row: DbPublishRow): PublishRow {
     platform: row.platform,
     channel: row.channel,
     day: row.day,
-    slot: row.slot,
+    seq: row.seq,
     status: row.status,
     postId: row.post_id,
     url: row.url,
@@ -79,7 +77,7 @@ function windowDays(days: number, now: Date): string[] {
 
 /**
  * The grid's shape comes from CHANNEL CONFIG, not from the publishes table:
- * a slot that was never filled has no row, and inferring the schedule from
+ * an attempt that never happened has no row, and inferring the shape from
  * existing rows would hide exactly those gaps. Channels with no [publish]
  * table never enter the publish pool and are omitted entirely.
  */
@@ -93,7 +91,7 @@ export function buildPublishGrids(
   const oldest = dayList[dayList.length - 1]
 
   const statement = db.prepare(
-    'SELECT id, job_id, platform, channel, day, slot, status, post_id, url, error, ' +
+    'SELECT id, job_id, platform, channel, day, seq, status, post_id, url, error, ' +
       'error_kind, attempt, created_at, finished_at FROM publishes ' +
       'WHERE channel = ? AND day >= ? AND day <= ? ORDER BY id ASC',
   )
@@ -107,23 +105,24 @@ export function buildPublishGrids(
     const dbRows = statement.all(channel.name, oldest, dayList[0]) as DbPublishRow[]
     const cells = new Map<string, PublishRow>()
     // ORDER BY id ASC plus overwrite means the newest attempt for a cell
-    // wins, which is what the UNIQUE(channel,platform,day,slot) constraint
+    // wins, which is what the UNIQUE(channel,platform,day,seq) constraint
     // makes near-certain anyway.
     for (const row of dbRows) {
-      cells.set(cellKey(row.day, row.slot, row.platform), toPublishRow(row))
+      cells.set(cellKey(row.day, row.seq, row.platform), toPublishRow(row))
     }
-    // One row per (platform, slot) pair rather than per distinct time: two
-    // platforms declaring the identical slot time (the natural shared
-    // `[publish] slots = [...]` configuration) must not collapse into one
-    // row, or one platform's attempts would be indistinguishable from the
-    // other's in the grid. The pairs are unique by construction —
-    // buildTargets emits at most one target per platform, and
-    // slotsFieldSchema rejects duplicate slots within one — so no dedupe.
+    // One row per (platform, ordinal) pair, with the ordinals coming from the
+    // channel's videos_per_day: an attempt that never happened has no
+    // publishes row, and inferring the shape from existing rows would hide
+    // exactly those gaps. Two platforms never collapse into one row, so a
+    // publish on one platform can't hide or overwrite the other's.
     const rows: GridRow[] = publish.targets.flatMap((target) =>
-      target.slots.map((slot) => ({ platform: target.platform, slot })),
+      Array.from({ length: channel.videosPerDay }, (_unused, i) => ({
+        platform: target.platform,
+        seq: i + 1,
+      })),
     )
     rows.sort((a, b) => {
-      if (a.slot !== b.slot) return a.slot < b.slot ? -1 : 1
+      if (a.seq !== b.seq) return a.seq - b.seq
       return a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0
     })
 

@@ -10,7 +10,7 @@ import {
 } from '../publish/platforms/options.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
-import type { Platform, PublishChannelConfig, PublishTargetConfig } from '../publish/types.js'
+import type { PublishChannelConfig, PublishTargetConfig } from '../publish/types.js'
 
 export interface CaptionStyle {
   font: string
@@ -65,41 +65,50 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
 }) as ScoutConfig
 
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
-const SLOT_RE = /^([01]\d|2[0-3]):[0-5]\d$/
 
-const slotsFieldSchema = z
-  .array(z.string().regex(SLOT_RE, 'slots must be zero-padded 24h HH:MM'))
-  .min(1, 'slots must be a non-empty array')
-  .refine((slots) => new Set(slots).size === slots.length, {
-    message: 'slots must not contain duplicates',
-  })
+// A now-removed key that used to be load-bearing. zod's own strict-object
+// error ("Unrecognized key: slots") tells the operator nothing about where the
+// setting went, and a live channel TOML that silently stops controlling
+// cadence is the worst possible outcome — so it is named explicitly, at every
+// level it used to be allowed. The field is declared purely so that .strict()
+// lets it through to this check; nothing ever reads it.
+const REMOVED_SLOTS_MESSAGE = 'slots were removed; daily volume now comes from videos_per_day'
+
+function rejectStaleSlots(slots: unknown, ctx: z.RefinementCtx): void {
+  if (slots !== undefined) {
+    ctx.addIssue({ code: 'custom', message: REMOVED_SLOTS_MESSAGE, path: ['slots'] })
+  }
+}
 
 // .strict() is applied AFTER .extend() (not on the base options schema): a
 // non-strict base can be extended freely, and strictness on the final,
 // per-platform shape is what makes an unknown key (e.g. category_id under
 // [publish.instagram]) a load error naming that platform's own field set.
+// superRefine comes last so it sees the parsed shape.
 const youtubeTargetSchema = youtubeOptionsSchema
-  .extend({ slots: slotsFieldSchema.optional() })
+  .extend({ slots: z.unknown().optional() })
   .strict()
+  .superRefine((val, ctx) => rejectStaleSlots(val.slots, ctx))
 const instagramTargetSchema = instagramOptionsSchema
-  .extend({ slots: slotsFieldSchema.optional() })
+  .extend({ slots: z.unknown().optional() })
   .strict()
+  .superRefine((val, ctx) => rejectStaleSlots(val.slots, ctx))
 
-// .strict() at this level rejects both the removed `platforms = [...]` key
-// and any undeclared platform sub-table (e.g. [publish.tiktok]) — zod's
-// default unknown-key behavior on a strict object covers both without extra
-// code (design spec §4.2). superRefine enforces the two rules zod's static
-// shape cannot express: at least one platform declared, and every declared
-// platform resolves to a non-empty slot list (its own override, or the
-// shared `slots` above it).
+// .strict() at this level rejects any undeclared platform sub-table (e.g.
+// [publish.tiktok]) and the removed `platforms = [...]` key — zod's default
+// unknown-key behavior on a strict object covers them without extra code.
+// superRefine enforces the two rules the static shape cannot express: a stale
+// `slots` key gets a message naming its replacement, and at least one platform
+// must be declared.
 const publishSchema = z
   .object({
-    slots: slotsFieldSchema.optional(),
+    slots: z.unknown().optional(),
     youtube: youtubeTargetSchema.optional(),
     instagram: instagramTargetSchema.optional(),
   })
   .strict()
   .superRefine((val, ctx) => {
+    rejectStaleSlots(val.slots, ctx)
     const declared = PUBLISH_PLATFORMS.filter((p) => val[p] !== undefined)
     if (declared.length === 0) {
       ctx.addIssue({
@@ -107,15 +116,6 @@ const publishSchema = z
         message:
           'a [publish] table must declare at least one platform sub-table (e.g. [publish.youtube])',
       })
-      return
-    }
-    for (const platform of declared) {
-      if (val.slots === undefined && val[platform]?.slots === undefined) {
-        ctx.addIssue({
-          code: 'custom',
-          message: `[publish.${platform}] has no slots, and [publish] declares no shared slots to fall back to`,
-        })
-      }
     }
   })
   .optional()
@@ -175,49 +175,27 @@ function usdToMicros(usd: number): number {
   return Math.round(usd * 1_000_000)
 }
 
-// superRefine on publishSchema guarantees every declared platform resolves
-// to a defined slot list; this throw is defensive (unreachable in practice),
-// matching the codebase's fail-loudly-not-silently convention rather than a
-// non-null assertion.
-function resolveSlots(
-  shared: string[] | undefined,
-  override: string[] | undefined,
-  platform: Platform,
-): string[] {
-  const slots = override ?? shared
-  if (slots === undefined) {
-    throw new Error(
-      `loadChannelConfig: [publish.${platform}] resolved no slots (unreachable — schema guard)`,
-    )
-  }
-  return [...slots].sort()
-}
-
-// Each target — and its slots array and options object — is frozen
-// individually, not just the outer targets array (loadChannelConfig also
-// freezes `publish` and `publish.targets`). This matches the pre-per-platform
-// convention (see DEFAULT_SCOUT above): defense against accidental mutation
-// of shared config state across jobs/ticks, e.g.
-// `channel.publish.targets[0].slots.push(...)` must fail loudly, not
-// silently corrupt config every subsequent tick reads.
+// Each target — and its options object — is frozen individually, not just the
+// outer targets array (loadChannelConfig also freezes `publish` and
+// `publish.targets`). Defense against accidental mutation of shared config
+// state across jobs/ticks: `channel.publish.targets[0].options.privacy = ...`
+// must fail loudly, not silently corrupt config every subsequent tick reads.
 function buildTargets(raw: NonNullable<RawPublish>): PublishTargetConfig[] {
   const targets: PublishTargetConfig[] = []
   if (raw.youtube) {
     targets.push(
       Object.freeze({
         platform: 'youtube',
-        slots: Object.freeze(resolveSlots(raw.slots, raw.youtube.slots, 'youtube')),
         options: Object.freeze(normalizeYoutubeOptions(raw.youtube)),
-      }) as PublishTargetConfig,
+      }),
     )
   }
   if (raw.instagram) {
     targets.push(
       Object.freeze({
         platform: 'instagram',
-        slots: Object.freeze(resolveSlots(raw.slots, raw.instagram.slots, 'instagram')),
         options: Object.freeze(normalizeInstagramOptions(raw.instagram)),
-      }) as PublishTargetConfig,
+      }),
     )
   }
   return targets.sort((a, b) => (a.platform < b.platform ? -1 : 1))

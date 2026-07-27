@@ -179,10 +179,10 @@ video {
   background: #000;
 }
 
-.slot-grid td {
+.publish-grid td {
   text-align: center;
   font-size: 12px;
 }
-.slot-empty {
+.cell-empty {
   color: var(--border);
 }

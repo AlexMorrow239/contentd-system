@@ -63,7 +63,6 @@ describe('youtube adapter (contract)', () => {
         targets: [
           {
             platform: 'youtube',
-            slots: ['00:00'],
             options: { privacy: 'private', categoryId: 24, madeForKids: false },
           },
         ],

@@ -145,10 +145,9 @@ describe('golden-path loop e2e', () => {
     // Real channel TOML incl. [scout] and [publish] — the same file
     // scoutChannel (loaded via loadChannelsDir here), produceNextTick, and
     // publishNextTick (via opts.channelsDir) all read. bg/bgm dirs are
-    // schema-required strings; fake stages never read them. slots =
-    // ["00:00"] is deliberately the earliest possible slot: it is <= any
-    // local HH:MM, so the due-slot check below needs no assumption about
-    // the test runner's timezone.
+    // schema-required strings; fake stages never read them. The publish
+    // cadence carries no clock times: videos_per_day is the whole schedule,
+    // and the tick below injects a `now` inside the local publish window.
     writeFileSync(
       path.join(channelsDir, 'example.toml'),
       [
@@ -179,7 +178,6 @@ describe('golden-path loop e2e', () => {
         'min_score = 60',
         '',
         '[publish]',
-        'slots = ["00:00"]',
         '',
         '[publish.youtube]',
         '',
@@ -269,7 +267,7 @@ describe('golden-path loop e2e', () => {
     // the tick's lease was released in its finally
     expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
 
-    // ── Publish: the ready video fills the channel's one due slot ───────
+    // ── Publish: the ready video takes the channel's first ordinal ──────
     // Client-credential and token-decryption env, read at call time by
     // publishNextTick exactly like every other env-sourced constant in
     // this codebase — never at module load.
@@ -278,9 +276,10 @@ describe('golden-path loop e2e', () => {
     vi.stubEnv('BRAINROT_TOKEN_KEY', 'a'.repeat(64))
     const tokenKey = parseTokenKey('a'.repeat(64))
 
-    // slot "00:00" is due at any local wall-clock time, so this fixed
-    // `now` makes no assumption about the test runner's timezone.
-    const publishNow = () => new Date('2024-01-01T12:00:00Z')
+    // A LOCAL-time constructor (month is 0-based): 12:00 local sits inside
+    // the 09:00-21:00 publish window in every timezone the suite runs in,
+    // which a fixed UTC instant would not.
+    const publishNow = () => new Date(2024, 0, 1, 12, 0)
 
     const uploadCalls: { videoPath: string; meta: PlatformMeta }[] = []
     // A full adapter stub (upload only — credential resolution is bypassed
@@ -298,8 +297,8 @@ describe('golden-path loop e2e', () => {
       },
     }
 
-    // Before any grant is on file, the due slot is blocked on auth — a
-    // blocked candidate never claims its slot, so it stays open for the
+    // Before any grant is on file, the due channel is blocked on auth — a
+    // blocked candidate never claims a row, so the ordinal stays open for the
     // next tick (verified below). No `adapters` override here: this exercises
     // the real ADAPTERS.youtube credential check (client env presence, then a
     // decryptable stored token), which the fakeAdapter above would bypass.
@@ -320,7 +319,7 @@ describe('golden-path loop e2e', () => {
       channel: 'example',
       platform: 'youtube',
       jobId: tick.jobId,
-      slot: '00:00',
+      seq: 1,
       postId: 'fakeVideoId1',
       url: 'https://youtube.com/shorts/fakeVideoId1',
     })

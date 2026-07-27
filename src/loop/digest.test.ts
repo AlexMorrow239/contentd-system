@@ -72,9 +72,9 @@ function seedLibrary(
   ).run(jobId, state, createdAt)
 }
 
-// Publishes rows carry the channel/slot/status shape the publish-next tick
-// writes; day/slot default to fixed values so tests control the UNIQUE
-// (channel, platform, day, slot) constraint explicitly.
+// Publishes rows carry the channel/seq/status shape the publish-next tick
+// writes; day/seq default to fixed values so tests control the UNIQUE
+// (channel, platform, day, seq) constraint explicitly.
 function seedPublish(
   db: Database,
   opts: {
@@ -82,7 +82,7 @@ function seedPublish(
     channel?: string
     platform?: 'youtube'
     day?: string
-    slot?: string
+    seq?: number
     status?: 'claimed' | 'done' | 'failed' | 'interrupted'
     url?: string | null
     error?: string | null
@@ -93,14 +93,14 @@ function seedPublish(
 ): void {
   db.prepare(
     `INSERT INTO publishes
-       (job_id, platform, channel, day, slot, status, url, error, error_kind, attempt, created_at)
+       (job_id, platform, channel, day, seq, status, url, error, error_kind, attempt, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     opts.jobId,
     opts.platform ?? 'youtube',
     opts.channel ?? 'chan-a',
     opts.day ?? '2026-07-19',
-    opts.slot ?? '10:00',
+    opts.seq ?? 1,
     opts.status ?? 'done',
     opts.url ?? null,
     opts.error ?? null,
@@ -151,14 +151,14 @@ function seedCost(db: Database, jobId: string, usdMicros: number): void {
   ).run(jobId, usdMicros)
 }
 
-function publishChannel(name: string, overrides: { slots?: string[] } = {}) {
+function publishChannel(name: string, overrides: { videosPerDay?: number } = {}) {
   return testChannel({
     name,
+    videosPerDay: overrides.videosPerDay ?? 2,
     publish: {
       targets: [
         {
           platform: 'youtube',
-          slots: overrides.slots ?? ['10:00'],
           options: { privacy: 'public', categoryId: 24, madeForKids: false },
         },
       ],
@@ -348,14 +348,14 @@ describe('buildDigest — publishing section', () => {
     seedPublish(db, {
       jobId: 'j-pub',
       channel: 'chan-a',
-      slot: '10:00',
+      seq: 1,
       status: 'done',
       url: 'https://youtube.com/shorts/abc123',
     })
     const digest = buildDigest(db, [])
     expect(digest).toContain('Publishing (last 24h)')
     expect(digest).toContain('  Published:')
-    expect(digest).toContain('    chan-a 10:00 "Moon Facts" — https://youtube.com/shorts/abc123')
+    expect(digest).toContain('    chan-a #1 "Moon Facts" — https://youtube.com/shorts/abc123')
     db.close()
   })
 
@@ -365,13 +365,13 @@ describe('buildDigest — publishing section', () => {
     seedPublish(db, {
       jobId: 'j-fail',
       channel: 'chan-b',
-      slot: '14:00',
+      seq: 2,
       status: 'failed',
       errorKind: 'rejected',
       error: longError,
     })
     const digest = buildDigest(db, [])
-    expect(digest).toContain(`    chan-b 14:00 rejected: ${'x'.repeat(80)}`)
+    expect(digest).toContain(`    chan-b #2 rejected: ${'x'.repeat(80)}`)
     expect(digest).not.toContain('x'.repeat(81))
     db.close()
   })
@@ -409,14 +409,14 @@ describe('buildDigest — publishing action items', () => {
     seedPublish(db, {
       jobId: 'j1',
       channel: 'chan-a',
-      slot: '10:00',
+      seq: 1,
       status: 'failed',
       errorKind: 'auth',
     })
     seedPublish(db, {
       jobId: 'j2',
       channel: 'chan-a',
-      slot: '14:00',
+      seq: 2,
       status: 'failed',
       errorKind: 'auth',
     })
@@ -432,14 +432,14 @@ describe('buildDigest — publishing action items', () => {
     seedPublish(db, {
       jobId: 'j1',
       channel: 'chan-a',
-      slot: '10:00',
+      seq: 1,
       status: 'failed',
       errorKind: 'quota',
     })
     seedPublish(db, {
       jobId: 'j2',
       channel: 'chan-a',
-      slot: '14:00',
+      seq: 2,
       status: 'failed',
       errorKind: 'quota',
     })
@@ -455,13 +455,13 @@ describe('buildDigest — publishing action items', () => {
     seedPublish(db, {
       jobId: 'j-int',
       channel: 'chan-a',
-      slot: '19:00',
+      seq: 3,
       status: 'interrupted',
       createdAt: isoAgo(3 * DAY_MS),
     })
     const digest = buildDigest(db, [])
     expect(digest).toContain(
-      '  interrupted publish j-int (chan-a, youtube, 19:00) — check YouTube Studio, then brainrot publish retry j-int or brainrot publish mark-done j-int <postId>',
+      '  interrupted publish j-int (chan-a, youtube, #3) — check YouTube Studio, then brainrot publish retry j-int or brainrot publish mark-done j-int <postId>',
     )
     db.close()
   })
@@ -474,7 +474,7 @@ describe('buildDigest — publishing action items', () => {
       jobId: 'j-capped',
       channel: 'chan-a',
       day: '2026-07-19',
-      slot: '08:00',
+      seq: 1,
       status: 'failed',
       errorKind: 'rejected',
     })
@@ -482,7 +482,7 @@ describe('buildDigest — publishing action items', () => {
       jobId: 'j-capped',
       channel: 'chan-a',
       day: '2026-07-19',
-      slot: '12:00',
+      seq: 2,
       status: 'failed',
       errorKind: 'rejected',
     })
@@ -490,7 +490,7 @@ describe('buildDigest — publishing action items', () => {
       jobId: 'j-capped',
       channel: 'chan-a',
       day: '2026-07-19',
-      slot: '16:00',
+      seq: 3,
       status: 'failed',
       errorKind: 'rejected',
     })
@@ -509,7 +509,7 @@ describe('buildDigest — publishing action items', () => {
       jobId: 'j-under',
       channel: 'chan-a',
       day: '2026-07-19',
-      slot: '08:00',
+      seq: 1,
       status: 'failed',
       errorKind: 'rejected',
     })
@@ -517,7 +517,7 @@ describe('buildDigest — publishing action items', () => {
       jobId: 'j-under',
       channel: 'chan-a',
       day: '2026-07-19',
-      slot: '12:00',
+      seq: 2,
       status: 'failed',
       errorKind: 'rejected',
     })
@@ -536,7 +536,6 @@ describe('buildDigest — ready-backlog in the Publishing section', () => {
         targets: [
           {
             platform: 'youtube',
-            slots: ['10:00'],
             options: { privacy: 'public', categoryId: 24, madeForKids: false },
           },
         ],
@@ -570,8 +569,8 @@ describe('buildDigest — ready-backlog in the Publishing section', () => {
   })
 })
 
-describe('buildDigest — lapsed-slots action item', () => {
-  it('reports slots that lapsed unfilled yesterday for channels with a publish config', () => {
+describe('buildDigest — volume-shortfall action item', () => {
+  it('reports a channel that published fewer videos than videos_per_day yesterday, split per platform', () => {
     const db = openDb(':memory:')
     // Mirror the impl's own local field math (new Date(now); setDate(-1);
     // localDay) — now-minus-24h lands on the wrong local date across a DST
@@ -581,11 +580,14 @@ describe('buildDigest — lapsed-slots action item', () => {
     const yesterday = localDay(yesterdayDate)
     const chA = testChannel({
       name: 'chan-a',
+      videosPerDay: 3,
+      // Declared instagram-first because that is the order buildTargets
+      // emits (sorted by platform), and the per-platform split follows it.
       publish: {
         targets: [
+          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
           {
             platform: 'youtube',
-            slots: ['09:00', '14:00', '19:00'],
             options: { privacy: 'public', categoryId: 24, madeForKids: false },
           },
         ],
@@ -596,22 +598,40 @@ describe('buildDigest — lapsed-slots action item', () => {
       jobId: 'j-yday',
       channel: 'chan-a',
       day: yesterday,
-      slot: '09:00',
+      seq: 1,
       status: 'done',
     })
     const digest = buildDigest(db, [chA])
     expect(digest).toContain(
-      `  chan-a youtube: slots 14:00, 19:00 lapsed unfilled yesterday (${yesterday})`,
+      `  chan-a: published 1 of 3 videos yesterday (${yesterday}) — instagram 0, youtube 1`,
     )
-    expect(digest).not.toContain('09:00 lapsed')
     db.close()
   })
 
-  it('does not flag lapsed slots for a channel with no publish config', () => {
+  it('says nothing when the channel met its count', () => {
+    const db = openDb(':memory:')
+    const yesterdayDate = new Date()
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+    const yesterday = localDay(yesterdayDate)
+    const chA = publishChannel('chan-a', { videosPerDay: 1 })
+    seedJob(db, { id: 'j-yday', channel: 'chan-a' })
+    seedPublish(db, {
+      jobId: 'j-yday',
+      channel: 'chan-a',
+      day: yesterday,
+      seq: 1,
+      status: 'done',
+    })
+    const digest = buildDigest(db, [chA])
+    expect(digest).not.toContain('videos yesterday')
+    db.close()
+  })
+
+  it('does not report a shortfall for a channel with no publish config', () => {
     const db = openDb(':memory:')
     const chB = testChannel({ name: 'chan-b', publish: null })
     const digest = buildDigest(db, [chB])
-    expect(digest).not.toContain('lapsed unfilled yesterday')
+    expect(digest).not.toContain('videos yesterday')
     db.close()
   })
 })
@@ -817,7 +837,6 @@ describe('buildDigest — token expiry warning', () => {
         targets: [
           {
             platform: 'instagram',
-            slots: ['10:00'],
             options: { igUserId: 'ig-1', shareToFeed: true },
           },
         ],

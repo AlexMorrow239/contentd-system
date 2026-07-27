@@ -1,9 +1,9 @@
 import { z } from 'zod'
 
 // Deliberately NOT .strict() here — channel.ts's per-platform target schema
-// extends this with an optional `slots` override and applies .strict() to
-// the EXTENDED shape, so an unknown key under [publish.instagram] (e.g. a
-// stray category_id) fails there, not here.
+// extends this (with the removed-but-still-declared `slots` key it rejects by
+// name) and applies .strict() to the EXTENDED shape, so an unknown key under
+// [publish.instagram] (e.g. a stray category_id) fails there, not here.
 export const youtubeOptionsSchema = z.object({
   privacy: z.enum(['public', 'unlisted', 'private']).default('public'),
   category_id: z.number().int().positive().default(24),

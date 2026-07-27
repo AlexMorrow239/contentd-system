@@ -38,7 +38,7 @@ export interface PublishesPageData {
 }
 
 function renderCell(row: PublishRow | undefined, dbChoice: DbChoice): SafeHtml {
-  if (row === undefined) return html`<td class="slot-empty">·</td>`
+  if (row === undefined) return html`<td class="cell-empty">·</td>`
 
   // Not currently exploitable — url is constructed server-side with a fixed
   // https:// scheme, never from user input — but routed through the same
@@ -59,17 +59,17 @@ function renderGrid(grid: ChannelGrid, dbChoice: DbChoice): SafeHtml {
   const header = grid.days.map((day) => html`<th>${day}</th>`)
   const rows = grid.rows.map(
     (row) => html`<tr>
-      <th>${row.slot} ${row.platform}</th>
+      <th>#${String(row.seq)} ${row.platform}</th>
       ${grid.days.map((day) =>
-        renderCell(grid.cells.get(cellKey(day, row.slot, row.platform)), dbChoice),
+        renderCell(grid.cells.get(cellKey(day, row.seq, row.platform)), dbChoice),
       )}
     </tr>`,
   )
   return html`<div class="panel">
     <h2>${grid.channel}</h2>
-    <table class="slot-grid">
+    <table class="publish-grid">
       <thead>
-        <tr><th>slot</th>${header}</tr>
+        <tr><th>#</th>${header}</tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>

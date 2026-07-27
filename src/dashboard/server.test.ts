@@ -174,7 +174,6 @@ describe('/publishes', () => {
         'per_day_usd = 20.0',
         '',
         '[publish]',
-        'slots = ["10:00"]',
         '',
         '[publish.instagram]',
         'ig_user_id = "1"',
@@ -188,8 +187,8 @@ describe('/publishes', () => {
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
     ).run()
     db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
-        "VALUES ('j1','instagram','space',?,'10:00','done',1)",
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
+        "VALUES ('j1','instagram','space',?,1,'done',1)",
     ).run(today)
     db.close()
 

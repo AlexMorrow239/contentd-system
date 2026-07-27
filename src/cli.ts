@@ -336,20 +336,30 @@ program
     'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
   )
   .option('--dry-run', 'preview the next publish without writing anything')
-  .action(async (opts: { db?: string; channelsDir?: string; dryRun?: boolean }) => {
-    const channelsDir = resolveChannelsDir(opts.channelsDir)
-    const db = openDb(resolveDbPath(opts.db))
-    try {
-      const result = await publishNextTick(db, { channelsDir, dryRun: opts.dryRun })
-      // One cron-greppable JSON line. Exit 1 only for a completed-but-failed
-      // upload attempt (the video stays 'ready' for the next slot); every
-      // noop and dry-run preview is a benign exit 0.
-      process.stdout.write(JSON.stringify(result) + '\n')
-      process.exitCode = result.action === 'publish-failed' ? 1 : 0
-    } finally {
-      db.close()
-    }
-  })
+  .option(
+    '--force',
+    'ignore the publish window, the pacing gap, and the daily count (local testing; platform quotas still apply)',
+  )
+  .action(
+    async (opts: { db?: string; channelsDir?: string; dryRun?: boolean; force?: boolean }) => {
+      const channelsDir = resolveChannelsDir(opts.channelsDir)
+      const db = openDb(resolveDbPath(opts.db))
+      try {
+        const result = await publishNextTick(db, {
+          channelsDir,
+          dryRun: opts.dryRun,
+          force: opts.force,
+        })
+        // One cron-greppable JSON line. Exit 1 only for a completed-but-failed
+        // upload attempt (the video stays 'ready' for the next attempt); every
+        // noop and dry-run preview is a benign exit 0.
+        process.stdout.write(JSON.stringify(result) + '\n')
+        process.exitCode = result.action === 'publish-failed' ? 1 : 0
+      } finally {
+        db.close()
+      }
+    },
+  )
 
 // Operator veto (reject) and repair (requeue) over the scouted topic queue.
 // Actions are thin: id validation lives in parseTopicIds, state transitions
@@ -658,7 +668,7 @@ publish
         return
       }
       console.log(
-        `job ${jobId}: interrupted publish cleared — back in the pool for the next due slot`,
+        `job ${jobId}: interrupted publish cleared — back in the pool for the next due attempt`,
       )
     } finally {
       db.close()
@@ -738,7 +748,7 @@ publishes
       }
       for (const r of rows) {
         console.log(
-          `${r.day} ${r.slot} ${r.channel} ${r.platform} ${r.status} attempt ${r.attempt} ${r.jobId} ${r.url ?? r.error ?? '-'}`,
+          `${r.day} #${String(r.seq)} ${r.channel} ${r.platform} ${r.status} attempt ${r.attempt} ${r.jobId} ${r.url ?? r.error ?? '-'}`,
         )
       }
     } finally {

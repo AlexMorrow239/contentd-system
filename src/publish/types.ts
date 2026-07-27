@@ -96,12 +96,12 @@ export interface PublishAdapter<O = unknown> {
   ): Promise<{ postId: string; url: string }>
 }
 
-// Parsed [publish.<platform>] TOML sub-table for one channel (src/config/channel.ts).
-// slots is already resolved: the platform's own override, or the channel's
-// shared [publish] slots when the platform declares none of its own.
+// Parsed [publish.<platform>] TOML sub-table for one channel
+// (src/config/channel.ts). No schedule of its own: cadence comes from the
+// channel's videos_per_day, and the window/gap are derived in schedule.ts.
 export type PublishTargetConfig =
-  | { platform: 'youtube'; slots: string[]; options: YoutubeOptions }
-  | { platform: 'instagram'; slots: string[]; options: InstagramOptions }
+  | { platform: 'youtube'; options: YoutubeOptions }
+  | { platform: 'instagram'; options: InstagramOptions }
 
 // Parsed [publish] TOML table for a channel. A channel with no [publish]
 // table at all is `null` on ChannelConfig and never enters the publish pool.

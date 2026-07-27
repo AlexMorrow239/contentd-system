@@ -13,7 +13,7 @@ function row(overrides: Partial<PublishRow> = {}): PublishRow {
     platform: 'youtube',
     channel: 'space',
     day: '2026-07-25',
-    slot: '09:00',
+    seq: 1,
     status: 'done',
     postId: 'abc',
     url: 'https://youtube.com/shorts/abc',
@@ -31,7 +31,7 @@ function pageData(cells: Map<string, PublishRow>) {
     grids: [
       {
         channel: 'space',
-        rows: [{ platform: 'youtube' as const, slot: '09:00' }],
+        rows: [{ platform: 'youtube' as const, seq: 1 }],
         days: ['2026-07-25'],
         cells,
       },
@@ -44,21 +44,21 @@ function pageData(cells: Map<string, PublishRow>) {
 
 describe('renderPublishesPage', () => {
   it('links a done cell to the published video', () => {
-    const cells = new Map([[cellKey('2026-07-25', '09:00', 'youtube'), row()]])
+    const cells = new Map([[cellKey('2026-07-25', 1, 'youtube'), row()]])
     const out = renderPublishesPage(pageData(cells)).value
     expect(out).toContain('https://youtube.com/shorts/abc')
     expect(out).toContain('status-done')
   })
 
-  it('shows an unfilled slot as a visible gap', () => {
+  it('shows an ordinal that was never reached as a visible gap', () => {
     const out = renderPublishesPage(pageData(new Map())).value
-    expect(out).toContain('slot-empty')
+    expect(out).toContain('cell-empty')
   })
 
   it('shows error kind and attempt on a failed cell', () => {
     const cells = new Map([
       [
-        cellKey('2026-07-25', '09:00', 'youtube'),
+        cellKey('2026-07-25', 1, 'youtube'),
         row({ status: 'failed', errorKind: 'quota', attempt: 3, url: null, postId: null }),
       ],
     ])
@@ -72,23 +72,23 @@ describe('renderPublishesPage', () => {
     // https:// scheme — but applying the same control as topics.ts keeps the
     // hardening from quietly regressing if that ever changes.
     const cells = new Map([
-      [cellKey('2026-07-25', '09:00', 'youtube'), row({ url: 'javascript:alert(1)' })],
+      [cellKey('2026-07-25', 1, 'youtube'), row({ url: 'javascript:alert(1)' })],
     ])
     const out = renderPublishesPage(pageData(cells)).value
     expect(out).not.toContain('href="javascript:alert(1)"')
     expect(out).not.toContain('<a href="javascript:')
   })
 
-  it('labels each row with its platform, and keeps same-slot platforms in separate rows', () => {
-    // Regression for the cellKey collision bug: two platforms sharing a slot
-    // time must render as two distinct rows/cells, not overwrite one another.
+  it('labels each row with its platform, and keeps same-ordinal platforms in separate rows', () => {
+    // Regression for the cellKey collision bug: two platforms sharing an
+    // ordinal must render as two distinct rows/cells, not overwrite one another.
     const cells = new Map([
       [
-        cellKey('2026-07-25', '10:00', 'youtube'),
+        cellKey('2026-07-25', 2, 'youtube'),
         row({ platform: 'youtube', status: 'done', url: 'https://youtube.com/shorts/yt1' }),
       ],
       [
-        cellKey('2026-07-25', '10:00', 'instagram'),
+        cellKey('2026-07-25', 2, 'instagram'),
         row({
           platform: 'instagram',
           status: 'failed',
@@ -103,8 +103,8 @@ describe('renderPublishesPage', () => {
         {
           channel: 'space',
           rows: [
-            { platform: 'instagram' as const, slot: '10:00' },
-            { platform: 'youtube' as const, slot: '10:00' },
+            { platform: 'instagram' as const, seq: 2 },
+            { platform: 'youtube' as const, seq: 2 },
           ],
           days: ['2026-07-25'],
           cells,
@@ -115,8 +115,8 @@ describe('renderPublishesPage', () => {
       dbChoice: 'prod' as const,
     }
     const out = renderPublishesPage(data).value
-    expect(out).toContain('10:00 instagram')
-    expect(out).toContain('10:00 youtube')
+    expect(out).toContain('#2 instagram')
+    expect(out).toContain('#2 youtube')
     expect(out).toContain('https://youtube.com/shorts/yt1')
     expect(out).toContain('transient')
   })

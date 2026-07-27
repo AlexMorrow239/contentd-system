@@ -7,23 +7,24 @@ import { ADAPTERS } from '../publish/platforms/index.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import {
   claimPublish,
-  consumedSlots,
   eligibleVideo,
+  lastAttemptAt,
   markPublishDone,
   markPublishFailed,
   sweepInterrupted,
   uploadsUsedToday,
+  videosPublishedToday,
 } from '../publish/publishes.js'
 import type { EligibleVideo } from '../publish/publishes.js'
-import { dueSlotsForChannel, localDay, orderCandidates } from '../publish/schedule.js'
-import type { SlotCandidate } from '../publish/schedule.js'
+import { channelNotDueReason, localDay, orderChannels } from '../publish/schedule.js'
+import type { ChannelCandidate, NotDueReason } from '../publish/schedule.js'
 import {
   PUBLISH_PLATFORMS,
   PublishError,
   PublishOutcomeUnknownError,
   resolvePlatformMeta,
 } from '../publish/types.js'
-import type { Platform, PublishAdapter } from '../publish/types.js'
+import type { Platform, PublishAdapter, PublishTargetConfig } from '../publish/types.js'
 import type { ObjectStore } from '../storage/types.js'
 import { acquireLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
 
@@ -31,7 +32,9 @@ export interface PublishTickResult {
   action: 'published' | 'publish-failed' | 'noop' | 'dry-run'
   reason?:
     | 'lease-held'
-    | 'no-due-slot'
+    | 'not-in-window'
+    | 'paced'
+    | 'daily-count-met'
     | 'platform-quota'
     | 'no-ready-video'
     | 'no-video-file'
@@ -42,14 +45,13 @@ export interface PublishTickResult {
   channel?: string
   platform?: Platform
   jobId?: string
-  slot?: string
+  seq?: number
   postId?: string
   url?: string
   error?: string
   wouldPublish?: {
     channel: string
     platform: Platform
-    slot: string
     jobId: string
     title: string
   } | null
@@ -85,11 +87,12 @@ function badEnvMessage(): string | undefined {
 const MAX_VIDEO_FILE_SCANS = 50
 
 /**
- * Selects and executes one upload: env check -> due slots (per target) ->
- * quota pre-filter -> fairness order -> candidate scan (video, its file,
- * credential) -> claim -> resolveCredential -> upload -> finalize.
- * The publish lease and repair sweep wrap this in the next cycle. Names no
- * platform literal anywhere in this file — guarded by a structural test.
+ * Selects and executes one upload: env check -> per-channel due gate (window,
+ * pacing gap, day count) -> fairness order -> candidate scan (quota,
+ * credential, video and its bytes) -> claim -> resolveCredential -> upload ->
+ * finalize. The publish lease and repair sweep wrap this in the next cycle.
+ * Names no platform literal anywhere in this file — guarded by a structural
+ * test.
  */
 export async function publishNextTick(
   db: Database,
@@ -99,6 +102,7 @@ export async function publishNextTick(
     fetchImpl?: typeof fetch
     now?: () => Date
     dryRun?: boolean
+    force?: boolean
     // Injectable for tests (a fakeStore); production leaves this undefined
     // and resolveStore() below builds the real s3Store lazily, once per tick.
     store?: ObjectStore
@@ -106,6 +110,7 @@ export async function publishNextTick(
 ): Promise<PublishTickResult> {
   const nowFn = opts.now ?? (() => new Date())
   const dryRun = opts.dryRun ?? false
+  const force = opts.force ?? false
   const adapters = Object.fromEntries(
     PUBLISH_PLATFORMS.map((p) => [p, opts.adapters?.[p] ?? ADAPTERS[p](opts.fetchImpl)]),
   ) as Record<Platform, PublishAdapter>
@@ -155,102 +160,129 @@ export async function publishNextTick(
     if (!dryRun) {
       // Repair sweep (publish-analog of produce-next's topic sweep): a tick
       // that died mid-upload leaves a stale 'claimed' row — heal it to
-      // 'interrupted' before planning this tick's slot.
+      // 'interrupted' before planning this tick's attempt.
       sweepInterrupted(db, PUBLISH_LEASE_TTL_MS, now)
     }
     const day = localDay(now)
 
-    const candidates: SlotCandidate[] = []
+    // Which channels are due, and why the rest are not. Pacing is per
+    // CHANNEL, not per (channel, platform): videos_per_day counts videos, and
+    // a video goes to every platform the channel declares.
+    const candidates: ChannelCandidate[] = []
+    let notDue: NotDueReason | undefined
     for (const channel of channels) {
       if (channel.publish === null) continue
-      for (const target of channel.publish.targets) {
-        const consumed = consumedSlots(db, channel.name, target.platform, day)
-        const due = dueSlotsForChannel(target.slots, consumed, now)
-        for (const slot of due) {
-          candidates.push({
-            channel: channel.name,
-            platform: target.platform,
-            slot,
-            filledCount: consumed.size,
-            totalSlots: target.slots.length,
+      const publishedToday = videosPublishedToday(db, channel.name, day)
+      // --force is the local-testing bypass: it skips the window, the min
+      // gap, and the day count so ticks can be fired back to back. It never
+      // skips quota, credentials, or eligibility — a forced test must not be
+      // able to overrun a platform's real daily cap.
+      const reason = force
+        ? undefined
+        : channelNotDueReason({
+            videosPerDay: channel.videosPerDay,
+            publishedToday,
+            lastAttemptAt: lastAttemptAt(db, channel.name),
+            now,
           })
-        }
+      if (reason !== undefined) {
+        // The first skipped channel's reason wins the report — channels arrive
+        // name-ordered, so with one channel this is exact and with several it
+        // is indicative. Same convention as firstReason below: the tick reports
+        // ONE cause, not a per-channel breakdown (that is the digest's job).
+        if (notDue === undefined) notDue = reason
+        continue
       }
+      candidates.push({
+        channel: channel.name,
+        publishedToday,
+        videosPerDay: channel.videosPerDay,
+      })
     }
     if (candidates.length === 0) {
       return dryRun
-        ? { action: 'dry-run', wouldPublish: null, reason: 'no-due-slot' }
-        : { action: 'noop', reason: 'no-due-slot' }
+        ? { action: 'dry-run', wouldPublish: null, reason: notDue }
+        : { action: 'noop', reason: notDue }
     }
 
-    // Quota pre-filter (design spec §7, decision 7): usage is computed once
-    // per distinct (scope-appropriate) key rather than per candidate. A
-    // candidate whose platform is at or over its cap is dropped before
-    // fairness ordering ever sees it.
+    const ordered = orderChannels(candidates)
+    const tokenKeyHex = process.env.BRAINROT_TOKEN_KEY
+    const tokenKey = tokenKeyHex ? parseTokenKey(tokenKeyHex) : undefined
+
+    // Quota gate (design spec §7, decision 7): usage is computed once per
+    // distinct (scope-appropriate) key rather than per candidate.
     const usageCache = new Map<string, number>()
-    const underQuota = candidates.filter((c) => {
-      const adapter = adapters[c.platform]
-      const key = adapter.quota.scope === 'global' ? c.platform : `${c.platform}:${c.channel}`
+    function underQuota(platform: Platform, channel: string): boolean {
+      const adapter = adapters[platform]
+      const key = adapter.quota.scope === 'global' ? platform : `${platform}:${channel}`
       let used = usageCache.get(key)
       if (used === undefined) {
         used = uploadsUsedToday(
           db,
-          c.platform,
+          platform,
           day,
-          adapter.quota.scope === 'channel' ? c.channel : undefined,
+          adapter.quota.scope === 'channel' ? channel : undefined,
         )
         usageCache.set(key, used)
       }
       return used < adapter.quota.cap()
-    })
-    if (underQuota.length === 0) {
-      return dryRun
-        ? { action: 'dry-run', wouldPublish: null, reason: 'platform-quota' }
-        : { action: 'noop', reason: 'platform-quota' }
     }
 
-    const ordered = orderCandidates(underQuota)
-    const tokenKeyHex = process.env.BRAINROT_TOKEN_KEY
-    const tokenKey = tokenKeyHex ? parseTokenKey(tokenKeyHex) : undefined
-
-    let firstReason: 'no-ready-video' | 'no-video-file' | 'no-auth' | undefined
-    let picked: { candidate: SlotCandidate; video: EligibleVideo; tokenKey: Buffer } | undefined
+    let firstReason: 'no-ready-video' | 'no-video-file' | 'no-auth' | 'platform-quota' | undefined
+    // `target` (not a bare options object) so the option type stays narrowed to
+    // its platform all the way to the upload call. `tokenKey` rides along
+    // already narrowed to Buffer: the credential gate below is what proves it
+    // is set, and carrying it here is what lets the upload block use it with
+    // no non-null assertion.
+    let picked:
+      | { channel: string; target: PublishTargetConfig; video: EligibleVideo; tokenKey: Buffer }
+      | undefined
 
     for (const candidate of ordered) {
-      // Video pre-flight: a candidate qualifies if the bytes are reachable at
-      // all — a local file OR a stored object. A pruned runs/ tree is now
-      // normal (the bucket is the durable copy), so requiring the local file
-      // would skip every archived video. A row with neither would burn the
-      // slot plus a quota unit on a failure the adapter can only call
-      // 'rejected', so it is still excluded and the query re-run.
-      const prunedJobIds: string[] = []
-      let video: EligibleVideo | null = null
-      for (let scan = 0; scan < MAX_VIDEO_FILE_SCANS; scan++) {
-        const row = eligibleVideo(db, candidate.channel, candidate.platform, prunedJobIds)
-        if (row === null) break
-        if (row.objectKey !== null || existsSync(row.videoPath)) {
-          video = row
-          break
+      const channel = channels.find((c) => c.name === candidate.channel)
+      if (channel === undefined || channel.publish === null) continue
+      for (const target of channel.publish.targets) {
+        if (!underQuota(target.platform, channel.name)) {
+          if (firstReason === undefined) firstReason = 'platform-quota'
+          continue
         }
-        prunedJobIds.push(row.jobId)
-      }
-      if (video === null) {
-        if (firstReason === undefined) {
-          firstReason = prunedJobIds.length === 0 ? 'no-ready-video' : 'no-video-file'
+        // hasCredential is a cheap, non-network check (env presence, a
+        // decryptable stored token) — safe to run per-target before any claim.
+        if (
+          tokenKey === undefined ||
+          !adapters[target.platform].hasCredential(db, channel.name, tokenKey)
+        ) {
+          if (firstReason === undefined) firstReason = 'no-auth'
+          continue
         }
-        continue
+        // Video pre-flight, unchanged from today: a candidate qualifies if the
+        // bytes are reachable AT ALL — a local file OR a stored object. A pruned
+        // runs/ tree is normal (the bucket is the durable copy), so requiring the
+        // local file would skip every archived video. A row with neither would
+        // burn a quota unit on a failure the adapter can only call 'rejected'.
+        // eligibleVideo returns only the TOP row, so an unreachable one must be
+        // excluded and the query re-run.
+        const prunedJobIds: string[] = []
+        let video: EligibleVideo | null = null
+        for (let scan = 0; scan < MAX_VIDEO_FILE_SCANS; scan++) {
+          const row = eligibleVideo(db, channel.name, target.platform, prunedJobIds)
+          if (row === null) break
+          if (row.objectKey !== null || existsSync(row.videoPath)) {
+            video = row
+            break
+          }
+          prunedJobIds.push(row.jobId)
+        }
+        if (video === null) {
+          if (firstReason === undefined) {
+            firstReason = prunedJobIds.length === 0 ? 'no-ready-video' : 'no-video-file'
+          }
+          continue
+        }
+        picked = { channel: channel.name, target, video, tokenKey }
+        break
       }
-      // hasCredential is a cheap, non-network check (env presence, a
-      // decryptable stored token) — safe to run per-candidate before any claim.
-      if (
-        tokenKey === undefined ||
-        !adapters[candidate.platform].hasCredential(db, candidate.channel, tokenKey)
-      ) {
-        if (firstReason === undefined) firstReason = 'no-auth'
-        continue
-      }
-      picked = { candidate, video, tokenKey }
-      break
+      if (picked !== undefined) break
     }
 
     if (picked === undefined) {
@@ -259,49 +291,32 @@ export async function publishNextTick(
         : { action: 'noop', reason: firstReason }
     }
 
-    const { candidate, video, tokenKey: pickedTokenKey } = picked
-    const meta = resolvePlatformMeta(video.metadataJson, candidate.platform, video.topic)
+    const { channel: pickedChannel, target, video, tokenKey: pickedTokenKey } = picked
+    const pickedPlatform = target.platform
+    const meta = resolvePlatformMeta(video.metadataJson, pickedPlatform, video.topic)
 
     if (dryRun) {
       return {
         action: 'dry-run',
         wouldPublish: {
-          channel: candidate.channel,
-          platform: candidate.platform,
-          slot: candidate.slot,
+          channel: pickedChannel,
+          platform: pickedPlatform,
           jobId: video.jobId,
           title: meta.title,
         },
       }
     }
 
-    // Resolve the channel and its target BEFORE the claim: nothing may throw
-    // between the claim and the upload, or a thrown row would sit 'claimed'
-    // until the sweep heals it.
-    const channel = channels.find((c) => c.name === candidate.channel)
-    if (channel === undefined || channel.publish === null) {
-      throw new Error(
-        `publishNextTick: channel ${candidate.channel} missing publish config at claim time`,
-      )
-    }
-    const target = channel.publish.targets.find((t) => t.platform === candidate.platform)
-    if (target === undefined) {
-      throw new Error(
-        `publishNextTick: channel ${candidate.channel} missing ${candidate.platform} target at claim time`,
-      )
-    }
-
-    // The UNIQUE(channel, platform, day, slot) constraint is the real guard;
-    // a conflict here means a racing tick won this slot — unreachable under
+    // The UNIQUE(channel, platform, day, seq) constraint is the real guard; a
+    // conflict here means a racing tick won this ordinal — unreachable under
     // the publish lease, but a defensive exit rather than a crash.
-    const claimId = claimPublish(db, {
+    const claim = claimPublish(db, {
       jobId: video.jobId,
-      platform: candidate.platform,
-      channel: candidate.channel,
+      platform: pickedPlatform,
+      channel: pickedChannel,
       day,
-      slot: candidate.slot,
     })
-    if (claimId === null) {
+    if (claim === null) {
       return { action: 'noop', reason: 'claim-conflict' }
     }
 
@@ -310,8 +325,8 @@ export async function publishNextTick(
     // mapped to a failure kind, because by then the post may already be live.
     let uploaded: { postId: string; url: string }
     try {
-      const adapter = adapters[candidate.platform]
-      const credential = await adapter.resolveCredential(db, candidate.channel, pickedTokenKey, now)
+      const adapter = adapters[pickedPlatform]
+      const credential = await adapter.resolveCredential(db, pickedChannel, pickedTokenKey, now)
       uploaded = await adapter.upload(
         {
           media: publishMedia({
@@ -332,14 +347,14 @@ export async function publishNextTick(
       // stays 'claimed' for the sweep — same operator path as a crashed tick.
       if (!(err instanceof PublishOutcomeUnknownError)) {
         const kind = err instanceof PublishError ? err.kind : 'transient'
-        markPublishFailed(db, claimId, message, kind, nowFn())
+        markPublishFailed(db, claim.id, message, kind, nowFn())
       }
       return {
         action: 'publish-failed',
-        channel: candidate.channel,
-        platform: candidate.platform,
+        channel: pickedChannel,
+        platform: pickedPlatform,
         jobId: video.jobId,
-        slot: candidate.slot,
+        seq: claim.seq,
         error: message,
       }
     }
@@ -351,24 +366,24 @@ export async function publishNextTick(
     // the post facts ride out in the error text so the operator has them.
     // `nowFn()` again, not the tick's start: finished_at records the write.
     try {
-      markPublishDone(db, claimId, uploaded.postId, uploaded.url, nowFn())
+      markPublishDone(db, claim.id, uploaded.postId, uploaded.url, nowFn())
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       return {
         action: 'publish-failed',
-        channel: candidate.channel,
-        platform: candidate.platform,
+        channel: pickedChannel,
+        platform: pickedPlatform,
         jobId: video.jobId,
-        slot: candidate.slot,
+        seq: claim.seq,
         error: `uploaded ${uploaded.postId} (${uploaded.url}) but recording it failed: ${message}`,
       }
     }
     return {
       action: 'published',
-      channel: candidate.channel,
-      platform: candidate.platform,
+      channel: pickedChannel,
+      platform: pickedPlatform,
       jobId: video.jobId,
-      slot: candidate.slot,
+      seq: claim.seq,
       postId: uploaded.postId,
       url: uploaded.url,
     }

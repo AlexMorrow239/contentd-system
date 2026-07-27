@@ -3,7 +3,6 @@ import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import {
   claimPublish,
-  consumedSlots,
   eligibleVideo,
   lastAttemptAt,
   listPublishes,
@@ -62,76 +61,54 @@ function recordTransactionModes(db: Database): string[] {
 }
 
 describe('claimPublish', () => {
-  it('numbers attempts 1-based per (jobId, platform), counting every prior row regardless of slot or day', () => {
+  it('numbers attempts 1-based per (jobId, platform), counting every prior row regardless of day', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1')
-
-    const id1 = claimPublish(db, {
-      jobId: 'job-1',
-      platform: 'youtube',
-      channel: 'chan-a',
-      day: '2026-07-20',
-      slot: '10:00',
-    })
-    expect(id1).not.toBeNull()
-    expect(
-      (db.prepare('SELECT attempt FROM publishes WHERE id = ?').get(id1) as { attempt: number })
-        .attempt,
-    ).toBe(1)
-    db.prepare("UPDATE publishes SET status = 'failed' WHERE id = ?").run(id1)
-
-    const id2 = claimPublish(db, {
-      jobId: 'job-1',
-      platform: 'youtube',
-      channel: 'chan-a',
-      day: '2026-07-20',
-      slot: '14:00',
-    })
-    expect(
-      (db.prepare('SELECT attempt FROM publishes WHERE id = ?').get(id2) as { attempt: number })
-        .attempt,
-    ).toBe(2)
-    db.prepare("UPDATE publishes SET status = 'failed' WHERE id = ?").run(id2)
-
-    const id3 = claimPublish(db, {
-      jobId: 'job-1',
-      platform: 'youtube',
-      channel: 'chan-a',
-      day: '2026-07-21',
-      slot: '10:00',
-    })
-    expect(
-      (db.prepare('SELECT attempt FROM publishes WHERE id = ?').get(id3) as { attempt: number })
-        .attempt,
-    ).toBe(3)
-    db.close()
-  })
-
-  it('returns null on a UNIQUE (channel, platform, day, slot) conflict and writes nothing', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-1')
-    seedJob(db, 'job-2')
 
     const first = claimPublish(db, {
       jobId: 'job-1',
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-20',
-      slot: '10:00',
     })
     expect(first).not.toBeNull()
+    expect(
+      (
+        db.prepare('SELECT attempt FROM publishes WHERE id = ?').get(first?.id) as {
+          attempt: number
+        }
+      ).attempt,
+    ).toBe(1)
+    db.prepare("UPDATE publishes SET status = 'failed' WHERE id = ?").run(first?.id)
 
-    const conflict = claimPublish(db, {
-      jobId: 'job-2',
+    const second = claimPublish(db, {
+      jobId: 'job-1',
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-20',
-      slot: '10:00',
     })
-    expect(conflict).toBeNull()
+    expect(
+      (
+        db.prepare('SELECT attempt FROM publishes WHERE id = ?').get(second?.id) as {
+          attempt: number
+        }
+      ).attempt,
+    ).toBe(2)
+    db.prepare("UPDATE publishes SET status = 'failed' WHERE id = ?").run(second?.id)
 
-    const rows = db.prepare('SELECT job_id FROM publishes').all() as { job_id: string }[]
-    expect(rows).toEqual([{ job_id: 'job-1' }])
+    const third = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-21',
+    })
+    expect(
+      (
+        db.prepare('SELECT attempt FROM publishes WHERE id = ?').get(third?.id) as {
+          attempt: number
+        }
+      ).attempt,
+    ).toBe(3)
     db.close()
   })
 
@@ -145,10 +122,117 @@ describe('claimPublish', () => {
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-20',
-      slot: '10:00',
     })
 
     expect(modes).toEqual(['immediate'])
+    db.close()
+  })
+})
+
+describe('claimPublish seq', () => {
+  it('numbers the first claim of a (channel, platform, day) as 1 and returns it', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    const claim = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    expect(claim).toEqual({ id: expect.any(Number), seq: 1 })
+    db.close()
+  })
+
+  it('increments seq per (channel, platform, day), independently per platform', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-a' })
+    const a = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    const b = claimPublish(db, {
+      jobId: 'job-2',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    const c = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'instagram',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    expect([a?.seq, b?.seq, c?.seq]).toEqual([1, 2, 1])
+    db.close()
+  })
+
+  it('restarts seq at 1 on the next day', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedJob(db, 'job-2', { channel: 'chan-a' })
+    claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    const next = claimPublish(db, {
+      jobId: 'job-2',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-23',
+    })
+    expect(next?.seq).toBe(1)
+    db.close()
+  })
+
+  it('returns null rather than throwing when the computed seq is already taken', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    // Two rows with a GAP: the count is 2, so the next claim computes seq 3 —
+    // which the seeded row already holds. This is the state a racing tick
+    // leaves behind, and the UNIQUE constraint is the backstop that catches it.
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) VALUES ' +
+        "('job-1','youtube','chan-a','2026-07-22',1,'failed',1)," +
+        "('job-1','youtube','chan-a','2026-07-22',3,'done',2)",
+    ).run()
+    expect(
+      claimPublish(db, {
+        jobId: 'job-1',
+        platform: 'youtube',
+        channel: 'chan-a',
+        day: '2026-07-22',
+      }),
+    ).toBeNull()
+    // The failed INSERT is rolled back whole: no third row, no half-written
+    // attempt counter.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 2 })
+    db.close()
+  })
+
+  it('still counts attempts per (job, platform), independent of seq', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    const first = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    markPublishFailed(db, first!.id, 'boom', 'transient', new Date())
+    const second = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    const row = listPublishes(db).find((r) => r.id === second!.id)
+    expect(row?.attempt).toBe(2)
+    expect(row?.seq).toBe(2)
     db.close()
   })
 })
@@ -181,13 +265,13 @@ describe('markPublishDone', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1')
     seedLibrary(db, 'job-1', { state: 'ready' })
-    const id = claimPublish(db, {
+    const claim = claimPublish(db, {
       jobId: 'job-1',
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-20',
-      slot: '10:00',
-    }) as number
+    })
+    const id = claim!.id
 
     markPublishDone(
       db,
@@ -216,16 +300,15 @@ describe('markPublishDone', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1')
     seedLibrary(db, 'job-1', { state: 'ready' })
-    const id = claimPublish(db, {
+    const claim = claimPublish(db, {
       jobId: 'job-1',
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-20',
-      slot: '10:00',
-    }) as number
+    })
     const modes = recordTransactionModes(db)
 
-    markPublishDone(db, id, 'yt-abc123', 'https://youtube.com/shorts/yt-abc123', new Date())
+    markPublishDone(db, claim!.id, 'yt-abc123', 'https://youtube.com/shorts/yt-abc123', new Date())
 
     expect(modes).toEqual(['immediate'])
     db.close()
@@ -252,13 +335,13 @@ describe('markPublishFailed', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1')
     seedLibrary(db, 'job-1', { state: 'ready' })
-    const id = claimPublish(db, {
+    const claim = claimPublish(db, {
       jobId: 'job-1',
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-20',
-      slot: '10:00',
-    }) as number
+    })
+    const id = claim!.id
 
     markPublishFailed(
       db,
@@ -293,7 +376,7 @@ function seedPublish(
     platform: string
     channel: string
     day: string
-    slot: string
+    seq: number
     status: string
     postId: string | null
     url: string | null
@@ -309,7 +392,7 @@ function seedPublish(
     platform: 'youtube',
     channel: 'chan-a',
     day: '2026-07-20',
-    slot: '10:00',
+    seq: 1,
     status: 'claimed',
     postId: null,
     url: null,
@@ -322,7 +405,7 @@ function seedPublish(
   }
   const res = db
     .prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, error, error_kind, attempt, created_at, finished_at) ' +
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, post_id, url, error, error_kind, attempt, created_at, finished_at) ' +
         'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .run(
@@ -330,7 +413,7 @@ function seedPublish(
       row.platform,
       row.channel,
       row.day,
-      row.slot,
+      row.seq,
       row.status,
       row.postId,
       row.url,
@@ -356,7 +439,7 @@ describe('sweepInterrupted', () => {
     })
     const freshId = seedPublish(db, {
       jobId: 'job-fresh',
-      slot: '14:00',
+      seq: 2,
       status: 'claimed',
       createdAt: '2026-07-20T11:55:00.000Z',
     })
@@ -389,7 +472,7 @@ describe('sweepInterrupted', () => {
     })
     const pastCutoffId = seedPublish(db, {
       jobId: 'job-past-cutoff',
-      slot: '14:00',
+      seq: 2,
       status: 'claimed',
       createdAt: '2026-07-20T11:30:00.001Z',
     })
@@ -403,35 +486,16 @@ describe('sweepInterrupted', () => {
   })
 })
 
-describe('consumedSlots', () => {
-  it('returns slot strings with any-status row for the given (channel, platform, day)', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-1')
-    seedJob(db, 'job-2')
-    seedJob(db, 'job-3')
-    seedPublish(db, { jobId: 'job-1', slot: '10:00', status: 'done' })
-    seedPublish(db, { jobId: 'job-2', slot: '14:00', status: 'failed', errorKind: 'transient' })
-    seedPublish(db, { jobId: 'job-3', slot: '19:00', channel: 'chan-b' })
-    seedPublish(db, { jobId: 'job-3', slot: '08:00', day: '2026-07-19' })
-
-    expect(consumedSlots(db, 'chan-a', 'youtube', '2026-07-20')).toEqual(
-      new Set(['10:00', '14:00']),
-    )
-    expect(consumedSlots(db, 'chan-a', 'youtube', '2026-07-21')).toEqual(new Set())
-    db.close()
-  })
-})
-
 describe('uploadsUsedToday', () => {
   it('counts claimed/done/interrupted and non-auth failed rows, including NULL error_kind, excluding auth failures', () => {
     const db = openDb(':memory:')
     for (const id of ['job-1', 'job-2', 'job-3', 'job-4', 'job-5', 'job-6']) seedJob(db, id)
-    seedPublish(db, { jobId: 'job-1', slot: '08:00', status: 'claimed' })
-    seedPublish(db, { jobId: 'job-2', slot: '09:00', status: 'done' })
-    seedPublish(db, { jobId: 'job-3', slot: '10:00', status: 'interrupted' })
-    seedPublish(db, { jobId: 'job-4', slot: '11:00', status: 'failed', errorKind: 'quota' })
-    seedPublish(db, { jobId: 'job-5', slot: '12:00', status: 'failed', errorKind: null })
-    seedPublish(db, { jobId: 'job-6', slot: '13:00', status: 'failed', errorKind: 'auth' })
+    seedPublish(db, { jobId: 'job-1', seq: 1, status: 'claimed' })
+    seedPublish(db, { jobId: 'job-2', seq: 2, status: 'done' })
+    seedPublish(db, { jobId: 'job-3', seq: 3, status: 'interrupted' })
+    seedPublish(db, { jobId: 'job-4', seq: 4, status: 'failed', errorKind: 'quota' })
+    seedPublish(db, { jobId: 'job-5', seq: 5, status: 'failed', errorKind: null })
+    seedPublish(db, { jobId: 'job-6', seq: 6, status: 'failed', errorKind: 'auth' })
 
     expect(uploadsUsedToday(db, 'youtube', '2026-07-20')).toBe(5)
     expect(uploadsUsedToday(db, 'youtube', '2026-07-21')).toBe(0)
@@ -545,9 +609,9 @@ describe('eligibleVideo', () => {
     seedLibrary(db, 'job-done', { state: 'ready' })
     seedLibrary(db, 'job-claimed', { state: 'ready' })
     seedLibrary(db, 'job-interrupted', { state: 'ready' })
-    seedPublish(db, { jobId: 'job-done', slot: '08:00', status: 'done' })
-    seedPublish(db, { jobId: 'job-claimed', slot: '09:00', status: 'claimed' })
-    seedPublish(db, { jobId: 'job-interrupted', slot: '10:00', status: 'interrupted' })
+    seedPublish(db, { jobId: 'job-done', seq: 1, status: 'done' })
+    seedPublish(db, { jobId: 'job-claimed', seq: 2, status: 'claimed' })
+    seedPublish(db, { jobId: 'job-interrupted', seq: 3, status: 'interrupted' })
 
     expect(eligibleVideo(db, 'chan-a', 'youtube')).toBeNull()
     db.close()
@@ -560,24 +624,24 @@ describe('eligibleVideo', () => {
     seedJob(db, 'job-under-cap', { topic: 'under cap' })
     seedLibrary(db, 'job-capped', { state: 'ready' })
     seedLibrary(db, 'job-under-cap', { state: 'ready' })
-    seedPublish(db, { jobId: 'job-capped', slot: '08:00', status: 'failed', errorKind: 'rejected' })
-    seedPublish(db, { jobId: 'job-capped', slot: '09:00', status: 'failed', errorKind: 'rejected' })
-    seedPublish(db, { jobId: 'job-capped', slot: '10:00', status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'job-capped', seq: 1, status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'job-capped', seq: 2, status: 'failed', errorKind: 'rejected' })
+    seedPublish(db, { jobId: 'job-capped', seq: 3, status: 'failed', errorKind: 'rejected' })
     // Different day than job-capped's rows: publishes.day plays no part in
     // eligibleVideo's per-job_id aggregate, but reusing job-capped's
-    // (channel, platform, day, slot) here would collide with the schema's
+    // (channel, platform, day, seq) here would collide with the schema's
     // UNIQUE constraint since both jobs share the default channel/day.
     seedPublish(db, {
       jobId: 'job-under-cap',
       day: '2026-07-21',
-      slot: '08:00',
+      seq: 1,
       status: 'failed',
       errorKind: 'rejected',
     })
     seedPublish(db, {
       jobId: 'job-under-cap',
       day: '2026-07-21',
-      slot: '09:00',
+      seq: 2,
       status: 'failed',
       errorKind: 'rejected',
     })
@@ -595,7 +659,7 @@ describe('eligibleVideo', () => {
     // job-a: one non-rejected failure — doesn't count toward the cap, but
     // still outranked by the zero-failure jobs on the primary sort key.
     seedLibrary(db, 'job-a', { state: 'ready', createdAt: '2026-07-19T00:00:00.000Z' })
-    seedPublish(db, { jobId: 'job-a', slot: '08:00', status: 'failed', errorKind: 'transient' })
+    seedPublish(db, { jobId: 'job-a', seq: 1, status: 'failed', errorKind: 'transient' })
     // job-b, job-c, job-d: zero failures — tie broken by created_at DESC,
     // then job_id ASC.
     seedLibrary(db, 'job-b', { state: 'ready', createdAt: '2026-07-18T00:00:00.000Z' })
@@ -780,14 +844,14 @@ describe('listPublishes', () => {
     })
     const olderId = seedPublish(db, {
       jobId: 'job-older',
-      slot: '11:00',
+      seq: 2,
       status: 'failed',
       errorKind: 'rejected',
       createdAt: olderAt,
     })
     seedPublish(db, {
       jobId: 'job-out',
-      slot: '12:00',
+      seq: 3,
       status: 'failed',
       errorKind: 'transient',
       createdAt: isoAgo(8 * DAY_MS),
@@ -801,7 +865,7 @@ describe('listPublishes', () => {
       platform: 'youtube',
       channel: 'chan-a',
       day: '2026-07-20',
-      slot: '10:00',
+      seq: 1,
       status: 'done',
       postId: 'yt-1',
       url: 'https://youtube.com/shorts/yt-1',
@@ -835,8 +899,13 @@ describe('videosPublishedToday', () => {
   it('counts a fan-out of one video to two platforms as ONE video', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a' })
-    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
-    claimPublish(db, { jobId: 'job-1', platform: 'instagram', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22' })
+    claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'instagram',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
     expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(1)
     db.close()
   })
@@ -845,8 +914,8 @@ describe('videosPublishedToday', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedJob(db, 'job-2', { channel: 'chan-a' })
-    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
-    claimPublish(db, { jobId: 'job-2', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '14:00' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22' })
+    claimPublish(db, { jobId: 'job-2', platform: 'youtube', channel: 'chan-a', day: '2026-07-22' })
     expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(2)
     db.close()
   })
@@ -854,8 +923,13 @@ describe('videosPublishedToday', () => {
   it('counts a failed attempt — an attempt consumes its place in the day', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a' })
-    const claim = claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-22', slot: '10:00' })
-    markPublishFailed(db, claim!, 'boom', 'transient', new Date())
+    const claim = claimPublish(db, {
+      jobId: 'job-1',
+      platform: 'youtube',
+      channel: 'chan-a',
+      day: '2026-07-22',
+    })
+    markPublishFailed(db, claim!.id, 'boom', 'transient', new Date())
     expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(1)
     db.close()
   })
@@ -864,8 +938,8 @@ describe('videosPublishedToday', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedJob(db, 'job-2', { channel: 'chan-b' })
-    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-21', slot: '10:00' })
-    claimPublish(db, { jobId: 'job-2', platform: 'youtube', channel: 'chan-b', day: '2026-07-22', slot: '10:00' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-a', day: '2026-07-21' })
+    claimPublish(db, { jobId: 'job-2', platform: 'youtube', channel: 'chan-b', day: '2026-07-22' })
     expect(videosPublishedToday(db, 'chan-a', '2026-07-22')).toBe(0)
     db.close()
   })
@@ -883,12 +957,12 @@ describe('lastAttemptAt', () => {
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedJob(db, 'job-2', { channel: 'chan-a' })
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
-        "VALUES ('job-1','youtube','chan-a','2026-07-21','20:50','done',1,'2026-07-21T20:50:00.000Z')",
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, created_at) ' +
+        "VALUES ('job-1','youtube','chan-a','2026-07-21',1,'done',1,'2026-07-21T20:50:00.000Z')",
     ).run()
     db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt, created_at) " +
-        "VALUES ('job-2','youtube','chan-a','2026-07-22','10:00','done',1,'2026-07-22T10:00:00.000Z')",
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, created_at) ' +
+        "VALUES ('job-2','youtube','chan-a','2026-07-22',1,'done',1,'2026-07-22T10:00:00.000Z')",
     ).run()
     expect(lastAttemptAt(db, 'chan-a')?.toISOString()).toBe('2026-07-22T10:00:00.000Z')
     db.close()
@@ -897,7 +971,7 @@ describe('lastAttemptAt', () => {
   it('ignores other channels', () => {
     const db = openDb(':memory:')
     seedJob(db, 'job-1', { channel: 'chan-b' })
-    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-b', day: '2026-07-22', slot: '10:00' })
+    claimPublish(db, { jobId: 'job-1', platform: 'youtube', channel: 'chan-b', day: '2026-07-22' })
     expect(lastAttemptAt(db, 'chan-a')).toBeNull()
     db.close()
   })

@@ -34,12 +34,10 @@ stroke_px = 8
 per_video_usd = 0.5
 per_day_usd = 10.0
 
-# Only one video exists per day, so the later two slots noop at zero cost —
-# they are insurance: a slot missed while the Mac sleeps stays due for the
-# rest of the LOCAL day. Slot times are machine-local, unlike the UTC
-# budget/quota day.
+# Cadence comes from videos_per_day above: a 12h local window (09:00-21:00)
+# split into that many evenly spaced attempts. A window missed while the Mac
+# sleeps is simply not made up — the count is a ceiling, not a guarantee.
 [publish]
-slots = ["10:00", "14:00", "19:00"]
 
 [publish.youtube]
 privacy = "private"

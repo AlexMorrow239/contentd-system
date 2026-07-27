@@ -4,7 +4,7 @@ import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } fro
 import { PUBLISHABLE_LIBRARY_STATES, unstoredLibraryJobs } from '../jobs/library.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
-import { consumedSlots, MAX_PUBLISH_ATTEMPTS } from '../publish/publishes.js'
+import { MAX_PUBLISH_ATTEMPTS, videosPublishedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
 import { loadToken } from '../publish/tokens.js'
 import { resolvePlatformMeta } from '../publish/types.js'
@@ -75,7 +75,7 @@ function pushNoneIfEmpty(lines: string[], sectionStart: number, noneLine: string
  * sections group straight from sqlite so channels that vanished from the
  * channels dir still report; `channels` (the loadChannelsDir enumeration)
  * feeds the spend section and the publish-config-aware action items (ready
- * backlog, lapsed slots), both scoped to channels carrying a `[publish]`
+ * backlog, volume shortfall), both scoped to channels carrying a `[publish]`
  * table. datetime(created_at) normalizes the stored ISO-8601 'T'/'Z' format
  * to sqlite's own datetime() format — a raw string compare against
  * datetime('now','-1 day') would widen the window to the whole boundary day.
@@ -163,18 +163,18 @@ export function buildDigest(
   // the window to the whole boundary day.
   const publishedRows = db
     .prepare(
-      `SELECT p.channel AS channel, p.platform AS platform, p.slot AS slot,
+      `SELECT p.channel AS channel, p.platform AS platform, p.seq AS seq,
               p.url AS url, j.topic AS topic, l.metadata_json AS metadataJson
        FROM publishes p
        JOIN jobs j ON j.id = p.job_id
        JOIN library l ON l.job_id = p.job_id
        WHERE p.status = 'done' AND datetime(p.created_at) >= datetime('now', '-1 day')
-       ORDER BY p.channel, p.slot`,
+       ORDER BY p.channel, p.seq`,
     )
     .all() as {
     channel: string
     platform: Platform
-    slot: string
+    seq: number
     url: string
     topic: string
     metadataJson: string
@@ -183,26 +183,26 @@ export function buildDigest(
   const publishedStart = lines.length
   for (const r of publishedRows) {
     const meta = resolvePlatformMeta(r.metadataJson, r.platform, r.topic)
-    lines.push(`    ${r.channel} ${r.slot} "${meta.title}" — ${r.url}`)
+    lines.push(`    ${r.channel} #${String(r.seq)} "${meta.title}" — ${r.url}`)
   }
   pushNoneIfEmpty(lines, publishedStart, '    none')
   const failedPublishRows = db
     .prepare(
-      `SELECT channel, slot, error_kind AS errorKind, error
+      `SELECT channel, seq, error_kind AS errorKind, error
        FROM publishes
        WHERE status = 'failed' AND datetime(created_at) >= datetime('now', '-1 day')
-       ORDER BY channel, slot`,
+       ORDER BY channel, seq`,
     )
-    .all() as { channel: string; slot: string; errorKind: string; error: string | null }[]
+    .all() as { channel: string; seq: number; errorKind: string; error: string | null }[]
   lines.push('  Failed:')
   const failedStart = lines.length
   for (const r of failedPublishRows) {
-    lines.push(`    ${r.channel} ${r.slot} ${r.errorKind}: ${(r.error ?? '').slice(0, 80)}`)
+    lines.push(`    ${r.channel} #${String(r.seq)} ${r.errorKind}: ${(r.error ?? '').slice(0, 80)}`)
   }
   pushNoneIfEmpty(lines, failedStart, '    none')
   // buildDigest is not clock-injected (no call site needs it); this single
   // now() read serves both the ready-backlog age just below and the
-  // lapsed-slots 'yesterday' derivation in Action items.
+  // volume-shortfall 'yesterday' derivation in Action items.
   const now = new Date()
   // Ready-backlog pressure belongs in Publishing (spec §8), NOT Action items:
   // a lone just-produced video would otherwise stand as a daily action item
@@ -384,7 +384,7 @@ export function buildDigest(
   // BRAINROT_TOKEN_KEY, or unset client credentials all make every publish
   // tick a `no-auth` noop that writes no publishes row — so the auth hint
   // above (which counts failed rows) can never fire, and the only other
-  // signal is a lapsed slot a full day later with no cause named. Names
+  // signal is a volume shortfall a full day later with no cause named. Names
   // only: neither key nor token bytes are ever read into a line here.
   // A stored token nearing expiry without auto-refresh keeping ahead of it
   // (design spec decision 5) is the digest's own signal that resolveCredential
@@ -450,16 +450,16 @@ export function buildDigest(
   // interrupted upload sits until the operator checks Studio, however old.
   const interruptedRows = db
     .prepare(
-      "SELECT job_id AS jobId, channel, platform, slot FROM publishes WHERE status = 'interrupted' ORDER BY created_at ASC",
+      "SELECT job_id AS jobId, channel, platform, seq FROM publishes WHERE status = 'interrupted' ORDER BY created_at ASC",
     )
-    .all() as { jobId: string; channel: string; platform: Platform; slot: string }[]
+    .all() as { jobId: string; channel: string; platform: Platform; seq: number }[]
   const STUDIO_HINT: Record<Platform, string> = {
     youtube: 'check YouTube Studio',
     instagram: 'check the Instagram app',
   }
   for (const r of interruptedRows) {
     lines.push(
-      `  interrupted publish ${r.jobId} (${r.channel}, ${r.platform}, ${r.slot}) — ${STUDIO_HINT[r.platform]}, then brainrot publish retry ${r.jobId} or brainrot publish mark-done ${r.jobId} <postId>`,
+      `  interrupted publish ${r.jobId} (${r.channel}, ${r.platform}, #${String(r.seq)}) — ${STUDIO_HINT[r.platform]}, then brainrot publish retry ${r.jobId} or brainrot publish mark-done ${r.jobId} <postId>`,
     )
   }
   // Only 'rejected' failures count toward the cap (decision 8) — auth/
@@ -492,23 +492,34 @@ export function buildDigest(
       `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,
     )
   }
-  // Local-time slot bookkeeping (decision 13): "yesterday" is the local
-  // calendar day before now — local date-field math, NOT now-minus-24h,
-  // which lands on the wrong local date across DST transitions.
+  // Volume shortfall, replacing the old lapsed-slots report: with cadence
+  // derived from videos_per_day there are no named slots to lapse, so the
+  // signal is the count. The per-platform split is what makes a
+  // quota-skipped platform visible — a channel can hit its video count while
+  // one platform got none of them.
+  //
+  // "yesterday" is the local calendar day before now (decision 13) — local
+  // date-field math, NOT now-minus-24h, which lands on the wrong local date
+  // across DST transitions.
   const yesterdayDate = new Date(now)
   yesterdayDate.setDate(yesterdayDate.getDate() - 1)
   const yesterday = localDay(yesterdayDate)
+  const perPlatform = db.prepare(
+    'SELECT COUNT(DISTINCT job_id) AS n FROM publishes WHERE channel = ? AND platform = ? AND day = ?',
+  )
   for (const channel of channels) {
     if (channel.publish === null) continue
-    for (const target of channel.publish.targets) {
-      const consumed = consumedSlots(db, channel.name, target.platform, yesterday)
-      const lapsed = target.slots.filter((slot) => !consumed.has(slot))
-      if (lapsed.length > 0) {
-        lines.push(
-          `  ${channel.name} ${target.platform}: slots ${lapsed.join(', ')} lapsed unfilled yesterday (${yesterday})`,
-        )
-      }
-    }
+    const published = videosPublishedToday(db, channel.name, yesterday)
+    if (published >= channel.videosPerDay) continue
+    const split = channel.publish.targets
+      .map((t) => {
+        const { n } = perPlatform.get(channel.name, t.platform, yesterday) as { n: number }
+        return `${t.platform} ${n}`
+      })
+      .join(', ')
+    lines.push(
+      `  ${channel.name}: published ${published} of ${channel.videosPerDay} videos yesterday (${yesterday}) — ${split}`,
+    )
   }
   pushNoneIfEmpty(lines, actionItemsStart, '  none')
 

@@ -11,7 +11,7 @@ export interface PublishRow {
   platform: Platform
   channel: string
   day: string
-  slot: string
+  seq: number
   status: PublishStatus
   postId: string | null
   url: string | null
@@ -27,40 +27,55 @@ export interface PublishRow {
 // digest-flagged — auth/quota/transient failures never count toward it.
 export const MAX_PUBLISH_ATTEMPTS = 3
 
-// INSERT a claimed row; attempt = 1 + count of every prior row for this
-// (jobId, platform), computed inside the same transaction so a concurrent
-// claim can never observe a half-written count. The UNIQUE (channel,
-// platform, day, slot) constraint IS the slot bookkeeping (design spec
-// §3.1) — a conflict here means a racing tick already took the slot, so
-// the SqliteError from the INSERT (and only the INSERT) is caught and
-// reported as null rather than propagated.
+/**
+ * INSERT a claimed row. Two counts are computed inside one transaction:
+ *
+ * - `attempt` = 1 + every prior row for this (jobId, platform) — the
+ *   poison-video ordinal.
+ * - `seq` = 1 + every prior row for this (channel, platform, day) — the
+ *   within-day ordinal that replaced the old clock-time slot. The
+ *   UNIQUE (channel, platform, day, seq) constraint is the database-level
+ *   backstop against a double-publish when the publish lease fails; a
+ *   conflict means a racing tick already took this ordinal, so the
+ *   SqliteError from the INSERT (and only the INSERT) is reported as null
+ *   rather than propagated.
+ *
+ * `.immediate()` (not a deferred BEGIN): the two reads and the INSERT must
+ * share one write-locked snapshot, or a writer committing in between
+ * invalidates it as SQLITE_BUSY_SNAPSHOT — the one busy error busy_timeout
+ * cannot retry. Same rationale as acquireLease (lease.ts).
+ *
+ * Returns both the row id (for the finalize path) and the seq (for the tick's
+ * reported outcome), or null on the conflict.
+ */
 export function claimPublish(
   db: Database,
-  opts: { jobId: string; platform: Platform; channel: string; day: string; slot: string },
-): number | null {
+  opts: { jobId: string; platform: Platform; channel: string; day: string },
+): { id: number; seq: number } | null {
   const countPriorAttempts = db.prepare(
     'SELECT COUNT(*) AS n FROM publishes WHERE job_id = ? AND platform = ?',
   )
+  const countDayRows = db.prepare(
+    'SELECT COUNT(*) AS n FROM publishes WHERE channel = ? AND platform = ? AND day = ?',
+  )
   const insertClaim = db.prepare(
-    'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
+    'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
       "VALUES (?, ?, ?, ?, ?, 'claimed', ?)",
   )
-  // `.immediate()` (not a deferred BEGIN): the count read and the INSERT must
-  // share one write-locked snapshot, or a writer committing in between
-  // invalidates it as SQLITE_BUSY_SNAPSHOT — the one busy error busy_timeout
-  // cannot retry. Same rationale as acquireLease (lease.ts).
-  const claim = db.transaction((): number | null => {
-    const { n } = countPriorAttempts.get(opts.jobId, opts.platform) as { n: number }
+  const claim = db.transaction((): { id: number; seq: number } | null => {
+    const { n: attempts } = countPriorAttempts.get(opts.jobId, opts.platform) as { n: number }
+    const { n: dayRows } = countDayRows.get(opts.channel, opts.platform, opts.day) as { n: number }
+    const seq = dayRows + 1
     try {
       const info = insertClaim.run(
         opts.jobId,
         opts.platform,
         opts.channel,
         opts.day,
-        opts.slot,
-        n + 1,
+        seq,
+        attempts + 1,
       )
-      return Number(info.lastInsertRowid)
+      return { id: Number(info.lastInsertRowid), seq }
     } catch (err) {
       if (err instanceof BetterSqlite3.SqliteError && err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
         return null
@@ -122,7 +137,7 @@ export function markPublishDone(
 }
 
 // Failure never touches the library row: the video stays 'ready' and
-// re-enters the eligibility pool for the next slot (design spec decision 7).
+// re-enters the eligibility pool for the next attempt (design spec decision 7).
 export function markPublishFailed(
   db: Database,
   id: number,
@@ -147,21 +162,6 @@ export function sweepInterrupted(db: Database, olderThanMs: number, now: Date): 
     )
     .run(cutoff)
   return info.changes
-}
-
-// Slot bookkeeping read: every slot string with a row of ANY status for
-// this (channel, platform, day) — an attempt, successful or not, consumes
-// its slot for the rest of the local day (design spec decision 7).
-export function consumedSlots(
-  db: Database,
-  channel: string,
-  platform: Platform,
-  day: string,
-): Set<string> {
-  const rows = db
-    .prepare('SELECT slot FROM publishes WHERE channel = ? AND platform = ? AND day = ?')
-    .all(channel, platform, day) as { slot: string }[]
-  return new Set(rows.map((r) => r.slot))
 }
 
 // Platform quota gate (design spec decision 10, §6 step 4): every row that
@@ -299,7 +299,7 @@ export function eligibleVideo(
 
 // Manual resolution path (design spec §7 `publish retry`): interrupted →
 // failed with kind 'transient' so the video re-enters the eligibility
-// pool at the next slot. The suffix appends to whatever error text is
+// pool at the next attempt. The suffix appends to whatever error text is
 // already on the row (interrupted rows leave it NULL, so COALESCE keeps
 // the append from producing a literal "null" prefix). Guarded by status,
 // so a job with no interrupted row is a no-op and reports false.
@@ -352,7 +352,7 @@ export function interruptedPlatform(db: Database, jobId: string): Platform | nul
 }
 
 const PUBLISH_COLUMNS =
-  'id, job_id, platform, channel, day, slot, status, post_id, url, error, error_kind, attempt, created_at, finished_at'
+  'id, job_id, platform, channel, day, seq, status, post_id, url, error, error_kind, attempt, created_at, finished_at'
 
 interface DbPublishRow {
   id: number
@@ -360,7 +360,7 @@ interface DbPublishRow {
   platform: Platform
   channel: string
   day: string
-  slot: string
+  seq: number
   status: PublishStatus
   post_id: string | null
   url: string | null
@@ -378,7 +378,7 @@ function toPublishRow(row: DbPublishRow): PublishRow {
     platform: row.platform,
     channel: row.channel,
     day: row.day,
-    slot: row.slot,
+    seq: row.seq,
     status: row.status,
     postId: row.post_id,
     url: row.url,

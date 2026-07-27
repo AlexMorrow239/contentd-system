@@ -21,25 +21,25 @@ describe('publishes table constraints', () => {
     expect(() =>
       db
         .prepare(
-          'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
-            "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'uploading', 1)",
+          'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
+            "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', 1, 'uploading', 1)",
         )
         .run(),
     ).toThrow(/CHECK/)
     db.close()
   })
 
-  it('rejects a duplicate (channel, platform, day, slot) insert', () => {
+  it('rejects a duplicate (channel, platform, day, seq) insert', () => {
     const db = openDb(':memory:')
     db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
-        "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'claimed', 1)",
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
+        "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', 1, 'claimed', 1)",
     ).run()
     expect(() =>
       db
         .prepare(
-          'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
-            "VALUES ('job-2', 'youtube', 'chan-a', '2026-07-22', '10:00', 'claimed', 1)",
+          'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
+            "VALUES ('job-2', 'youtube', 'chan-a', '2026-07-22', 1, 'claimed', 1)",
         )
         .run(),
     ).toThrow(/UNIQUE/)
@@ -51,14 +51,14 @@ describe('publishes table constraints', () => {
     expect(() =>
       db
         .prepare(
-          'INSERT INTO publishes (job_id, platform, channel, day, slot, status, error_kind, attempt) ' +
-            "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'failed', 'timeout', 1)",
+          'INSERT INTO publishes (job_id, platform, channel, day, seq, status, error_kind, attempt) ' +
+            "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', 1, 'failed', 'timeout', 1)",
         )
         .run(),
     ).toThrow(/CHECK/)
     db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, error_kind, attempt) ' +
-        "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', '10:00', 'claimed', NULL, 1)",
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, error_kind, attempt) ' +
+        "VALUES ('job-1', 'youtube', 'chan-a', '2026-07-22', 1, 'claimed', NULL, 1)",
     ).run()
     const row = db.prepare('SELECT error_kind FROM publishes').get() as {
       error_kind: string | null

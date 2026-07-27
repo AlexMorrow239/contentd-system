@@ -90,7 +90,7 @@ describe('brainrot CLI', () => {
       jobId: string
       channel: string
       day: string
-      slot: string
+      seq: number
       status: string
       postId?: string | null
       url?: string | null
@@ -107,13 +107,13 @@ describe('brainrot CLI', () => {
       "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, '/tmp/video.mp4', '{}', 'ready')",
     ).run(opts.jobId)
     db.prepare(
-      `INSERT INTO publishes (job_id, platform, channel, day, slot, status, post_id, url, error, error_kind, attempt)
+      `INSERT INTO publishes (job_id, platform, channel, day, seq, status, post_id, url, error, error_kind, attempt)
        VALUES (?, 'youtube', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       opts.jobId,
       opts.channel,
       opts.day,
-      opts.slot,
+      opts.seq,
       opts.status,
       opts.postId ?? null,
       opts.url ?? null,
@@ -493,7 +493,7 @@ describe('brainrot CLI', () => {
         jobId: 'job-retry-1',
         channel: 'demo',
         day: '2026-07-22',
-        slot: '10:00',
+        seq: 1,
         status: 'interrupted',
       })
       const result = await runCli(['publish', 'retry', 'job-retry-1', '--db', dbPath])
@@ -537,7 +537,7 @@ describe('brainrot CLI', () => {
         jobId: 'job-done-1',
         channel: 'demo',
         day: '2026-07-22',
-        slot: '10:00',
+        seq: 1,
         status: 'interrupted',
       })
       const result = await runCli([
@@ -588,14 +588,14 @@ describe('brainrot CLI', () => {
   )
 
   it.concurrent(
-    '`publishes list` prints day/slot/channel/platform/status/attempt/jobId and the url or error',
+    '`publishes list` prints day/seq/channel/platform/status/attempt/jobId and the url or error',
     async () => {
       const dbPath = tmpDbPath()
       seedPublishRow(dbPath, {
         jobId: 'job-list-done',
         channel: 'demo',
         day: '2026-07-22',
-        slot: '10:00',
+        seq: 1,
         status: 'done',
         postId: 'yt-1',
         url: 'https://youtube.com/shorts/yt-1',
@@ -605,7 +605,7 @@ describe('brainrot CLI', () => {
         jobId: 'job-list-failed',
         channel: 'demo',
         day: '2026-07-22',
-        slot: '14:00',
+        seq: 2,
         status: 'failed',
         error: 'upload rejected: bad file',
         errorKind: 'rejected',
@@ -614,10 +614,10 @@ describe('brainrot CLI', () => {
       const result = await runCli(['publishes', 'list', '--db', dbPath])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain(
-        '2026-07-22 10:00 demo youtube done attempt 1 job-list-done https://youtube.com/shorts/yt-1',
+        '2026-07-22 #1 demo youtube done attempt 1 job-list-done https://youtube.com/shorts/yt-1',
       )
       expect(result.stdout).toContain(
-        '2026-07-22 14:00 demo youtube failed attempt 2 job-list-failed upload rejected: bad file',
+        '2026-07-22 #2 demo youtube failed attempt 2 job-list-failed upload rejected: bad file',
       )
     },
     60000,

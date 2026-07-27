@@ -275,33 +275,41 @@ describe('loadChannelsDir', () => {
   })
 })
 
-// Baseline [publish] table reused by several tests below.
-const PUBLISH_YOUTUBE_ONLY = [
-  '[publish]',
-  'slots = ["10:00", "14:00", "19:00"]',
-  '',
-  '[publish.youtube]',
-  'privacy = "private"',
-  'category_id = 24',
-  'made_for_kids = false',
-  '',
-]
-
 describe('[publish] — per-platform targets', () => {
   it('is null when [publish] is absent', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
     expect(cfg.publish).toBeNull()
   })
 
-  it('parses a single youtube target using the shared slots', () => {
-    const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, ...PUBLISH_YOUTUBE_ONLY]))
+  it('parses a single youtube target with no slots field anywhere', () => {
+    const cfg = loadChannelConfig(
+      writeToml([...PLAN1_LINES, '[publish]', '', '[publish.youtube]', 'privacy = "private"', '']),
+    )
     expect(cfg.publish?.targets).toEqual([
-      {
-        platform: 'youtube',
-        slots: ['10:00', '14:00', '19:00'],
-        options: { privacy: 'private', categoryId: 24, madeForKids: false },
-      },
+      { platform: 'youtube', options: expect.objectContaining({ privacy: 'private' }) },
     ])
+  })
+
+  it('rejects a stale shared slots key with a message naming the replacement', () => {
+    expect(() =>
+      loadChannelConfig(
+        writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', '', '[publish.youtube]', '']),
+      ),
+    ).toThrow(/slots were removed; daily volume now comes from videos_per_day/)
+  })
+
+  it('rejects a stale per-platform slots key with the same message', () => {
+    expect(() =>
+      loadChannelConfig(
+        writeToml([...PLAN1_LINES, '[publish]', '', '[publish.youtube]', 'slots = ["10:00"]', '']),
+      ),
+    ).toThrow(/slots were removed; daily volume now comes from videos_per_day/)
+  })
+
+  it('still requires at least one platform sub-table', () => {
+    expect(() => loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', '']))).toThrow(
+      /must declare at least one platform sub-table/,
+    )
   })
 
   it('parses youtube and instagram targets together, sorted by platform', () => {
@@ -309,7 +317,6 @@ describe('[publish] — per-platform targets', () => {
       writeToml([
         ...PLAN1_LINES,
         '[publish]',
-        'slots = ["10:00", "14:00"]',
         '',
         '[publish.instagram]',
         'ig_user_id = "17841400000000000"',
@@ -322,51 +329,11 @@ describe('[publish] — per-platform targets', () => {
     expect(cfg.publish?.targets.map((t) => t.platform)).toEqual(['instagram', 'youtube'])
   })
 
-  it('lets a platform override the shared slots', () => {
-    const cfg = loadChannelConfig(
-      writeToml([
-        ...PLAN1_LINES,
-        '[publish]',
-        'slots = ["10:00"]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "1"',
-        'slots = ["11:00", "18:00"]',
-        '',
-      ]),
-    )
-    expect(cfg.publish?.targets[0]).toEqual({
-      platform: 'instagram',
-      slots: ['11:00', '18:00'],
-      options: { igUserId: '1', shareToFeed: true },
-    })
-  })
-
   it('defaults instagram share_to_feed to true', () => {
     const cfg = loadChannelConfig(
-      writeToml([
-        ...PLAN1_LINES,
-        '[publish]',
-        'slots = ["10:00"]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "1"',
-        '',
-      ]),
+      writeToml([...PLAN1_LINES, '[publish]', '', '[publish.instagram]', 'ig_user_id = "1"', '']),
     )
     expect(cfg.publish?.targets[0]).toMatchObject({ options: { shareToFeed: true } })
-  })
-
-  it('throws when [publish] declares no platform sub-table', () => {
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', ''])),
-    ).toThrow(/at least one platform sub-table/)
-  })
-
-  it('throws when a platform has no slots and [publish] has no shared slots', () => {
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish.youtube]', 'privacy = "public"', ''])),
-    ).toThrow(/no slots/)
   })
 
   it('throws on the removed legacy platforms array', () => {
@@ -375,7 +342,6 @@ describe('[publish] — per-platform targets', () => {
         writeToml([
           ...PLAN1_LINES,
           '[publish]',
-          'slots = ["10:00"]',
           'platforms = ["youtube"]',
           '',
           '[publish.youtube]',
@@ -387,9 +353,7 @@ describe('[publish] — per-platform targets', () => {
 
   it('throws on an unknown platform sub-table', () => {
     expect(() =>
-      loadChannelConfig(
-        writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', '', '[publish.tiktok]', '']),
-      ),
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', '', '[publish.tiktok]', ''])),
     ).toThrow()
   })
 
@@ -399,7 +363,6 @@ describe('[publish] — per-platform targets', () => {
         writeToml([
           ...PLAN1_LINES,
           '[publish]',
-          'slots = ["10:00"]',
           '',
           '[publish.instagram]',
           'ig_user_id = "1"',
@@ -410,59 +373,21 @@ describe('[publish] — per-platform targets', () => {
     ).toThrow()
   })
 
-  it('throws on duplicate slots within one platform override', () => {
-    expect(() =>
-      loadChannelConfig(
-        writeToml([
-          ...PLAN1_LINES,
-          '[publish]',
-          'slots = ["10:00"]',
-          '',
-          '[publish.youtube]',
-          'slots = ["10:00", "10:00"]',
-          '',
-        ]),
-      ),
-    ).toThrow(/duplicates/)
-  })
-
   // Regression (M2): [publish] freezing used to stop at the outer `publish`
-  // object and `publish.targets` array — pre-per-platform-rewrite, this test
-  // also asserted `cfg.publish.slots`/`cfg.publish.platforms` were frozen.
-  // The per-platform rewrite (Task 5) moved slots/options onto each target,
-  // and only the outer two layers stayed frozen — each target object, its
-  // slots array, and its options object were silently mutable, e.g.
-  // `cfg.publish.targets[0].slots.push(...)` succeeded. Assert every layer.
-  it('deep-freezes publish, targets, and each target — object, slots, and options', () => {
+  // object and `publish.targets` array — each target object and its options
+  // object were silently mutable, e.g.
+  // `cfg.publish.targets[0].options.privacy = ...` succeeded. Assert every
+  // layer.
+  it('deep-freezes publish, targets, each target, and its options', () => {
     const cfg = loadChannelConfig(
-      writeToml([
-        ...PLAN1_LINES,
-        '[publish]',
-        'slots = ["10:00", "14:00"]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "1"',
-        '',
-        '[publish.youtube]',
-        'privacy = "public"',
-        '',
-      ]),
+      writeToml([...PLAN1_LINES, '[publish]', '', '[publish.youtube]', '']),
     )
-    expect(Object.isFrozen(cfg.publish)).toBe(true)
-    const targets = cfg.publish?.targets ?? []
-    expect(Object.isFrozen(targets)).toBe(true)
-    expect(targets.length).toBeGreaterThan(0)
-    for (const target of targets) {
-      expect(Object.isFrozen(target)).toBe(true)
-      expect(Object.isFrozen(target.slots)).toBe(true)
-      expect(Object.isFrozen(target.options)).toBe(true)
-    }
-    const [first] = targets
-    expect(() => first.slots.push('23:00')).toThrow(TypeError)
-    const options = first.options as unknown as Record<string, unknown>
-    expect(() => {
-      options.someKey = 'x'
-    }).toThrow(TypeError)
+    const publish = cfg.publish!
+    expect(Object.isFrozen(publish)).toBe(true)
+    expect(Object.isFrozen(publish.targets)).toBe(true)
+    const first = publish.targets[0]
+    expect(Object.isFrozen(first)).toBe(true)
+    expect(Object.isFrozen(first.options)).toBe(true)
   })
 })
 
@@ -474,7 +399,6 @@ describe('testChannel() publish default', () => {
         targets: [
           {
             platform: 'youtube',
-            slots: ['10:00'],
             options: { privacy: 'public', categoryId: 24, madeForKids: false },
           },
         ],
@@ -484,7 +408,6 @@ describe('testChannel() publish default', () => {
       targets: [
         {
           platform: 'youtube',
-          slots: ['10:00'],
           options: { privacy: 'public', categoryId: 24, madeForKids: false },
         },
       ],
@@ -546,7 +469,7 @@ function channelToml(opts: {
     'per_day_usd = 10.0',
   ]
   if (opts.platforms.length > 0) {
-    lines.push('[publish]', 'slots = ["10:00"]')
+    lines.push('[publish]')
     for (const p of opts.platforms) {
       lines.push(`[publish.${p}]`)
       // instagramOptionsSchema requires ig_user_id; youtube has no required fields.
