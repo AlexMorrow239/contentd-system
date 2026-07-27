@@ -367,8 +367,12 @@ it. Each tick reports how many it dropped as `droppedMedia`.
 To clean image-sourced topics scouted before this existed, run
 `pnpm brainrot topics prune-media` (add `--dry-run` first to see what it would
 do). It re-fetches each candidate's permalink and rejects the ones whose target
-is an image. Like the other manual commands it runs outside the scout lease, so
-stop the loop first if a tick may be live.
+is an image. Reddit rate-limits this endpoint hard, so it deliberately paces
+itself at ~20s per row and retries a 429 once — budget roughly *20 seconds per
+reddit candidate* and let it run. Any row it cannot resolve is left untouched
+and reported on stderr; re-running picks them up. Like the other manual
+commands it runs outside the scout lease, so stop the loop first if a tick may
+be live.
 
 ### Start
 

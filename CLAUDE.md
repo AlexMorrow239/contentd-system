@@ -391,11 +391,13 @@ Conventions:
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~35s wall / ~200s CPU for 1018 tests across 77
+**Performance.** The suite runs ~13s wall / ~70s CPU for 1020 tests across 77
 files (warm; a first run after `pnpm install` is slower while the Remotion
-webpack cache in `node_modules/.cache` fills). Wall clock is set by the slowest
-single file, not by the total — `src/jobs/test/golden-path.test.ts` is the floor at
-~13s, one indivisible e2e render. That also means CPU spent anywhere shows up
+webpack cache in `node_modules/.cache` fills, and any measurement taken while
+something else is loading the machine can read 3x high). Wall clock is set by
+the slowest single file, not by the total — `src/jobs/test/golden-path.test.ts`
+is the floor at ~13s, one indivisible e2e render: the whole suite finishing in
+about that same time is the sign everything else is fully parallel behind it. That also means CPU spent anywhere shows up
 everywhere: cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
 `golden-path`, `assemble` and `remotion` too, purely by ending the contention.
 

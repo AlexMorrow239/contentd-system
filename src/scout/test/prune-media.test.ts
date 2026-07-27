@@ -92,14 +92,48 @@ describe('pruneMedia', () => {
     db.close()
   })
 
-  it('skips a rate-limited permalink rather than guessing', async () => {
+  it('skips a persistently rate-limited permalink rather than guessing', async () => {
     const db = memDb()
     const id = seedRedditTopic(db)
+    const { impl, urls } = stub(429)
 
-    const result = await pruneMedia(db, { fetchImpl: stub(429).impl, delayMs: 0 })
+    const result = await pruneMedia(db, { fetchImpl: impl, delayMs: 0 })
 
     expect(result.skipped).toEqual([{ topicId: id, reason: 'http-429' }])
     expect(only(db).status).toBe('candidate')
+    // Retried once, then gave up — never grinds against a limited endpoint.
+    expect(urls).toHaveLength(2)
+    db.close()
+  })
+
+  it('retries once after a 429 and uses the result', async () => {
+    const db = memDb()
+    seedRedditTopic(db)
+    let call = 0
+    const impl: FetchLike = async () => {
+      call += 1
+      return call === 1
+        ? new Response('', { status: 429 })
+        : new Response(permalinkFeedXml('t3_aaa1', 'https://i.redd.it/x.jpeg'), { status: 200 })
+    }
+
+    const result = await pruneMedia(db, { fetchImpl: impl, delayMs: 0 })
+
+    expect(result.skipped).toEqual([])
+    expect(result.rejected).toBe(1)
+    expect(only(db).status).toBe('rejected')
+    db.close()
+  })
+
+  it('does not retry a non-429 failure', async () => {
+    const db = memDb()
+    const id = seedRedditTopic(db)
+    const { impl, urls } = stub(404)
+
+    const result = await pruneMedia(db, { fetchImpl: impl, delayMs: 0 })
+
+    expect(result.skipped).toEqual([{ topicId: id, reason: 'http-404' }])
+    expect(urls).toHaveLength(1)
     db.close()
   })
 

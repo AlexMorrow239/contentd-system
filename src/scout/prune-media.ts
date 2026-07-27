@@ -7,10 +7,17 @@ import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash } from './sources/types.js'
 import type { FetchLike } from './sources/types.js'
 import { redditCandidates, rejectTopicWithReason, setTopicTargetUrl } from './topics.js'
 
-// Reddit rate-limits readily: three back-to-back feed fetches returned 429 on
-// 2026-07-27, while ~20s spacing succeeded. This walks the whole queue, so it
-// paces itself. Injected so tests never sleep.
-export const PRUNE_FETCH_DELAY_MS = 2_000
+// Reddit rate-limits hard on this endpoint. Measured 2026-07-27: three
+// back-to-back feed fetches all returned 429, and a first pass over a real
+// 15-row queue at 2s spacing lost 14 rows to 429. ~20s spacing is what
+// actually got through. A one-off cleanup can afford to be slow — a pass that
+// skips most of the queue cannot. Injected so tests never sleep.
+export const PRUNE_FETCH_DELAY_MS = 20_000
+
+// One retry per row, after a longer pause, so a single rate-limit blip does
+// not cost that row its whole pass. Still bounded: a persistently limited
+// endpoint gives up and reports rather than grinding.
+export const PRUNE_RETRY_MULTIPLIER = 3
 
 export const PRUNE_REJECT_REASON = 'prune-media: submission target is an image'
 
@@ -67,10 +74,18 @@ export async function pruneMedia(
     result.checked += 1
     let target: string | undefined
     try {
-      const res = await fetchImpl(permalinkFeedUrl(row.url), {
-        headers: { 'User-Agent': REDDIT_USER_AGENT },
-        signal: AbortSignal.timeout(SOURCE_FETCH_TIMEOUT_MS),
-      })
+      const get = (): Promise<Response> =>
+        fetchImpl(permalinkFeedUrl(row.url), {
+          headers: { 'User-Agent': REDDIT_USER_AGENT },
+          signal: AbortSignal.timeout(SOURCE_FETCH_TIMEOUT_MS),
+        })
+      let res = await get()
+      // 429 is the expected failure here, and it is transient by definition.
+      // Back off once before giving the row up.
+      if (res.status === 429) {
+        await sleep(delayMs * PRUNE_RETRY_MULTIPLIER)
+        res = await get()
+      }
       if (!res.ok) {
         result.skipped.push({ topicId: row.id, reason: `http-${res.status}` })
         continue
