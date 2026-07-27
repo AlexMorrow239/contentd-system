@@ -9,6 +9,8 @@
  * orphaned by a failed reject-delete — a rare event costing fractions of a
  * cent, already recorded by a warning line carrying the key.
  */
+import { BrainrotError } from '../errors.js'
+
 export interface ObjectStore {
   put(key: string, body: Buffer, contentType: string): Promise<{ etag: string; bytes: number }>
   get(key: string): Promise<Buffer<ArrayBuffer>>
@@ -17,15 +19,16 @@ export interface ObjectStore {
   delete(key: string): Promise<void>
 }
 
-// Mirrors PublishError's shape (src/publish/types.ts): one class, one `kind`
-// discriminant, so callers map storage outcomes onto their own taxonomy
-// without instanceof-ing SDK-specific error types.
-export class StorageError extends Error {
-  constructor(
-    message: string,
-    public kind: 'not-found' | 'auth' | 'transient',
-  ) {
-    super(message)
+// One class, one `kind` discriminant, so callers map storage outcomes onto
+// their own taxonomy without instanceof-ing SDK-specific error types. The
+// vocabulary is the shared one in src/errors.ts, narrowed to the three
+// outcomes an object store can actually produce.
+export class StorageError extends BrainrotError {
+  // See PublishError: `declare` is mandatory under useDefineForClassFields.
+  declare readonly kind: 'not-found' | 'auth' | 'transient'
+
+  constructor(message: string, kind: 'not-found' | 'auth' | 'transient') {
+    super(message, { domain: 'storage', kind })
     this.name = 'StorageError'
   }
 }
