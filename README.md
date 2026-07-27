@@ -364,15 +364,22 @@ astrophotography site with no file extension, a YouTube explainer — are not
 guessed at: the target host goes into the scoring prompt so the model can weigh
 it. Each tick reports how many it dropped as `droppedMedia`.
 
-To clean image-sourced topics scouted before this existed, run
-`pnpm brainrot topics prune-media` (add `--dry-run` first to see what it would
-do). It re-fetches each candidate's permalink and rejects the ones whose target
-is an image. Reddit rate-limits this endpoint hard, so it deliberately paces
-itself at ~20s per row and retries a 429 once — budget roughly *20 seconds per
-reddit candidate* and let it run. Any row it cannot resolve is left untouched
-and reported on stderr; re-running picks them up. Like the other manual
-commands it runs outside the scout lease, so stop the loop first if a tick may
-be live.
+To clean image-sourced topics scouted before this existed, run `topics
+prune-media`. It re-fetches each candidate's permalink and rejects the ones
+whose target is an image. On the host it obeys the same dev defaults as every
+other command, so name the production database explicitly or it will quietly
+find nothing to do:
+
+```bash
+BRAINROT_DB=data/brainrot.db pnpm brainrot topics prune-media --dry-run
+```
+
+Drop `--dry-run` once the verdicts look right. Reddit rate-limits this endpoint
+hard, so it paces itself at ~20s per row and retries a 429 once — budget
+roughly *20 seconds per reddit candidate*, and watch the per-row progress on
+stderr. Any row it cannot resolve is left untouched and reported; re-running
+picks those up. Like the other manual commands it runs outside the scout lease,
+so stop the loop first if a tick may be live.
 
 ### Start
 
