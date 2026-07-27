@@ -1,4 +1,5 @@
 import { encodePcmWav, parseWavDurationMs } from '../media/wav.js'
+import { BrainrotError } from '../errors.js'
 import type { WordTiming } from './whisperx.js'
 
 // ElevenLabs bills TTS per character. $0.30 per 1,000 characters is the
@@ -88,8 +89,9 @@ export async function synthWithTimestamps(opts: {
   // the voice stage can fall back to the volume chain at zero spend.
   const apiKey = opts.apiKey ?? process.env.ELEVENLABS_API_KEY
   if (!apiKey) {
-    throw new Error(
+    throw new BrainrotError(
       'synthWithTimestamps: missing ElevenLabs API key (pass opts.apiKey or set ELEVENLABS_API_KEY)',
+      { domain: 'config', kind: 'invalid' },
     )
   }
   const fetchImpl = opts.fetchImpl ?? fetch

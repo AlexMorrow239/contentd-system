@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { parseWav } from '../../media/wav.js'
+import { classify } from '../../errors.js'
 import {
   ELEVENLABS_USD_MICROS_PER_1K_CHARS,
   estimateTtsCostMicros,
@@ -167,12 +168,17 @@ describe('synthWithTimestamps', () => {
     ).rejects.toThrow(/elevenlabs response carried no audio/)
   })
 
-  it('throws before any network call when no API key is available', async () => {
+  it('throws before any network call when no API key is available, classified as config/invalid', async () => {
     vi.stubEnv('ELEVENLABS_API_KEY', '')
     const { impl, calls } = fakeFetch(200, FIXTURE)
-    await expect(
-      synthWithTimestamps({ voiceId: 'v', modelId: 'm', text: 'x', fetchImpl: impl }),
-    ).rejects.toThrow(/ELEVENLABS_API_KEY/)
+    const err = await synthWithTimestamps({
+      voiceId: 'v',
+      modelId: 'm',
+      text: 'x',
+      fetchImpl: impl,
+    }).catch((e: unknown) => e)
+    expect(err).toMatchObject({ message: expect.stringMatching(/ELEVENLABS_API_KEY/) })
+    expect(classify(err)).toMatchObject({ domain: 'config', kind: 'invalid' })
     expect(calls).toHaveLength(0)
   })
 
