@@ -96,15 +96,37 @@ describe('error handling conventions', () => {
 
   it('declares no Error subclass outside the errors module', async () => {
     // Every classifiable error extends BrainrotError, which is the only thing
-    // in the repo permitted to extend Error directly. This is the guard that
-    // stops a new module from re-rolling its own hierarchy — which is how ten
-    // classes in four incompatible shapes happened the first time.
+    // in the repo permitted to extend Error directly (or any of its standard
+    // built-in subtypes — TypeError, RangeError, etc.). This is the guard
+    // that stops a new module from re-rolling its own hierarchy — which is
+    // how ten classes in four incompatible shapes happened the first time.
+    //
+    // The needle is built from two pieces rather than written as one literal
+    // regex so that this file's own source doesn't contain the contiguous
+    // banned substring — otherwise this test would list itself as an
+    // offender the moment the pattern is reformatted (a plain `/\bextends
+    // Error\b/` literal happens to not self-match today, but only because
+    // the `\b`'s backslash sits directly before `extends` in the source
+    // text, which defeats the leading boundary check — an accident, not a
+    // guarantee).
+    const BUILTIN_ERROR_TYPES = [
+      'Error',
+      'TypeError',
+      'RangeError',
+      'SyntaxError',
+      'EvalError',
+      'URIError',
+      'ReferenceError',
+    ]
+    const EXTENDS_BUILTIN_ERROR = new RegExp(
+      String.raw`\bextends` + ' ' + `(?:${BUILTIN_ERROR_TYPES.join('|')})\\b`,
+    )
     const offenders: string[] = []
     for (const file of await srcFiles()) {
       const rel = relative(SRC_ROOT, file)
       if (rel === 'errors.ts') continue
       const src = await readFile(file, 'utf8')
-      if (/\bextends Error\b/.test(src)) offenders.push(rel)
+      if (EXTENDS_BUILTIN_ERROR.test(src)) offenders.push(rel)
     }
     expect(offenders).toEqual([])
   })
