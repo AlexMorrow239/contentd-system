@@ -7,6 +7,8 @@ import {
 } from '../types.js'
 import type { PublishErrorKind } from '../types.js'
 import { renderCaption, renderTags, TAGS_MAX_CHARS, tagsPayloadLength } from '../platform-meta.js'
+import { BrainrotError, classify } from '../../errors.js'
+import { toPublishFailureKind } from '../types.js'
 
 describe('PUBLISH_PLATFORMS', () => {
   it('is youtube and instagram', () => {
@@ -302,5 +304,54 @@ describe('renderCaption', () => {
   it('omits the hashtag block when there are no hashtags', () => {
     const caption = renderCaption({ title: 'T', description: 'D', hashtags: [] })
     expect(caption).toBe('T\n\nD')
+  })
+})
+
+describe('PublishError classification', () => {
+  it('is a BrainrotError in the publish domain carrying its kind', () => {
+    const err = new PublishError('nope', 'quota')
+    expect(err).toBeInstanceOf(BrainrotError)
+    expect(err).toBeInstanceOf(PublishError)
+    expect(err.name).toBe('PublishError')
+    expect(err.kind).toBe('quota')
+    expect(classify(err)).toMatchObject({
+      domain: 'publish',
+      kind: 'quota',
+      code: 'publish/quota',
+      message: 'nope',
+    })
+  })
+
+  it('classifies PublishOutcomeUnknownError as publish/unknown-outcome', () => {
+    const err = new PublishOutcomeUnknownError('answer unreadable')
+    expect(err).toBeInstanceOf(BrainrotError)
+    expect(err.name).toBe('PublishOutcomeUnknownError')
+    expect(classify(err)).toMatchObject({
+      domain: 'publish',
+      kind: 'unknown-outcome',
+      code: 'publish/unknown-outcome',
+    })
+  })
+})
+
+describe('toPublishFailureKind', () => {
+  it('passes through the four kinds a publishes row can store', () => {
+    for (const kind of ['auth', 'quota', 'rejected', 'transient'] as const) {
+      expect(toPublishFailureKind(classify(new PublishError('x', kind)))).toBe(kind)
+    }
+  })
+
+  it('collapses anything else to transient', () => {
+    // Reproduces exactly today's `err instanceof PublishError ? err.kind
+    // : 'transient'` fallback, now over the wide ErrorKind union.
+    expect(toPublishFailureKind(classify(new Error('boom')))).toBe('transient')
+    expect(
+      toPublishFailureKind(classify(new BrainrotError('x', { domain: 'job', kind: 'budget' }))),
+    ).toBe('transient')
+    expect(
+      toPublishFailureKind(
+        classify(new BrainrotError('x', { domain: 'storage', kind: 'not-found' })),
+      ),
+    ).toBe('transient')
   })
 })

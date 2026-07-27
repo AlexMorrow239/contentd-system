@@ -6,6 +6,7 @@ import {
   platformEntrySchema,
   type PlatformMeta,
 } from './platform-meta.js'
+import { BrainrotError, type ErrorInfo, errorMessage, isAbortLike } from '../errors.js'
 
 export type { PlatformMeta }
 
@@ -14,12 +15,15 @@ export type Platform = (typeof PUBLISH_PLATFORMS)[number]
 
 export type PublishErrorKind = 'auth' | 'quota' | 'rejected' | 'transient'
 
-export class PublishError extends Error {
-  constructor(
-    message: string,
-    public kind: PublishErrorKind,
-  ) {
-    super(message)
+export class PublishError extends BrainrotError {
+  // `declare` is mandatory here: target is ES2022 so useDefineForClassFields
+  // is true, and a real field re-declaration would emit a define that
+  // overwrites the base constructor's assignment with undefined. This narrows
+  // the type only — it emits nothing.
+  declare readonly kind: PublishErrorKind
+
+  constructor(message: string, kind: PublishErrorKind) {
+    super(message, { domain: 'publish', kind })
     this.name = 'PublishError'
   }
 }
@@ -30,13 +34,26 @@ export class PublishError extends Error {
 // caller's own per-call timeout so the message names the constant that
 // actually fired.
 export function networkError(op: string, timeoutMs: number, err: unknown): PublishError {
-  if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+  if (isAbortLike(err)) {
     return new PublishError(`${op}: request timed out after ${timeoutMs}ms`, 'transient')
   }
-  return new PublishError(
-    `${op}: request failed: ${err instanceof Error ? err.message : String(err)}`,
-    'transient',
-  )
+  return new PublishError(`${op}: request failed: ${errorMessage(err)}`, 'transient')
+}
+
+// classify() returns the wide ErrorKind; a `publishes` row stores the narrow
+// four-value PublishErrorKind. This is the one narrowing seam between them,
+// and it reproduces exactly the previous
+// `err instanceof PublishError ? err.kind : 'transient'` fallback.
+export function toPublishFailureKind(info: ErrorInfo): PublishErrorKind {
+  switch (info.kind) {
+    case 'auth':
+    case 'quota':
+    case 'rejected':
+    case 'transient':
+      return info.kind
+    default:
+      return 'transient'
+  }
 }
 
 // The platform ACCEPTED the post — it exists on the platform — but its
@@ -46,9 +63,9 @@ export function networkError(op: string, timeoutMs: number, err: unknown): Publi
 // The tick leaves the row 'claimed' so the repair sweep heals it to 'interrupted'.
 // Shared across every adapter — moved here (was youtube.ts-only) once
 // Instagram's media_publish step needed the identical contract.
-export class PublishOutcomeUnknownError extends Error {
+export class PublishOutcomeUnknownError extends BrainrotError {
   constructor(message: string) {
-    super(message)
+    super(message, { domain: 'publish', kind: 'unknown-outcome' })
     this.name = 'PublishOutcomeUnknownError'
   }
 }
