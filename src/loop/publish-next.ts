@@ -32,6 +32,7 @@ export interface PublishTickResult {
   action: 'published' | 'publish-failed' | 'noop' | 'dry-run'
   reason?:
     | 'lease-held'
+    | 'no-publish-channel'
     | 'not-in-window'
     | 'paced'
     | 'daily-count-met'
@@ -170,8 +171,16 @@ export async function publishNextTick(
     // a video goes to every platform the channel declares.
     const candidates: ChannelCandidate[] = []
     let notDue: NotDueReason | undefined
+    // Distinguishes "nothing to consider" from "considered and not due": a
+    // channel only flips this once it clears the `publish === null` skip
+    // below, so it stays false when the channels dir declares no [publish]
+    // table at all (or is empty) — the pacing reasons below never fire in
+    // that case, and without this flag the tick would fall through with no
+    // reason at all.
+    let anyChannelConsidered = false
     for (const channel of channels) {
       if (channel.publish === null) continue
+      anyChannelConsidered = true
       const publishedToday = videosPublishedToday(db, channel.name, day)
       // --force is the local-testing bypass: it skips the window, the min
       // gap, and the day count so ticks can be fired back to back. It never
@@ -200,9 +209,14 @@ export async function publishNextTick(
       })
     }
     if (candidates.length === 0) {
+      // No channel considered at all (no [publish] table anywhere, or an
+      // empty channels dir) outranks any pacing reason, because there is
+      // none to report — notDue is only ever set inside the loop above,
+      // which a channel must clear the `publish === null` skip to reach.
+      const reason = anyChannelConsidered ? notDue : 'no-publish-channel'
       return dryRun
-        ? { action: 'dry-run', wouldPublish: null, reason: notDue }
-        : { action: 'noop', reason: notDue }
+        ? { action: 'dry-run', wouldPublish: null, reason }
+        : { action: 'noop', reason }
     }
 
     const ordered = orderChannels(candidates)

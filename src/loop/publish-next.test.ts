@@ -246,13 +246,14 @@ afterEach(() => {
 
 describe('publishNextTick — gates', () => {
   // A channels dir where nothing declares [publish] produces no candidate and
-  // no per-channel reason to report: there is no channel whose gate closed.
-  it('no-ops with no reason when no channel has publishing configured', async () => {
+  // no channel whose pacing gate closed — distinct from a pacing reason, so
+  // it gets its own 'no-publish-channel' cause rather than a bare noop.
+  it('no-ops with reason no-publish-channel when no channel has publishing configured', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-nodue-')
     writeChannel(channelsDir, { name: 'chan-a' })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop' })
+    expect(result).toEqual({ action: 'noop', reason: 'no-publish-channel' })
     db.close()
   })
 
@@ -1282,7 +1283,7 @@ describe('publish-next CLI', () => {
       ])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
-      expect(JSON.parse(result.stdout)).toEqual({ action: 'noop' })
+      expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-publish-channel' })
     },
     60000,
   )
@@ -1306,6 +1307,7 @@ describe('publish-next CLI', () => {
       expect(JSON.parse(result.stdout)).toEqual({
         action: 'dry-run',
         wouldPublish: null,
+        reason: 'no-publish-channel',
       })
     },
     60000,
