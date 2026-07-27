@@ -237,9 +237,9 @@ export function lastAttemptAt(db: Database, channel: string): Date | null {
 // the metadata it needs to render the post. `objectKey` is null for library
 // rows produced before object storage existed (see ../jobs/backfill-store.ts),
 // so it is the tick's cue that only a local file can serve this video.
-// Named rather than inlined at each use because the publish tick threads the
-// same shape through its candidate scan and its `picked` state.
-export interface EligibleVideo {
+// Named separately from ChannelVideoCandidate below because the SQL row shape
+// (before per-platform blocking is folded in) is its own thing.
+interface PublishableVideo {
   jobId: string
   videoPath: string
   objectKey: string | null
@@ -247,76 +247,16 @@ export interface EligibleVideo {
   topic: string
 }
 
-// Eligibility per design spec §6 step 6 and §3.3 (decision 1, decision 9):
-// 'ready' OR 'published' library rows for jobs on this channel — a video
-// already published on one platform stays in every other platform's pool,
-// since platforms never compete for videos — excluding any job that
-// already has a done/claimed/interrupted row for THIS platform (it's
-// either published here already or in flight), and excluding any job at
-// or past MAX_PUBLISH_ATTEMPTS 'rejected' failures (poison-video guard —
-// decision 8; only 'rejected' counts, since auth/quota/transient failures
-// are channel- or platform-wide, not the video's fault). The LEFT JOIN is
-// against a per-job aggregate (grouped by job_id, filtered to this platform) rather
-// than a raw join against `publishes`, so a job with several rows
-// contributes exactly one joined row — no fan-out to dedupe. Order:
-// fewest failed rows of any kind first (spreads attempts during a
-// channel-wide outage), then newest library row first (fresh trend
-// content over stale), then job id for determinism.
-//
-// `excludeJobIds` lets a caller walk PAST the top row and see the next one:
-// the publish tick uses it to step over ready rows whose video file was
-// pruned off disk, a condition no column here can express. Only the count of
-// ids shapes the SQL (one `?` each) — the ids themselves are bound
-// parameters, never interpolated text.
-export function eligibleVideo(
-  db: Database,
-  channel: string,
-  platform: Platform,
-  excludeJobIds: readonly string[] = [],
-): EligibleVideo | null {
-  const exclusion =
-    excludeJobIds.length === 0
-      ? ''
-      : `AND l.job_id NOT IN (${excludeJobIds.map(() => '?').join(', ')})`
-  const row = db
-    .prepare(
-      `SELECT l.job_id AS jobId, l.video_path AS videoPath, lo.object_key AS objectKey,
-              l.metadata_json AS metadataJson, j.topic AS topic
-       FROM library l
-       JOIN jobs j ON j.id = l.job_id
-       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
-       LEFT JOIN (
-         SELECT job_id,
-                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failedCount,
-                SUM(CASE WHEN status = 'failed' AND error_kind = 'rejected' THEN 1 ELSE 0 END) AS rejectedCount,
-                SUM(CASE WHEN status IN ('done','claimed','interrupted') THEN 1 ELSE 0 END) AS blockingCount
-         FROM publishes
-         WHERE platform = ?
-         GROUP BY job_id
-       ) p ON p.job_id = l.job_id
-       WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES})
-         AND j.channel = ?
-         AND COALESCE(p.blockingCount, 0) = 0
-         AND COALESCE(p.rejectedCount, 0) < ?
-         ${exclusion}
-       ORDER BY COALESCE(p.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
-       LIMIT 1`,
-    )
-    .get(platform, channel, MAX_PUBLISH_ATTEMPTS, ...excludeJobIds) as EligibleVideo | undefined
-  return row === undefined ? null : row
-}
-
-export interface ChannelVideoCandidate extends EligibleVideo {
+export interface ChannelVideoCandidate extends PublishableVideo {
   /** Platforms this video can never go to again, per database state alone. */
   blockedPlatforms: Platform[]
 }
 
 /**
  * Publishable videos for one channel, newest-relevant first, each carrying
- * the platforms that database state rules out. Replaces the per-platform
- * `eligibleVideo` query: one tick now publishes one video to every platform
- * that still wants it, so selection is per channel and the platform set is an
- * output rather than an input.
+ * the platforms that database state rules out. Selection is per channel, not
+ * per platform, because one tick publishes one video to every platform that
+ * still wants it — so the platform set is an output rather than an input.
  *
  * A platform is blocked when the job already has a done/claimed/interrupted
  * row for it (published there, or in flight) or has reached
@@ -354,7 +294,7 @@ export function channelVideoCandidates(
        WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) AND j.channel = ?
        ORDER BY COALESCE(agg.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC`,
     )
-    .all(channel) as (EligibleVideo & { failedCount: number })[]
+    .all(channel) as (PublishableVideo & { failedCount: number })[]
 
   // Every blocking fact for this channel's jobs, in ONE grouped read rather
   // than a query per row — the walk below is a Map lookup. Scoped by channel so
@@ -417,8 +357,8 @@ export function retryInterrupted(db: Database, jobId: string): boolean {
         "WHERE job_id = ? AND status = 'interrupted'",
     )
     .run(jobId)
-  // Invariant: eligibleVideo excludes any job with a blocking row (done/
-  // claimed/interrupted) for the platform, so a job never re-enters rotation
+  // Invariant: channelVideoCandidates reports a platform with a blocking row
+  // (done/claimed/interrupted) as blocked, so a job never re-enters rotation
   // to accrue a second interrupted row — ≤1 per (job, platform). `>= 1` (not
   // `=== 1`) so that even under a hypothetical multi-row state this still
   // reports the truthful "rows were changed" rather than a false negative.
@@ -446,8 +386,9 @@ export function markInterruptedDone(
 // authority, so `publish mark-done` needs no --platform flag and can never
 // record one platform's URL shape against another's post. Null when the job
 // has no interrupted row (the same condition markInterruptedDone reports as
-// false). At most one such row per (job, platform) by eligibleVideo's
-// invariant; the ORDER BY only makes the multi-platform pick deterministic.
+// false). At most one such row per (job, platform) by channelVideoCandidates'
+// blocking invariant; the ORDER BY only makes the multi-platform pick
+// deterministic.
 export function interruptedPlatform(db: Database, jobId: string): Platform | null {
   const row = db
     .prepare(

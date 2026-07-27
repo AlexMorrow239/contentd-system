@@ -98,7 +98,8 @@ describe('publishMedia', () => {
   // Regression test for the store.get() catch flattening every StorageError
   // kind to 'rejected': a transient outage or a bad credential must stay
   // 'transient' so the failed publish attempt doesn't count toward
-  // rejectedCount (src/publish/publishes.ts eligibleVideo, cap 3) and
+  // the retirement cap (src/publish/publishes.ts channelVideoCandidates,
+  // MAX_PUBLISH_ATTEMPTS) and
   // permanently retire an otherwise-fine video.
   it('throws a transient PublishError when store.get() reports a transient storage error', async () => {
     const media = publishMedia({

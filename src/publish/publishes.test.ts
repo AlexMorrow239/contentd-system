@@ -4,7 +4,6 @@ import { openDb } from '../db/index.js'
 import {
   channelVideoCandidates,
   claimPublish,
-  eligibleVideo,
   lastAttemptAt,
   listPublishes,
   markInterruptedDone,
@@ -18,8 +17,8 @@ import {
 } from './publishes.js'
 
 // Raw-insert seed: publishes.job_id references jobs(id) (FKs are OFF, but
-// every fixture stays realistic — eligibleVideo's JOIN through jobs needs a
-// real row). One helper covers every test below; overrides keep each test
+// every fixture stays realistic — channelVideoCandidates' JOIN through jobs
+// needs a real row). One helper covers every test below; overrides keep each test
 // declaring only what it cares about.
 function seedJob(
   db: Database,
@@ -227,12 +226,12 @@ describe('claimPublish seq', () => {
         "('job-1','youtube','chan-a','2026-07-22',1,'done',1)",
     ).run()
     const originalPrepare = db.prepare.bind(db)
-    const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
+    const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation((sql: string) => {
       if (sql.includes('MAX(seq)')) {
         return { get: () => ({ maxSeq: 0 }) } as unknown as ReturnType<typeof originalPrepare>
       }
       return originalPrepare(sql)
-    }) as typeof db.prepare)
+    })
     expect(
       claimPublish(db, {
         jobId: 'job-1',
@@ -564,182 +563,6 @@ describe('uploadsUsedToday', () => {
   })
 })
 
-describe('eligibleVideo', () => {
-  it('only considers ready library rows on the given channel, excluding needs-review and blocked', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-ready', { topic: 'ready topic' })
-    seedJob(db, 'job-review')
-    seedJob(db, 'job-blocked')
-    seedJob(db, 'job-other-chan', { channel: 'chan-b' })
-    seedLibrary(db, 'job-ready', { state: 'ready' })
-    seedLibrary(db, 'job-review', { state: 'needs-review' })
-    seedLibrary(db, 'job-blocked', { state: 'blocked' })
-    seedLibrary(db, 'job-other-chan', { state: 'ready' })
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube')).toEqual({
-      jobId: 'job-ready',
-      videoPath: '/tmp/out.mp4',
-      objectKey: null,
-      metadataJson: '{}',
-      topic: 'ready topic',
-    })
-    expect(eligibleVideo(db, 'chan-c', 'youtube')).toBeNull()
-    db.close()
-  })
-
-  // library_objects is LEFT-joined, never inner-joined: a library row
-  // predating object storage has no object row and must still be selectable
-  // so it can publish to YouTube from its local file.
-  it('returns the object key when the job has one', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-1')
-    seedLibrary(db, 'job-1', { state: 'ready' })
-    db.prepare(
-      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('job-1', 'videos/chan-a/job-1.mp4', 10, 'e')",
-    ).run()
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube')?.objectKey).toBe('videos/chan-a/job-1.mp4')
-    db.close()
-  })
-
-  it('returns a null object key for a library row predating library_objects', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-1')
-    seedLibrary(db, 'job-1', { state: 'ready' })
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube')?.objectKey).toBeNull()
-    db.close()
-  })
-
-  // Design spec decision 1 (cross-post semantics): a video already
-  // 'published' via one platform must stay in the eligibility pool for
-  // every other platform, since platforms never compete for videos.
-  it('includes a published-state row when the platform has no blocking row of its own', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-1', { channel: 'chan' })
-    seedLibrary(db, 'job-1', { state: 'published' })
-
-    const row = eligibleVideo(db, 'chan', 'instagram')
-
-    expect(row?.jobId).toBe('job-1')
-    db.close()
-  })
-
-  it('excludes a published-state row once THIS platform also has a done row', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-1', { channel: 'chan' })
-    seedLibrary(db, 'job-1', { state: 'published' })
-    seedPublish(db, { jobId: 'job-1', platform: 'instagram', channel: 'chan', status: 'done' })
-
-    expect(eligibleVideo(db, 'chan', 'instagram')).toBeNull()
-    db.close()
-  })
-
-  it('excludes jobs with a done, claimed, or interrupted row for the platform', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-done')
-    seedJob(db, 'job-claimed')
-    seedJob(db, 'job-interrupted')
-    seedLibrary(db, 'job-done', { state: 'ready' })
-    seedLibrary(db, 'job-claimed', { state: 'ready' })
-    seedLibrary(db, 'job-interrupted', { state: 'ready' })
-    seedPublish(db, { jobId: 'job-done', seq: 1, status: 'done' })
-    seedPublish(db, { jobId: 'job-claimed', seq: 2, status: 'claimed' })
-    seedPublish(db, { jobId: 'job-interrupted', seq: 3, status: 'interrupted' })
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube')).toBeNull()
-    db.close()
-  })
-
-  it('excludes a job at MAX_PUBLISH_ATTEMPTS rejected failures but includes one still under the cap', () => {
-    const db = openDb(':memory:')
-    expect(MAX_PUBLISH_ATTEMPTS).toBe(3)
-    seedJob(db, 'job-capped', { topic: 'capped' })
-    seedJob(db, 'job-under-cap', { topic: 'under cap' })
-    seedLibrary(db, 'job-capped', { state: 'ready' })
-    seedLibrary(db, 'job-under-cap', { state: 'ready' })
-    seedPublish(db, { jobId: 'job-capped', seq: 1, status: 'failed', errorKind: 'rejected' })
-    seedPublish(db, { jobId: 'job-capped', seq: 2, status: 'failed', errorKind: 'rejected' })
-    seedPublish(db, { jobId: 'job-capped', seq: 3, status: 'failed', errorKind: 'rejected' })
-    // Different day than job-capped's rows: publishes.day plays no part in
-    // eligibleVideo's per-job_id aggregate, but reusing job-capped's
-    // (channel, platform, day, seq) here would collide with the schema's
-    // UNIQUE constraint since both jobs share the default channel/day.
-    seedPublish(db, {
-      jobId: 'job-under-cap',
-      day: '2026-07-21',
-      seq: 1,
-      status: 'failed',
-      errorKind: 'rejected',
-    })
-    seedPublish(db, {
-      jobId: 'job-under-cap',
-      day: '2026-07-21',
-      seq: 2,
-      status: 'failed',
-      errorKind: 'rejected',
-    })
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe('job-under-cap')
-    db.close()
-  })
-
-  it('orders by fewest failed rows of any kind, then newest library row, then job id', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-a')
-    seedJob(db, 'job-b')
-    seedJob(db, 'job-c')
-    seedJob(db, 'job-d')
-    // job-a: one non-rejected failure — doesn't count toward the cap, but
-    // still outranked by the zero-failure jobs on the primary sort key.
-    seedLibrary(db, 'job-a', { state: 'ready', createdAt: '2026-07-19T00:00:00.000Z' })
-    seedPublish(db, { jobId: 'job-a', seq: 1, status: 'failed', errorKind: 'transient' })
-    // job-b, job-c, job-d: zero failures — tie broken by created_at DESC,
-    // then job_id ASC.
-    seedLibrary(db, 'job-b', { state: 'ready', createdAt: '2026-07-18T00:00:00.000Z' })
-    seedLibrary(db, 'job-c', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
-    seedLibrary(db, 'job-d', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe('job-c')
-    db.close()
-  })
-
-  // The exclusion list is how the publish tick walks past ready rows whose
-  // video file was pruned: without it the single returned row shadows every
-  // older healthy row on the channel.
-  it('skips excluded job ids and returns the next one in order', () => {
-    const db = openDb(':memory:')
-    seedJob(db, 'job-new')
-    seedJob(db, 'job-mid')
-    seedJob(db, 'job-old')
-    seedLibrary(db, 'job-new', { createdAt: '2026-07-20T00:00:00.000Z' })
-    seedLibrary(db, 'job-mid', { createdAt: '2026-07-19T00:00:00.000Z' })
-    seedLibrary(db, 'job-old', { createdAt: '2026-07-18T00:00:00.000Z' })
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube', [])?.jobId).toBe('job-new')
-    expect(eligibleVideo(db, 'chan-a', 'youtube', ['job-new'])?.jobId).toBe('job-mid')
-    expect(eligibleVideo(db, 'chan-a', 'youtube', ['job-new', 'job-mid'])?.jobId).toBe('job-old')
-    expect(eligibleVideo(db, 'chan-a', 'youtube', ['job-new', 'job-mid', 'job-old'])).toBeNull()
-    db.close()
-  })
-
-  // The exclusion list reaches SQL as placeholders, never as interpolated
-  // text: a job id carrying quotes matches literally and closes nothing.
-  it('binds excluded job ids as parameters rather than interpolating them', () => {
-    const db = openDb(':memory:')
-    const nasty = `job-'); DROP TABLE library; --`
-    seedJob(db, nasty)
-    seedJob(db, 'job-plain')
-    seedLibrary(db, nasty, { createdAt: '2026-07-20T00:00:00.000Z' })
-    seedLibrary(db, 'job-plain', { createdAt: '2026-07-19T00:00:00.000Z' })
-
-    expect(eligibleVideo(db, 'chan-a', 'youtube')?.jobId).toBe(nasty)
-    expect(eligibleVideo(db, 'chan-a', 'youtube', [nasty])?.jobId).toBe('job-plain')
-    expect(db.prepare('SELECT COUNT(*) AS n FROM library').get()).toEqual({ n: 2 })
-    db.close()
-  })
-})
-
 describe('channelVideoCandidates', () => {
   it('returns nothing for a channel with no publishable library rows', () => {
     const db = openDb(':memory:')
@@ -761,6 +584,32 @@ describe('channelVideoCandidates', () => {
         blockedPlatforms: [],
       },
     ])
+    db.close()
+  })
+
+  it('excludes library rows that are not publishable', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-ready', { channel: 'chan-a' })
+    seedJob(db, 'job-review', { channel: 'chan-a' })
+    seedJob(db, 'job-blocked', { channel: 'chan-a' })
+    seedLibrary(db, 'job-ready', { state: 'ready' })
+    seedLibrary(db, 'job-review', { state: 'needs-review' })
+    seedLibrary(db, 'job-blocked', { state: 'blocked' })
+    expect(channelVideoCandidates(db, 'chan-a', 10).map((r) => r.jobId)).toEqual(['job-ready'])
+    db.close()
+  })
+
+  // library_objects is LEFT-joined, never inner-joined: a library row predating
+  // object storage has no object row and must still be selectable so it can
+  // publish from its local file.
+  it('carries the object key when the job has one', () => {
+    const db = openDb(':memory:')
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    db.prepare(
+      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('job-1', 'videos/chan-a/job-1.mp4', 10, 'e')",
+    ).run()
+    expect(channelVideoCandidates(db, 'chan-a', 10)[0].objectKey).toBe('videos/chan-a/job-1.mp4')
     db.close()
   })
 
@@ -830,7 +679,12 @@ describe('channelVideoCandidates', () => {
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedLibrary(db, 'job-1', { state: 'published' })
     for (const platform of ['youtube', 'instagram'] as const) {
-      const claim = claimPublish(db, { jobId: 'job-1', platform, channel: 'chan-a', day: '2026-07-22' })
+      const claim = claimPublish(db, {
+        jobId: 'job-1',
+        platform,
+        channel: 'chan-a',
+        day: '2026-07-22',
+      })
       markPublishDone(db, claim!.id, `${platform}-1`, 'https://example.test/x', new Date())
     }
     expect(channelVideoCandidates(db, 'chan-a', 10)).toEqual([])

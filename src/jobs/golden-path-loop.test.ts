@@ -317,11 +317,16 @@ describe('golden-path loop e2e', () => {
     expect(published).toEqual({
       action: 'published',
       channel: 'example',
-      platform: 'youtube',
       jobId: tick.jobId,
-      seq: 1,
-      postId: 'fakeVideoId1',
-      url: 'https://youtube.com/shorts/fakeVideoId1',
+      results: [
+        {
+          platform: 'youtube',
+          status: 'published',
+          seq: 1,
+          postId: 'fakeVideoId1',
+          url: 'https://youtube.com/shorts/fakeVideoId1',
+        },
+      ],
     })
     expect(uploadCalls).toEqual([
       {

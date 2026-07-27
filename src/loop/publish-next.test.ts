@@ -5,16 +5,21 @@ import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../db/index.js'
 import { parseTokenKey } from '../publish/crypto.js'
-import { claimPublish, markPublishDone } from '../publish/publishes.js'
+import {
+  claimPublish,
+  listPublishes,
+  markPublishDone,
+  videosPublishedToday,
+} from '../publish/publishes.js'
 import { upsertToken } from '../publish/tokens.js'
 import { runCli } from '../testing/run-cli.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import type { Platform, PublishAdapter } from '../publish/types.js'
 import { YT_UPLOAD_SCOPE } from '../publish/platforms/youtube.js'
-import { PublishOutcomeUnknownError } from '../publish/types.js'
+import { PublishError, PublishOutcomeUnknownError } from '../publish/types.js'
 import { fakeStore } from '../storage/fake.js'
-import { acquireLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
+import { acquireLease, extendLease, PUBLISH_LEASE_TTL_MS } from './lease.js'
 import { publishNextTick } from './publish-next.js'
 
 // Spies claimPublish so the claim-conflict test can force a `null` return
@@ -29,6 +34,15 @@ vi.mock('../publish/publishes.js', async (importOriginal) => {
     claimPublish: vi.fn(actual.claimPublish),
     markPublishDone: vi.fn(actual.markPublishDone),
   }
+})
+
+// Spies extendLease so the fan-out tests can count the mid-fan-out heartbeats.
+// acquireLease and releaseLease stay REAL (the factory spreads the original
+// module) because every lease test in this file asserts on their actual
+// database effect.
+vi.mock('./lease.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./lease.js')>()
+  return { ...actual, extendLease: vi.fn(actual.extendLease) }
 })
 
 // Local-time constructor (month is 0-based): 2026-07-22 14:05 machine-local.
@@ -120,7 +134,8 @@ function seedReadyVideo(
   videoRoot ??= tmpDir('brainrot-publish-videos-')
   const videoPath = join(videoRoot, `${jobId}.mp4`)
   if (opts.videoExists !== false) writeFileSync(videoPath, 'fake video bytes')
-  // created_at is explicit only where a test pins eligibleVideo's newest-first
+  // created_at is explicit only where a test pins the candidate scan's
+  // newest-first
   // tiebreak; otherwise the column default stands.
   db.prepare(
     'INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
@@ -135,7 +150,7 @@ function seedReadyVideo(
 }
 
 // Inserts the library_objects row a real `store` pipeline stage would leave
-// behind — the durable-copy record eligibleVideo LEFT JOINs against.
+// behind — the durable-copy record channelVideoCandidates LEFT JOINs against.
 function seedObjectKey(db: Database, jobId: string, objectKey: string): void {
   db.prepare(
     'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?)',
@@ -209,23 +224,67 @@ function fakeAdapter(upload: PublishAdapter['upload']): PublishAdapter {
   }
 }
 
-// An Instagram-shaped adapter whose upload resolves `req.media.url()` the
-// same way instagramUploadTarget does (media.ts requires an object key + a
-// store for url() to succeed) — used to exercise the store-resolution path
-// the local-file-only fakeAdapter above never touches.
-function urlResolvingAdapter(): PublishAdapter {
+// The Instagram-shaped sibling of fakeAdapter: a channel-scoped quota and the
+// platform id the tick keys its per-platform work off.
+function fakeIgAdapter(upload: PublishAdapter['upload']): PublishAdapter {
   return {
     platformId: 'instagram',
     quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: () => 25 },
     postUrl: () => null,
     hasCredential: () => true,
     resolveCredential: async () => 'ig-token',
-    async upload(req) {
-      const url = await req.media.url(7200)
-      return { postId: 'ig-post-1', url }
-    },
+    upload,
   }
 }
+
+// An Instagram-shaped adapter whose upload resolves `req.media.url()` the
+// same way instagramUploadTarget does (media.ts requires an object key + a
+// store for url() to succeed) — used to exercise the store-resolution path
+// the local-file-only fakeAdapter above never touches.
+function urlResolvingAdapter(): PublishAdapter {
+  return fakeIgAdapter(async (req) => {
+    const url = await req.media.url(7200)
+    return { postId: 'ig-post-1', url }
+  })
+}
+
+/**
+ * One channel declaring BOTH [publish.youtube] and [publish.instagram], one
+ * ready video with a real local file, and a stub adapter per platform. The
+ * adapters carry the REAL quota descriptors so BRAINROT_*_UPLOADS_PER_DAY still
+ * governs (fakeAdapter hardcodes cap 6), and `videos_per_day = 1` keeps the
+ * channel loadable when a test lowers the YouTube cap to 1.
+ */
+function fanOutFixture(prefix: string): {
+  db: Database
+  dir: string
+  jobId: string
+  adapters: Record<Platform, PublishAdapter>
+} {
+  const db = openDb(':memory:')
+  const dir = tmpDir(prefix)
+  writeChannel(dir, { name: 'test', publish: true, instagram: true, videosPerDay: 1 })
+  const jobId = seedReadyVideo(db, { channel: 'test', topic: 'Fan-out topic' })
+  const adapters: Record<Platform, PublishAdapter> = {
+    youtube: {
+      ...fakeAdapter(async () => ({ postId: 'yt-1', url: 'https://youtu.be/yt-1' })),
+      quota: PLATFORM_QUOTAS.youtube,
+    },
+    instagram: {
+      ...fakeIgAdapter(async () => ({
+        postId: 'ig-1',
+        url: 'https://instagram.test/ig-1',
+      })),
+      quota: PLATFORM_QUOTAS.instagram,
+    },
+  }
+  return { db, dir, jobId, adapters }
+}
+
+// 10:00 local on the fixture day: inside the 09:00–21:00 window, and with no
+// prior attempt the min gap is clear too, so the fan-out tests below are never
+// gated by pacing.
+const FANOUT_NOW = () => new Date(2026, 6, 22, 10, 0)
 
 beforeEach(() => {
   vi.stubEnv('YT_CLIENT_ID', 'test-client-id')
@@ -261,6 +320,10 @@ describe('publishNextTick — gates', () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-quota-')
     writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    // A publishable, authorized video, so the cap is the ONLY thing stopping
+    // this tick — an empty library would report 'no-ready-video' instead.
+    seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
     seedQuotaRows(db, { count: 6 })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
@@ -274,6 +337,8 @@ describe('publishNextTick — gates', () => {
     // loadChannelsDir now rejects a channel declaring more youtube
     // videos/day than the (possibly env-overridden) cap allows.
     writeChannel(channelsDir, { name: 'chan-a', publish: true, videosPerDay: 1 })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
     seedQuotaRows(db, { count: 1 })
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
@@ -362,9 +427,9 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       action: 'dry-run',
       wouldPublish: {
         channel: 'chan-b',
-        platform: 'youtube',
         jobId,
         title: 'Chan B topic',
+        platforms: ['youtube'],
       },
     })
     db.close()
@@ -413,18 +478,17 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       action: 'dry-run',
       wouldPublish: {
         channel: 'chan-b',
-        platform: 'youtube',
         jobId: jobB,
         title: 'Chan B topic',
+        platforms: ['youtube'],
       },
     })
     db.close()
   })
 
-  // eligibleVideo returns ONE row, so a pruned newest video would otherwise
-  // shadow every older healthy video on its channel forever: the scan skipped
-  // the whole candidate and the next tick re-picked the same dead row. The
-  // scan now re-queries with the pruned job excluded until it finds a file.
+  // A pruned newest video must not shadow every older healthy video on its
+  // channel: the scan walks past it to the next candidate rather than giving up
+  // on the channel and re-picking the same dead row on the next tick.
   it('publishes an older ready video when the newest one on the channel is pruned', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-shadow-')
@@ -453,11 +517,16 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     expect(result).toEqual({
       action: 'published',
       channel: 'chan-a',
-      platform: 'youtube',
       jobId: older,
-      seq: 1,
-      postId: 'yt-old',
-      url: 'https://youtube.com/shorts/yt-old',
+      results: [
+        {
+          platform: 'youtube',
+          status: 'published',
+          seq: 1,
+          postId: 'yt-old',
+          url: 'https://youtube.com/shorts/yt-old',
+        },
+      ],
     })
     db.close()
   })
@@ -506,9 +575,9 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
       action: 'dry-run',
       wouldPublish: {
         channel: 'chan-b',
-        platform: 'youtube',
         jobId: jobB,
         title: 'Chan B topic',
+        platforms: ['youtube'],
       },
     })
     db.close()
@@ -539,11 +608,16 @@ describe('publishNextTick — publish', () => {
     expect(result).toEqual({
       action: 'published',
       channel: 'chan-a',
-      platform: 'youtube',
       jobId,
-      seq: 1,
-      postId: 'yt123',
-      url: 'https://youtube.com/shorts/yt123',
+      results: [
+        {
+          platform: 'youtube',
+          status: 'published',
+          seq: 1,
+          postId: 'yt123',
+          url: 'https://youtube.com/shorts/yt123',
+        },
+      ],
     })
     const row = db
       .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
@@ -571,7 +645,6 @@ describe('publishNextTick — publish', () => {
     writeChannel(channelsDir, { name: 'chan-a', publish: true })
     const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    const { PublishError } = await import('../publish/types.js')
     const target = fakeAdapter(async () => {
       throw new PublishError('upload: invalid metadata', 'rejected')
     })
@@ -583,10 +656,15 @@ describe('publishNextTick — publish', () => {
     expect(result).toEqual({
       action: 'publish-failed',
       channel: 'chan-a',
-      platform: 'youtube',
       jobId,
-      seq: 1,
-      error: 'upload: invalid metadata',
+      results: [
+        {
+          platform: 'youtube',
+          status: 'failed',
+          seq: 1,
+          error: 'upload: invalid metadata',
+        },
+      ],
     })
     const row = db
       .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
@@ -648,10 +726,13 @@ describe('publishNextTick — publish', () => {
     })
     expect(result.action).toBe('publish-failed')
     expect(result.jobId).toBe(jobId)
-    // The post facts survive in the error text — the operator needs them to
-    // confirm the upload in Studio and run `publish mark-done`.
-    expect(result.error).toContain('yt-live-1')
-    expect(result.error).toContain('https://youtube.com/shorts/yt-live-1')
+    // Reported 'unknown', never 'failed': the post may be live, so the video
+    // must not go back in the pool. The post facts survive in the error text —
+    // the operator needs them to confirm the upload in Studio and run
+    // `publish mark-done`.
+    expect(result.results?.[0].status).toBe('unknown')
+    expect(result.results?.[0].error).toContain('yt-live-1')
+    expect(result.results?.[0].error).toContain('https://youtube.com/shorts/yt-live-1')
     const row = db
       .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
       .get(jobId) as {
@@ -687,10 +768,15 @@ describe('publishNextTick — publish', () => {
     expect(result).toEqual({
       action: 'publish-failed',
       channel: 'chan-a',
-      platform: 'youtube',
       jobId,
-      seq: 1,
-      error: 'youtubeTarget: accepted the upload but its success body carried no video id',
+      results: [
+        {
+          platform: 'youtube',
+          status: 'unknown',
+          seq: 1,
+          error: 'youtubeTarget: accepted the upload but its success body carried no video id',
+        },
+      ],
     })
     const row = db
       .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
@@ -731,15 +817,24 @@ describe('publishNextTick — publish', () => {
     db.close()
   })
 
-  it('no-ops with reason claim-conflict when a racing tick already took the ordinal', async () => {
+  // A racing tick winning the ordinal is that ONE platform's failure, not the
+  // tick's: the other platforms in a fan-out still have work to do. With a
+  // single declared platform there is nothing left, so the tick is
+  // publish-failed and the CLI exits 1.
+  it('reports a claim conflict as that platform failing, not as a whole-tick noop', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-conflict-')
     writeChannel(channelsDir, { name: 'chan-a', publish: true })
-    seedReadyVideo(db, { channel: 'chan-a' })
+    const jobId = seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
     vi.mocked(claimPublish).mockReturnValueOnce(null)
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
+    expect(result).toEqual({
+      action: 'publish-failed',
+      channel: 'chan-a',
+      jobId,
+      results: [{ platform: 'youtube', status: 'failed', error: 'claim conflict' }],
+    })
     db.close()
   })
 })
@@ -834,9 +929,9 @@ describe('publishNextTick — lease and sweep', () => {
       action: 'dry-run',
       wouldPublish: {
         channel: 'chan-a',
-        platform: 'youtube',
         jobId,
         title: 'Preview me',
+        platforms: ['youtube'],
       },
     })
     // the stale row from a DIFFERENT day is untouched: sweep never ran
@@ -951,15 +1046,7 @@ describe('quota pre-filter', () => {
     // global youtube quota (cap 1) without touching chan's own day count or
     // pacing clock.
     seedQuotaRows(db, { count: 1 })
-    const instagramTarget = fakeAdapter(async () => ({ postId: 'p1', url: 'https://ig/p1' }))
-    const igAdapter: PublishAdapter = {
-      platformId: 'instagram',
-      quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: () => 25 },
-      postUrl: () => null,
-      hasCredential: () => true,
-      resolveCredential: async () => 'ig-token',
-      upload: instagramTarget.upload,
-    }
+    const igAdapter = fakeIgAdapter(async () => ({ postId: 'p1', url: 'https://ig/p1' }))
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, {
       channelsDir,
@@ -967,7 +1054,7 @@ describe('quota pre-filter', () => {
       adapters: { instagram: igAdapter },
     })
     expect(result.action).toBe('published')
-    expect(result.platform).toBe('instagram')
+    expect(result.results?.map((r) => r.platform)).toEqual(['instagram'])
     db.close()
   })
 
@@ -1012,9 +1099,8 @@ describe('publishNextTick — media resolved from object storage', () => {
     expect(result).toMatchObject({
       action: 'published',
       channel: 'chan',
-      platform: 'instagram',
       jobId,
-      postId: 'ig-post-1',
+      results: [{ platform: 'instagram', status: 'published', postId: 'ig-post-1' }],
     })
     db.close()
   })
@@ -1043,7 +1129,7 @@ describe('publishNextTick — media resolved from object storage', () => {
   // 'transient', not 'rejected': a deploy that drops or breaks BRAINROT_S3_*
   // is a misconfiguration of the environment, not a defect in the video, and
   // 'rejected' counts toward rejectedCount's un-undoable 3-attempt retirement
-  // cap (src/publish/publishes.ts eligibleVideo).
+  // cap (src/publish/publishes.ts channelVideoCandidates).
   it('degrades to a legible transient failure, not a crash, when no store is configured or injected', async () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
@@ -1244,7 +1330,291 @@ describe('publishNextTick — the due gate', () => {
       adapters: publishingAdapters(),
       now: () => new Date(2026, 6, 22, 10, 0),
     })
-    expect(result.seq).toBe(1)
+    expect(result.results?.[0].seq).toBe(1)
+    db.close()
+  })
+})
+
+describe('publishNextTick — fan-out across every declared platform', () => {
+  it('publishes one video to both declared platforms in a single tick', async () => {
+    const { db, dir, jobId, adapters } = fanOutFixture('brainrot-publish-fanout-both-')
+    const result = await publishNextTick(db, { channelsDir: dir, adapters, now: FANOUT_NOW })
+    expect(result.action).toBe('published')
+    expect(result.channel).toBe('test')
+    expect(result.jobId).toBe(jobId)
+    // Ordered by the channel's target order, which loadChannelConfig sorts by
+    // platform name — so instagram precedes youtube.
+    expect(result.results).toEqual([
+      {
+        platform: 'instagram',
+        status: 'published',
+        seq: 1,
+        postId: 'ig-1',
+        url: 'https://instagram.test/ig-1',
+      },
+      {
+        platform: 'youtube',
+        status: 'published',
+        seq: 1,
+        postId: 'yt-1',
+        url: 'https://youtu.be/yt-1',
+      },
+    ])
+    db.close()
+  })
+
+  it('counts a two-platform fan-out as ONE video against videos_per_day', async () => {
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-count-')
+    await publishNextTick(db, { channelsDir: dir, adapters, now: FANOUT_NOW })
+    expect(videosPublishedToday(db, 'test', '2026-07-22')).toBe(1)
+    db.close()
+  })
+
+  it('records both platforms against the same job, each with its own row', async () => {
+    const { db, dir, jobId, adapters } = fanOutFixture('brainrot-publish-fanout-rows-')
+    await publishNextTick(db, { channelsDir: dir, adapters, now: FANOUT_NOW })
+    const rows = listPublishes(db).filter((r) => r.jobId === jobId)
+    expect(rows.map((r) => [r.platform, r.status, r.seq]).sort()).toEqual([
+      ['instagram', 'done', 1],
+      ['youtube', 'done', 1],
+    ])
+    db.close()
+  })
+
+  it('keeps going after one platform fails, and reports both outcomes', async () => {
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-onefail-')
+    const failing = {
+      ...adapters,
+      youtube: {
+        ...adapters.youtube,
+        upload: async () => {
+          throw new PublishError('bad video', 'rejected')
+        },
+      },
+    }
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: failing,
+      now: FANOUT_NOW,
+    })
+    expect(result.action).toBe('published')
+    expect(result.results).toEqual([
+      {
+        platform: 'instagram',
+        status: 'published',
+        seq: 1,
+        postId: 'ig-1',
+        url: 'https://instagram.test/ig-1',
+      },
+      { platform: 'youtube', status: 'failed', seq: 1, error: 'bad video' },
+    ])
+    const yt = listPublishes(db).find((r) => r.platform === 'youtube')
+    expect([yt?.status, yt?.errorKind]).toEqual(['failed', 'rejected'])
+    db.close()
+  })
+
+  it('is publish-failed when every attempted platform fails', async () => {
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-allfail-')
+    const upload: PublishAdapter['upload'] = async () => {
+      throw new PublishError('nope', 'transient')
+    }
+    const failing = {
+      youtube: { ...adapters.youtube, upload },
+      instagram: { ...adapters.instagram, upload },
+    }
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: failing,
+      now: FANOUT_NOW,
+    })
+    expect(result.action).toBe('publish-failed')
+    expect(result.results?.map((r) => r.status)).toEqual(['failed', 'failed'])
+    db.close()
+  })
+
+  it('leaves an unknown-outcome row claimed for the sweep and continues to the next platform', async () => {
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-unknown-')
+    const unknown = {
+      ...adapters,
+      instagram: {
+        ...adapters.instagram,
+        upload: async () => {
+          throw new PublishOutcomeUnknownError('no id in response')
+        },
+      },
+    }
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: unknown,
+      now: FANOUT_NOW,
+    })
+    expect(result.results).toEqual([
+      { platform: 'instagram', status: 'unknown', seq: 1, error: 'no id in response' },
+      {
+        platform: 'youtube',
+        status: 'published',
+        seq: 1,
+        postId: 'yt-1',
+        url: 'https://youtu.be/yt-1',
+      },
+    ])
+    // Never 'failed': that would return the video to the pool and publish it a
+    // second time. The next tick's sweep heals it to 'interrupted'.
+    expect(listPublishes(db).find((r) => r.platform === 'instagram')?.status).toBe('claimed')
+    db.close()
+  })
+
+  it('publishes to the open platform only when the other is at quota', async () => {
+    // The cap parser rejects 0, so set it to 1 and consume that one upload.
+    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-quota-')
+    seedAttempt(db, {
+      jobId: 'job-other',
+      channel: 'test',
+      platform: 'youtube',
+      day: '2026-07-22',
+    })
+    // That seeded attempt also meets the channel's day count and resets its
+    // pacing clock, so --force is what keeps this a quota test.
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters,
+      force: true,
+      now: FANOUT_NOW,
+    })
+    expect(result.results?.map((r) => r.platform)).toEqual(['instagram'])
+    db.close()
+  })
+
+  it('publishes to the credentialed platform only when the other has no token', async () => {
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-nocred-')
+    const noYtCred = {
+      ...adapters,
+      youtube: { ...adapters.youtube, hasCredential: () => false },
+    }
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: noYtCred,
+      now: FANOUT_NOW,
+    })
+    expect(result.results?.map((r) => r.platform)).toEqual(['instagram'])
+    db.close()
+  })
+
+  // Instagram's create-container-then-poll upload can outlast the 30-minute
+  // publish lease. Losing it mid-fan-out would let a second tick publish the
+  // same video again, so the tick heartbeats before every platform after the
+  // first — not before the first, which has just acquired the lease.
+  it('heartbeats the lease once per platform after the first, before that upload starts', async () => {
+    const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-heartbeat-')
+    // Each upload records how many heartbeats had already fired when it began —
+    // a count taken only at the end could not tell a heartbeat before the second
+    // upload from one after it, and only the former protects the lease.
+    const heartbeatsBeforeUpload: Record<string, number> = {}
+    const watching = {
+      instagram: {
+        ...adapters.instagram,
+        upload: async (...args: Parameters<PublishAdapter['upload']>) => {
+          heartbeatsBeforeUpload.instagram = vi.mocked(extendLease).mock.calls.length
+          return adapters.instagram.upload(...args)
+        },
+      },
+      youtube: {
+        ...adapters.youtube,
+        upload: async (...args: Parameters<PublishAdapter['upload']>) => {
+          heartbeatsBeforeUpload.youtube = vi.mocked(extendLease).mock.calls.length
+          return adapters.youtube.upload(...args)
+        },
+      },
+    }
+    vi.mocked(extendLease).mockClear()
+    await publishNextTick(db, { channelsDir: dir, adapters: watching, now: FANOUT_NOW })
+    expect(heartbeatsBeforeUpload).toEqual({ instagram: 0, youtube: 1 })
+    expect(vi.mocked(extendLease)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(extendLease)).toHaveBeenCalledWith(
+      db,
+      'publish',
+      expect.stringMatching(/^pid:/),
+      PUBLISH_LEASE_TTL_MS,
+    )
+    db.close()
+  })
+
+  it('does not heartbeat for a single-platform channel', async () => {
+    const db = openDb(':memory:')
+    const dir = tmpDir('brainrot-publish-fanout-single-')
+    writeChannel(dir, { name: 'test', publish: true, videosPerDay: 1 })
+    seedReadyVideo(db, { channel: 'test' })
+    const adapters = {
+      youtube: {
+        ...fakeAdapter(async () => ({ postId: 'yt-1', url: 'https://youtu.be/yt-1' })),
+        quota: PLATFORM_QUOTAS.youtube,
+      },
+    }
+    vi.mocked(extendLease).mockClear()
+    const result = await publishNextTick(db, { channelsDir: dir, adapters, now: FANOUT_NOW })
+    expect(result.action).toBe('published')
+    expect(vi.mocked(extendLease)).not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it('dry-run previews the video and every platform it would reach, writing nothing', async () => {
+    const { db, dir, jobId, adapters } = fanOutFixture('brainrot-publish-fanout-dryrun-')
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters,
+      dryRun: true,
+      now: FANOUT_NOW,
+    })
+    expect(result).toEqual({
+      action: 'dry-run',
+      wouldPublish: {
+        channel: 'test',
+        jobId,
+        title: 'Fan-out topic',
+        platforms: ['instagram', 'youtube'],
+      },
+    })
+    expect(listPublishes(db)).toEqual([])
+    db.close()
+  })
+
+  // The archived-video path, and the whole reason the durable copy lives in the
+  // object bucket: runs/ is a disposable cache, so a video with no local file
+  // must still fan out, with each platform's media handle served from the store.
+  it('fans an archived video out from its stored object when the local file is gone', async () => {
+    const db = openDb(':memory:')
+    const dir = tmpDir('brainrot-publish-fanout-archived-')
+    writeChannel(dir, { name: 'test', publish: true, instagram: true, videosPerDay: 1 })
+    const jobId = seedReadyVideo(db, { channel: 'test', videoExists: false })
+    const objectKey = 'videos/test/archived.mp4'
+    seedObjectKey(db, jobId, objectKey)
+    const store = fakeStore(tmpDir('brainrot-publish-fanout-archived-store-'))
+    await store.put(objectKey, Buffer.from('archived video bytes'), 'video/mp4')
+    // Each adapter reads the bytes through the handle the tick built for it, so
+    // `seen` proves the store — not a local file — served both platforms.
+    const seen: string[] = []
+    const readBytes = (postId: string): PublishAdapter['upload'] =>
+      async function upload(req) {
+        seen.push((await req.media.bytes()).toString())
+        return { postId, url: `https://example.test/${postId}` }
+      }
+    const result = await publishNextTick(db, {
+      channelsDir: dir,
+      adapters: {
+        youtube: { ...fakeAdapter(readBytes('yt-arch')), quota: PLATFORM_QUOTAS.youtube },
+        instagram: { ...fakeIgAdapter(readBytes('ig-arch')), quota: PLATFORM_QUOTAS.instagram },
+      },
+      store,
+      now: FANOUT_NOW,
+    })
+    expect(result.action).toBe('published')
+    expect(result.jobId).toBe(jobId)
+    expect(result.results?.map((r) => [r.platform, r.status, r.postId])).toEqual([
+      ['instagram', 'published', 'ig-arch'],
+      ['youtube', 'published', 'yt-arch'],
+    ])
+    expect(seen).toEqual(['archived video bytes', 'archived video bytes'])
     db.close()
   })
 })

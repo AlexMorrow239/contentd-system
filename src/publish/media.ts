@@ -15,8 +15,8 @@ import { PublishError, type PublishMedia } from './types.js'
  * environment instead — no object store configured, or an unexpected
  * (non-StorageError, or non-'not-found') failure reading the store — is
  * 'transient', since fixing the environment recovers the video and
- * 'rejected' counts toward rejectedCount's retirement cap (eligibleVideo,
- * src/publish/publishes.ts) with no way to undo it.
+ * 'rejected' counts toward the per-platform retirement cap
+ * (channelVideoCandidates, src/publish/publishes.ts) with no way to undo it.
  */
 export function publishMedia(opts: {
   objectKey: string | null

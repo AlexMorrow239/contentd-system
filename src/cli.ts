@@ -350,11 +350,12 @@ program
           dryRun: opts.dryRun,
           force: opts.force,
         })
-        // One cron-greppable JSON line. Exit 1 only for a completed-but-failed
-        // upload attempt (the video stays 'ready' for the next attempt); every
-        // noop and dry-run preview is a benign exit 0.
+        // One cron-greppable JSON line. Exit 1 when ANY platform in the fan-out
+        // failed — a partial success still needs to be visible to cron — while
+        // every noop and dry-run preview stays a benign exit 0.
         process.stdout.write(JSON.stringify(result) + '\n')
-        process.exitCode = result.action === 'publish-failed' ? 1 : 0
+        const anyFailed = result.results?.some((r) => r.status === 'failed') ?? false
+        process.exitCode = result.action === 'publish-failed' || anyFailed ? 1 : 0
       } finally {
         db.close()
       }
