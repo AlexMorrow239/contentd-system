@@ -11,7 +11,17 @@ import { makeCtx, seedVoiceJson } from '../testing/job.js'
 import { tmpDir } from '../testing/tmp.js'
 import type { JobContext } from '../jobs/types.js'
 
-/** bgmDir is the only channel field these tests vary; empty dir -> no bgm. */
+/**
+ * bgmDir is the only channel field these tests vary; empty dir -> no bgm.
+ *
+ * The jobId is unique per ctx rather than a fixed 'job-assemble'. assembleStage
+ * stages per-job assets into `<serveUrl>/public/<jobId>`, and the cleanup
+ * assertion below can only look for that directory by scanning the OS tmpdir —
+ * so a constant id makes the test observe OTHER processes' renders. Two
+ * concurrent `pnpm test` runs (or a watch run beside a manual one) would see
+ * each other's in-flight public/job-assemble and fail.
+ */
+let ctxSeq = 0
 function assembleCtx(bgmDir = tmpDir('brainrot-bgm-')): JobContext {
   return makeCtx({
     channel: testChannel({
@@ -20,7 +30,7 @@ function assembleCtx(bgmDir = tmpDir('brainrot-bgm-')): JobContext {
       bgmDir,
     }),
     topic: 'test topic',
-    jobId: 'job-assemble',
+    jobId: `job-assemble-${process.pid}-${ctxSeq++}`,
     runDir: tmpDir('brainrot-run-'),
   })
 }
@@ -78,13 +88,6 @@ describe('assembleStage', () => {
       }),
     )
 
-    // Snapshot pre-existing Remotion bundle dirs so the cleanup assertion below
-    // only inspects the bundle created by THIS process (stale dirs from earlier
-    // runs may linger in the OS tmpdir until reaped).
-    const bundleDirsBefore = new Set(
-      readdirSync(tmpdir()).filter((d) => d.startsWith('remotion-webpack-bundle-')),
-    )
-
     await assembleStage.run(ctx)
 
     const out = ctx.artifactPath('assemble', 'final.mp4')
@@ -101,14 +104,17 @@ describe('assembleStage', () => {
     expect(c.video).toBe('h264')
     expect(c.audio).toBe('aac')
 
-    // Per-job public assets are cleaned up after render: this process's bundle
-    // dir (remotion-webpack-bundle-* in the OS tmpdir, new since the snapshot)
-    // must no longer contain public/<jobId>/.
-    const newBundleDirs = readdirSync(tmpdir()).filter(
-      (d) => d.startsWith('remotion-webpack-bundle-') && !bundleDirsBefore.has(d),
-    )
-    expect(newBundleDirs.length).toBeGreaterThanOrEqual(1)
-    for (const d of newBundleDirs) {
+    // Per-job public assets are cleaned up after the render: no Remotion bundle
+    // dir anywhere in the OS tmpdir may still hold public/<jobId>/.
+    //
+    // Scoped by the unique jobId rather than by a before/after snapshot of the
+    // tmpdir. The snapshot approach classified any bundle dir that appeared
+    // during this test as "ours", which is only true when nothing else is
+    // rendering — under two concurrent runs it read the other run's directory
+    // and failed on assets that were never this test's to clean up.
+    const bundleDirs = readdirSync(tmpdir()).filter((d) => d.startsWith('remotion-webpack-bundle-'))
+    expect(bundleDirs.length).toBeGreaterThanOrEqual(1)
+    for (const d of bundleDirs) {
       expect(existsSync(path.join(tmpdir(), d, 'public', ctx.jobId))).toBe(false)
     }
   }, 180000)
