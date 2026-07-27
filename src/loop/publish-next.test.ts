@@ -50,13 +50,18 @@ afterAll(() => {
 // Plan-1-shape channel TOML plus an optional [publish] table (spec §3.3).
 // `instagram: true` adds a second [publish.instagram] target sharing the
 // same slots, for the cross-platform/quota-pre-filter tests below.
-function channelToml(opts: { name: string; slots?: string[]; instagram?: boolean }): string {
+function channelToml(opts: {
+  name: string
+  slots?: string[]
+  instagram?: boolean
+  videosPerDay?: number
+}): string {
   const lines = [
     `name = "${opts.name}"`,
     'niche = ["space facts"]',
     'bg_dir = "assets/bg"',
     'bgm_dir = "assets/bgm"',
-    'videos_per_day = 2',
+    `videos_per_day = ${opts.videosPerDay ?? 2}`,
     '',
     '[voice]',
     'volume = "af_heart"',
@@ -89,7 +94,7 @@ function channelToml(opts: { name: string; slots?: string[]; instagram?: boolean
 
 function writeChannel(
   dir: string,
-  opts: { name: string; slots?: string[]; instagram?: boolean },
+  opts: { name: string; slots?: string[]; instagram?: boolean; videosPerDay?: number },
 ): void {
   writeFileSync(join(dir, `${opts.name}.toml`), channelToml(opts))
 }
@@ -238,7 +243,10 @@ describe('publishNextTick — gates', () => {
   it('honors the BRAINROT_YT_UPLOADS_PER_DAY override for the cap', async () => {
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-quota-override-')
-    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'] })
+    // videosPerDay lowered to match the cap this test stubs to 1 below —
+    // loadChannelsDir now rejects a channel declaring more youtube
+    // videos/day than the (possibly env-overridden) cap allows.
+    writeChannel(channelsDir, { name: 'chan-a', slots: ['14:00'], videosPerDay: 1 })
     seedQuotaRows(db, { count: 1 })
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
@@ -892,7 +900,7 @@ describe('cross-platform candidates', () => {
     // against, checked via the reason.
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-crossplatform-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
     seedReadyVideo(db, { channel: 'chan' })
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, { channelsDir, now, dryRun: true })
@@ -906,7 +914,7 @@ describe('quota pre-filter', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-quota-prefilter-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
     seedReadyVideo(db, { channel: 'chan' })
     // A prior youtube upload today, on a different slot, so it counts toward
     // the global youtube quota (cap 1) without consuming the 10:00 slot.
@@ -941,7 +949,7 @@ describe('quota pre-filter', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-quota-allcapped-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'] })
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], videosPerDay: 1 })
     seedReadyVideo(db, { channel: 'chan' })
     seedConsumedSlot(db, {
       channel: 'chan',
@@ -966,7 +974,7 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-store-qualify-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
     // Push youtube over its (capped-to-1) quota so only the instagram
     // candidate for this slot survives the pre-filter.
     seedConsumedSlot(db, {
@@ -1000,7 +1008,7 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-store-noqualify-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
     seedConsumedSlot(db, {
       channel: 'chan',
       platform: 'youtube',
@@ -1031,7 +1039,7 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-store-unconfigured-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
     seedConsumedSlot(db, {
       channel: 'chan',
       platform: 'youtube',
@@ -1069,7 +1077,7 @@ describe('publishNextTick — media resolved from object storage', () => {
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = openDb(':memory:')
     const channelsDir = tmpDir('brainrot-publish-nolog-url-')
-    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true })
+    writeChannel(channelsDir, { name: 'chan', slots: ['10:00'], instagram: true, videosPerDay: 1 })
     seedConsumedSlot(db, {
       channel: 'chan',
       platform: 'youtube',

@@ -8,6 +8,7 @@ import {
   normalizeYoutubeOptions,
   youtubeOptionsSchema,
 } from '../publish/platforms/options.js'
+import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import type { Platform, PublishChannelConfig, PublishTargetConfig } from '../publish/types.js'
 
@@ -124,7 +125,10 @@ const rawSchema = z.object({
   name: z.string(),
   niche: z.array(z.string()),
   script_model: z.string().default('claude-sonnet-5'),
-  videos_per_day: z.number(),
+  videos_per_day: z
+    .number()
+    .int('videos_per_day must be a whole number of videos')
+    .positive('videos_per_day must be greater than 0'),
   voice: z.object({
     volume: z.string(),
     premium: z
@@ -268,6 +272,52 @@ export function loadChannelConfig(path: string): ChannelConfig {
 }
 
 /**
+ * Third load-time invariant, alongside duplicate-names and filename==name:
+ * a channel set may not declare more videos per day than a platform can
+ * actually accept. Driven off PLATFORM_QUOTAS as plain data, so a third
+ * platform is covered without touching this function.
+ *
+ * A 'global' quota (YouTube: ~6 uploads/day per Google Cloud project) is
+ * summed across every channel declaring it; a 'channel' quota (Instagram: per
+ * IG account) is checked per channel. Because videos_per_day drives
+ * production as well as publishing, this also stops the pipeline rendering
+ * videos that could never be posted.
+ *
+ * Deliberately a hard error rather than a clamp: `videos_per_day = 4` must
+ * never quietly mean 3. It surfaces at edit time via `brainrot produce`, and
+ * as a `config-error` tick line via tryLoadChannelsDir — never silently.
+ */
+function assertQuotaHeadroom(channels: ChannelConfig[]): void {
+  for (const platform of PUBLISH_PLATFORMS) {
+    const quota = PLATFORM_QUOTAS[platform]
+    const declaring = channels.filter(
+      (c) => c.publish !== null && c.publish.targets.some((t) => t.platform === platform),
+    )
+    if (declaring.length === 0) continue
+    const cap = quota.cap()
+    if (quota.scope === 'global') {
+      const total = declaring.reduce((sum, c) => sum + c.videosPerDay, 0)
+      if (total > cap) {
+        const breakdown = declaring.map((c) => `${c.name}(${c.videosPerDay})`).join(' + ')
+        throw new Error(
+          `${breakdown} declare ${total} ${platform} videos/day, exceeding ${platform}'s ` +
+            `${cap}/day cap (shared across all channels) — lower videos_per_day`,
+        )
+      }
+      continue
+    }
+    for (const c of declaring) {
+      if (c.videosPerDay > cap) {
+        throw new Error(
+          `${c.name} declares ${c.videosPerDay} ${platform} videos/day, exceeding ` +
+            `${platform}'s ${cap}/day per-channel cap — lower videos_per_day`,
+        )
+      }
+    }
+  }
+}
+
+/**
  * Loads every channel TOML in a directory — the scout/loop enumeration.
  * Sorted by channel name (code-unit order, locale-independent) so tick
  * planning is deterministic. An unparseable file throws, naming the file:
@@ -312,7 +362,13 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
       )
     }
   }
-  return parsed.map((p) => p.cfg).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  const configs = parsed
+    .map((p) => p.cfg)
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  // Last of the three invariants: needs every channel parsed, since a global
+  // quota is a sum across all of them.
+  assertQuotaHeadroom(configs)
+  return configs
 }
 
 /**

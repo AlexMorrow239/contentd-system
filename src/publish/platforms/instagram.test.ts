@@ -22,10 +22,10 @@ afterEach(() => {
 })
 
 describe('igUploadsPerDayCap', () => {
-  it('defaults to 25', () => {
+  it('defaults to 50', () => {
     vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', undefined)
-    expect(igUploadsPerDayCap()).toBe(25)
-    expect(DEFAULT_IG_UPLOADS_PER_DAY).toBe(25)
+    expect(igUploadsPerDayCap()).toBe(50)
+    expect(DEFAULT_IG_UPLOADS_PER_DAY).toBe(50)
   })
 
   it('reads the env override at call time', () => {

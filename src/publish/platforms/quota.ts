@@ -5,8 +5,13 @@ import type { Platform, PlatformQuota } from '../types.js'
 // channel (design spec decision 10).
 export const DEFAULT_YT_UPLOADS_PER_DAY = 6
 
-// Instagram's cap applies to one IG account, so it is counted per channel.
-export const DEFAULT_IG_UPLOADS_PER_DAY = 25
+// Instagram's Content Publishing API allows 50 API-published posts per
+// rolling 24h per IG ACCOUNT, so it is counted per channel. Our own count is
+// a local calendar day rather than a rolling window, which at these volumes
+// (a handful of videos a day) can never approach the real limit — a config
+// declaring 50/day would have to be accepted by the load-time quota check
+// first, and no channel comes close.
+export const DEFAULT_IG_UPLOADS_PER_DAY = 50
 
 /**
  * One platform's `BRAINROT_*_UPLOADS_PER_DAY` override. Parsed at call time
