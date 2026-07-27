@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { errorMessage } from '../../errors.js'
 import { IG_CONTENT_PUBLISH_SCOPE } from '../oauth-flow.js'
 import { renderCaption } from '../platform-meta.js'
 import { loadToken, upsertToken } from '../tokens.js'
@@ -309,7 +310,7 @@ export function instagramAdapter(
           try {
             refreshed = await refreshLongLivedToken({ token: stored.token, fetchImpl })
           } catch (err) {
-            const message = err instanceof Error ? err.message : String(err)
+            const message = errorMessage(err)
             throw new PublishError(`instagramAdapter: token refresh failed: ${message}`, 'auth')
           }
           upsertToken(

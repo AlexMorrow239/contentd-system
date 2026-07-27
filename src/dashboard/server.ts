@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import type { Database } from 'better-sqlite3'
 import { Hono } from 'hono'
 import { openDbReadonly } from '../db/index.js'
+import { errorMessage } from '../errors.js'
 import type { LibraryState } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
@@ -82,7 +83,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
       if (!existsSync(dbPath)) {
         return c.html(missingDbPage(dbPath, dbChoice), 503)
       }
-      const message = err instanceof Error ? err.message : String(err)
+      const message = errorMessage(err)
       return c.html(corruptDbPage(dbPath, dbChoice, message), 503)
     }
     c.set('db', db)
@@ -322,7 +323,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         dbChoice,
         activeNav: 'overview',
         body: html`<h1>error</h1>
-          <p class="error">${err instanceof Error ? err.message : String(err)}</p>`,
+          <p class="error">${errorMessage(err)}</p>`,
       }),
       500,
     )

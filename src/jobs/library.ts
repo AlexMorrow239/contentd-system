@@ -1,5 +1,6 @@
 import type { StoreArtifact } from '../stages/store.js'
 import type { Database } from 'better-sqlite3'
+import { errorMessage } from '../errors.js'
 import type { ObjectStore } from '../storage/types.js'
 
 export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
@@ -195,7 +196,7 @@ export async function deleteRejectedObjects(opts: {
       deleted.push(o.jobId)
     } catch (err) {
       warn(
-        `could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${err instanceof Error ? err.message : String(err)}`,
+        `could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${errorMessage(err)}`,
       )
       failed.push(o.jobId)
     }

@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync } from 'node:fs'
+import { errorMessage } from '../errors.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import type { ObjectStore } from '../storage/types.js'
 
@@ -43,7 +44,7 @@ export function storeStage(store?: ObjectStore): StageDef {
         // matters: an EACCES/EIO reading a bind-mounted runs/ inside Docker is
         // a different first-hour failure than a genuinely missing file, and
         // should not send the operator hunting for a render bug.
-        const message = err instanceof Error ? err.message : String(err)
+        const message = errorMessage(err)
         throw new Error(`store: no rendered video at ${finalPath}: ${message}`)
       }
 

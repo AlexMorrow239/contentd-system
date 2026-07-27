@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { errorMessage } from '../errors.js'
 import { s3ConfigError, s3ConfigFromEnv } from './config.js'
 
 const KEYS = [
@@ -89,7 +90,7 @@ describe('s3ConfigError', () => {
     try {
       s3ConfigFromEnv()
     } catch (err) {
-      thrown = err instanceof Error ? err.message : String(err)
+      thrown = errorMessage(err)
     }
     expect(message).toBe(thrown)
   })

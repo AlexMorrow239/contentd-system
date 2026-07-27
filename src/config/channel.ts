@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
+import { errorMessage } from '../errors.js'
 import {
   instagramOptionsSchema,
   normalizeInstagramOptions,
@@ -370,6 +371,6 @@ export function tryLoadChannelsDir(dir: string): { channels: ChannelConfig[]; er
   try {
     return { channels: loadChannelsDir(dir) }
   } catch (err) {
-    return { channels: [], error: err instanceof Error ? err.message : String(err) }
+    return { channels: [], error: errorMessage(err) }
   }
 }

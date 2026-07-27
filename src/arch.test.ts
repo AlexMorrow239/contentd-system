@@ -1,7 +1,28 @@
+import { readdir, readFile } from 'node:fs/promises'
+import { join, relative } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { DASHBOARD_STAGE_ORDER } from './dashboard/queries/jobs.js'
 import { pipelineStages } from './jobs/pipeline.js'
 import { PUBLISH_PLATFORMS } from './publish/types.js'
+
+// Every .ts file under src/, as paths relative to src/. Used by the error
+// convention lints below, which are source-text greps rather than import
+// checks — the thing being guarded is "nobody writes this expression", which
+// no amount of importing can observe.
+const SRC_ROOT = fileURLToPath(new URL('.', import.meta.url))
+
+async function srcFiles(dir: string = SRC_ROOT): Promise<string[]> {
+  const entries = await readdir(dir, { withFileTypes: true })
+  const nested = await Promise.all(
+    entries.map(async (e) => {
+      const full = join(dir, e.name)
+      if (e.isDirectory()) return srcFiles(full)
+      return e.name.endsWith('.ts') ? [full] : []
+    }),
+  )
+  return nested.flat()
+}
 
 /**
  * Repo-wide architecture lints: assertions about how modules may depend on
@@ -40,5 +61,27 @@ describe('publish-next platform agnosticism', () => {
       expect(src).not.toContain(`'${platform}'`)
       expect(src).not.toContain(`"${platform}"`)
     }
+  })
+})
+
+describe('error handling conventions', () => {
+  it('no module re-rolls the message-extraction ternary', async () => {
+    // This exact expression had been copied into 13 files. `errorMessage()`
+    // in src/errors.ts is the one implementation, and src/errors.ts is the
+    // one place it legitimately appears — so it is the only exemption.
+    //
+    // The needle is built from two pieces rather than written as one literal
+    // so that this file's own source doesn't contain the contiguous banned
+    // substring — otherwise this test would always list itself as an
+    // offender, since the text it searches for necessarily appears inside it.
+    const BANNED_IDIOM = 'instanceof' + ' Error ?'
+    const offenders: string[] = []
+    for (const file of await srcFiles()) {
+      const rel = relative(SRC_ROOT, file)
+      if (rel === 'errors.ts') continue
+      const src = await readFile(file, 'utf8')
+      if (src.includes(BANNED_IDIOM)) offenders.push(rel)
+    }
+    expect(offenders).toEqual([])
   })
 })

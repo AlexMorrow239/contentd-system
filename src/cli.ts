@@ -2,6 +2,7 @@ import 'dotenv/config'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
+import { errorMessage } from './errors.js'
 import { createJob, runJob } from './jobs/runner.js'
 import { resumeJob } from './jobs/resume.js'
 import { loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './config/channel.js'
@@ -504,7 +505,7 @@ library
         store = (await import('./storage/s3.js')).storeFromEnv()
       } catch (err) {
         console.warn(
-          `object storage unavailable, ${objects.length} object(s) left in place: ${err instanceof Error ? err.message : String(err)}`,
+          `object storage unavailable, ${objects.length} object(s) left in place: ${errorMessage(err)}`,
         )
       }
       if (store !== null) {
@@ -645,7 +646,7 @@ program
         db.close()
       }
     } catch (err) {
-      console.error(err instanceof Error ? err.message : String(err))
+      console.error(errorMessage(err))
     }
   })
 
@@ -768,7 +769,7 @@ if (isMain) {
   // A rejected action (bad --channel path, etc.) would otherwise print a raw
   // unhandled-rejection stack. Surface just the message and exit 1.
   program.parseAsync(process.argv).catch((err) => {
-    console.error(err instanceof Error ? err.message : String(err))
+    console.error(errorMessage(err))
     process.exitCode = 1
   })
 }
