@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classify } from '../../errors.js'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
-import { REDDIT_USER_AGENT, redditSource } from './reddit.js'
+import { REDDIT_USER_AGENT, fetchRedditFeed, redditSource } from './reddit.js'
 import {
   ARTICLE_TARGET,
   IMAGE_TARGET,
@@ -73,7 +73,97 @@ function fakeTextFetch(status: number, body: string) {
   return { impl, calls }
 }
 
+describe('fetchRedditFeed', () => {
+  it('sends the descriptive UA and a timeout signal', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    const { impl, calls } = fakeTextFetch(200, RSS_FIXTURE)
+
+    await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
+      fetchImpl: impl,
+      timeoutMs: 9_000,
+      retryDelayMs: 0,
+    })
+
+    const init = calls[0].init!
+    expect((init.headers as Record<string, string>)['User-Agent']).toBe(REDDIT_USER_AGENT)
+    expect(timeoutSpy).toHaveBeenCalledWith(9_000)
+  })
+
+  it('retries once after a 429 and returns the retry response', async () => {
+    const calls: unknown[] = []
+    const impl: FetchLike = async (input) => {
+      calls.push(input)
+      return calls.length === 1
+        ? new Response('', { status: 429 })
+        : new Response(RSS_FIXTURE, { status: 200 })
+    }
+
+    const res = await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
+      fetchImpl: impl,
+      timeoutMs: 1_000,
+      retryDelayMs: 0,
+    })
+
+    expect(res.status).toBe(200)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('gives up after one retry rather than grinding', async () => {
+    const { impl, calls } = fakeTextFetch(429, '')
+
+    const res = await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
+      fetchImpl: impl,
+      timeoutMs: 1_000,
+      retryDelayMs: 0,
+    })
+
+    expect(res.status).toBe(429)
+    expect(calls).toHaveLength(2)
+  })
+
+  it('does not retry a non-429 failure', async () => {
+    const { impl, calls } = fakeTextFetch(404, '')
+
+    const res = await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
+      fetchImpl: impl,
+      timeoutMs: 1_000,
+      retryDelayMs: 0,
+    })
+
+    expect(res.status).toBe(404)
+    expect(calls).toHaveLength(1)
+  })
+})
+
 describe('redditSource', () => {
+  it('recovers from a rate-limited first attempt', async () => {
+    let call = 0
+    const impl: FetchLike = async () => {
+      call += 1
+      return call === 1
+        ? new Response('', { status: 429 })
+        : new Response(RSS_FIXTURE, { status: 200 })
+    }
+
+    const got = await redditSource('space', impl, { retryDelayMs: 0 }).fetch({
+      limit: 25,
+      timeoutMs: 1_000,
+    })
+
+    expect(got).toHaveLength(2)
+  })
+
+  it('still throws when the rate limit does not clear', async () => {
+    const { impl } = fakeTextFetch(429, '')
+    const err = await redditSource('space', impl, { retryDelayMs: 0 })
+      .fetch({ limit: 25, timeoutMs: 1_000 })
+      .catch((e: unknown) => e)
+    // The status stays in the message, so an operator can tell rate limiting
+    // from an outage in the sourceErrors entry.
+    expect(err).toMatchObject({ message: expect.stringMatching(/responded 429/) })
+    expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
+  })
+
   it('GETs the public .rss feed with the descriptive UA and a timeout signal', async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
     const { impl, calls } = fakeTextFetch(200, RSS_FIXTURE)

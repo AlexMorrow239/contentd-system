@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3'
 import { errorMessage } from '../errors.js'
 import { parseFeedCandidates } from './sources/feed.js'
 import { classifyTarget } from './sources/post-kind.js'
-import { REDDIT_USER_AGENT, redditLinkTarget } from './sources/reddit.js'
+import { fetchRedditFeed, redditLinkTarget } from './sources/reddit.js'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash } from './sources/types.js'
 import type { FetchLike } from './sources/types.js'
 import { redditCandidates, rejectTopicWithReason, setTopicTargetUrl } from './topics.js'
@@ -80,18 +80,14 @@ export async function pruneMedia(
     row: (typeof rows)[number],
   ): Promise<{ target: string } | { skip: string }> {
     try {
-      const get = (): Promise<Response> =>
-        fetchImpl(permalinkFeedUrl(row.url), {
-          headers: { 'User-Agent': REDDIT_USER_AGENT },
-          signal: AbortSignal.timeout(SOURCE_FETCH_TIMEOUT_MS),
-        })
-      let res = await get()
-      // 429 is the expected failure here, and it is transient by definition.
-      // Back off once before giving the row up.
-      if (res.status === 429) {
-        await sleep(delayMs * PRUNE_RETRY_MULTIPLIER)
-        res = await get()
-      }
+      // Shares redditSource's fetch: one place knows reddit's UA convention
+      // and its 429 backoff. A row that is still limited after the retry is a
+      // skip, not a throw — the remaining rows are still worth checking.
+      const res = await fetchRedditFeed(permalinkFeedUrl(row.url), {
+        fetchImpl,
+        timeoutMs: SOURCE_FETCH_TIMEOUT_MS,
+        retryDelayMs: delayMs * PRUNE_RETRY_MULTIPLIER,
+      })
       if (!res.ok) return { skip: `http-${res.status}` }
       const entries = parseFeedCandidates(await res.text(), row.source, `prune-media: ${row.url}`)
       // Comments are t1_; the submission is the only t3_ entry, and the only
