@@ -20,7 +20,7 @@ describe('dashboard stage order', () => {
     // wrappers, which a read-only viewer has no business loading. This is the
     // anti-drift guard, and it pays the heavy import once, in test only.
     //
-    // It was previously inside dashboard/queries/jobs.test.ts, which is
+    // It was previously inside dashboard/queries/test/jobs.test.ts, which is
     // otherwise a set of instant in-memory SQL assertions.
     expect([...DASHBOARD_STAGE_ORDER]).toEqual(pipelineStages().map((s) => s.name))
   })
@@ -32,7 +32,8 @@ describe('publish-next platform agnosticism', () => {
     // (src/publish/platforms/index.ts); a platform name appearing in its source
     // means a special case has crept back in.
     //
-    // Previously lived inside publish-next.test.ts, which is a behavior file.
+    // Previously lived inside loop/test/publish-next.test.ts, which is a
+    // behavior file.
     const { readFile } = await import('node:fs/promises')
     const src = await readFile(new URL('./loop/publish-next.ts', import.meta.url), 'utf8')
     for (const platform of PUBLISH_PLATFORMS) {

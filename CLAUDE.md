@@ -38,7 +38,7 @@ pnpm brainrot publishes list [--days N]
 pnpm brainrot auth youtube|instagram --channel <name>
 ```
 
-Run a single test file: `pnpm vitest run src/jobs/runner.test.ts`.
+Run a single test file: `pnpm vitest run src/jobs/test/runner.test.ts`.
 Contract tests live in `*.contract.test.ts` and are excluded from the default
 `pnpm test` run (see `vitest.config.ts`); they hit real provider APIs and
 cost real money — don't run them without a reason.
@@ -257,6 +257,14 @@ Tests are colocated (`src/**/*.test.ts`, plus `remotion/**`), in three tiers:
 the default hermetic run, `*.contract.test.ts` (`CONTRACT=1`, real paid API
 calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up).
 
+**Layout rule: a directory with more than 3 test files folds its tests into a
+nested `test/` subdirectory** — `src/loop/test/`, `src/stages/test/`, etc. — so
+the source directory listing stays scannable; a directory with 3 or fewer
+stays flat (`src/config/`, `src/scout/`, the repo root). This is a pure
+file-location rule, orthogonal to file size: a large file that cleanly
+consumes the shared testkit and its module's own `_*.fixtures.ts` does not
+need to be split just for being large (see below).
+
 **`src/testing/` is the one shared testkit.** It is excluded from the `dist/`
 build, so nothing in it can reach production. Use it rather than re-rolling
 fixtures locally:
@@ -289,11 +297,14 @@ Conventions:
   never buried between describes.
 - Conditional tiers use `describe.skipIf`/`it.skipIf`. A bare `return` reports
   a **pass** for work that never ran.
-- Split large files as `<module>.<facet>.test.ts` — `cli.<subcommand>`,
-  `publish-next.<phase>`, `publishes.<concern>`, `digest.<section>`. Keep
-  subprocess tests in their own `*.cli.test.ts` rather than beside in-process
-  ones: `it.concurrent` batches at `maxConcurrency` within a single file, so 28
-  spawns in one file queued 8 at a time in one worker.
+- Prefer one file per module over a facet split, even for a large file
+  (`cli.test.ts`, `src/loop/test/publish-next.test.ts`, and
+  `src/publish/test/publishes.test.ts` are each several hundred lines holding
+  every describe for their module, subprocess and in-process tests included).
+  A split earns its keep only when it separates a genuinely different concern
+  — `src/config/channels.smoke.test.ts` stays apart from `channel.test.ts`
+  because it hits real on-disk `channels/`/`channels-dev/` directories and
+  would otherwise cost `channel.test.ts` its hermeticity, not because of size.
 - A `_<module>.fixtures.ts` holds what only that module needs, and **delegates
   row SQL to `src/testing/db.ts`** rather than re-issuing INSERTs. That is what
   lets a module keep an ergonomic local call shape (digest ages rows via
@@ -305,10 +316,10 @@ Conventions:
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~18s wall / ~94s CPU for 922 tests across 89
+**Performance.** The suite runs ~18s wall / ~94s CPU for 922 tests across 72
 files (warm; a first run after `pnpm install` is slower while the Remotion
 webpack cache in `node_modules/.cache` fills). Wall clock is set by the slowest
-single file, not by the total — `src/jobs/golden-path.test.ts` is the floor at
+single file, not by the total — `src/jobs/test/golden-path.test.ts` is the floor at
 ~14s, one indivisible e2e render. That also means CPU spent anywhere shows up
 everywhere: cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
 `golden-path`, `assemble` and `remotion` too, purely by ending the contention.
