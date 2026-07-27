@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../config/channel.js'
-import { openDb } from '../db/index.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { stubStorageEnv } from '../testing/storage.js'
 import { createJob } from '../jobs/runner.js'
@@ -13,6 +12,7 @@ import type { JobContext, StageDef } from '../jobs/types.js'
 import { claimTopic } from '../scout/topics.js'
 import { produceNextTick } from './produce-next.js'
 import { acquireLease, PRODUCE_LEASE_TTL_MS } from './lease.js'
+import { memDb } from '../testing/db.js'
 
 // Both lost-claim races are single-instant windows between planning and
 // executing that no in-process seeding can open, so the two losing calls are
@@ -66,7 +66,7 @@ const channelsDir = tmpDir('brainrot-loop-channels-')
 writeFileSync(join(channelsDir, 'loop-chan.toml'), CHANNEL_TOML)
 
 function setup() {
-  const db = openDb(':memory:')
+  const db = memDb()
   const runsRoot = join(tmpDir('brainrot-loop-run-'), 'runs')
   return { db, runsRoot }
 }

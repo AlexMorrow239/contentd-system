@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../db/index.js'
 import { recordCost } from '../jobs/costs.js'
 import { testChannel } from '../testing/channel.js'
 import { planTick, RESUME_MIN_HEADROOM_USD_MICROS } from './plan-tick.js'
+import { memDb } from '../testing/db.js'
 
 const NOOP = { kind: 'noop', reason: 'no-eligible-work' } as const
 
@@ -92,7 +92,7 @@ describe('planTick basics', () => {
   })
 
   it('noops when there are no blocked jobs and no topics', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(planTick(db, [testChannel()])).toEqual(NOOP)
     db.close()
   })
@@ -100,7 +100,7 @@ describe('planTick basics', () => {
 
 describe('resume pass', () => {
   it('beats the claim pass when a blocked job is eligible', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedJob(db, { id: 'job-parked', status: 'blocked' })
     seedTopic(db) // a claimable topic must not outrank the parked job
     expect(planTick(db, [testChannel()])).toEqual({
@@ -112,7 +112,7 @@ describe('resume pass', () => {
   })
 
   it('takes the oldest blocked job first', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedJob(db, { id: 'job-newer', status: 'blocked', createdAt: '2026-07-02T00:00:00.000Z' })
     seedJob(db, { id: 'job-older', status: 'blocked', createdAt: '2026-07-01T00:00:00.000Z' })
     expect(planTick(db, [testChannel()])).toMatchObject({
@@ -123,7 +123,7 @@ describe('resume pass', () => {
   })
 
   it('skips a blocked job whose channel is missing and takes the next oldest', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     // Oldest blocked job belongs to a channel whose TOML left the dir.
     seedJob(db, {
       id: 'job-ghost',
@@ -169,7 +169,7 @@ describe('resume pass skip conditions', () => {
   ]
 
   it.each(cases)('skips the blocked job when $reason', ({ expected, seed }) => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seed(db)
     expect(planTick(db, [testChannel()])).toEqual({
       kind: 'noop',
@@ -181,7 +181,7 @@ describe('resume pass skip conditions', () => {
 
 describe('resume pass per-video headroom', () => {
   it('skips a blocked job at its per-video cap so the claim pass still runs', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedJob(db, { id: 'job-capped', status: 'blocked' })
     // The whole $8 per-video cap is already spent: resuming could only
     // re-block at the first checkpoint, and the job keeps its place at the
@@ -196,7 +196,7 @@ describe('resume pass per-video headroom', () => {
   })
 
   it('resumes while a full minimum step of per-video headroom remains', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedJob(db, { id: 'job-parked', status: 'blocked' })
     // $8 cap − $6 spent = exactly the $2 step: the guard is strictly-less, so
     // this job is still worth resuming.
@@ -209,7 +209,7 @@ describe('resume pass per-video headroom', () => {
   })
 
   it('scales the floor down for a channel whose whole daily budget is under $2', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedJob(db, { id: 'job-parked', status: 'blocked' })
     // A $1.50/day channel can never clear the absolute $2 floor, so a flat
     // floor would lock its blocked jobs out permanently — even at zero spend.
@@ -226,7 +226,7 @@ describe('resume pass per-video headroom', () => {
 
 describe('claim pass', () => {
   it('claims the best eligible topic', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const best = seedTopic(db, { title: 'Why the Moon is drifting away', score: 90 })
     seedTopic(db, { title: 'runner-up', score: 70 })
     expect(planTick(db, [testChannel()])).toEqual({
@@ -243,7 +243,7 @@ describe('claim pass quota', () => {
   it.each(['queued', 'running', 'failed', 'done'])(
     'a %s job created today consumes its daily slot',
     (status) => {
-      const db = openDb(':memory:')
+      const db = memDb()
       seedJob(db, { status })
       seedTopic(db)
       const ch = testChannel({ videosPerDay: 1 })
@@ -253,7 +253,7 @@ describe('claim pass quota', () => {
   )
 
   it('counts blocked jobs toward the claim quota too', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     // Sentinel spend empties GLOBAL headroom so the resume pass skips the
     // blocked job; the claim pass must then see its slot as taken.
     seedJob(db, { status: 'blocked' })
@@ -265,7 +265,7 @@ describe('claim pass quota', () => {
   })
 
   it('ignores jobs from previous UTC days', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedJob(db, { status: 'failed', createdAt: '2020-01-01T00:00:00.000Z' })
     const topicId = seedTopic(db)
     const ch = testChannel({ videosPerDay: 1 })
@@ -279,7 +279,7 @@ describe('claim pass quota', () => {
 
 describe('claim pass channel fairness', () => {
   it('prefers the channel with the lowest filled fraction of its daily quota', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedJob(db, { channel: 'chan-a' }) // 1 of 2 slots → 0.5
     seedJob(db, { channel: 'chan-b' }) // 1 of 4 slots → 0.25
     seedTopic(db, { channel: 'chan-a', title: 'a topic' })
@@ -295,7 +295,7 @@ describe('claim pass channel fairness', () => {
   })
 
   it('breaks filled-fraction ties by channel name ascending', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { channel: 'chan-a', title: 'a topic' })
     seedTopic(db, { channel: 'chan-b', title: 'b topic' })
     const chA = testChannel({ name: 'chan-a', videosPerDay: 2 })
@@ -309,7 +309,7 @@ describe('claim pass channel fairness', () => {
   })
 
   it('falls through to the next channel when the fairest one has no topics', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const bTopic = seedTopic(db, { channel: 'chan-b', title: 'b topic' })
     const chA = testChannel({ name: 'chan-a', videosPerDay: 2 })
     const chB = testChannel({ name: 'chan-b', videosPerDay: 2 })

@@ -1,14 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { openDb } from '../db/index.js'
 import { localDay } from '../publish/schedule.js'
 import type { DashboardConfig } from './config.js'
 import { createApp } from './server.js'
+import { tmpDir } from '../testing/tmp.js'
 
 function seededConfig(): DashboardConfig {
-  const dir = mkdtempSync(join(tmpdir(), 'brainrot-dash-'))
+  const dir = tmpDir('brainrot-dash-')
   const prod = join(dir, 'brainrot.db')
   openDb(prod).close()
   return {
@@ -201,7 +202,7 @@ describe('/publishes', () => {
 
 describe('video streaming', () => {
   function configWithVideo(bytes: Buffer, videoPathInDb?: string): DashboardConfig {
-    const dir = mkdtempSync(join(tmpdir(), 'brainrot-vid-'))
+    const dir = tmpDir('brainrot-vid-')
     const runsRoot = join(dir, 'runs')
     const videoDir = join(runsRoot, 'j1', 'assemble')
     mkdirSync(videoDir, { recursive: true })

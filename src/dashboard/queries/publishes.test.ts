@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../../db/index.js'
 import type { ChannelConfig } from '../../config/channel.js'
 import type { PublishTargetConfig } from '../../publish/types.js'
+import { testChannel } from '../../testing/channel.js'
+import { memDb } from '../../testing/db.js'
 import { buildPublishGrids, cellKey } from './publishes.js'
 
 function channelWithTargets(
@@ -10,25 +11,7 @@ function channelWithTargets(
   videosPerDay: number,
   targets: PublishTargetConfig[],
 ): ChannelConfig {
-  return {
-    name,
-    niche: [],
-    videosPerDay,
-    voice: { volume: 'af_heart' },
-    captionStyle: {
-      font: 'Inter',
-      fontSizePx: 80,
-      activeColor: '#fff',
-      inactiveColor: '#888',
-      strokePx: 8,
-    },
-    bgDir: [],
-    bgmDir: '',
-    budget: { perVideoUsdMicros: 500_000, perDayUsdMicros: 2_000_000 },
-    scriptModel: 'claude-sonnet-5',
-    scout: { subreddits: [], rss: [], minScore: 60, perSourceLimit: 25 },
-    publish: { targets },
-  }
+  return testChannel({ name, videosPerDay, publish: { targets } })
 }
 
 function channel(name: string, videosPerDay: number): ChannelConfig {
@@ -41,7 +24,7 @@ function channel(name: string, videosPerDay: number): ChannelConfig {
 }
 
 function seed(): Database {
-  const db = openDb(':memory:')
+  const db = memDb()
   db.prepare(
     "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
   ).run()

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { openDb } from '../../db/index.js'
 import { publishMedia } from '../media.js'
 import { upsertToken } from '../tokens.js'
 import type { PlatformMeta, PublishMedia } from '../types.js'
@@ -16,6 +15,7 @@ import {
   youtubeTarget,
 } from './youtube.js'
 import { tmpDir } from '../../testing/tmp.js'
+import { memDb } from '../../testing/db.js'
 
 const TEST_KEY = Buffer.alloc(32, 0x42)
 
@@ -385,7 +385,7 @@ describe('youtubeAdapter', () => {
   it('hasCredential is false when YT_CLIENT_ID is unset, even with a stored token', () => {
     vi.stubEnv('YT_CLIENT_ID', undefined)
     vi.stubEnv('YT_CLIENT_SECRET', 'secret')
-    const db = openDb(':memory:')
+    const db = memDb()
     upsertToken(db, 'youtube', 'chan', 'rt', 'scope', TEST_KEY)
     expect(youtubeAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(false)
   })
@@ -393,14 +393,14 @@ describe('youtubeAdapter', () => {
   it('hasCredential is false with no stored token, even with env set', () => {
     vi.stubEnv('YT_CLIENT_ID', 'id')
     vi.stubEnv('YT_CLIENT_SECRET', 'secret')
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(youtubeAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(false)
   })
 
   it('hasCredential is true with both env and a stored token', () => {
     vi.stubEnv('YT_CLIENT_ID', 'id')
     vi.stubEnv('YT_CLIENT_SECRET', 'secret')
-    const db = openDb(':memory:')
+    const db = memDb()
     upsertToken(db, 'youtube', 'chan', 'rt', 'scope', TEST_KEY)
     expect(youtubeAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(true)
   })
@@ -408,7 +408,7 @@ describe('youtubeAdapter', () => {
   it('resolveCredential mints an access token from the stored refresh token', async () => {
     vi.stubEnv('YT_CLIENT_ID', 'id')
     vi.stubEnv('YT_CLIENT_SECRET', 'secret')
-    const db = openDb(':memory:')
+    const db = memDb()
     upsertToken(db, 'youtube', 'chan', 'rt-stored', 'scope', TEST_KEY)
     const fetchImpl: typeof fetch = async () =>
       new Response(JSON.stringify({ access_token: 'at-minted' }), {
@@ -427,7 +427,7 @@ describe('youtubeAdapter', () => {
   it('resolveCredential throws PublishError(auth) with no stored token', async () => {
     vi.stubEnv('YT_CLIENT_ID', 'id')
     vi.stubEnv('YT_CLIENT_SECRET', 'secret')
-    const db = openDb(':memory:')
+    const db = memDb()
     await expect(
       youtubeAdapter().resolveCredential(db, 'chan', TEST_KEY, new Date()),
     ).rejects.toMatchObject({ kind: 'auth' })
@@ -436,7 +436,7 @@ describe('youtubeAdapter', () => {
   it('resolveCredential throws PublishError(auth) when YT_CLIENT_ID/SECRET are unset, even with a stored token', async () => {
     vi.stubEnv('YT_CLIENT_ID', undefined)
     vi.stubEnv('YT_CLIENT_SECRET', undefined)
-    const db = openDb(':memory:')
+    const db = memDb()
     upsertToken(db, 'youtube', 'chan', 'rt-stored', 'scope', TEST_KEY)
     await expect(
       youtubeAdapter().resolveCredential(db, 'chan', TEST_KEY, new Date()),

@@ -2,16 +2,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { openDb } from '../db/index.js'
 import { fakeStore } from '../storage/fake.js'
 import { backfillStore } from './backfill-store.js'
+import { memDb } from '../testing/db.js'
 
 describe('backfillStore', () => {
   it('uploads library rows that have a local file but no object row', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-backfill-'))
     const videoPath = path.join(dir, 'final.mp4')
     writeFileSync(videoPath, Buffer.from('mp4 bytes'))
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-1','example','volume','t','done')",
     ).run()
@@ -31,7 +31,7 @@ describe('backfillStore', () => {
   })
 
   it('skips rows whose local file is gone', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-1','example','volume','t','done')",
     ).run()
@@ -55,7 +55,7 @@ describe('backfillStore', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-backfill-'))
     const videoPath = path.join(dir, 'final.mp4')
     writeFileSync(videoPath, Buffer.from('mp4 bytes'))
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-1','example','volume','t','done')",
     ).run()
@@ -75,7 +75,7 @@ describe('backfillStore', () => {
   })
 
   it('leaves rows that already have an object row alone', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-1','example','volume','t','done')",
     ).run()

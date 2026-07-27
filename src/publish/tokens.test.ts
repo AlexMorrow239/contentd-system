@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { openDb } from '../db/index.js'
 import { loadToken, upsertToken } from './tokens.js'
+import { memDb } from '../testing/db.js'
 
 // AES-256-GCM key sized for crypto.ts's parseTokenKey output; filler bytes
 // are fine — these tests never touch parseTokenKey or a real secret.
@@ -8,7 +8,7 @@ const TEST_KEY = Buffer.alloc(32, 0x42)
 
 describe('upsertToken / loadToken', () => {
   it('round-trips a stored refresh token through encrypt/decrypt', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     upsertToken(
       db,
       'youtube',
@@ -25,7 +25,7 @@ describe('upsertToken / loadToken', () => {
   })
 
   it('overwrites the token and scopes on re-upsert, keeping a single row', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     upsertToken(db, 'youtube', 'chan-a', 'rt-test-token-1', 'scope-a', TEST_KEY)
     upsertToken(db, 'youtube', 'chan-a', 'rt-test-token-2', 'scope-b', TEST_KEY)
     expect(loadToken(db, 'youtube', 'chan-a', TEST_KEY)).toEqual({
@@ -38,13 +38,13 @@ describe('upsertToken / loadToken', () => {
   })
 
   it('returns null when no row exists for that platform/channel', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(loadToken(db, 'youtube', 'no-such-channel', TEST_KEY)).toBeNull()
     db.close()
   })
 
   it('returns null and writes one stderr line naming platform+channel when the stored ciphertext is tampered', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     upsertToken(db, 'youtube', 'chan-a', 'rt-test-token', 'scope-a', TEST_KEY)
     db.prepare(
       'UPDATE oauth_tokens SET token_ciphertext = ? WHERE platform = ? AND channel = ?',
@@ -62,7 +62,7 @@ describe('upsertToken / loadToken', () => {
 
   describe('expires_at', () => {
     it('stores and returns a non-null expiry', () => {
-      const db = openDb(':memory:')
+      const db = memDb()
       upsertToken(
         db,
         'instagram',
@@ -80,7 +80,7 @@ describe('upsertToken / loadToken', () => {
     })
 
     it('defaults expiresAt to null when omitted (YouTube has no expiry)', () => {
-      const db = openDb(':memory:')
+      const db = memDb()
       upsertToken(db, 'youtube', 'chan', 'rt-token', 'scope', TEST_KEY)
       expect(loadToken(db, 'youtube', 'chan', TEST_KEY)).toEqual({
         token: 'rt-token',
@@ -90,7 +90,7 @@ describe('upsertToken / loadToken', () => {
     })
 
     it('an upsert overwrites a prior expiry', () => {
-      const db = openDb(':memory:')
+      const db = memDb()
       upsertToken(db, 'instagram', 'chan', 't1', 'scope', TEST_KEY, '2026-08-01T00:00:00.000Z')
       upsertToken(db, 'instagram', 'chan', 't2', 'scope', TEST_KEY, '2026-09-01T00:00:00.000Z')
       expect(loadToken(db, 'instagram', 'chan', TEST_KEY)?.expiresAt).toBe(

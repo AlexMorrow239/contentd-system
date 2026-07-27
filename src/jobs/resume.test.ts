@@ -10,6 +10,7 @@ import type { JobContext, StageDef } from './types.js'
 import { pipelineStages } from './pipeline.js'
 import { claimJobForResume, ResumeError, resumeJob } from './resume.js'
 import { runCli } from '../testing/run-cli.js'
+import { memDb } from '../testing/db.js'
 
 // Real minimal channel TOML (plan-1 shape; [scout] is optional): resumeJob
 // loads the channel from disk, so the fixture must round-trip loadChannelConfig.
@@ -58,7 +59,7 @@ describe('resumeJob', () => {
   let runsRoot: string
 
   beforeEach(() => {
-    db = openDb(':memory:')
+    db = memDb()
     channelsDir = mkdtempSync(join(tmpdir(), 'brainrot-channels-'))
     runsRoot = mkdtempSync(join(tmpdir(), 'brainrot-runs-'))
     writeFileSync(join(channelsDir, 'resume-test.toml'), CHANNEL_TOML)

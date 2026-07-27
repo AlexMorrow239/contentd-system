@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../../db/index.js'
 import { countTopics, topicChannels } from './topics.js'
+import { memDb } from '../../testing/db.js'
 
 let seq = 0
 function seedTopic(
@@ -39,7 +39,7 @@ function seedTopic(
 
 describe('topicChannels', () => {
   it('lists distinct channels alphabetically, straight from the topics table', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { channel: 'space' })
     seedTopic(db, { channel: 'ocean' })
     seedTopic(db, { channel: 'space' })
@@ -48,7 +48,7 @@ describe('topicChannels', () => {
   })
 
   it('is unaffected by any status/channel filter — always the full dropdown', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { channel: 'space', status: 'rejected' })
     seedTopic(db, { channel: 'ocean', status: 'candidate' })
     expect(topicChannels(db)).toEqual(['ocean', 'space'])
@@ -58,7 +58,7 @@ describe('topicChannels', () => {
 
 describe('countTopics', () => {
   it('counts all matching rows regardless of any limit applied elsewhere', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db)
     seedTopic(db)
     expect(countTopics(db)).toBe(2)
@@ -66,7 +66,7 @@ describe('countTopics', () => {
   })
 
   it('applies the same channel and status filters as listTopics', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { channel: 'space', status: 'candidate' })
     seedTopic(db, { channel: 'space', status: 'rejected' })
     seedTopic(db, { channel: 'ocean', status: 'candidate' })

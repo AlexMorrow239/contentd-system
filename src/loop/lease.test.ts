@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { openDb } from '../db/index.js'
 import {
   acquireLease,
   extendLease,
@@ -7,6 +6,7 @@ import {
   PUBLISH_LEASE_TTL_MS,
   releaseLease,
 } from './lease.js'
+import { memDb } from '../testing/db.js'
 
 // Only the boundary test fakes the clock; restoring here keeps a failing
 // assertion inside it from leaking a frozen clock into the rest of the file.
@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe('leases schema', () => {
   it('openDb creates the leases table with name as primary key', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const rows = db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='leases'")
       .all()
@@ -38,7 +38,7 @@ describe('leases schema', () => {
 
 describe('acquireLease', () => {
   it('acquires a free lease and stamps holder + expiry exactly ttl ahead', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(PRODUCE_LEASE_TTL_MS).toBe(5_400_000)
     const before = Date.now()
     expect(acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
@@ -54,7 +54,7 @@ describe('acquireLease', () => {
   })
 
   it('refuses while the lease is held — even for the same holder', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
     // a tick landing during a long render: the NORMAL no-op case
     expect(acquireLease(db, 'produce', 'pid:200', PRODUCE_LEASE_TTL_MS)).toBe(false)
@@ -70,7 +70,7 @@ describe('acquireLease', () => {
   })
 
   it('takes over an expired lease, replacing the holder', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO leases (name, holder, expires_at) VALUES ('produce', 'pid:dead', '2020-01-01T00:00:00.000Z')",
     ).run()
@@ -87,7 +87,7 @@ describe('acquireLease', () => {
   // acquire instant is already expired. Frozen clock, because the boundary is
   // the one instant the wall clock cannot be made to land on.
   it('treats an expiry equal to the acquire instant as expired, one millisecond later as held', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const now = new Date('2026-07-20T12:00:00.000Z')
     vi.useFakeTimers()
     vi.setSystemTime(now)
@@ -103,7 +103,7 @@ describe('acquireLease', () => {
 
 describe('releaseLease', () => {
   it('deletes only when the holder matches', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)
     // wrong holder: no-op — the lease stays held
     releaseLease(db, 'produce', 'pid:999')
@@ -115,7 +115,7 @@ describe('releaseLease', () => {
   })
 
   it('an evicted holder cannot release the takeover lease', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO leases (name, holder, expires_at) VALUES ('produce', 'pid:dead', '2020-01-01T00:00:00.000Z')",
     ).run()
@@ -132,7 +132,7 @@ describe('releaseLease', () => {
 
 describe('extendLease', () => {
   it('pushes the expiry a fresh ttl ahead for the holding process', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)
     // A drifted expiry stands in for a render that outlived its lease.
     db.prepare(
@@ -149,7 +149,7 @@ describe('extendLease', () => {
   })
 
   it('refuses when the holder differs — a lost lease is never re-acquired', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     acquireLease(db, 'produce', 'pid:new', PRODUCE_LEASE_TTL_MS)
     // The evicted holder's heartbeat fires late: it must neither extend nor
     // steal back the lease the takeover process now owns.
@@ -162,7 +162,7 @@ describe('extendLease', () => {
   })
 
   it('refuses when the lease row is gone', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(extendLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(false)
     expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
     db.close()

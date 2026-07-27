@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { fakeStore } from '../storage/fake.js'
 import { StorageError, type ObjectStore } from '../storage/types.js'
 import { publishMedia } from './media.js'
+import { tmpDir } from '../testing/tmp.js'
 
 const BODY = Buffer.from('local bytes', 'utf8')
 const REMOTE = Buffer.from('remote bytes', 'utf8')
@@ -39,16 +39,11 @@ describe('publishMedia', () => {
   let localPath: string
 
   beforeEach(async () => {
-    dir = mkdtempSync(path.join(tmpdir(), 'brainrot-media-'))
-    storeRoot = mkdtempSync(path.join(tmpdir(), 'brainrot-media-store-'))
+    dir = tmpDir('brainrot-media-')
+    storeRoot = tmpDir('brainrot-media-store-')
     store = fakeStore(storeRoot)
     localPath = path.join(dir, 'final.mp4')
     await store.put('videos/example/job-1.mp4', REMOTE, 'video/mp4')
-  })
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
-    rmSync(storeRoot, { recursive: true, force: true })
   })
 
   it('prefers the local file when it exists', async () => {

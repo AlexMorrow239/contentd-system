@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
-import { openDb } from '../db/index.js'
 import { BudgetExceededError } from '../jobs/costs.js'
 import { DEFAULT_SCOUT } from '../config/channel.js'
 import type { ChannelConfig, ScoutConfig } from '../config/channel.js'
@@ -13,6 +12,7 @@ import {
   scoutAll,
   scoutChannel,
 } from './scout.js'
+import { memDb } from '../testing/db.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {
@@ -74,7 +74,7 @@ afterEach(() => {
 
 describe('scoutChannel', () => {
   it('fetches, scores, inserts, and ledgers under the scout sentinel', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const channel = scoutedChannel() // minScore 60
     const fetchImpl = fetchStub({
       '/r/space/.rss': redditFeed([
@@ -126,7 +126,7 @@ describe('scoutChannel', () => {
   })
 
   it('re-runs are free: known hashes are filtered before the Haiku call', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
       '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
@@ -154,7 +154,7 @@ describe('scoutChannel', () => {
   })
 
   it('isolates a failing source: one sourceErrors entry, other sources still scout', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const channel = scoutedChannel({ subreddits: ['space', 'askscience'] })
     const fetchImpl = fetchStub({
       '/r/space/.rss': new Error('connect timeout'),
@@ -175,7 +175,7 @@ describe('scoutChannel', () => {
   })
 
   it('isolates a source whose constructor throws on a malformed rss URL', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     // rssSource runs `new URL(url)` at construction; a malformed feed URL must
     // fault only that source, not abort the whole channel before isolation.
     const channel = scoutedChannel({ subreddits: ['space'], rss: ['not a url'] })
@@ -199,7 +199,7 @@ describe('scoutChannel', () => {
 
   it('gates on the global day budget BEFORE spending', async () => {
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
-    const db = openDb(':memory:')
+    const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
       '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
@@ -216,7 +216,7 @@ describe('scoutChannel', () => {
   })
 
   it('ledgers spend from a paid-but-invalid scoring response, then rethrows', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
       '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
@@ -236,7 +236,7 @@ describe('scoutChannel', () => {
   })
 
   it('rolls the ledger row back when the topic insert fails (one transaction)', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
       '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
@@ -259,7 +259,7 @@ describe('scoutChannel', () => {
 
 describe('scoutAll', () => {
   it('skips sourceless channels and isolates a scoring failure per channel', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const manualOnly = testChannel({ name: 'manual-only' }) // DEFAULT_SCOUT: no sources
     const bad = scoutedChannel({ subreddits: ['failing'] }, 'bad')
@@ -296,7 +296,7 @@ describe('scoutAll', () => {
   })
 
   it('throws AllSourcesFailedError only when every source everywhere failed', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
     // fetchStub({}) rejects every URL — total source failure
@@ -323,7 +323,7 @@ describe('scoutAll', () => {
   })
 
   it('throws AllChannelsScoringFailedError when sources are fine but every channel failed scoring', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
@@ -357,7 +357,7 @@ describe('scoutAll', () => {
   // one meant every scout firing exited 1 for the rest of the UTC day.
   it('stays healthy when every channel is blocked by the global day budget', async () => {
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
-    const db = openDb(':memory:')
+    const db = memDb()
     const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
@@ -377,7 +377,7 @@ describe('scoutAll', () => {
   // The mixed case still fails: one channel out of budget does not excuse the
   // other dying on an expired key.
   it('still throws when a real scoring failure sits alongside a budget-blocked channel', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
@@ -412,7 +412,7 @@ describe('scoutAll', () => {
   })
 
   it('stays healthy when a run genuinely finds nothing new (every item already known)', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const fetchImpl = fetchStub({
       '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),

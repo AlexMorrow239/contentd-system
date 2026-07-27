@@ -1,6 +1,5 @@
-import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { describe, expect, it, vi } from 'vitest'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import type Anthropic from '@anthropic-ai/sdk'
 import { loadChannelsDir } from '../config/channel.js'
@@ -17,21 +16,7 @@ import { stubStorageEnv } from '../testing/storage.js'
 import type { PlatformMeta, PublishAdapter } from '../publish/types.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
-
-const cleanup: string[] = []
-function tmp(prefix: string): string {
-  const d = mkdtempSync(path.join(tmpdir(), prefix))
-  cleanup.push(d)
-  return d
-}
-
-afterAll(() => {
-  for (const d of cleanup) rmSync(d, { recursive: true, force: true })
-})
-
-afterEach(() => {
-  vi.unstubAllEnvs()
-})
+import { tmpDir } from '../testing/tmp.js'
 
 // Reddit .rss fixture: the public Atom feed redditSource reads keylessly,
 // <entry><id> carrying the t3_ fullname. One post scores above the channel
@@ -136,7 +121,7 @@ function fakeStagesFor(calls: StageName[]): () => StageDef[] {
 
 describe('golden-path loop e2e', () => {
   it('scouts a fixture feed into the topic queue, then one tick produces it into the library', async () => {
-    const workspace = tmp('brainrot-loop-e2e-')
+    const workspace = tmpDir('brainrot-loop-e2e-')
     const channelsDir = path.join(workspace, 'channels')
     const runsRoot = path.join(workspace, 'runs')
     mkdirSync(channelsDir, { recursive: true })

@@ -1,9 +1,9 @@
 import type { Database } from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
-import { openDb } from '../db/index.js'
 import { fakeStore } from '../storage/fake.js'
 import { preflight } from './preflight.js'
 import { tmpDir } from '../testing/tmp.js'
+import { memDb } from '../testing/db.js'
 
 const VIDEO = Buffer.concat([
   Buffer.from([0, 0, 0, 24]),
@@ -37,7 +37,7 @@ function servingFetch(body: Buffer, contentType = 'video/mp4', status = 200): ty
 
 describe('preflight', () => {
   it('passes every check for a well-formed stored object', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seed(db)
     const store = fakeStore(tmpDir('pf-ok-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
@@ -53,7 +53,7 @@ describe('preflight', () => {
   })
 
   it('fails when the URL returns a non-200', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seed(db)
     const store = fakeStore(tmpDir('pf-403-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
@@ -69,7 +69,7 @@ describe('preflight', () => {
   })
 
   it('fails on a wrong content type', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seed(db)
     const store = fakeStore(tmpDir('pf-ct-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
@@ -85,7 +85,7 @@ describe('preflight', () => {
   })
 
   it('fails on a byte-length mismatch against library_objects', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seed(db)
     const store = fakeStore(tmpDir('pf-len-'))
     await store.put('videos/example/job-1.mp4', VIDEO, 'video/mp4')
@@ -101,7 +101,7 @@ describe('preflight', () => {
   })
 
   it('fails when the body is not an MP4', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seed(db)
     const store = fakeStore(tmpDir('pf-magic-'))
     const notMp4 = Buffer.alloc(VIDEO.length, 1)
@@ -118,7 +118,7 @@ describe('preflight', () => {
   })
 
   it('throws a legible error when the job has no stored object', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-2','example','volume','t','done')",
     ).run()

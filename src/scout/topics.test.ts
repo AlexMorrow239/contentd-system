@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../db/index.js'
 import {
   claimTopic,
   eligibleTopic,
@@ -13,6 +12,7 @@ import {
   rejectTopics,
   requeueTopic,
 } from './topics.js'
+import { memDb } from '../testing/db.js'
 
 // Raw-insert seed: the DAO only ever writes status/job_id transitions, so
 // tests control every column (created_at included) directly.
@@ -71,7 +71,7 @@ function seedTopic(
 
 describe('topics table schema', () => {
   it('creates the table with candidate default and UNIQUE (channel, dedupe_hash)', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     db.prepare(
       "INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) VALUES ('chan-a', 'T', 'R', 's', 'u', 'h1', 80, 'r')",
     ).run()
@@ -100,7 +100,7 @@ describe('topics table schema', () => {
   })
 
   it('rejects a status outside the lifecycle CHECK', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(() => seedTopic(db, { status: 'simmering' })).toThrow(/CHECK/)
     // 'approved' was a valid status under the old premium-tier lifecycle;
     // it is no longer part of the CHECK.
@@ -111,7 +111,7 @@ describe('topics table schema', () => {
 
 describe('insertTopics', () => {
   it('inserts a batch and reports only rows actually written', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const base = {
       title: 'Why the Moon is drifting away',
       rawTitle: 'Moon drifting 3.8cm/yr',
@@ -144,7 +144,7 @@ describe('insertTopics', () => {
   })
 
   it('returns 0 for an empty batch', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(insertTopics(db, [])).toBe(0)
     db.close()
   })
@@ -152,7 +152,7 @@ describe('insertTopics', () => {
 
 describe('knownHashes', () => {
   it('returns only hashes already stored for that channel', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { channel: 'chan-a', dedupeHash: 'h1' })
     // rejected rows are still "known" — they must never reach the scorer again
     seedTopic(db, { channel: 'chan-a', dedupeHash: 'h2', status: 'rejected' })
@@ -165,7 +165,7 @@ describe('knownHashes', () => {
 
 describe('recentTopicTitles', () => {
   it('returns non-rejected titles newest first, capped at the limit', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { title: 'oldest', createdAt: '2026-07-18T00:00:00.000Z' })
     seedTopic(db, { title: 'skipped', createdAt: '2026-07-19T00:00:00.000Z', status: 'rejected' })
     seedTopic(db, { title: 'middle', createdAt: '2026-07-19T12:00:00.000Z', status: 'used' })
@@ -186,7 +186,7 @@ describe('recentTopicTitles', () => {
   })
 
   it('defaults the limit to RECENT_TITLES_LIMIT (30)', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(RECENT_TITLES_LIMIT).toBe(30)
     for (let i = 0; i < 35; i++) {
       seedTopic(db, { createdAt: `2026-07-19T00:00:${String(i).padStart(2, '0')}.000Z` })
@@ -198,7 +198,7 @@ describe('recentTopicTitles', () => {
 
 describe('rejectTopics', () => {
   it('reject flips candidate only, leaves claimed/used alone, and reports the changed count', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const a = seedTopic(db) // candidate
     const b = seedTopic(db, { status: 'claimed', jobId: 'job-1' })
     const c = seedTopic(db, { status: 'used' })
@@ -220,7 +220,7 @@ describe('rejectTopics', () => {
 
 describe('claimTopic / markTopicUsedByJob', () => {
   it('claim binds the topic to its job and reports success', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const id = seedTopic(db) // candidate
     expect(claimTopic(db, id, 'job-42')).toBe(true)
     const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
@@ -232,7 +232,7 @@ describe('claimTopic / markTopicUsedByJob', () => {
   })
 
   it('claim never revives a rejected, used, or already-claimed topic', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     for (const status of ['rejected', 'used', 'claimed'] as const) {
       const id = seedTopic(db, { status, jobId: 'job-old' })
       expect(claimTopic(db, id, 'job-new')).toBe(false)
@@ -246,7 +246,7 @@ describe('claimTopic / markTopicUsedByJob', () => {
   })
 
   it('markTopicUsedByJob flips only the claimed row with that job id', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const claimed = seedTopic(db, { status: 'claimed', jobId: 'job-42' })
     const other = seedTopic(db, { status: 'claimed', jobId: 'job-7' })
     markTopicUsedByJob(db, 'job-42')
@@ -273,7 +273,7 @@ describe('requeueTopic', () => {
   }
 
   it('returns an orphaned claimed topic to the queue and unbinds its job', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const id = seedTopic(db, { status: 'claimed', jobId: 'job-dead' })
     seedJob(db, 'job-dead', 'failed')
     expect(requeueTopic(db, id)).toEqual({ ok: true })
@@ -286,7 +286,7 @@ describe('requeueTopic', () => {
   })
 
   it('requeues a topic whose job row is gone entirely', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const id = seedTopic(db, { status: 'claimed', jobId: 'job-vanished' })
     expect(requeueTopic(db, id)).toEqual({ ok: true })
     expect(
@@ -299,7 +299,7 @@ describe('requeueTopic', () => {
   // from the resume pass until an operator fixes the config, and until then
   // its topic is frozen out of the queue.
   it('requeues a topic held by a blocked job', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const id = seedTopic(db, { status: 'claimed', jobId: 'job-blocked' })
     seedJob(db, 'job-blocked', 'blocked')
     expect(requeueTopic(db, id)).toEqual({ ok: true })
@@ -315,7 +315,7 @@ describe('requeueTopic', () => {
   // markTopicUsedByJob keys on it, so the old job later resuming to completion
   // matches nothing rather than yanking the requeued topic to 'used'.
   it('leaves the requeued topic alone when its old job later completes', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const id = seedTopic(db, { status: 'claimed', jobId: 'job-blocked' })
     seedJob(db, 'job-blocked', 'blocked')
     expect(requeueTopic(db, id)).toEqual({ ok: true })
@@ -329,7 +329,7 @@ describe('requeueTopic', () => {
   })
 
   it('refuses while a queued or running job still holds the topic', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     for (const status of ['queued', 'running'] as const) {
       const jobId = `job-${status}`
       const id = seedTopic(db, { status: 'claimed', jobId })
@@ -351,7 +351,7 @@ describe('requeueTopic', () => {
   })
 
   it('refuses an unknown id and a topic that is not claimed', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(requeueTopic(db, 9999)).toEqual({ ok: false, reason: 'unknown' })
     const used = seedTopic(db, { status: 'used', jobId: 'job-old' })
     expect(requeueTopic(db, used)).toEqual({ ok: false, reason: 'not-claimed', status: 'used' })
@@ -367,7 +367,7 @@ describe('requeueTopic', () => {
 
 describe('listTopics', () => {
   it('maps rows to camelCase and returns newest first', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { title: 'old', createdAt: '2026-07-19T00:00:00.000Z' })
     const newestId = seedTopic(db, {
       title: 'new',
@@ -401,7 +401,7 @@ describe('listTopics', () => {
   })
 
   it('filters by channel and status independently', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { channel: 'chan-a', status: 'candidate' })
     seedTopic(db, { channel: 'chan-a', status: 'claimed', jobId: 'job-1' })
     seedTopic(db, { channel: 'chan-b', status: 'claimed', jobId: 'job-2' })
@@ -412,7 +412,7 @@ describe('listTopics', () => {
   })
 
   it('is unlimited by default, so existing CLI callers see every row', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db)
     seedTopic(db)
     seedTopic(db)
@@ -421,7 +421,7 @@ describe('listTopics', () => {
   })
 
   it('honours an optional limit for callers that need one bounded (the dashboard)', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { createdAt: '2026-07-19T00:00:00.000Z' })
     seedTopic(db, { createdAt: '2026-07-20T00:00:00.000Z' })
     seedTopic(db, { createdAt: '2026-07-21T00:00:00.000Z' })
@@ -435,7 +435,7 @@ describe('listTopics', () => {
 
 describe('eligibleTopic', () => {
   it('takes only candidate, highest score first, ignoring every other status', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { score: 70, status: 'candidate', title: 'winner' })
     seedTopic(db, { score: 95, status: 'rejected', title: 'rejected' })
     seedTopic(db, { score: 99, status: 'used', title: 'used' })
@@ -446,7 +446,7 @@ describe('eligibleTopic', () => {
   })
 
   it('breaks score ties oldest first and returns null on an empty queue', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedTopic(db, { score: 80, createdAt: '2026-07-20T02:00:00.000Z', title: 'later' })
     seedTopic(db, { score: 80, createdAt: '2026-07-20T01:00:00.000Z', title: 'earlier' })
     expect(eligibleTopic(db, 'chan-a')?.title).toBe('earlier')

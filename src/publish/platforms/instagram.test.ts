@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { openDb } from '../../db/index.js'
 import { loadToken, upsertToken } from '../tokens.js'
 import type { PublishMedia } from '../types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../types.js'
@@ -13,6 +12,7 @@ import {
   instagramUploadTarget,
   refreshLongLivedToken,
 } from './instagram.js'
+import { memDb } from '../../testing/db.js'
 
 const TEST_KEY = Buffer.alloc(32, 0x42)
 
@@ -362,14 +362,14 @@ describe('instagramAdapter', () => {
   })
 
   it('hasCredential is true only with a stored token', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(instagramAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(false)
     upsertToken(db, 'instagram', 'chan', 'tok', 'scope', TEST_KEY, '2027-01-01T00:00:00.000Z')
     expect(instagramAdapter().hasCredential(db, 'chan', TEST_KEY)).toBe(true)
   })
 
   it('resolveCredential returns the stored token unchanged when far from expiry', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const farExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString()
     upsertToken(db, 'instagram', 'chan', 'tok-stored', 'scope', TEST_KEY, farExpiry)
     const credential = await instagramAdapter().resolveCredential(db, 'chan', TEST_KEY, new Date())
@@ -377,7 +377,7 @@ describe('instagramAdapter', () => {
   })
 
   it('resolveCredential refreshes and persists a new token inside the refresh window', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const soonExpiry = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString() // inside 10-day window
     upsertToken(db, 'instagram', 'chan', 'tok-old', 'scope', TEST_KEY, soonExpiry)
     const fetchImpl: typeof fetch = async () =>
@@ -396,7 +396,7 @@ describe('instagramAdapter', () => {
   })
 
   it('resolveCredential maps a failed refresh to PublishError(auth)', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const soonExpiry = new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString()
     upsertToken(db, 'instagram', 'chan', 'tok-old', 'scope', TEST_KEY, soonExpiry)
     const fetchImpl: typeof fetch = async () => new Response('', { status: 500 })
@@ -406,7 +406,7 @@ describe('instagramAdapter', () => {
   })
 
   it('resolveCredential throws PublishError(auth) with no stored token', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     await expect(
       instagramAdapter().resolveCredential(db, 'chan', TEST_KEY, new Date()),
     ).rejects.toMatchObject({ kind: 'auth' })

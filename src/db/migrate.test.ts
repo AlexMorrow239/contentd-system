@@ -1,11 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Database } from 'better-sqlite3'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openDb } from './index.js'
 import { migrate } from './migrate.js'
+import { tmpDir } from '../testing/tmp.js'
 
 // The CURRENT canonical schema — the same text openDb hands migrate(). Read
 // from disk rather than copied so the rebuild is exercised against whatever
@@ -95,7 +95,7 @@ const CURRENT_SHAPE_NO_INDEX = `
 `
 
 function oldShapeDb(): { db: Database; dir: string } {
-  const dir = mkdtempSync(join(tmpdir(), 'migrate-'))
+  const dir = tmpDir('brainrot-migrate-')
   const db = new BetterSqlite3(join(dir, 'test.db'))
   db.pragma('foreign_keys = OFF')
   db.exec(OLD_SCHEMA)
@@ -112,7 +112,7 @@ function oldShapeDb(): { db: Database; dir: string } {
  * publishes FK names).
  */
 function oldShapeFile(ddl: string, seed?: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'migrate-'))
+  const dir = tmpDir('brainrot-migrate-')
   cleanupDirs.push(dir)
   const dbPath = join(dir, 'test.db')
   const raw = new BetterSqlite3(dbPath)
@@ -204,7 +204,7 @@ describe('migrate', () => {
   it('is a no-op against a database already on the new shape', () => {
     // A DB created fresh via the current schema.sql already has no CHECK, no
     // `slot` column, and an expires_at — migrate() must not touch it.
-    const dir = mkdtempSync(join(tmpdir(), 'migrate-'))
+    const dir = tmpDir('brainrot-migrate-')
     cleanupDirs.push(dir)
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
@@ -256,7 +256,7 @@ describe('migrate — slot to seq', () => {
   })
 
   it('leaves a fresh database untouched', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'migrate-'))
+    const dir = tmpDir('brainrot-migrate-')
     cleanupDirs.push(dir)
     const db = openDb(join(dir, 'fresh.db'))
     expect(() => db.prepare('SELECT seq FROM publishes').all()).not.toThrow()

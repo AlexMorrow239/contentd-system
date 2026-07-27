@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../db/index.js'
 import { parseLibraryJobIds } from '../cli.js'
 import { fakeStore } from '../storage/fake.js'
 import type { ObjectStore } from '../storage/types.js'
@@ -14,6 +13,7 @@ import {
 import type { LibraryState } from './library.js'
 import { runCli } from '../testing/run-cli.js'
 import { tmpDir } from '../testing/tmp.js'
+import { memDb } from '../testing/db.js'
 
 // Raw-insert seed: the DAO only ever writes library.state, so tests control
 // every other column — the owning jobs row included — directly.
@@ -65,7 +65,7 @@ function seedLibrary(
 
 describe('listLibrary', () => {
   it('joins jobs for channel/topic and returns newest created_at first', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedLibrary(db, seedJob(db, { id: 'j-old', topic: 'old topic' }), {
       createdAt: '2026-07-19T00:00:00.000Z',
     })
@@ -88,7 +88,7 @@ describe('listLibrary', () => {
   })
 
   it('filters by state and channel independently', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     seedLibrary(db, seedJob(db, { channel: 'chan-a' }), { state: 'ready' })
     seedLibrary(db, seedJob(db, { channel: 'chan-a' }), { state: 'blocked' })
     seedLibrary(db, seedJob(db, { channel: 'chan-b' }), { state: 'ready' })
@@ -102,7 +102,7 @@ describe('listLibrary', () => {
 
 describe('approveLibrary', () => {
   it('flips needs-review rows to ready and reports the changed count; other ids are skipped', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const a = seedJob(db, { id: 'a' }) // needs-review
     seedLibrary(db, a, { state: 'needs-review' })
     const b = seedJob(db, { id: 'b' })
@@ -125,7 +125,7 @@ describe('approveLibrary', () => {
   })
 
   it('returns 0 when no id is in needs-review state (or the batch is empty)', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const ready = seedJob(db, { id: 'ready-job' })
     seedLibrary(db, ready, { state: 'ready' })
     const blocked = seedJob(db, { id: 'blocked-job' })
@@ -141,7 +141,7 @@ describe('approveLibrary', () => {
 
 describe('rejectLibrary', () => {
   it('flips needs-review, ready, and published rows to blocked; unknown ids are skipped', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const a = seedJob(db, { id: 'a' })
     seedLibrary(db, a, { state: 'needs-review' })
     const b = seedJob(db, { id: 'b' })
@@ -168,7 +168,7 @@ describe('rejectLibrary', () => {
   // be pulled out of another platform's queue after the fact — 'published'
   // is no longer immutable history the way it was before cross-posting.
   it('accepts a published row and flips it to blocked', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const jobId = seedJob(db, { id: 'job-1' })
     seedLibrary(db, jobId, { state: 'published' })
 
@@ -183,7 +183,7 @@ describe('rejectLibrary', () => {
 
 describe('libraryObjectKeys', () => {
   it('returns the keys for the given job ids, skipping ids with no object row', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const jobId = seedJob(db, { id: 'job-1' })
     seedLibrary(db, jobId, { state: 'ready' })
     db.prepare(
@@ -196,7 +196,7 @@ describe('libraryObjectKeys', () => {
   })
 
   it('returns an empty array for no ids', () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     expect(libraryObjectKeys(db, [])).toEqual([])
     db.close()
   })
@@ -222,7 +222,7 @@ describe('deleteRejectedObjects', () => {
   }
 
   it('is a no-op for an empty object list', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const store = fakeStore(tmpDir('brainrot-reject-'))
     const res = await deleteRejectedObjects({ db, objects: [], store })
     expect(res).toEqual({ deleted: [], failed: [] })
@@ -230,7 +230,7 @@ describe('deleteRejectedObjects', () => {
   })
 
   it('deletes every object and clears every library_objects row when all succeed', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const a = seedJob(db, { id: 'a' })
     const b = seedJob(db, { id: 'b' })
     seedObjectRow(db, a, 'videos/chan-a/a.mp4')
@@ -256,7 +256,7 @@ describe('deleteRejectedObjects', () => {
   })
 
   it('one key throwing lands it in failed, still processes the rest, and warns with the key', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const a = seedJob(db, { id: 'a' })
     const b = seedJob(db, { id: 'b' })
     const c = seedJob(db, { id: 'c' })
@@ -295,7 +295,7 @@ describe('deleteRejectedObjects', () => {
   })
 
   it('leaves the library_objects row of a failed delete in place so the orphan is still discoverable', async () => {
-    const db = openDb(':memory:')
+    const db = memDb()
     const jobId = seedJob(db, { id: 'job-1' })
     seedObjectRow(db, jobId, 'videos/chan-a/job-1.mp4')
 

@@ -1,29 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../../db/index.js'
 import type { ChannelConfig } from '../../config/channel.js'
+import { testChannel } from '../../testing/channel.js'
+import { memDb } from '../../testing/db.js'
 import { buildOverview } from './overview.js'
 
 function channel(name: string, perDayUsdMicros: number): ChannelConfig {
-  return {
-    name,
-    niche: [],
-    videosPerDay: 2,
-    voice: { volume: 'af_heart' },
-    captionStyle: {
-      font: 'Inter',
-      fontSizePx: 80,
-      activeColor: '#fff',
-      inactiveColor: '#888',
-      strokePx: 8,
-    },
-    bgDir: [],
-    bgmDir: '',
-    budget: { perVideoUsdMicros: 500_000, perDayUsdMicros },
-    scriptModel: 'claude-sonnet-5',
-    scout: { subreddits: [], rss: [], minScore: 60, perSourceLimit: 25 },
-    publish: null,
-  }
+  return testChannel({ name, budget: { perVideoUsdMicros: 500_000, perDayUsdMicros } })
 }
 
 const NOW = new Date('2026-07-25T12:00:00Z')
@@ -32,7 +15,7 @@ describe('buildOverview', () => {
   let db: Database
 
   beforeEach(() => {
-    db = openDb(':memory:')
+    db = memDb()
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
   })
 

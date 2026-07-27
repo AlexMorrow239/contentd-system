@@ -2,12 +2,12 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../../db/index.js'
 import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from './jobs.js'
 import { tmpDir } from '../../testing/tmp.js'
+import { memDb } from '../../testing/db.js'
 
 function seed(): Database {
-  const db = openDb(':memory:')
+  const db = memDb()
   db.prepare(
     'INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) ' +
       "VALUES ('j1','space','volume','Why Venus is hot','failed','2026-07-24T10:00:00.000Z',NULL)",

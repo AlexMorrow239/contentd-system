@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../../db/index.js'
 import { countLibraryEntries, libraryChannels, listLibraryEntries } from './library.js'
+import { memDb } from '../../testing/db.js'
 
 function seed(): Database {
-  const db = openDb(':memory:')
+  const db = memDb()
   db.prepare(
     "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
   ).run()
