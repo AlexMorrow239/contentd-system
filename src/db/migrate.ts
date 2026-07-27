@@ -14,6 +14,18 @@ function hasColumn(db: Database, table: string, column: string): boolean {
   return rows.some((r) => r.name === column)
 }
 
+// PRAGMA table_info returns an empty list for a missing table rather than
+// throwing, so hasColumn cannot distinguish "no such column" from "no such
+// table" — and an ADD COLUMN against the latter throws. openDb execs
+// schema.sql first so every table exists in production; this keeps a step
+// honest when called on a bare handle.
+function tableExists(db: Database, table: string): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table)
+  return row !== undefined
+}
+
 function publishesHasOldCheck(db: Database): boolean {
   const row = db
     .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'publishes'")
@@ -161,6 +173,12 @@ export function migrate(
 ): void {
   if (!hasColumn(db, 'oauth_tokens', 'expires_at')) {
     db.exec('ALTER TABLE oauth_tokens ADD COLUMN expires_at TEXT')
+  }
+  // The submission target behind a scouted topic. Backfilled for existing rows
+  // by `brainrot topics prune-media`, which is the only thing that can recover
+  // it — topics.url is the comments permalink, not the target.
+  if (tableExists(db, 'topics') && !hasColumn(db, 'topics', 'target_url')) {
+    db.exec('ALTER TABLE topics ADD COLUMN target_url TEXT')
   }
   if (hasColumn(db, 'publishes', 'slot') || publishesHasOldCheck(db)) {
     rebuildPublishes(db, schemaSql)

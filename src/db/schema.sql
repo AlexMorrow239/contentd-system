@@ -36,7 +36,11 @@ CREATE TABLE IF NOT EXISTS topics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL, title TEXT NOT NULL,
   raw_title TEXT NOT NULL, source TEXT NOT NULL,
-  url TEXT NOT NULL, dedupe_hash TEXT NOT NULL,
+  -- url is the reddit COMMENTS permalink; target_url is what the submission
+  -- actually points at (an article, an image host, its own permalink for a
+  -- self post). Nullable: an RSS item has no submission target, and rows
+  -- written before this column existed have none either.
+  url TEXT NOT NULL, target_url TEXT, dedupe_hash TEXT NOT NULL,
   score INTEGER NOT NULL, reason TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'candidate'
     CHECK (status IN ('candidate','claimed','used','rejected')),

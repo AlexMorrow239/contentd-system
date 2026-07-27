@@ -170,6 +170,7 @@ export async function scoutChannel(
       rawTitle: candidate.title,
       source: candidate.sourceId,
       url: candidate.url,
+      targetUrl: candidate.targetUrl,
       dedupeHash: hash,
       score: s.score,
       reason: s.reason,

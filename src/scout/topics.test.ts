@@ -381,6 +381,7 @@ describe('listTopics', () => {
       jobId: 'job-1',
       createdAt: '2026-07-20T00:00:00.000Z',
     })
+    // An RSS item has no submission target, so target_url stays null.
     const rows = listTopics(db)
     expect(rows.map((r) => r.title)).toEqual(['new', 'old'])
     expect(rows[0]).toEqual({
@@ -390,6 +391,7 @@ describe('listTopics', () => {
       rawTitle: 'raw new',
       source: 'rss:example.com',
       url: 'https://example.com/new',
+      targetUrl: null,
       dedupeHash: 'h-new',
       score: 91,
       reason: 'hooky',

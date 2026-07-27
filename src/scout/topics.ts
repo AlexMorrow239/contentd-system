@@ -9,6 +9,10 @@ export interface TopicRow {
   rawTitle: string
   source: string
   url: string
+  // The submission target: what the post points at, as opposed to `url`,
+  // which is its comments permalink. Null for RSS items (no submission) and
+  // for rows written before the column existed.
+  targetUrl: string | null
   dedupeHash: string
   score: number
   reason: string
@@ -25,6 +29,7 @@ export interface NewTopic {
   rawTitle: string
   source: string
   url: string
+  targetUrl?: string
   dedupeHash: string
   score: number
   reason: string
@@ -32,7 +37,7 @@ export interface NewTopic {
 }
 
 const TOPIC_COLUMNS =
-  'id, channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id, created_at'
+  'id, channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status, job_id, created_at'
 
 interface DbTopicRow {
   id: number
@@ -41,6 +46,7 @@ interface DbTopicRow {
   raw_title: string
   source: string
   url: string
+  target_url: string | null
   dedupe_hash: string
   score: number
   reason: string
@@ -57,6 +63,7 @@ function toTopicRow(row: DbTopicRow): TopicRow {
     rawTitle: row.raw_title,
     source: row.source,
     url: row.url,
+    targetUrl: row.target_url,
     dedupeHash: row.dedupe_hash,
     score: row.score,
     reason: row.reason,
@@ -71,8 +78,8 @@ function toTopicRow(row: DbTopicRow): TopicRow {
 // a mid-run crash loses the whole batch, never half of it.
 export function insertTopics(db: Database, rows: NewTopic[]): number {
   const stmt = db.prepare(
-    'INSERT OR IGNORE INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT OR IGNORE INTO topics (channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   )
   const insertAll = db.transaction((batch: NewTopic[]) => {
     let inserted = 0
@@ -83,6 +90,7 @@ export function insertTopics(db: Database, rows: NewTopic[]): number {
         t.rawTitle,
         t.source,
         t.url,
+        t.targetUrl ?? null,
         t.dedupeHash,
         t.score,
         t.reason,

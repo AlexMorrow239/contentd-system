@@ -94,6 +94,28 @@ const CURRENT_SHAPE_NO_INDEX = `
   );
 `
 
+// The topics shape before target_url existed. Frozen here for the same reason
+// as the fixtures above: it must keep describing the OLD shape as schema.sql
+// moves on.
+const OLD_TOPICS = `
+CREATE TABLE IF NOT EXISTS topics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel TEXT NOT NULL, title TEXT NOT NULL,
+  raw_title TEXT NOT NULL, source TEXT NOT NULL,
+  url TEXT NOT NULL, dedupe_hash TEXT NOT NULL,
+  score INTEGER NOT NULL, reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'candidate'
+    CHECK (status IN ('candidate','claimed','used','rejected')),
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (channel, dedupe_hash)
+);
+`
+
+function colNames(db: Database, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name)
+}
+
 function oldShapeDb(): { db: Database; dir: string } {
   const dir = tmpDir('brainrot-migrate-')
   const db = new BetterSqlite3(join(dir, 'test.db'))
@@ -209,6 +231,58 @@ describe('migrate', () => {
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
     db.exec(CURRENT_SHAPE_NO_INDEX)
+    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+  })
+})
+
+describe('migrate — topics.target_url', () => {
+  // CURRENT_SHAPE_NO_INDEX carries the publishes and oauth_tokens tables
+  // migrate's *other* steps read, so these tests exercise the topics step
+  // against a database that is otherwise already current.
+  function topicsDb(ddl: string): Database {
+    const dir = tmpDir('brainrot-migrate-')
+    cleanupDirs.push(dir)
+    const db = new BetterSqlite3(join(dir, 'test.db'))
+    db.pragma('foreign_keys = OFF')
+    db.exec(CURRENT_SHAPE_NO_INDEX + ddl)
+    return db
+  }
+
+  it('adds target_url to a topics table that predates it', () => {
+    const db = topicsDb(OLD_TOPICS)
+    expect(colNames(db, 'topics')).not.toContain('target_url')
+
+    migrate(db, SCHEMA_SQL)
+
+    expect(colNames(db, 'topics')).toContain('target_url')
+  })
+
+  it('preserves existing rows, leaving the new column null', () => {
+    const db = topicsDb(OLD_TOPICS)
+    db.exec(
+      "INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) " +
+        "VALUES ('chan-a', 'A topic', 'A topic', 'reddit:r/space', 'https://e.invalid/x', 'h1', 80, 'seeded')",
+    )
+
+    migrate(db, SCHEMA_SQL)
+
+    expect(db.prepare('SELECT title, target_url FROM topics').all()).toEqual([
+      { title: 'A topic', target_url: null },
+    ])
+  })
+
+  it('is idempotent: a second run adds no duplicate column', () => {
+    const db = topicsDb(OLD_TOPICS)
+    migrate(db, SCHEMA_SQL)
+    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+    expect(colNames(db, 'topics').filter((n) => n === 'target_url')).toHaveLength(1)
+  })
+
+  it('skips the step entirely when there is no topics table', () => {
+    // openDb execs schema.sql before calling migrate, so topics always exists
+    // in production. The probe is what keeps a caller holding a bare handle —
+    // every fixture above — from hitting "no such table".
+    const db = topicsDb(OLD_JOBS)
     expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
   })
 })

@@ -10,6 +10,7 @@ function topic(overrides: Partial<TopicRow> = {}): TopicRow {
     rawTitle: 'why venus is hot',
     source: 'reddit:r/space',
     url: 'https://reddit.com/r/space/1',
+    targetUrl: null,
     dedupeHash: 'abc',
     score: 82,
     reason: 'strong hook',
