@@ -1,21 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
-import { BudgetExceededError } from '../jobs/costs.js'
-import { BrainrotError, classify } from '../errors.js'
-import { DEFAULT_SCOUT } from '../config/channel.js'
-import type { ChannelConfig, ScoutConfig } from '../config/channel.js'
-import { testChannel } from '../testing/channel.js'
-import type { FetchLike } from './sources/types.js'
-import { listTopics } from './topics.js'
+import { BudgetExceededError } from '../../jobs/costs.js'
+import { BrainrotError, classify } from '../../errors.js'
+import { DEFAULT_SCOUT } from '../../config/channel.js'
+import type { ChannelConfig, ScoutConfig } from '../../config/channel.js'
+import { testChannel } from '../../testing/channel.js'
+import type { FetchLike } from '../sources/types.js'
+import { listTopics } from '../topics.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
   ScoutRunFailedError,
   scoutAll,
   scoutChannel,
-} from './scout.js'
-import type { ScoutChannelResult } from './scout.js'
-import { memDb } from '../testing/db.js'
+} from '../scout.js'
+import type { ScoutChannelResult } from '../scout.js'
+import { memDb } from '../../testing/db.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {

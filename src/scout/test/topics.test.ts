@@ -11,8 +11,8 @@ import {
   recentTopicTitles,
   rejectTopics,
   requeueTopic,
-} from './topics.js'
-import { memDb } from '../testing/db.js'
+} from '../topics.js'
+import { memDb } from '../../testing/db.js'
 
 // Raw-insert seed: the DAO only ever writes status/job_id transitions, so
 // tests control every column (created_at included) directly.

@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
-import { PRICE_TABLE } from '../providers/anthropic.js'
-import type { TrendCandidate } from './sources/types.js'
+import { PRICE_TABLE } from '../../providers/anthropic.js'
+import type { TrendCandidate } from '../sources/types.js'
 import {
   ESTIMATED_SCOUT_COST_MICROS,
   SCOUT_MAX_TOKENS,
   SCOUT_MODEL,
   candidateLine,
   scoreCandidates,
-} from './score.js'
+} from '../score.js'
 
 // Client injection seam (script.test.ts pattern): a plain object with a
 // vi.fn() create — vitest constructor mocks are never needed here.
