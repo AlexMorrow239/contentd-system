@@ -9,6 +9,7 @@ import {
   libraryObjectKeys,
   listLibrary,
   pendingInventory,
+  reclaimedUnreviewedJobs,
   rejectLibrary,
 } from '../library.js'
 import type { LibraryState } from '../library.js'
@@ -118,7 +119,7 @@ describe('approveLibrary', () => {
     seedLibrary(db, c, { state: 'needs-review' })
 
     // b is not needs-review and 'no-such-job' does not exist: both silently skipped
-    expect(approveLibrary(db, [a, b, c, 'no-such-job'])).toBe(2)
+    expect(approveLibrary(db, [a, b, c, 'no-such-job'])).toEqual({ approved: 2, reclaimed: [] })
     const states = db.prepare('SELECT job_id, state FROM library ORDER BY job_id').all() as {
       job_id: string
       state: string
@@ -140,8 +141,61 @@ describe('approveLibrary', () => {
     const published = seedJob(db, { id: 'published-job' })
     seedLibrary(db, published, { state: 'published' })
 
-    expect(approveLibrary(db, ['ready-job', 'blocked-job', 'published-job'])).toBe(0)
-    expect(approveLibrary(db, [])).toBe(0)
+    expect(approveLibrary(db, ['ready-job', 'blocked-job', 'published-job'])).toEqual({
+      approved: 0,
+      reclaimed: [],
+    })
+    expect(approveLibrary(db, [])).toEqual({ approved: 0, reclaimed: [] })
+    db.close()
+  })
+
+  it('refuses a needs-review row whose stored object was reclaimed, and names it', () => {
+    const db = memDb()
+    const gone = seedJob(db, { id: 'gone-job' })
+    seedLibrary(db, gone, { state: 'needs-review' })
+    seedLibraryObject(db, gone, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
+    const held = seedJob(db, { id: 'held-job' })
+    seedLibrary(db, held, { state: 'needs-review' })
+    seedLibraryObject(db, held)
+
+    // Approving a video with no bytes would put an unpublishable row into the
+    // pool, where it can only be picked, fail, and be picked again.
+    expect(approveLibrary(db, [gone, held])).toEqual({ approved: 1, reclaimed: ['gone-job'] })
+    expect(
+      db.prepare('SELECT state FROM library WHERE job_id = ?').get(gone) as { state: string },
+    ).toEqual({ state: 'needs-review' })
+    db.close()
+  })
+
+  it('does not report an already-ready id as a reclaimed refusal', () => {
+    const db = memDb()
+    const ready = seedJob(db, { id: 'ready-job' })
+    seedLibrary(db, ready, { state: 'ready' })
+    seedLibraryObject(db, ready, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
+
+    // It was never approvable in the first place — calling that a reclaim
+    // refusal would send the operator after the wrong cause.
+    expect(approveLibrary(db, [ready])).toEqual({ approved: 0, reclaimed: [] })
+    db.close()
+  })
+})
+
+describe('reclaimedUnreviewedJobs', () => {
+  it('names needs-review rows whose bytes were freed, and nothing else', () => {
+    const db = memDb()
+    const gone = seedJob(db, { id: 'gone-job', channel: 'chan-a' })
+    seedLibrary(db, gone, { state: 'needs-review' })
+    seedLibraryObject(db, gone, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
+    const held = seedJob(db, { id: 'held-job' })
+    seedLibrary(db, held, { state: 'needs-review' })
+    seedLibraryObject(db, held)
+    // A reclaimed object on a REVIEWED row is the normal end state, not a
+    // finding: the reclaim sweep only reaches it once every platform settled.
+    const readyGone = seedJob(db, { id: 'ready-gone-job' })
+    seedLibrary(db, readyGone, { state: 'published' })
+    seedLibraryObject(db, readyGone, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
+
+    expect(reclaimedUnreviewedJobs(db)).toEqual([{ jobId: 'gone-job', channel: 'chan-a' }])
     db.close()
   })
 })
@@ -407,17 +461,44 @@ describe('pendingInventory', () => {
     ).toBe(0)
   })
 
-  it('does not count a passed-over video once it ages out', () => {
+  it('does not count a passed-over video once it ages out behind a newer one', () => {
     const db = memDb()
     seedVideo(db, 'job-1', 'published', AGED)
     seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
+    // The contention ageing out requires: a newer video really did take a slot
+    // ahead of job-1. job-2 is fresh and still owed to youtube, so the 1 below
+    // is job-2 alone.
+    seedVideo(db, 'job-2', 'published', FRESH)
+    seedPublish(db, 'job-2', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'done',
+      seq: 2,
+      createdAt: FRESH,
+    })
     expect(
       pendingInventory(db, {
         channel: 'chan-a',
         declared: ['youtube', 'instagram'],
         createdAfter: CUTOFF,
       }),
-    ).toBe(0)
+    ).toBe(1)
+  })
+
+  it('still counts old videos when the channel has published nothing at all', () => {
+    // A publish outage longer than backlog_days. Nothing outranked these, so
+    // they are still publishable — and inventory that disappeared here while
+    // the candidate scan kept offering them would let production run away.
+    const db = memDb()
+    seedVideo(db, 'job-1', 'ready', AGED)
+    seedVideo(db, 'job-2', 'ready', AGED)
+    expect(
+      pendingInventory(db, {
+        channel: 'chan-a',
+        declared: ['youtube', 'instagram'],
+        createdAfter: CUTOFF,
+      }),
+    ).toBe(2)
   })
 
   it('ignores other channels', () => {

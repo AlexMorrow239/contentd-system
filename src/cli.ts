@@ -511,9 +511,18 @@ library
     // the parseAsync .catch (message on stderr, exit 1) with no writes.
     const jobIds = parseLibraryJobIds(rawIds)
     const db = openDb(resolveDbPath(opts.db))
-    const changed = approveLibrary(db, jobIds)
-    // changed < jobIds.length flags ids that were not in 'needs-review' state.
-    console.log(`approved ${changed} of ${jobIds.length}`)
+    const { approved, reclaimed } = approveLibrary(db, jobIds)
+    // approved < jobIds.length flags ids that were not in 'needs-review' state.
+    console.log(`approved ${approved} of ${jobIds.length}`)
+    // A distinct diagnostic, because it is a distinct condition: the row was
+    // approvable in every way except that its bytes are gone, so approving it
+    // would have put an unpublishable video into the pool.
+    if (reclaimed.length > 0) {
+      console.error(
+        `not approved — stored object already reclaimed, nothing left to publish: ${reclaimed.join(', ')} ` +
+          `— retire with brainrot library reject ${reclaimed.join(' ')}`,
+      )
+    }
   })
 
 library

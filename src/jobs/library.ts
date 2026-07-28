@@ -2,7 +2,7 @@ import type { StoreArtifact } from '../stages/store.js'
 import type { Database } from 'better-sqlite3'
 import { errorMessage } from '../errors.js'
 import type { ObjectStore } from '../storage/types.js'
-import { isFullySettled, legFactsByJob } from '../publish/settled.js'
+import { contentionFacts, isAged, isFullySettled, legFactsByJob } from '../publish/settled.js'
 import type { Platform } from '../publish/types.js'
 
 export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
@@ -77,18 +77,73 @@ export function listLibrary(
   return rows.map(toLibraryRow)
 }
 
-// Publish gate (design spec decision 4): only needs-review rows can be
-// promoted into the publish pool, and only into 'ready'. The status guard
-// makes this idempotent and blind to ids in the wrong state — the returned
-// count is what actually changed, which the CLI reports against jobIds.length.
-export function approveLibrary(db: Database, jobIds: string[]): number {
-  if (jobIds.length === 0) return 0
+export interface ApproveResult {
+  /** Rows actually promoted to 'ready'. */
+  approved: number
+  /**
+   * Ids refused because their bytes are gone. Reported separately rather than
+   * folded into the shortfall: an id in the wrong state is a typo, an id whose
+   * object was reclaimed is a video the operator can never publish.
+   */
+  reclaimed: string[]
+}
+
+/**
+ * Publish gate (design spec decision 4): only needs-review rows can be
+ * promoted into the publish pool, and only into 'ready'. The status guard
+ * makes this idempotent and blind to ids in the wrong state — the returned
+ * count is what actually changed, which the CLI reports against jobIds.length.
+ *
+ * A row whose stored object was reclaimed is refused. A needs-review video has
+ * no `publishes` rows, so once it ages out the reclaim sweep frees its bytes
+ * (the accepted behaviour — needs-review is deliberately NOT exempt). Promoting
+ * such a row afterwards would put a video with nothing to upload into the
+ * publish pool, where it can only be picked, fail, and be picked again. The
+ * refusal is reported, never silent.
+ */
+export function approveLibrary(db: Database, jobIds: string[]): ApproveResult {
+  if (jobIds.length === 0) return { approved: 0, reclaimed: [] }
   const placeholders = jobIds.map(() => '?').join(', ')
-  return db
+  // Named BEFORE the update, and scoped to rows the update would otherwise
+  // have taken — an id already 'ready' or unknown is not a reclaimed refusal.
+  const reclaimed = (
+    db
+      .prepare(
+        `SELECT l.job_id AS jobId FROM library l
+         JOIN library_objects lo ON lo.job_id = l.job_id
+         WHERE l.job_id IN (${placeholders}) AND l.state = 'needs-review'
+               AND lo.reclaimed_at IS NOT NULL
+         ORDER BY l.job_id`,
+      )
+      .all(...jobIds) as { jobId: string }[]
+  ).map((r) => r.jobId)
+  const approved = db
     .prepare(
-      `UPDATE library SET state = 'ready' WHERE job_id IN (${placeholders}) AND state = 'needs-review'`,
+      `UPDATE library SET state = 'ready' WHERE job_id IN (${placeholders}) AND state = 'needs-review'
+       AND NOT EXISTS (SELECT 1 FROM library_objects lo
+                       WHERE lo.job_id = library.job_id AND lo.reclaimed_at IS NOT NULL)`,
     )
     .run(...jobIds).changes
+  return { approved, reclaimed }
+}
+
+/**
+ * Videos whose bytes were reclaimed before anyone reviewed them — the digest's
+ * only trace of the accepted consequence above. They are dead weight: they
+ * still count as inventory (pendingInventory counts every needs-review row),
+ * and approving one is refused, so the operator has to reject them by hand.
+ */
+export function reclaimedUnreviewedJobs(db: Database): { jobId: string; channel: string }[] {
+  return db
+    .prepare(
+      `SELECT l.job_id AS jobId, j.channel AS channel
+       FROM library l
+       JOIN jobs j ON j.id = l.job_id
+       JOIN library_objects lo ON lo.job_id = l.job_id
+       WHERE l.state = 'needs-review' AND lo.reclaimed_at IS NOT NULL
+       ORDER BY l.job_id`,
+    )
+    .all() as { jobId: string; channel: string }[]
 }
 
 // Reject retires a row from any of three states: needs-review (never
@@ -176,6 +231,9 @@ export function pendingInventory(
     db,
     rows.map((r) => r.jobId),
   )
+  // Same channel-wide contention read the reclaim sweep uses, so the two agree
+  // on which videos have aged out (./publish/settled.ts).
+  const contention = contentionFacts(db, opts.channel)
   let count = 0
   for (const row of rows) {
     if (row.state === 'needs-review') {
@@ -185,7 +243,7 @@ export function pendingInventory(
     const settled = isFullySettled({
       declared: opts.declared,
       legs: legs.get(row.jobId) ?? [],
-      aged: row.createdAt < opts.createdAfter,
+      aged: isAged(contention, row, opts.createdAfter),
     })
     if (!settled) count += 1
   }
@@ -198,11 +256,18 @@ export function pendingInventory(
  * (runJob, ./runner.ts) upserts the same artifact on every resume, and the
  * operator backfill (./backfill-store.ts) may be re-run over rows it already
  * uploaded. Synchronous, so it composes inside runJob's db.transaction().
+ *
+ * `reclaimed_at` is cleared on conflict: the row describes what is in the
+ * bucket NOW, and an upsert means something was just put there. No caller
+ * re-uploads a reclaimed job today (backfillStore keys off the row's absence,
+ * and reclaim keeps the row precisely to stop that), but leaving the stamp set
+ * would mark a live object as freed and orphan it in the bucket forever.
  */
 export function upsertLibraryObject(db: Database, jobId: string, object: StoreArtifact): void {
   db.prepare(
     'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, ?, ?) ' +
-      'ON CONFLICT(job_id) DO UPDATE SET object_key=excluded.object_key, bytes=excluded.bytes, etag=excluded.etag',
+      'ON CONFLICT(job_id) DO UPDATE SET object_key=excluded.object_key, bytes=excluded.bytes, ' +
+      'etag=excluded.etag, reclaimed_at=NULL',
   ).run(jobId, object.objectKey, object.bytes, object.etag)
 }
 
