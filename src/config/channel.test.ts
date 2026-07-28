@@ -129,12 +129,14 @@ describe('[scout] config', () => {
       rss: [],
       minScore: 60,
       perSourceLimit: 25,
+      queueDays: 3,
     })
     expect(DEFAULT_SCOUT).toEqual({
       subreddits: [],
       rss: [],
       minScore: 60,
       perSourceLimit: 25,
+      queueDays: 3,
     })
   })
 
@@ -154,6 +156,7 @@ describe('[scout] config', () => {
       rss: ['https://www.sciencedaily.com/rss/space_time.xml'],
       minScore: 75,
       perSourceLimit: 10,
+      queueDays: 3,
     })
   })
 
@@ -164,6 +167,7 @@ describe('[scout] config', () => {
       rss: [],
       minScore: 60,
       perSourceLimit: 25,
+      queueDays: 3,
     })
   })
 
@@ -188,6 +192,38 @@ describe('[scout] config', () => {
     expect(config1.scout.subreddits).not.toBe(config2.scout.subreddits)
     expect(config1.scout.rss).not.toBe(config2.scout.rss)
     expect(Object.isFrozen(DEFAULT_SCOUT)).toBe(true)
+  })
+})
+
+describe('backlog_days / scout.queue_days', () => {
+  it('defaults backlog_days to 2 and scout.queue_days to 3', () => {
+    const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
+    expect(cfg.backlogDays).toBe(2)
+    expect(cfg.scout.queueDays).toBe(3)
+  })
+
+  it('reads explicit backlog_days and queue_days', () => {
+    const lines = PLAN1_LINES.flatMap((l) =>
+      l === 'videos_per_day = 2' ? [l, 'backlog_days = 5'] : [l],
+    )
+    const cfg = loadChannelConfig(writeToml([...lines, '[scout]', 'queue_days = 7']))
+    expect(cfg.backlogDays).toBe(5)
+    expect(cfg.scout.queueDays).toBe(7)
+  })
+
+  it('rejects a zero or negative backlog_days', () => {
+    const lines = PLAN1_LINES.flatMap((l) =>
+      l === 'videos_per_day = 2' ? [l, 'backlog_days = 0'] : [l],
+    )
+    expect(() => loadChannelConfig(writeToml(lines))).toThrow(
+      /backlog_days must be greater than 0/,
+    )
+  })
+
+  it('rejects a zero or negative queue_days', () => {
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'queue_days = 0'])),
+    ).toThrow(/queue_days must be greater than 0/)
   })
 })
 

@@ -153,8 +153,7 @@ async function sweepReclaimable(
     const objects = reclaimableObjects(db, {
       channel: channel.name,
       declared: channel.publish.targets.map((t) => t.platform),
-      // TASK 6 replaces the literal with channel.backlogDays.
-      createdAfter: agedCutoff(now, 2),
+      createdAfter: agedCutoff(now, channel.backlogDays),
       limit: remaining,
     })
     if (objects.length === 0) continue
@@ -367,8 +366,7 @@ export async function publishNextTick(
         channel.name,
         declaredPlatforms,
         MAX_VIDEO_CANDIDATES,
-        // TASK 6 replaces the literal with channel.backlogDays.
-        agedCutoff(now, 2),
+        agedCutoff(now, channel.backlogDays),
       )) {
         // Bytes-reachable pre-flight: a local file OR a stored object. A pruned
         // runs/ tree is normal (the bucket is the durable copy); a row with

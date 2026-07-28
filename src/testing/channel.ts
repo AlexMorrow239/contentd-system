@@ -30,6 +30,7 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
     name: 'test',
     niche: ['space facts', 'astronomy'],
     videosPerDay: 2,
+    backlogDays: 2,
     voice: {
       volume: 'af_heart',
       premium: {

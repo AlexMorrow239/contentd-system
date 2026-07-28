@@ -36,12 +36,26 @@ export interface ScoutConfig {
   rss: string[]
   minScore: number
   perSourceLimit: number
+  /**
+   * How many days of scored candidate topics to keep queued before the scout
+   * skips this channel. Deeper than backlogDays by default: the scorer rejects
+   * a share of what it sees, and topics go stale.
+   */
+  queueDays: number
 }
 
 export interface ChannelConfig {
   name: string
   niche: string[]
   videosPerDay: number
+  /**
+   * How many days of finished, unconsumed video this channel may hold before
+   * production stops (plan-tick.ts), and — the same number — how long a video
+   * gets to find a publish slot before it is considered passed over
+   * (publish/settled.ts). One knob, because "hold more inventory" and "give
+   * each video longer to find a slot" are the same statement about depth.
+   */
+  backlogDays: number
   voice: { volume: string; premium?: PremiumVoiceConfig; dev?: boolean }
   captionStyle: CaptionStyle
   bgDir: string[]
@@ -67,6 +81,7 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
   rss: Object.freeze([] as string[]),
   minScore: 60,
   perSourceLimit: 25,
+  queueDays: 3,
 }) as ScoutConfig
 
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
@@ -134,6 +149,11 @@ const rawSchema = z.object({
     .number()
     .int('videos_per_day must be a whole number of videos')
     .positive('videos_per_day must be greater than 0'),
+  backlog_days: z
+    .number()
+    .int('backlog_days must be a whole number of days')
+    .positive('backlog_days must be greater than 0')
+    .default(2),
   voice: z.object({
     volume: z.string(),
     premium: z
@@ -151,6 +171,11 @@ const rawSchema = z.object({
       rss: z.array(z.string()).default([]),
       min_score: z.number().int().min(0).max(100).default(DEFAULT_SCOUT.minScore),
       per_source_limit: z.number().int().min(1).max(100).default(DEFAULT_SCOUT.perSourceLimit),
+      queue_days: z
+        .number()
+        .int('queue_days must be a whole number of days')
+        .positive('queue_days must be greater than 0')
+        .default(DEFAULT_SCOUT.queueDays),
     })
     .optional(),
   publish: publishSchema,
@@ -213,6 +238,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
     name: raw.name,
     niche: raw.niche,
     videosPerDay: raw.videos_per_day,
+    backlogDays: raw.backlog_days,
     voice: {
       volume: raw.voice.volume,
       dev: raw.voice.dev,
@@ -244,6 +270,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
           rss: raw.scout.rss,
           minScore: raw.scout.min_score,
           perSourceLimit: raw.scout.per_source_limit,
+          queueDays: raw.scout.queue_days,
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
     publish: raw.publish
