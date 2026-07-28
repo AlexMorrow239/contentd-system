@@ -110,6 +110,15 @@ describe('listLibraryEntries', () => {
     expect(listLibraryEntries(db)[0].bytes).toBe('archived')
   })
 
+  it('reports a video with no library_objects row as unstored, not archived', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready', videoPath: '/nope/final.mp4' })
+    // No seedLibraryObject call: this job was never uploaded to object storage.
+
+    expect(listLibraryEntries(db)[0].bytes).toBe('unstored')
+  })
+
   it('reports an existing local file as local', () => {
     const db = memDb()
     const dir = tmpDir('lib')

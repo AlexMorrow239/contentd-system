@@ -143,6 +143,20 @@ describe('renderLibraryPage', () => {
     expect(html).toContain('reclaimed')
   })
 
+  it('renders the unstored note instead of a player, naming the fix', () => {
+    const html = renderLibraryPage(pageData([entry({ bytes: 'unstored' })])).value
+    expect(html).not.toContain('<video controls')
+    expect(html).toContain('library backfill-store')
+  })
+
+  it('does not render a javascript: url as a clickable link', () => {
+    const html = renderLibraryPage(
+      pageData([entry({ links: [{ platform: 'youtube', url: 'javascript:alert(1)' }] })]),
+    ).value
+    expect(html).not.toContain('href="javascript:alert(1)"')
+    expect(html).not.toMatch(/href=["']javascript:/i)
+  })
+
   it('renders one link per platform', () => {
     const html = renderLibraryPage(
       pageData([entry({ links: [{ platform: 'youtube', url: 'https://youtu.be/abc' }] })]),

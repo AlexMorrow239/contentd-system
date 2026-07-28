@@ -175,6 +175,17 @@ describe('getJobDetail', () => {
     db.close()
   })
 
+  it('reports bytes unstored when there is no local file and no library_objects row', () => {
+    const db = seed()
+    db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
+        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
+    ).run()
+    // No library_objects row: this job was never uploaded to object storage.
+    expect(getJobDetail(db, 'j2')?.bytes).toBe('unstored')
+    db.close()
+  })
+
   it('reports bytes reclaimed when the stored object has been reclaimed', () => {
     const db = seed()
     db.prepare(

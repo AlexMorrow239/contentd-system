@@ -174,6 +174,32 @@ describe('renderJobDetailPage', () => {
     expect(out).toContain('reclaimed — the stored object was deleted after every platform settled')
   })
 
+  it('says the video is unstored instead of rendering a dead player, naming the fix', () => {
+    const unstored: JobDetail = {
+      ...detail,
+      libraryState: 'ready',
+      videoPath: 'runs/j1/assemble/final.mp4',
+      bytes: 'unstored',
+    }
+    const out = renderJobDetailPage(unstored, 'prod').value
+    expect(out).not.toContain('/library/j1/video')
+    expect(out).not.toContain('<video')
+    expect(out).toContain('library backfill-store')
+  })
+
+  it('does not render a javascript: url as a clickable link', () => {
+    const hostile: JobDetail = {
+      ...detail,
+      libraryState: 'published',
+      videoPath: 'runs/j1/assemble/final.mp4',
+      bytes: 'local',
+      links: [{ platform: 'youtube', url: 'javascript:alert(1)' }],
+    }
+    const out = renderJobDetailPage(hostile, 'prod').value
+    expect(out).not.toContain('href="javascript:alert(1)"')
+    expect(out).not.toMatch(/href=["']javascript:/i)
+  })
+
   it('renders a live link per platform that published', () => {
     const withLinks: JobDetail = {
       ...detail,

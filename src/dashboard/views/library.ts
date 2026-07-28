@@ -1,6 +1,6 @@
 import type { LibraryState } from '../../jobs/library.js'
 import type { DbChoice } from '../config.js'
-import { html, SafeHtml } from '../html.js'
+import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import type { LibraryEntry, QcSummary } from '../queries/library.js'
 import { formatTime, truncationNotice } from './jobs.js'
 import { dbHref } from './layout.js'
@@ -36,13 +36,20 @@ function renderBytes(entry: LibraryEntry, dbChoice: DbChoice): SafeHtml {
       return html`<span class="muted">archived to object storage</span>`
     case 'reclaimed':
       return html`<span class="muted">reclaimed — ${formatTime(entry.createdAt)}</span>`
+    case 'unstored':
+      return html`<span class="muted">not stored — run <code>library backfill-store</code></span>`
   }
 }
 
 function renderLinks(links: LibraryEntry['links']): SafeHtml {
   if (links.length === 0) return html`<span class="muted">—</span>`
   return html`<ul class="links">
-    ${links.map((l) => html`<li><a href="${l.url}" rel="noreferrer noopener" target="_blank">${l.platform} ↗</a></li>`)}
+    ${links.map((l) => {
+      const safeUrl = httpUrlOrNull(l.url)
+      return safeUrl === null
+        ? html`<li><span class="warning" title="blocked unsafe link scheme">${l.platform}</span></li>`
+        : html`<li><a href="${safeUrl}" rel="noreferrer noopener" target="_blank">${l.platform} ↗</a></li>`
+    })}
   </ul>`
 }
 

@@ -133,12 +133,12 @@ export interface JobDetail {
   libraryState: string | null
   videoPath: string | null
   /**
-   * Where this job's video bytes are — same three states the library page
+   * Where this job's video bytes are — same four states the library page
    * draws, from the database plus existsSync. The dashboard holds no bucket
    * credentials (design spec decision 9), so this is never fetched or
    * presigned. Null when the job has no library row at all.
    */
-  bytes: 'local' | 'archived' | 'reclaimed' | null
+  bytes: 'local' | 'archived' | 'reclaimed' | 'unstored' | null
   /** Live post urls, one per platform that published. */
   links: { platform: string; url: string }[]
 }
@@ -196,14 +196,19 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
 
   const libraryRow = db
     .prepare(
-      `SELECT l.state AS state, l.video_path AS videoPath, lo.reclaimed_at AS reclaimedAt
+      `SELECT l.state AS state, l.video_path AS videoPath, lo.object_key AS objectKey,
+              lo.reclaimed_at AS reclaimedAt
        FROM library l LEFT JOIN library_objects lo ON lo.job_id = l.job_id
        WHERE l.job_id = ?`,
     )
-    .get(jobId) as { state: string; videoPath: string; reclaimedAt: string | null } | undefined
+    .get(jobId) as
+    | { state: string; videoPath: string; objectKey: string | null; reclaimedAt: string | null }
+    | undefined
 
   // Same precedence as the library page: a reclaimed object is reclaimed even
   // if a stale runs/ file survives, because the durable copy is the one gone.
+  // Only once neither applies does the presence of a library_objects row
+  // distinguish 'archived' (uploaded) from 'unstored' (never uploaded).
   const bytes: JobDetail['bytes'] =
     libraryRow === undefined
       ? null
@@ -211,7 +216,9 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
         ? 'reclaimed'
         : existsSync(libraryRow.videoPath)
           ? 'local'
-          : 'archived'
+          : libraryRow.objectKey !== null
+            ? 'archived'
+            : 'unstored'
 
   const links = db
     .prepare(

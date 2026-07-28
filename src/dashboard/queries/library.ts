@@ -14,9 +14,14 @@ export type QcSummary =
  * dashboard holds no bucket credentials by design, so it can name the state
  * but not play the video. 'reclaimed' — the object was deliberately deleted
  * after every declared platform settled, and the live post is all that is
- * left. Drawn from the database plus existsSync, never from the bucket.
+ * left. 'unstored' — there is no local file AND no library_objects row: the
+ * video was never uploaded to object storage at all, distinct from
+ * 'archived' (uploaded, just not present locally). This is exactly the set
+ * jobs/library.ts's unstoredLibraryJobs selects and digest.ts reports as the
+ * `library backfill-store` backlog. Drawn from the database plus existsSync,
+ * never from the bucket.
  */
-export type LibraryBytes = 'local' | 'archived' | 'reclaimed'
+export type LibraryBytes = 'local' | 'archived' | 'reclaimed' | 'unstored'
 
 export interface LibraryLink {
   platform: string
@@ -72,10 +77,18 @@ interface DbLibraryEntry {
 }
 
 // Precedence: a reclaimed object is reclaimed even if a stale runs/ file
-// happens to survive, because the durable copy is the one that is gone.
-function libraryBytes(row: { video_path: string; reclaimed_at: string | null }): LibraryBytes {
+// happens to survive, because the durable copy is the one that is gone. Only
+// once neither reclaimed-nor-local applies does the presence of a
+// library_objects row distinguish 'archived' (uploaded) from 'unstored'
+// (never uploaded).
+function libraryBytes(row: {
+  video_path: string
+  object_key: string | null
+  reclaimed_at: string | null
+}): LibraryBytes {
   if (row.reclaimed_at !== null) return 'reclaimed'
-  return existsSync(row.video_path) ? 'local' : 'archived'
+  if (existsSync(row.video_path)) return 'local'
+  return row.object_key !== null ? 'archived' : 'unstored'
 }
 
 /**
