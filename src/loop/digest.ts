@@ -6,6 +6,7 @@ import { parseTokenKey } from '../publish/crypto.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { MAX_PUBLISH_ATTEMPTS, videosPublishedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
+import { agedCutoff, isLegSettled, legFactsByJob } from '../publish/settled.js'
 import { loadToken } from '../publish/tokens.js'
 import { resolvePlatformMeta } from '../publish/types.js'
 import type { Platform } from '../publish/types.js'
@@ -26,6 +27,12 @@ export const STRANDED_QUEUED_MS = 3_600_000 // 1 h
 // many, fresh failures would be buried under a wall of history the operator
 // has already seen. The remainder is still counted, never silently dropped.
 export const FAILED_JOBS_LIMIT = 10
+
+// How far back the aged-out report reaches. Current state, not last-24h: a
+// structural shortfall (a channel declaring more videos_per_day than a
+// platform's cap allows) ages out videos every single day, and a one-day
+// window would show it as a trickle rather than the standing condition it is.
+export const AGED_OUT_WINDOW_DAYS = 7
 
 /**
  * Environment facts the digest reports on. Read from process.env by default
@@ -226,6 +233,45 @@ export function buildDigest(
     lines.push(`    ${r.channel}: ${r.n} ready videos backlogged, oldest ${ageHours}h old`)
   }
   pushNoneIfEmpty(lines, backlogStart, '    none')
+
+  // Videos no platform will ever take, because newer videos outranked them for
+  // a scarce platform's slots. Nothing is written to `publishes` for a leg
+  // that was never attempted, so this section is the ONLY trace such a video
+  // leaves — and a steady non-zero count is the signal that a channel's
+  // videos_per_day exceeds what one of its platforms can absorb.
+  lines.push('  Aged out:')
+  const agedStart = lines.length
+  const windowStart = agedCutoff(now, AGED_OUT_WINDOW_DAYS)
+  for (const channel of channels) {
+    if (channel.publish === null) continue
+    const cutoff = agedCutoff(now, channel.backlogDays)
+    const rows = db
+      .prepare(
+        `SELECT l.job_id AS jobId FROM library l JOIN jobs j ON j.id = l.job_id
+         WHERE j.channel = ? AND l.state != 'blocked'
+               AND l.created_at < ? AND l.created_at >= ?`,
+      )
+      .all(channel.name, cutoff, windowStart) as { jobId: string }[]
+    if (rows.length === 0) continue
+    const legs = legFactsByJob(
+      db,
+      rows.map((r) => r.jobId),
+    )
+    for (const target of channel.publish.targets) {
+      const platform = target.platform
+      // Aged AND settled-without-a-done-row is exactly "passed over": the leg
+      // is closed, and nothing published it.
+      const n = rows.filter((r) => {
+        const facts = (legs.get(r.jobId) ?? []).find((l) => l.platform === platform)
+        return (facts?.doneCount ?? 0) === 0 && isLegSettled(facts, true)
+      }).length
+      if (n === 0) continue
+      lines.push(
+        `    ${channel.name}: ${n} video${n === 1 ? '' : 's'} aged out unpublished on ${platform}`,
+      )
+    }
+  }
+  pushNoneIfEmpty(lines, agedStart, '    none')
 
   lines.push('', 'Action items')
   const actionItemsStart = lines.length

@@ -86,7 +86,7 @@ export function seedPublish(
   opts: {
     jobId: string
     channel?: string
-    platform?: 'youtube'
+    platform?: 'youtube' | 'instagram'
     day?: string
     seq?: number
     status?: 'claimed' | 'done' | 'failed' | 'interrupted'

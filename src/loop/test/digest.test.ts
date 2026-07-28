@@ -800,6 +800,89 @@ describe('buildDigest — library rows with no stored object', () => {
   })
 })
 
+describe('buildDigest — aged-out videos in the Publishing section', () => {
+  it('reports videos that aged out unpublished on a declared platform', () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      backlogDays: 2,
+      publish: {
+        targets: [
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES ('job-1', '/tmp/out.mp4', '{}', 'published', ?)",
+    ).run(isoAgo(72 * HOUR_MS))
+    seedPublish(db, {
+      jobId: 'job-1',
+      channel: 'chan-a',
+      platform: 'instagram',
+      status: 'done',
+      seq: 1,
+    })
+    const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
+    expect(digest).toContain('chan-a: 1 video aged out unpublished on youtube')
+    db.close()
+  })
+
+  it('reports none when every aged video published everywhere', () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      backlogDays: 2,
+      publish: {
+        targets: [
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES ('job-1', '/tmp/out.mp4', '{}', 'published', ?)",
+    ).run(isoAgo(72 * HOUR_MS))
+    seedPublish(db, {
+      jobId: 'job-1',
+      channel: 'chan-a',
+      platform: 'youtube',
+      status: 'done',
+      seq: 1,
+    })
+    const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
+    expect(digest).toContain('  Aged out:\n    none')
+    db.close()
+  })
+
+  it('does not report a video that is still inside its horizon', () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      backlogDays: 2,
+      publish: {
+        targets: [
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    seedLibrary(db, 'job-1', 'ready', isoAgo(HOUR_MS))
+    const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
+    expect(digest).toContain('  Aged out:\n    none')
+    db.close()
+  })
+})
+
 describe('buildDigest — section order', () => {
   it('emits the five sections in the pinned order', () => {
     const db = memDb()
