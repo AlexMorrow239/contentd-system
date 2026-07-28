@@ -262,6 +262,9 @@ export function lastAttemptAt(db: Database, channel: string): Date | null {
 interface PublishableVideo {
   jobId: string
   videoPath: string
+  // Null for library rows produced before object storage existed AND for rows
+  // whose object has been reclaimed (publish/reclaim.ts) — both mean the same
+  // thing to the caller: only a local file can serve this video.
   objectKey: string | null
   metadataJson: string
   topic: string
@@ -324,19 +327,29 @@ const BLOCKED_PREDICATE = 'blockingCount > 0 OR rejectedCount >= ?'
  * by a SQL LIMIT, not a JS truncation: the fully-blocked drop test is
  * expressible against `platforms`, so a channel's whole publish history (every
  * `metadata_json` included) never has to be loaded to return `limit` rows.
+ *
+ * `createdAfter` is the aged-out horizon (agedCutoff, ./settled.ts): videos
+ * older than it are never returned. The age clause alone is sufficient here,
+ * rather than the full settled predicate — for an aged video EVERY declared
+ * platform is closed already: done, attempt-capped, pending (which
+ * BLOCKED_PREDICATE rules out), or settled by age. A separate check would only
+ * restate that. The bound is a lexicographic compare, which is exact: both
+ * sides are the same fixed-width ISO-8601 UTC format.
  */
 export function channelVideoCandidates(
   db: Database,
   channel: string,
   platforms: readonly Platform[],
   limit: number,
+  createdAfter: string,
 ): ChannelVideoCandidate[] {
   // `platform IN ()` is a syntax error, and the answer is [] regardless.
   if (platforms.length === 0) return []
   const platformParams = platforms.map(() => '?').join(', ')
   const rows = db
     .prepare(
-      `SELECT l.job_id AS jobId, l.video_path AS videoPath, lo.object_key AS objectKey,
+      `SELECT l.job_id AS jobId, l.video_path AS videoPath,
+              CASE WHEN lo.reclaimed_at IS NULL THEN lo.object_key END AS objectKey,
               l.metadata_json AS metadataJson, j.topic AS topic
        FROM library l
        JOIN jobs j ON j.id = l.job_id
@@ -353,11 +366,19 @@ export function channelVideoCandidates(
          GROUP BY job_id
        ) blk ON blk.job_id = l.job_id
        WHERE l.state IN (${PUBLISHABLE_LIBRARY_STATES}) AND j.channel = ?
+             AND l.created_at >= ?
              AND COALESCE(blk.blockedCount, 0) < ?
        ORDER BY COALESCE(agg.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
        LIMIT ?`,
     )
-    .all(...platforms, MAX_PUBLISH_ATTEMPTS, channel, platforms.length, limit) as PublishableVideo[]
+    .all(
+      ...platforms,
+      MAX_PUBLISH_ATTEMPTS,
+      channel,
+      createdAfter,
+      platforms.length,
+      limit,
+    ) as PublishableVideo[]
   if (rows.length === 0) return []
 
   // Every blocking fact for the rows actually returned, in ONE grouped read

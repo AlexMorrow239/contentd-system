@@ -20,6 +20,7 @@ import {
 import type { ChannelVideoCandidate } from '../publish/publishes.js'
 import { channelNotDueReason, localDay, orderChannels } from '../publish/schedule.js'
 import type { ChannelCandidate, NotDueReason } from '../publish/schedule.js'
+import { agedCutoff } from '../publish/settled.js'
 import { PUBLISH_PLATFORMS, resolvePlatformMeta, toPublishFailureKind } from '../publish/types.js'
 import type { Platform, PublishAdapter, PublishTargetConfig } from '../publish/types.js'
 import type { ObjectStore } from '../storage/types.js'
@@ -301,6 +302,8 @@ export async function publishNextTick(
         channel.name,
         declaredPlatforms,
         MAX_VIDEO_CANDIDATES,
+        // TASK 6 replaces the literal with channel.backlogDays.
+        agedCutoff(now, 2),
       )) {
         // Bytes-reachable pre-flight: a local file OR a stored object. A pruned
         // runs/ tree is normal (the bucket is the durable copy); a row with

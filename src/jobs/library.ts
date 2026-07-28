@@ -155,7 +155,9 @@ export function upsertLibraryObject(db: Database, jobId: string, object: StoreAr
 
 // Reject deletes the stored object too (design spec decision 7), so the CLI
 // needs the keys BEFORE the rows are touched. Returns only jobs that actually
-// have an object — an id with no row simply does not appear.
+// have an object — an id with no row simply does not appear, and neither does
+// one whose object the reclaim sweep already deleted: attempting that delete
+// would warn about an orphan that does not exist.
 export function libraryObjectKeys(
   db: Database,
   jobIds: string[],
@@ -165,7 +167,7 @@ export function libraryObjectKeys(
   return db
     .prepare(
       `SELECT job_id AS jobId, object_key AS objectKey FROM library_objects
-       WHERE job_id IN (${placeholders}) ORDER BY job_id`,
+       WHERE job_id IN (${placeholders}) AND reclaimed_at IS NULL ORDER BY job_id`,
     )
     .all(...jobIds) as { jobId: string; objectKey: string }[]
 }
@@ -195,9 +197,7 @@ export async function deleteRejectedObjects(opts: {
       deleteStmt.run(o.jobId)
       deleted.push(o.jobId)
     } catch (err) {
-      warn(
-        `could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${errorMessage(err)}`,
-      )
+      warn(`could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${errorMessage(err)}`)
       failed.push(o.jobId)
     }
   }

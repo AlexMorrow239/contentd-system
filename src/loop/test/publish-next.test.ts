@@ -319,12 +319,12 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     const older = seedReadyVideo(db, {
       channel: 'chan-a',
       topic: 'Older topic',
-      createdAt: '2026-07-20T00:00:00.000Z',
+      createdAt: '2026-07-21T00:00:00.000Z',
     })
     seedReadyVideo(db, {
       channel: 'chan-a',
       topic: 'Newest topic',
-      createdAt: '2026-07-21T00:00:00.000Z',
+      createdAt: '2026-07-22T00:00:00.000Z',
       videoExists: false,
     })
     seedToken(db, 'chan-a')

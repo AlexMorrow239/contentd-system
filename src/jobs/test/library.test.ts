@@ -13,7 +13,7 @@ import {
 import type { LibraryState } from '../library.js'
 import { runCli } from '../../testing/run-cli.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { memDb } from '../../testing/db.js'
+import { memDb, seedLibraryObject } from '../../testing/db.js'
 
 // Raw-insert seed: the DAO only ever writes library.state, so tests control
 // every other column — the owning jobs row included — directly.
@@ -199,6 +199,15 @@ describe('libraryObjectKeys', () => {
     const db = memDb()
     expect(libraryObjectKeys(db, [])).toEqual([])
     db.close()
+  })
+
+  it('omits an already-reclaimed object', () => {
+    const db = memDb()
+    seedJob(db, { id: 'job-1' })
+    seedLibrary(db, 'job-1')
+    seedLibraryObject(db, 'job-1', { reclaimedAt: '2026-07-26T00:00:00.000Z' })
+
+    expect(libraryObjectKeys(db, ['job-1'])).toEqual([])
   })
 })
 

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { memDb, seedJob, seedLibrary, seedPublish } from '../../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPublish } from '../../testing/db.js'
 import { DAY_MS, isoAgo, recordTransactionModes } from './_publishes.fixtures.js'
 import {
   channelVideoCandidates,
@@ -386,7 +386,9 @@ describe('markPublishFailed', () => {
 describe('channelVideoCandidates', () => {
   it('returns nothing for a channel with no publishable library rows', () => {
     const db = memDb()
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([])
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z'),
+    ).toEqual([])
     db.close()
   })
 
@@ -394,7 +396,9 @@ describe('channelVideoCandidates', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-a', topic: 'ready topic' })
     seedLibrary(db, 'job-1', { state: 'ready' })
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z'),
+    ).toEqual([
       {
         jobId: 'job-1',
         videoPath: '/runs/job-1/assemble/final.mp4',
@@ -415,9 +419,11 @@ describe('channelVideoCandidates', () => {
     seedLibrary(db, 'job-ready', { state: 'ready' })
     seedLibrary(db, 'job-review', { state: 'needs-review' })
     seedLibrary(db, 'job-blocked', { state: 'blocked' })
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10).map((r) => r.jobId)).toEqual(
-      ['job-ready'],
-    )
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z').map(
+        (r) => r.jobId,
+      ),
+    ).toEqual(['job-ready'])
     db.close()
   })
 
@@ -431,9 +437,10 @@ describe('channelVideoCandidates', () => {
     db.prepare(
       "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('job-1', 'videos/chan-a/job-1.mp4', 10, 'e')",
     ).run()
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].objectKey).toBe(
-      'videos/chan-a/job-1.mp4',
-    )
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z')[0]
+        .objectKey,
+    ).toBe('videos/chan-a/job-1.mp4')
     db.close()
   })
 
@@ -448,9 +455,10 @@ describe('channelVideoCandidates', () => {
       day: '2026-07-22',
     })
     markPublishDone(db, claim!.id, 'yt-1', 'https://youtu.be/yt-1', new Date())
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
-      ['youtube'],
-    )
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z')[0]
+        .blockedPlatforms,
+    ).toEqual(['youtube'])
     db.close()
   })
 
@@ -464,9 +472,10 @@ describe('channelVideoCandidates', () => {
       channel: 'chan-a',
       day: '2026-07-22',
     })
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
-      ['instagram'],
-    )
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z')[0]
+        .blockedPlatforms,
+    ).toEqual(['instagram'])
     db.close()
   })
 
@@ -483,9 +492,10 @@ describe('channelVideoCandidates', () => {
       })
       markPublishFailed(db, claim!.id, 'bad video', 'rejected', new Date())
     }
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
-      ['youtube'],
-    )
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z')[0]
+        .blockedPlatforms,
+    ).toEqual(['youtube'])
     db.close()
   })
 
@@ -500,9 +510,10 @@ describe('channelVideoCandidates', () => {
       day: '2026-07-22',
     })
     markPublishFailed(db, claim!.id, 'network', 'transient', new Date())
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)[0].blockedPlatforms).toEqual(
-      [],
-    )
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z')[0]
+        .blockedPlatforms,
+    ).toEqual([])
     db.close()
   })
 
@@ -519,7 +530,9 @@ describe('channelVideoCandidates', () => {
       })
       markPublishDone(db, claim!.id, `${platform}-1`, 'https://example.test/x', new Date())
     }
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([])
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z'),
+    ).toEqual([])
     db.close()
   })
 
@@ -537,11 +550,19 @@ describe('channelVideoCandidates', () => {
       day: '2026-07-22',
     })
     markPublishDone(db, claim!.id, 'yt-1', 'https://youtu.be/yt-1', new Date())
-    expect(channelVideoCandidates(db, 'chan-a', ['youtube'], 10)).toEqual([])
+    expect(
+      channelVideoCandidates(db, 'chan-a', ['youtube'], 10, '2000-01-01T00:00:00.000Z'),
+    ).toEqual([])
     // Still open — and still reported blocked on youtube — for a channel that
     // also declares instagram.
     expect(
-      channelVideoCandidates(db, 'chan-a', ['youtube', 'instagram'], 10)[0].blockedPlatforms,
+      channelVideoCandidates(
+        db,
+        'chan-a',
+        ['youtube', 'instagram'],
+        10,
+        '2000-01-01T00:00:00.000Z',
+      )[0].blockedPlatforms,
     ).toEqual(['youtube'])
     db.close()
   })
@@ -585,9 +606,11 @@ describe('channelVideoCandidates', () => {
     })
     markPublishFailed(db, hurt!.id, 'network', 'transient', new Date())
 
-    expect(channelVideoCandidates(db, 'chan-a', ['youtube'], limit).map((r) => r.jobId)).toEqual([
-      'job-hurt',
-    ])
+    expect(
+      channelVideoCandidates(db, 'chan-a', ['youtube'], limit, '2000-01-01T00:00:00.000Z').map(
+        (r) => r.jobId,
+      ),
+    ).toEqual(['job-hurt'])
     db.close()
   })
 
@@ -597,7 +620,7 @@ describe('channelVideoCandidates', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedLibrary(db, 'job-1', { state: 'ready' })
-    expect(channelVideoCandidates(db, 'chan-a', [], 10)).toEqual([])
+    expect(channelVideoCandidates(db, 'chan-a', [], 10, '2000-01-01T00:00:00.000Z')).toEqual([])
     db.close()
   })
 
@@ -616,9 +639,11 @@ describe('channelVideoCandidates', () => {
       day: '2026-07-22',
     })
     markPublishFailed(db, claim!.id, 'network', 'transient', new Date())
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10).map((r) => r.jobId)).toEqual(
-      ['job-new', 'job-old', 'job-hurt'],
-    )
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z').map(
+        (r) => r.jobId,
+      ),
+    ).toEqual(['job-new', 'job-old', 'job-hurt'])
     db.close()
   })
 
@@ -628,7 +653,9 @@ describe('channelVideoCandidates', () => {
     seedJob(db, 'job-2', { channel: 'chan-a' })
     seedLibrary(db, 'job-1', { state: 'ready' })
     seedLibrary(db, 'job-2', { state: 'ready' })
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 1)).toHaveLength(1)
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 1, '2000-01-01T00:00:00.000Z'),
+    ).toHaveLength(1)
     db.close()
   })
 
@@ -636,8 +663,99 @@ describe('channelVideoCandidates', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-b' })
     seedLibrary(db, 'job-1', { state: 'ready' })
-    expect(channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10)).toEqual([])
+    expect(
+      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z'),
+    ).toEqual([])
     db.close()
+  })
+
+  it('omits a video older than the createdAfter bound', () => {
+    const db = memDb()
+    seedJob(db, 'job-old', { channel: 'chan-a' })
+    seedLibrary(db, 'job-old', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
+
+    expect(rows).toEqual([])
+  })
+
+  it('keeps a video exactly at the createdAfter bound', () => {
+    const db = memDb()
+    seedJob(db, 'job-edge', { channel: 'chan-a' })
+    seedLibrary(db, 'job-edge', { state: 'ready', createdAt: '2026-07-25T00:00:00.000Z' })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
+
+    expect(rows.map((r) => r.jobId)).toEqual(['job-edge'])
+  })
+
+  it('reports a reclaimed object as having no object key', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready', createdAt: '2026-07-26T00:00:00.000Z' })
+    seedLibraryObject(db, 'job-1', {
+      objectKey: 'videos/chan-a/job-1.mp4',
+      reclaimedAt: '2026-07-26T12:00:00.000Z',
+    })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-01T00:00:00.000Z')
+
+    expect(rows[0].objectKey).toBeNull()
+  })
+
+  it('still reports an unreclaimed object key', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedLibrary(db, 'job-1', { state: 'ready', createdAt: '2026-07-26T00:00:00.000Z' })
+    seedLibraryObject(db, 'job-1', { objectKey: 'videos/chan-a/job-1.mp4' })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-01T00:00:00.000Z')
+
+    expect(rows[0].objectKey).toBe('videos/chan-a/job-1.mp4')
+  })
+
+  // Pins the proof that lets the scan use the age clause alone rather than
+  // the full settled predicate: an aged video is closed to every declared
+  // platform, so it can never be a candidate — whatever its publish history.
+  it('omits every aged video regardless of its publish history', () => {
+    const db = memDb()
+    const histories: { id: string; seed: () => void }[] = [
+      { id: 'job-none', seed: () => {} },
+      {
+        id: 'job-done',
+        seed: () => seedPublish(db, 'job-done', { platform: 'instagram', status: 'done', seq: 1 }),
+      },
+      {
+        id: 'job-pending',
+        seed: () =>
+          seedPublish(db, 'job-pending', { platform: 'youtube', status: 'interrupted', seq: 2 }),
+      },
+      {
+        id: 'job-failed',
+        seed: () =>
+          seedPublish(db, 'job-failed', {
+            platform: 'youtube',
+            status: 'failed',
+            errorKind: 'transient',
+            seq: 3,
+          }),
+      },
+    ]
+    for (const h of histories) {
+      seedJob(db, h.id, { channel: 'chan-a' })
+      seedLibrary(db, h.id, { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+      h.seed()
+    }
+
+    const rows = channelVideoCandidates(
+      db,
+      'chan-a',
+      ['youtube', 'instagram'],
+      50,
+      '2026-07-25T00:00:00.000Z',
+    )
+
+    expect(rows).toEqual([])
   })
 })
 
