@@ -826,7 +826,9 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
       status: 'done',
       seq: 1,
     })
-    // Aged out means OUTRANKED, so a newer video must actually have published:
+    // Aged out means OUTRANKED WHILE WAITING, so another job must have
+    // published inside job-1's grace window — after job-1 was produced (72h
+    // ago) and no later than the horizon (backlog_days = 2, so 48h ago).
     // job-2 has no library row, so it supplies the evidence without being
     // reported itself.
     seedJob(db, { id: 'job-2', channel: 'chan-a' })
@@ -836,6 +838,7 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
       platform: 'instagram',
       status: 'done',
       seq: 2,
+      createdAt: isoAgo(60 * HOUR_MS),
     })
     const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
     expect(digest).toContain('chan-a: 1 video aged out unpublished on youtube')
@@ -860,6 +863,39 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     })
     seedJob(db, { id: 'job-1', channel: 'chan-a' })
     seedLibrary(db, 'job-1', 'ready', isoAgo(72 * HOUR_MS))
+    const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
+    expect(digest).toContain('  Aged out:\n    none')
+    db.close()
+  })
+
+  it('reports none when the only later publish landed after the horizon', () => {
+    // The recovering outage: one publish once credentials are fixed is not
+    // evidence that the backlog behind it was passed over, so the section must
+    // stay silent rather than announce a wave of write-offs.
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      backlogDays: 2,
+      publish: {
+        targets: [
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    seedLibrary(db, 'job-1', 'ready', isoAgo(72 * HOUR_MS))
+    seedJob(db, { id: 'job-2', channel: 'chan-a' })
+    seedPublish(db, {
+      jobId: 'job-2',
+      channel: 'chan-a',
+      platform: 'instagram',
+      status: 'done',
+      seq: 1,
+      createdAt: isoAgo(HOUR_MS),
+    })
     const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
     expect(digest).toContain('  Aged out:\n    none')
     db.close()
@@ -901,7 +937,9 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
       platform: 'instagram',
       status: 'done',
       seq: 2,
-      createdAt: isoAgo(HOUR_MS),
+      // Inside job-1's window: after it was produced (12 days ago) and no
+      // later than the horizon (backlog_days = 10).
+      createdAt: isoAgo(11 * 24 * HOUR_MS),
     })
 
     const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })

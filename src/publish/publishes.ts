@@ -329,13 +329,17 @@ const BLOCKED_PREDICATE = 'blockingCount > 0 OR rejectedCount >= ?'
  * `metadata_json` included) never has to be loaded to return `limit` rows.
  *
  * `createdAfter` is the aged-out horizon (agedCutoff, ./settled.ts): videos
- * older than it are never returned — PROVIDED something outranked them, which
- * is the NOT EXISTS half of the clause below and the SQL twin of isAged
- * (./settled.ts). Both halves have to be here: drop the date and nothing ages
- * out, drop the contention and a publish outage longer than backlog_days makes
- * every stored video permanently un-publishable while it still counts as
- * inventory — a channel wedged by its own gate, which is the exact livelock
- * this design exists to prevent. The age clause alone (rather than the full
+ * older than it are never returned — PROVIDED something outranked them WHILE
+ * THEY WERE WAITING, which is the NOT EXISTS half of the clause below and the
+ * SQL twin of isAged (./settled.ts): a done row of a different job, in this
+ * channel, created after the video AND at or before the same horizon. All
+ * three parts have to be here: drop the date and nothing ages out; drop the
+ * contention and a publish outage longer than backlog_days makes every stored
+ * video permanently un-publishable while it still counts as inventory — a
+ * channel wedged by its own gate, which is the exact livelock this design
+ * exists to prevent; drop the `<= createdAfter` upper bound and the FIRST
+ * publish after that outage ages out the entire backlog behind it in one tick,
+ * which merely defers the same damage. The age clause alone (rather than the full
  * settled predicate) is sufficient for what remains: for an aged, contended
  * video EVERY declared platform is closed already — done, attempt-capped,
  * pending (which BLOCKED_PREDICATE rules out), or settled by age. Every
@@ -376,7 +380,8 @@ export function channelVideoCandidates(
                   OR NOT EXISTS (SELECT 1 FROM publishes p
                                  WHERE p.channel = ? AND p.status = 'done'
                                        AND p.job_id != l.job_id
-                                       AND p.created_at > l.created_at))
+                                       AND p.created_at > l.created_at
+                                       AND p.created_at <= ?))
              AND COALESCE(blk.blockedCount, 0) < ?
        ORDER BY COALESCE(agg.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
        LIMIT ?`,
@@ -384,13 +389,15 @@ export function channelVideoCandidates(
     .all(
       // Bind order follows the '?' order in the text above: the blk subquery's
       // platform list, then its attempt cap, then channel, the aged-out
-      // horizon, the contention subquery's channel, the declared-platform
-      // count, and the row limit.
+      // horizon, the contention subquery's channel, the SAME horizon again as
+      // that subquery's upper bound, the declared-platform count, and the row
+      // limit.
       ...platforms,
       MAX_PUBLISH_ATTEMPTS,
       channel,
       createdAfter,
       channel,
+      createdAfter,
       platforms.length,
       limit,
     ) as PublishableVideo[]

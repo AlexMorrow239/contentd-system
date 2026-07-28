@@ -392,6 +392,9 @@ describe('pendingInventory', () => {
   const CUTOFF = '2026-07-25T00:00:00.000Z'
   const FRESH = '2026-07-26T00:00:00.000Z'
   const AGED = '2026-07-20T00:00:00.000Z'
+  // Inside an AGED video's grace window: after it was produced, at or before
+  // the horizon. That is what contention has to be (publish/settled.ts).
+  const OUTRANKED_AT = '2026-07-23T00:00:00.000Z'
 
   function seedVideo(db: Database, jobId: string, state: LibraryState, createdAt: string): void {
     seedJobRow(db, jobId, { channel: 'chan-a' })
@@ -465,16 +468,40 @@ describe('pendingInventory', () => {
     const db = memDb()
     seedVideo(db, 'job-1', 'published', AGED)
     seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
-    // The contention ageing out requires: a newer video really did take a slot
-    // ahead of job-1. job-2 is fresh and still owed to youtube, so the 1 below
-    // is job-2 alone.
-    seedVideo(db, 'job-2', 'published', FRESH)
+    // The contention ageing out requires: another job really did take a slot
+    // while job-1 was waiting — a done row after job-1 was produced and no
+    // later than the horizon. Seeded with NO library row of its own, so the
+    // count below is job-1 alone and 0 proves job-1 actually left inventory.
+    seedJobRow(db, 'job-2', { channel: 'chan-a' })
     seedPublish(db, 'job-2', {
       platform: 'instagram',
       channel: 'chan-a',
       status: 'done',
       seq: 2,
-      createdAt: FRESH,
+      createdAt: OUTRANKED_AT,
+    })
+    expect(
+      pendingInventory(db, {
+        channel: 'chan-a',
+        declared: ['youtube', 'instagram'],
+        createdAfter: CUTOFF,
+      }),
+    ).toBe(0)
+  })
+
+  it('still counts an old video whose only later publish landed past the horizon', () => {
+    // The recovering outage: one publish after the window closed must not age
+    // out the backlog that was stranded behind it. Counting it here is half of
+    // the lockstep — channelVideoCandidates must keep offering it too.
+    const db = memDb()
+    seedVideo(db, 'job-1', 'ready', AGED)
+    seedJobRow(db, 'job-2', { channel: 'chan-a' })
+    seedPublish(db, 'job-2', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'done',
+      seq: 1,
+      createdAt: '2026-07-27T00:00:00.000Z',
     })
     expect(
       pendingInventory(db, {

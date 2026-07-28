@@ -19,6 +19,12 @@ interface DbCandidateRow {
 }
 
 /**
+ * How many library rows one sweep will look at. See reclaimableObjects below
+ * for why the scan is bounded at all.
+ */
+export const RECLAIM_SCAN_LIMIT = 500
+
+/**
  * Videos in this channel whose every declared platform has a settled leg and
  * whose object is still in the bucket.
  *
@@ -43,9 +49,13 @@ interface DbCandidateRow {
  *
  * `limit` caps the batch so a large accumulated backlog cannot eat the publish
  * lease window; the next tick continues where this one left off.
+ *
+ * `warn` reports a SATURATED scan — RECLAIM_SCAN_LIMIT rows came back, so
+ * reclaimable objects may exist beyond the window this call could see. Silence
+ * there would read as "nothing left to reclaim" while the bucket kept growing,
+ * and the oldest-first order means a saturated scan repeats the same prefix
+ * every tick.
  */
-export const RECLAIM_SCAN_LIMIT = 500
-
 export function reclaimableObjects(
   db: Database,
   opts: {
@@ -53,6 +63,7 @@ export function reclaimableObjects(
     declared: readonly Platform[]
     createdAfter: string
     limit: number
+    warn?: (message: string) => void
   },
 ): ReclaimableObject[] {
   if (opts.declared.length === 0) return []
@@ -69,20 +80,28 @@ export function reclaimableObjects(
     )
     .all(opts.channel, RECLAIM_SCAN_LIMIT) as DbCandidateRow[]
   if (rows.length === 0) return []
+  if (rows.length === RECLAIM_SCAN_LIMIT) {
+    opts.warn?.(
+      `${opts.channel}: scan hit its ${RECLAIM_SCAN_LIMIT}-row limit — ` +
+        'reclaimable objects beyond the oldest ' +
+        `${RECLAIM_SCAN_LIMIT} library rows were not considered`,
+    )
+  }
 
   const legs = legFactsByJob(
     db,
     rows.map((r) => r.jobId),
   )
   // One channel-wide read, reused for every row: ageing out requires evidence
-  // that a DIFFERENT job published after this video was produced (./settled.ts).
-  const contention = contentionFacts(db, opts.channel)
+  // that a DIFFERENT job published inside this video's grace window — after it
+  // was produced and no later than the horizon (./settled.ts).
+  const contention = contentionFacts(db, opts.channel, opts.createdAfter)
   const out: ReclaimableObject[] = []
   for (const row of rows) {
     const settled = isFullySettled({
       declared: opts.declared,
       legs: legs.get(row.jobId) ?? [],
-      aged: isAged(contention, row, opts.createdAfter),
+      aged: isAged(contention, row),
     })
     if (!settled) continue
     out.push({ jobId: row.jobId, objectKey: row.objectKey, bytes: row.bytes })

@@ -26,9 +26,11 @@ import { PUBLISH_PLATFORMS } from '../types.js'
 
 /**
  * The contention half of the aged-out clause: a DIFFERENT job of chan-a that
- * really did publish after the aged videos under test were produced. Without
- * it the horizon must not fire at all — nothing outranked them, publishing
- * just never ran.
+ * really did publish INSIDE the grace window of the aged videos under test —
+ * after they were produced (2026-07-20) and no later than the horizon those
+ * tests pass (2026-07-25). Without it the horizon must not fire at all —
+ * nothing outranked them, publishing just never ran, or it only recovered
+ * after the window had closed.
  *
  * No library row, deliberately: it supplies evidence without ever being a
  * candidate itself, so assertions stay about the videos under test.
@@ -40,7 +42,7 @@ function seedOutranker(db: ReturnType<typeof memDb>): void {
     channel: 'chan-a',
     status: 'done',
     seq: 99,
-    createdAt: '2026-07-26T00:00:00.000Z',
+    createdAt: '2026-07-23T00:00:00.000Z',
   })
 }
 
@@ -725,12 +727,115 @@ describe('channelVideoCandidates', () => {
       channel: 'chan-b',
       status: 'done',
       seq: 1,
-      createdAt: '2026-07-26T00:00:00.000Z',
+      // Inside the window in every respect except the channel, so the channel
+      // is the only thing that can be rejecting it.
+      createdAt: '2026-07-23T00:00:00.000Z',
     })
 
     const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
 
     expect(rows.map((r) => r.jobId)).toEqual(['job-old'])
+  })
+
+  it('does not accept a publish that landed after the horizon as contention', () => {
+    // The recovering outage. One publish once credentials are fixed must not
+    // age out the whole backlog that was waiting behind it — the SQL twin of
+    // isAged's `<= cutoff` upper bound (settled.ts).
+    const db = memDb()
+    seedJob(db, 'job-old', { channel: 'chan-a' })
+    seedLibrary(db, 'job-old', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+    seedJob(db, 'job-recovered', { channel: 'chan-a' })
+    seedPublish(db, 'job-recovered', {
+      channel: 'chan-a',
+      status: 'done',
+      seq: 1,
+      createdAt: '2026-07-27T00:00:00.000Z',
+    })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
+
+    expect(rows.map((r) => r.jobId)).toEqual(['job-old'])
+  })
+
+  it('accepts contention landing exactly at the horizon', () => {
+    const db = memDb()
+    seedJob(db, 'job-old', { channel: 'chan-a' })
+    seedLibrary(db, 'job-old', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+    seedJob(db, 'job-edge', { channel: 'chan-a' })
+    seedPublish(db, 'job-edge', {
+      channel: 'chan-a',
+      status: 'done',
+      seq: 1,
+      createdAt: '2026-07-25T00:00:00.000Z',
+    })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
+
+    expect(rows).toEqual([])
+  })
+
+  it('does not accept the video’s own publish as contention', () => {
+    const db = memDb()
+    seedJob(db, 'job-old', { channel: 'chan-a' })
+    seedLibrary(db, 'job-old', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+    seedPublish(db, 'job-old', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'done',
+      seq: 1,
+      createdAt: '2026-07-23T00:00:00.000Z',
+    })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
+
+    expect(rows.map((r) => r.jobId)).toEqual(['job-old'])
+  })
+
+  it('does not accept a later non-done row as contention', () => {
+    for (const status of ['failed', 'claimed', 'interrupted'] as const) {
+      const db = memDb()
+      seedJob(db, 'job-old', { channel: 'chan-a' })
+      seedLibrary(db, 'job-old', { state: 'ready', createdAt: '2026-07-20T00:00:00.000Z' })
+      seedJob(db, `job-${status}`, { channel: 'chan-a' })
+      seedPublish(db, `job-${status}`, {
+        channel: 'chan-a',
+        status,
+        seq: 1,
+        createdAt: '2026-07-23T00:00:00.000Z',
+      })
+
+      const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
+
+      expect(rows.map((r) => r.jobId)).toEqual(['job-old'])
+      db.close()
+    }
+  })
+
+  it('keeps the channel’s newest video, which nothing published past', () => {
+    // Contention is strictly "after this video was produced", so the newest
+    // row in a channel survives even when older siblings aged out around it.
+    // job-b published at 07-22: inside job-a's window (drops job-a), not
+    // inside its own (keeps job-b), and before job-c existed (keeps job-c).
+    const db = memDb()
+    for (const [id, createdAt] of [
+      ['job-a', '2026-07-20T00:00:00.000Z'],
+      ['job-b', '2026-07-21T00:00:00.000Z'],
+      ['job-c', '2026-07-23T00:00:00.000Z'],
+    ] as const) {
+      seedJob(db, id, { channel: 'chan-a' })
+      seedLibrary(db, id, { state: 'ready', createdAt })
+    }
+    seedPublish(db, 'job-b', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'done',
+      seq: 1,
+      createdAt: '2026-07-22T00:00:00.000Z',
+    })
+
+    const rows = channelVideoCandidates(db, 'chan-a', ['youtube'], 50, '2026-07-25T00:00:00.000Z')
+
+    expect(rows.map((r) => r.jobId)).toEqual(['job-c', 'job-b'])
   })
 
   it('keeps a video exactly at the createdAfter bound', () => {

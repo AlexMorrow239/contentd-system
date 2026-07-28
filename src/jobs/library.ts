@@ -233,7 +233,7 @@ export function pendingInventory(
   )
   // Same channel-wide contention read the reclaim sweep uses, so the two agree
   // on which videos have aged out (./publish/settled.ts).
-  const contention = contentionFacts(db, opts.channel)
+  const contention = contentionFacts(db, opts.channel, opts.createdAfter)
   let count = 0
   for (const row of rows) {
     if (row.state === 'needs-review') {
@@ -243,7 +243,7 @@ export function pendingInventory(
     const settled = isFullySettled({
       declared: opts.declared,
       legs: legs.get(row.jobId) ?? [],
-      aged: isAged(contention, row, opts.createdAfter),
+      aged: isAged(contention, row),
     })
     if (!settled) count += 1
   }

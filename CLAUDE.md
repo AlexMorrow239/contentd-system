@@ -139,7 +139,17 @@ is a real outcome: a channel doing 10 videos/day against YouTube's ~6/day cap
 never publishes 4 of them, and `channelVideoCandidates` orders `created_at
 DESC`, so tomorrow's videos outrank them forever. No `publishes` row is ever
 written for such a leg, so without an age clause those objects would live
-forever and their videos would count as inventory forever. The row in
+forever and their videos would count as inventory forever. Ageing out also
+requires CONTENTION inside the video's own grace window: a `done` row of a
+different job in the same channel, created after the video and at or before
+the same horizon. Without any contention test a publish outage longer than
+`backlog_days` would age out the whole bucket on the first recovering tick;
+without the upper bound, the single publish that recovers from that outage
+would age out everything stranded behind it one tick later. The three
+consumers of the predicate — the sweep, `pendingInventory`, and
+`channelVideoCandidates`' hand-written SQL twin — must agree exactly, and
+`publish/test/settled.test.ts`'s "the passed-over video, end to end" describe
+is what pins them together. The row in
 `library_objects` survives with `reclaimed_at` stamped — `unstoredLibraryJobs`
 finds backfill candidates by the ABSENCE of a row, so keeping it is what stops
 `library backfill-store` from re-uploading what the sweep deleted.

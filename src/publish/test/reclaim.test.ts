@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPublish } from '../../testing/db.js'
 import { tmpDir } from '../../testing/tmp.js'
 import { fakeStore } from '../../storage/fake.js'
-import { reclaimableObjects, reclaimObjects } from '../reclaim.js'
+import { RECLAIM_SCAN_LIMIT, reclaimableObjects, reclaimObjects } from '../reclaim.js'
 
 const YEAR_AGO = '2025-07-27T00:00:00.000Z'
 const CUTOFF = '2026-07-25T00:00:00.000Z'
@@ -27,17 +27,21 @@ function seedVideo(
 
 /**
  * The contention evidence ageing out requires: a DIFFERENT job of this channel
- * that actually published after the video under test was produced. Without it
- * nothing outranked the video — publishing simply never ran — and the horizon
- * must not fire (settled.ts, isAged).
+ * that actually published INSIDE the grace window of the video under test —
+ * after that video was produced and no later than the horizon. Without it
+ * nothing outranked the video — publishing simply never ran, or only recovered
+ * after the window closed — and the horizon must not fire (settled.ts,
+ * isAged).
  *
- * Deliberately fresh, and published to instagram only, so it is never itself
- * reclaimable for any channel these tests declare: it adds contention without
- * adding a candidate.
+ * Published to instagram only, and to no youtube leg, so it is never itself
+ * reclaimable for any platform set these tests declare: it adds contention
+ * without adding a candidate.
  */
+const CONTENTION_AT = '2026-07-24T00:00:00.000Z'
+
 function seedContention(db: ReturnType<typeof memDb>, jobId = 'newer-job'): void {
-  seedVideo(db, jobId, { createdAt: FRESH })
-  seedPublish(db, jobId, { platform: 'instagram', status: 'done', seq: 9 })
+  seedVideo(db, jobId, { createdAt: '2026-07-23T00:00:00.000Z' })
+  seedPublish(db, jobId, { platform: 'instagram', status: 'done', seq: 9, createdAt: CONTENTION_AT })
 }
 
 describe('reclaim', () => {
@@ -254,6 +258,121 @@ describe('reclaim', () => {
           limit: 25,
         }),
       ).toEqual([])
+    })
+
+    it('ignores a done publish that lands after the horizon', () => {
+      // The recovering outage: nothing published while job-1 waited, and the
+      // first publish after credentials were fixed is not evidence that job-1
+      // was passed over. Deleting its bytes here is exactly the damage the
+      // window's upper bound exists to stop.
+      const db = memDb()
+      seedVideo(db, 'job-1', { createdAt: AGED })
+      seedPublish(db, 'job-1', { platform: 'instagram', status: 'done', seq: 1, createdAt: AGED })
+      seedVideo(db, 'recovered-job', { createdAt: AGED, object: false })
+      seedPublish(db, 'recovered-job', {
+        platform: 'youtube',
+        status: 'done',
+        seq: 2,
+        createdAt: '2026-07-27T00:00:00.000Z',
+      })
+
+      expect(
+        reclaimableObjects(db, {
+          channel: 'chan-a',
+          declared: ['youtube', 'instagram'],
+          createdAfter: CUTOFF,
+          limit: 25,
+        }),
+      ).toEqual([])
+    })
+
+    it('accepts a done publish landing exactly at the horizon', () => {
+      const db = memDb()
+      seedVideo(db, 'job-1', { createdAt: AGED })
+      seedPublish(db, 'job-1', { platform: 'instagram', status: 'done', seq: 1, createdAt: AGED })
+      seedVideo(db, 'edge-job', { createdAt: AGED, object: false })
+      seedPublish(db, 'edge-job', {
+        platform: 'youtube',
+        status: 'done',
+        seq: 2,
+        createdAt: CUTOFF,
+      })
+
+      expect(
+        reclaimableObjects(db, {
+          channel: 'chan-a',
+          declared: ['youtube', 'instagram'],
+          createdAfter: CUTOFF,
+          limit: 25,
+        }).map((r) => r.jobId),
+      ).toEqual(['job-1'])
+    })
+
+    it('does not accept a later failed, claimed or interrupted row as contention', () => {
+      // Only 'done' is evidence that a slot was actually consumed.
+      for (const status of ['failed', 'claimed', 'interrupted'] as const) {
+        const db = memDb()
+        seedVideo(db, 'job-1', { createdAt: AGED })
+        seedPublish(db, 'job-1', { platform: 'instagram', status: 'done', seq: 1, createdAt: AGED })
+        seedVideo(db, 'other-job', { createdAt: AGED, object: false })
+        seedPublish(db, 'other-job', {
+          platform: 'youtube',
+          status,
+          seq: 2,
+          createdAt: CONTENTION_AT,
+        })
+
+        expect(
+          reclaimableObjects(db, {
+            channel: 'chan-a',
+            declared: ['youtube', 'instagram'],
+            createdAfter: CUTOFF,
+            limit: 25,
+          }),
+        ).toEqual([])
+      }
+    })
+
+    it('warns when the scan comes back full', () => {
+      // RECLAIM_SCAN_LIMIT rows means reclaimable objects may exist past the
+      // window this call could see — and oldest-first means the next tick
+      // reads the same prefix, so silence would read as "nothing left".
+      const db = memDb()
+      const insert = db.transaction(() => {
+        for (let i = 0; i < RECLAIM_SCAN_LIMIT; i++) {
+          seedVideo(db, `job-${String(i).padStart(4, '0')}`, { createdAt: YEAR_AGO })
+        }
+      })
+      insert()
+      const warn = vi.fn()
+
+      reclaimableObjects(db, {
+        channel: 'chan-a',
+        declared: ['youtube'],
+        createdAfter: CUTOFF,
+        limit: 25,
+        warn,
+      })
+
+      expect(warn).toHaveBeenCalledOnce()
+      expect(warn.mock.calls[0][0]).toContain(String(RECLAIM_SCAN_LIMIT))
+      expect(warn.mock.calls[0][0]).toContain('chan-a')
+    })
+
+    it('does not warn on a scan that fits', () => {
+      const db = memDb()
+      seedVideo(db, 'job-1', { createdAt: FRESH })
+      const warn = vi.fn()
+
+      reclaimableObjects(db, {
+        channel: 'chan-a',
+        declared: ['youtube'],
+        createdAfter: CUTOFF,
+        limit: 25,
+        warn,
+      })
+
+      expect(warn).not.toHaveBeenCalled()
     })
 
     it('returns nothing for a channel declaring no platforms', () => {

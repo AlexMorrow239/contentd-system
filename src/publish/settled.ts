@@ -31,56 +31,77 @@ export function agedCutoff(now: Date, backlogDays: number): string {
 
 /**
  * The channel-wide evidence that ageing out is a real outcome and not just a
- * stopped clock: the newest 'done' publish per job, newest first, at most two
- * rows.
+ * stopped clock: the newest 'done' publish per job that landed AT OR BEFORE
+ * the aged-out horizon, newest first, at most two rows.
  *
- * Two rows is exactly enough, and that is the point of the shape. The question
- * asked of these facts is "did some OTHER job of this channel publish after
- * this video was produced" — so only the newest done publish belonging to a
- * different job can ever answer it. Grouping by job_id makes each row a
- * distinct job, so the top row answers unless it is the video's own job, in
- * which case the second row does. Everything below them is dominated.
+ * The `cutoff` restriction is the whole point of the shape and is carried on
+ * the facts so no caller can pair a read with a different horizon than the one
+ * it asks isAged about. Contention has to fall inside the video's own grace
+ * window — see isAged — and the newest done row OVERALL is the wrong thing to
+ * hold: one publish after the window closed would otherwise re-arm the horizon
+ * for every older video at once.
+ *
+ * Two rows is exactly enough. The question asked of these facts is "did some
+ * OTHER job of this channel publish inside this video's window" — so only the
+ * newest qualifying done publish belonging to a different job can ever answer
+ * it. Grouping by job_id makes each row a distinct job, so the top row answers
+ * unless it is the video's own job, in which case the second row does.
+ * Everything below them is dominated.
  *
  * One read per channel, not per video — the same discipline legFactsByJob
  * follows.
  */
 export interface ContentionFacts {
-  /** (job, newest done publish) pairs, newest first. At most two. */
+  /** The horizon this read was taken against; isAged compares videos to it. */
+  readonly cutoff: string
+  /** (job, newest done publish at-or-before `cutoff`) pairs, newest first. At most two. */
   readonly recentDone: readonly { jobId: string; at: string }[]
 }
 
-export function contentionFacts(db: Database, channel: string): ContentionFacts {
+export function contentionFacts(db: Database, channel: string, cutoff: string): ContentionFacts {
   const recentDone = db
     .prepare(
       `SELECT job_id AS jobId, MAX(created_at) AS at
-       FROM publishes WHERE channel = ? AND status = 'done'
+       FROM publishes WHERE channel = ? AND status = 'done' AND created_at <= ?
        GROUP BY job_id ORDER BY at DESC, job_id ASC LIMIT 2`,
     )
-    .all(channel) as { jobId: string; at: string }[]
-  return { recentDone }
+    .all(channel, cutoff) as { jobId: string; at: string }[]
+  return { cutoff, recentDone }
 }
 
 /**
  * Has this video aged out — i.e. is it old enough to write off, AND did
- * something actually outrank it?
+ * something actually outrank it WHILE IT WAS WAITING?
  *
  * The age clause's whole justification is contention: newer videos took the
  * scarce platform's slots ahead of this one, permanently. That argument needs
- * newer videos to have actually published. Without the second clause a publish
- * outage longer than backlog_days (host down, expired credential) would make
- * the first recovering tick declare EVERY stored video aged out — deleting the
- * bytes of videos nothing ever outranked, and simultaneously refusing to
- * publish them. Nothing was passed over there; publishing simply never ran.
+ * newer videos to have actually published, and to have published during this
+ * video's grace window — the span between its own creation and the horizon.
  *
- * Both comparisons are lexicographic on the same fixed-width ISO-8601 UTC
- * format, so string order IS chronological order.
+ * Both halves of that window matter:
+ *
+ *   - Without any contention test, a publish outage longer than backlog_days
+ *     (host down, expired credential) would make the first recovering tick
+ *     declare EVERY stored video aged out — deleting the bytes of videos
+ *     nothing ever outranked, and simultaneously refusing to publish them.
+ *   - Without the `<= cutoff` upper bound, ONE publish after the outage ends
+ *     re-arms the horizon for the whole backlog at once: 10 stranded videos,
+ *     the newest gets published on the first recovering tick, and on the next
+ *     tick that single done row is "newer than" the other nine, ageing all
+ *     nine out together. The outage's damage would be deferred by one tick,
+ *     not prevented. A publish that happens after the window closed is not
+ *     evidence that this video was passed over while it waited.
+ *
+ * `facts.recentDone` is already restricted to `<= facts.cutoff` by the read,
+ * so the check here is the lower bound alone. Every comparison is
+ * lexicographic on the same fixed-width ISO-8601 UTC format, so string order
+ * IS chronological order.
  */
 export function isAged(
   facts: ContentionFacts,
   video: { jobId: string; createdAt: string },
-  cutoff: string,
 ): boolean {
-  if (video.createdAt >= cutoff) return false
+  if (video.createdAt >= facts.cutoff) return false
   return facts.recentDone.some((r) => r.jobId !== video.jobId && r.at > video.createdAt)
 }
 

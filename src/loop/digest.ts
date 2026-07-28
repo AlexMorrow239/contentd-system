@@ -273,12 +273,13 @@ export function buildDigest(
       )
       .all(channel.name, cutoff, windowStart) as { jobId: string; createdAt: string }[]
     // Old enough is not the whole test: ageing out also requires that another
-    // job actually published after this video was produced (isAged,
-    // publish/settled.ts). Without the second half a publish outage would be
-    // reported here as a wave of passed-over videos, when in fact nothing
-    // outranked them and every one is still publishable.
-    const contention = contentionFacts(db, channel.name)
-    const rows = windowed.filter((r) => isAged(contention, r, cutoff))
+    // job actually published inside this video's grace window — after it was
+    // produced and no later than the horizon (isAged, publish/settled.ts).
+    // Without that half a publish outage would be reported here as a wave of
+    // passed-over videos, when in fact nothing outranked them and every one is
+    // still publishable.
+    const contention = contentionFacts(db, channel.name, cutoff)
+    const rows = windowed.filter((r) => isAged(contention, r))
     if (rows.length === 0) continue
     const legs = legFactsByJob(
       db,

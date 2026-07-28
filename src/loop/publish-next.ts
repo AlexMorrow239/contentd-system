@@ -150,18 +150,20 @@ async function sweepReclaimable(
     if (channel.publish === null) continue
     const remaining = MAX_RECLAIM_PER_TICK - count
     if (remaining <= 0) break
+    const warn = (message: string): void => console.error(`publish-next: reclaim: ${message}`)
     const objects = reclaimableObjects(db, {
       channel: channel.name,
       declared: channel.publish.targets.map((t) => t.platform),
       createdAfter: agedCutoff(now, channel.backlogDays),
       limit: remaining,
+      warn,
     })
     if (objects.length === 0) continue
     const result = await reclaimObjects({
       db,
       objects,
       store,
-      warn: (message) => console.error(`publish-next: reclaim: ${message}`),
+      warn,
     })
     count += result.reclaimed.length
     bytes += result.bytes

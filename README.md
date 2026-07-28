@@ -326,9 +326,9 @@ for it.
 
 That last case is the other half of the knob: `backlog_days` doubles as the
 horizon a video is given to find a publish slot. Past it — and only once
-newer videos have actually published ahead of it, so a publish outage never
-counts — the video is written off as aged out and its stored object is
-deleted. That includes a video still awaiting review: approve it within
+another video actually published *while this one was waiting*, so neither a
+publish outage nor the first upload that recovers from one ever counts — the
+video is written off as aged out and its stored object is deleted. That includes a video still awaiting review: approve it within
 `backlog_days` or its bytes are reclaimed, `library approve` refuses it, and
 the daily digest tells you to reject it. `[scout]
 queue_days` (default `3`) is the same idea one stage earlier: it caps how many
