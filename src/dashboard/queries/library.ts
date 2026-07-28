@@ -81,7 +81,7 @@ interface DbLibraryEntry {
 // once neither reclaimed-nor-local applies does the presence of a
 // library_objects row distinguish 'archived' (uploaded) from 'unstored'
 // (never uploaded).
-function libraryBytes(row: {
+export function libraryBytes(row: {
   video_path: string
   object_key: string | null
   reclaimed_at: string | null
@@ -96,7 +96,7 @@ function libraryBytes(row: {
  * Only 'done' rows with a url qualify — a failed attempt has nothing to link
  * to, and a done row without one predates url capture.
  */
-function libraryLinks(db: Database, jobIds: string[]): Map<string, LibraryLink[]> {
+export function libraryLinks(db: Database, jobIds: string[]): Map<string, LibraryLink[]> {
   const byJob = new Map<string, LibraryLink[]>()
   if (jobIds.length === 0) return byJob
   const placeholders = jobIds.map(() => '?').join(', ')

@@ -86,16 +86,20 @@ export function planTick(db: Database, channels: ChannelConfig[], now = new Date
   const candidates = channels
     .map((channel) => {
       const today = jobsToday(channel.name)
-      const inventory = pendingInventory(db, {
-        channel: channel.name,
-        declared: channel.publish?.targets.map((t) => t.platform) ?? [],
-        createdAfter: agedCutoff(now, channel.backlogDays),
-      })
-      const backlogged = inventory >= backlogCap(channel)
+      // Quota is cheaper to check and already excludes most channels most
+      // ticks — skip the inventory scan (3 queries) once quota alone closes it.
+      const underQuota = today < channel.videosPerDay
+      const backlogged =
+        underQuota &&
+        pendingInventory(db, {
+          channel: channel.name,
+          declared: channel.publish?.targets.map((t) => t.platform) ?? [],
+          createdAfter: agedCutoff(now, channel.backlogDays),
+        }) >= backlogCap(channel)
       if (backlogged) anyBacklogged = true
       return {
         channel,
-        open: today < channel.videosPerDay && !backlogged,
+        open: underQuota && !backlogged,
         filledFraction: today / channel.videosPerDay,
       }
     })

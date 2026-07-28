@@ -1,5 +1,5 @@
-import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
+import { libraryBytes, libraryLinks } from './library.js'
 
 export type JobStatus = 'queued' | 'running' | 'failed' | 'done' | 'blocked'
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed'
@@ -196,42 +196,26 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
 
   const libraryRow = db
     .prepare(
-      `SELECT l.state AS state, l.video_path AS videoPath, lo.object_key AS objectKey,
-              lo.reclaimed_at AS reclaimedAt
+      `SELECT l.state AS state, l.video_path AS video_path, lo.object_key AS object_key,
+              lo.reclaimed_at AS reclaimed_at
        FROM library l LEFT JOIN library_objects lo ON lo.job_id = l.job_id
        WHERE l.job_id = ?`,
     )
     .get(jobId) as
-    | { state: string; videoPath: string; objectKey: string | null; reclaimedAt: string | null }
+    | { state: string; video_path: string; object_key: string | null; reclaimed_at: string | null }
     | undefined
 
-  // Same precedence as the library page: a reclaimed object is reclaimed even
-  // if a stale runs/ file survives, because the durable copy is the one gone.
-  // Only once neither applies does the presence of a library_objects row
-  // distinguish 'archived' (uploaded) from 'unstored' (never uploaded).
-  const bytes: JobDetail['bytes'] =
-    libraryRow === undefined
-      ? null
-      : libraryRow.reclaimedAt !== null
-        ? 'reclaimed'
-        : existsSync(libraryRow.videoPath)
-          ? 'local'
-          : libraryRow.objectKey !== null
-            ? 'archived'
-            : 'unstored'
+  // Same precedence as the library page: libraryBytes owns it, this just calls it.
+  const bytes: JobDetail['bytes'] = libraryRow === undefined ? null : libraryBytes(libraryRow)
 
-  const links = db
-    .prepare(
-      "SELECT platform, url FROM publishes WHERE job_id = ? AND status = 'done' AND url IS NOT NULL ORDER BY platform",
-    )
-    .all(jobId) as { platform: string; url: string }[]
+  const links = libraryLinks(db, [jobId]).get(jobId) ?? []
 
   return {
     job: toJobRow(row),
     stages,
     costs,
     libraryState: libraryRow?.state ?? null,
-    videoPath: libraryRow?.videoPath ?? null,
+    videoPath: libraryRow?.video_path ?? null,
     bytes,
     links,
   }

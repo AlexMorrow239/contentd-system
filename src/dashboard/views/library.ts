@@ -41,8 +41,11 @@ function renderBytes(entry: LibraryEntry, dbChoice: DbChoice): SafeHtml {
   }
 }
 
-function renderLinks(links: LibraryEntry['links']): SafeHtml {
-  if (links.length === 0) return html`<span class="muted">—</span>`
+export function renderLinks(
+  links: LibraryEntry['links'],
+  emptyMarkup: SafeHtml = html`<span class="muted">—</span>`,
+): SafeHtml {
+  if (links.length === 0) return emptyMarkup
   return html`<ul class="links">
     ${links.map((l) => {
       const safeUrl = httpUrlOrNull(l.url)

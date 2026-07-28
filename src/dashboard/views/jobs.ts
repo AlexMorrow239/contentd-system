@@ -1,7 +1,8 @@
 import type { DbChoice } from '../config.js'
-import { html, httpUrlOrNull, SafeHtml } from '../html.js'
+import { html, SafeHtml } from '../html.js'
 import type { JobDetail, JobListRow, JobStatus, StageRow } from '../queries/jobs.js'
 import { dbHref } from './layout.js'
+import { renderLinks } from './library.js'
 
 export function formatUsd(usdMicros: number): string {
   return `$${(usdMicros / 1_000_000).toFixed(2)}`
@@ -126,16 +127,7 @@ export function renderJobDetailPage(detail: JobDetail, dbChoice: DbChoice): Safe
               : detail.bytes === 'reclaimed'
                 ? html`<p class="muted">reclaimed — the stored object was deleted after every platform settled</p>`
                 : html`<p class="muted">not stored — run <code>library backfill-store</code></p>`}
-          ${detail.links.length === 0
-            ? html``
-            : html`<ul class="links">
-                ${detail.links.map((l) => {
-                  const safeUrl = httpUrlOrNull(l.url)
-                  return safeUrl === null
-                    ? html`<li><span class="warning" title="blocked unsafe link scheme">${l.platform}</span></li>`
-                    : html`<li><a href="${safeUrl}" rel="noreferrer noopener" target="_blank">${l.platform} ↗</a></li>`
-                })}
-              </ul>`}
+          ${renderLinks(detail.links, html``)}
         </div>`
 
   const costs =
