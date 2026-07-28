@@ -336,7 +336,14 @@ export async function scoutAll(
   // Budget-blocked channels sit outside this test entirely: with all of them
   // blocked the set is empty and the run is healthy, while a real scoring
   // failure alongside one still fails the run.
-  const spendable = results.filter((r) => !budgetBlocked.has(r.channel))
+  //
+  // Queue-full channels are excluded for the same reason they are excluded
+  // from totalSources above: they never reached scoring, so they can carry no
+  // scoringError — and left in, ONE of them made `every` false and swallowed a
+  // genuine scoring outage on every other channel, exiting 0.
+  const spendable = results.filter(
+    (r) => !budgetBlocked.has(r.channel) && r.skipped === undefined,
+  )
   if (spendable.length > 0 && spendable.every((r) => r.scoringError !== undefined)) {
     // The count is of the channels the test actually ranged over, with any
     // budget-blocked ones named separately rather than folded into a total

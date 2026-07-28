@@ -640,6 +640,43 @@ describe('scoutAll', () => {
     expect(results).toHaveLength(1)
     expect(results[0].skipped).toBe('queue-full')
   })
+
+  it('still throws when a real scoring failure sits alongside a queue-full channel', async () => {
+    // A skipped channel never reached scoring, so it can carry no
+    // scoringError. Left inside the all-channels test, ONE of them made
+    // `every` false and swallowed a genuine scoring outage on every other
+    // channel — the run exited 0 while the queue quietly drained.
+    const db = memDb()
+    const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const full = testChannel({
+      name: 'chan-full',
+      videosPerDay: 2,
+      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+    })
+    for (let i = 0; i < 6; i++) {
+      seedTopic(db, { channel: 'chan-full', status: 'candidate', dedupeHash: `h-${String(i)}` })
+    }
+    const broken = scoutedChannel({ subreddits: ['two'] }, 'b')
+    const fetchImpl = fetchStub({ '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]) })
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
+      usage: { input_tokens: 10, output_tokens: 5 },
+    })
+
+    const err = await scoutAll(db, [full, broken], { client, fetchImpl }).then(
+      () => null,
+      (e: unknown) => e,
+    )
+
+    expect(err).toBeInstanceOf(AllChannelsScoringFailedError)
+    const failed = err as AllChannelsScoringFailedError
+    // The count ranges over the one channel that actually tried to score.
+    expect(failed.message).toBe('all 1 scouted channel(s) failed in scoring')
+    // Both channels' results still ride out for the CLI's JSON line.
+    expect(failed.results.map((r) => r.channel)).toEqual(['chan-full', 'b'])
+    stderrSpy.mockRestore()
+    db.close()
+  })
 })
 
 describe('scout error classification', () => {
