@@ -8,45 +8,23 @@ export function localDay(now: Date): string {
   return `${year}-${month}-${day}`
 }
 
-// The local-hour window uploads are allowed in. Deliberately NOT
-// configurable: the operator sets volume (videos_per_day) and the schedule is
-// derived from it. End is exclusive, so 21:00 itself is outside.
-export const PUBLISH_WINDOW_START_HOUR = 9
-export const PUBLISH_WINDOW_END_HOUR = 21
+// The floor between two publish attempts for ONE channel. Deliberately a
+// constant, not config: this is an anti-burst guard (a platform seeing six
+// uploads land in three minutes reads it as spam), not a schedule. Demand —
+// videos_per_day still unmet today — is the only thing that makes a channel
+// due; this only stops the demand from discharging as a single burst.
+export const PUBLISH_COOLDOWN_MS = 600_000 // 10 min
 
-const HOUR_MS = 3_600_000
-
-export function isInPublishWindow(now: Date): boolean {
-  const hour = now.getHours()
-  return hour >= PUBLISH_WINDOW_START_HOUR && hour < PUBLISH_WINDOW_END_HOUR
-}
+export type NotDueReason = 'paced' | 'daily-count-met'
 
 /**
- * Minimum spacing between two publish attempts for ONE channel: the window
- * divided by the day's video count — 3/day over a 12h window is one every 4h.
- * Floored, never rounded up, so N gaps always fit inside the window.
- * videosPerDay is a positive integer (config schema guarantees it), so the
- * result is always >= 1ms.
- */
-export function minGapMs(videosPerDay: number): number {
-  const windowMs = (PUBLISH_WINDOW_END_HOUR - PUBLISH_WINDOW_START_HOUR) * HOUR_MS
-  return Math.floor(windowMs / videosPerDay)
-}
-
-export type NotDueReason = 'not-in-window' | 'paced' | 'daily-count-met'
-
-/**
- * Why a channel is not due, or undefined when it IS due. Returns the reason
- * rather than a boolean so the tick can report WHICH gate closed instead of a
- * single opaque no-op.
+ * Why a channel is not due, or undefined when it IS due. There is no posting
+ * window anymore: the day quota (videos_per_day, per local calendar day) and
+ * the cooldown are the only gates.
  *
- * Gate order is the order of specificity, not of cost: an out-of-window tick
- * says so even if the count is also met, and a met count outranks pacing
- * because it is the more informative of the two.
- *
- * `lastAttemptAt` is deliberately not day-scoped by the caller — the gap must
- * measure correctly across midnight, where a day-scoped read would see null
- * and publish immediately at 00:00.
+ * `lastAttemptAt` is deliberately not day-scoped by the caller — the cooldown
+ * must measure correctly across midnight, where a day-scoped read would see
+ * null and fire at 00:00 sharp.
  */
 export function channelNotDueReason(opts: {
   videosPerDay: number
@@ -54,11 +32,10 @@ export function channelNotDueReason(opts: {
   lastAttemptAt: Date | null
   now: Date
 }): NotDueReason | undefined {
-  if (!isInPublishWindow(opts.now)) return 'not-in-window'
   if (opts.publishedToday >= opts.videosPerDay) return 'daily-count-met'
   if (
     opts.lastAttemptAt !== null &&
-    opts.now.getTime() - opts.lastAttemptAt.getTime() < minGapMs(opts.videosPerDay)
+    opts.now.getTime() - opts.lastAttemptAt.getTime() < PUBLISH_COOLDOWN_MS
   ) {
     return 'paced'
   }
