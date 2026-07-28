@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
 import type { LibraryState } from '../../jobs/library.js'
 
@@ -7,6 +8,21 @@ export type QcSummary =
   | { kind: 'unparseable' }
   | { kind: 'absent' }
 
+/**
+ * Where this video's bytes are. 'local' — the runs/ file is still on disk and
+ * the dashboard can stream it. 'archived' — only the bucket has it; the
+ * dashboard holds no bucket credentials by design, so it can name the state
+ * but not play the video. 'reclaimed' — the object was deliberately deleted
+ * after every declared platform settled, and the live post is all that is
+ * left. Drawn from the database plus existsSync, never from the bucket.
+ */
+export type LibraryBytes = 'local' | 'archived' | 'reclaimed'
+
+export interface LibraryLink {
+  platform: string
+  url: string
+}
+
 export interface LibraryEntry {
   jobId: string
   channel: string
@@ -15,6 +31,9 @@ export interface LibraryEntry {
   videoPath: string
   createdAt: string
   qc: QcSummary
+  bytes: LibraryBytes
+  /** One per platform that published, ordered by platform for stability. */
+  links: LibraryLink[]
 }
 
 /**
@@ -48,6 +67,39 @@ interface DbLibraryEntry {
   video_path: string
   metadata_json: string
   created_at: string
+  object_key: string | null
+  reclaimed_at: string | null
+}
+
+// Precedence: a reclaimed object is reclaimed even if a stale runs/ file
+// happens to survive, because the durable copy is the one that is gone.
+function libraryBytes(row: { video_path: string; reclaimed_at: string | null }): LibraryBytes {
+  if (row.reclaimed_at !== null) return 'reclaimed'
+  return existsSync(row.video_path) ? 'local' : 'archived'
+}
+
+/**
+ * Live post urls per job, in ONE grouped read rather than a query per row.
+ * Only 'done' rows with a url qualify — a failed attempt has nothing to link
+ * to, and a done row without one predates url capture.
+ */
+function libraryLinks(db: Database, jobIds: string[]): Map<string, LibraryLink[]> {
+  const byJob = new Map<string, LibraryLink[]>()
+  if (jobIds.length === 0) return byJob
+  const placeholders = jobIds.map(() => '?').join(', ')
+  const rows = db
+    .prepare(
+      `SELECT job_id, platform, url FROM publishes
+       WHERE job_id IN (${placeholders}) AND status = 'done' AND url IS NOT NULL
+       ORDER BY job_id, platform`,
+    )
+    .all(...jobIds) as { job_id: string; platform: string; url: string }[]
+  for (const row of rows) {
+    const links = byJob.get(row.job_id) ?? []
+    links.push({ platform: row.platform, url: row.url })
+    byJob.set(row.job_id, links)
+  }
+  return byJob
 }
 
 function libraryWhereClause(filter?: { state?: LibraryState; channel?: string }): {
@@ -79,11 +131,18 @@ export function listLibraryEntries(
     .prepare(
       'SELECT library.job_id AS job_id, jobs.channel AS channel, jobs.topic AS topic, ' +
         'library.state AS state, library.video_path AS video_path, ' +
-        'library.metadata_json AS metadata_json, library.created_at AS created_at ' +
-        `FROM library JOIN jobs ON library.job_id = jobs.id${clause} ` +
+        'library.metadata_json AS metadata_json, library.created_at AS created_at, ' +
+        'library_objects.object_key AS object_key, library_objects.reclaimed_at AS reclaimed_at ' +
+        'FROM library JOIN jobs ON library.job_id = jobs.id ' +
+        `LEFT JOIN library_objects ON library_objects.job_id = library.job_id${clause} ` +
         'ORDER BY library.created_at DESC, library.job_id DESC LIMIT ?',
     )
     .all(...params, limit) as DbLibraryEntry[]
+
+  const links = libraryLinks(
+    db,
+    rows.map((r) => r.job_id),
+  )
 
   return rows.map((row) => ({
     jobId: row.job_id,
@@ -93,6 +152,8 @@ export function listLibraryEntries(
     videoPath: row.video_path,
     createdAt: row.created_at,
     qc: summarizeQc(row.metadata_json),
+    bytes: libraryBytes(row),
+    links: links.get(row.job_id) ?? [],
   }))
 }
 

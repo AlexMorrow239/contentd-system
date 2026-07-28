@@ -28,6 +28,24 @@ function renderQc(qc: QcSummary): SafeHtml {
   }
 }
 
+function renderBytes(entry: LibraryEntry, dbChoice: DbChoice): SafeHtml {
+  switch (entry.bytes) {
+    case 'local':
+      return html`<video controls preload="metadata" src="${dbHref(`/library/${entry.jobId}/video`, dbChoice)}"></video>`
+    case 'archived':
+      return html`<span class="muted">archived to object storage</span>`
+    case 'reclaimed':
+      return html`<span class="muted">reclaimed — ${formatTime(entry.createdAt)}</span>`
+  }
+}
+
+function renderLinks(links: LibraryEntry['links']): SafeHtml {
+  if (links.length === 0) return html`<span class="muted">—</span>`
+  return html`<ul class="links">
+    ${links.map((l) => html`<li><a href="${l.url}" rel="noreferrer noopener" target="_blank">${l.platform} ↗</a></li>`)}
+  </ul>`
+}
+
 export interface LibraryPageData {
   entries: LibraryEntry[]
   /** Total rows matching the filter, before the 200-row cap. Undefined skips the notice. */
@@ -62,15 +80,14 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
 
   const rows = data.entries.map(
     (entry) => html`<tr>
-      <td>
-        <video controls preload="metadata" src="${dbHref(`/library/${entry.jobId}/video`, data.dbChoice)}"></video>
-      </td>
+      <td>${renderBytes(entry, data.dbChoice)}</td>
       <td>
         <a href="${dbHref(`/jobs/${entry.jobId}`, data.dbChoice)}">${entry.jobId}</a>
         <div class="muted">${entry.channel}</div>
       </td>
       <td>${entry.topic}</td>
       <td class="status-${entry.state}">${entry.state}</td>
+      <td>${renderLinks(entry.links)}</td>
       <td>${renderQc(entry.qc)}</td>
       <td>${formatTime(entry.createdAt)}</td>
     </tr>`,
@@ -81,7 +98,7 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
     ${truncationNotice(data.entries.length, data.total)}
     <table>
       <thead>
-        <tr><th>video</th><th>job</th><th>topic</th><th>state</th><th>qc</th><th>created</th></tr>
+        <tr><th>video</th><th>job</th><th>topic</th><th>state</th><th>live</th><th>qc</th><th>created</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>`

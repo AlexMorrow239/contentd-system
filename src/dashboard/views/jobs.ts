@@ -115,17 +115,23 @@ export function renderJobDetailPage(detail: JobDetail, dbChoice: DbChoice): Safe
   const { job } = detail
 
   const video =
-    detail.videoPath !== null && !detail.archived
-      ? html`<div class="panel">
+    detail.bytes === null
+      ? html``
+      : html`<div class="panel">
           <h2>video</h2>
-          <video controls preload="metadata" src="${dbHref(`/library/${job.id}/video`, dbChoice)}"></video>
+          ${detail.bytes === 'local'
+            ? html`<video controls preload="metadata" src="${dbHref(`/library/${job.id}/video`, dbChoice)}"></video>`
+            : detail.bytes === 'archived'
+              ? html`<p class="muted">archived to object storage — not available locally</p>`
+              : html`<p class="muted">reclaimed — the stored object was deleted after every platform settled</p>`}
+          ${detail.links.length === 0
+            ? html``
+            : html`<ul class="links">
+                ${detail.links.map(
+                  (l) => html`<li><a href="${l.url}" rel="noreferrer noopener" target="_blank">${l.platform} ↗</a></li>`,
+                )}
+              </ul>`}
         </div>`
-      : detail.archived
-        ? html`<div class="panel">
-            <h2>video</h2>
-            <p class="muted">archived to object storage — not available locally</p>
-          </div>`
-        : html``
 
   const costs =
     detail.costs.length === 0

@@ -136,16 +136,17 @@ describe('getJobDetail', () => {
     db.close()
   })
 
-  it('reports null library fields for a job that never finished', () => {
+  it('reports null bytes and no links for a job that never finished', () => {
     const db = seed()
     const detail = getJobDetail(db, 'j1')
     expect(detail?.libraryState).toBeNull()
     expect(detail?.videoPath).toBeNull()
-    expect(detail?.archived).toBe(false)
+    expect(detail?.bytes).toBeNull()
+    expect(detail?.links).toEqual([])
     db.close()
   })
 
-  it('is not archived when the local file still exists on disk', () => {
+  it('reports bytes local when the local file still exists on disk', () => {
     const db = seed()
     const dir = tmpDir('dashboard-video-')
     const file = path.join(dir, 'out.mp4')
@@ -157,21 +158,11 @@ describe('getJobDetail', () => {
     db.prepare(
       "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j2','videos/ocean/j2.mp4',1,'e')",
     ).run()
-    expect(getJobDetail(db, 'j2')?.archived).toBe(false)
+    expect(getJobDetail(db, 'j2')?.bytes).toBe('local')
     db.close()
   })
 
-  it('is not archived when there is no stored object, even if the local file is gone', () => {
-    const db = seed()
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
-    ).run()
-    expect(getJobDetail(db, 'j2')?.archived).toBe(false)
-    db.close()
-  })
-
-  it('is archived when a stored object exists and the local file is gone', () => {
+  it('reports bytes archived when the local file is gone and the object is not reclaimed', () => {
     const db = seed()
     db.prepare(
       'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
@@ -180,7 +171,39 @@ describe('getJobDetail', () => {
     db.prepare(
       "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j2','videos/ocean/j2.mp4',1,'e')",
     ).run()
-    expect(getJobDetail(db, 'j2')?.archived).toBe(true)
+    expect(getJobDetail(db, 'j2')?.bytes).toBe('archived')
+    db.close()
+  })
+
+  it('reports bytes reclaimed when the stored object has been reclaimed', () => {
+    const db = seed()
+    db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
+        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
+    ).run()
+    db.prepare(
+      "INSERT INTO library_objects (job_id, object_key, bytes, etag, reclaimed_at) " +
+        "VALUES ('j2','videos/ocean/j2.mp4',1,'e','2026-07-26T00:00:00.000Z')",
+    ).run()
+    expect(getJobDetail(db, 'j2')?.bytes).toBe('reclaimed')
+    db.close()
+  })
+
+  it('lists live post links for the job, one per platform', () => {
+    const db = seed()
+    db.prepare(
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
+        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'published')",
+    ).run()
+    db.prepare(
+      "INSERT INTO publishes (job_id, platform, channel, day, seq, status, url, attempt) " +
+        "VALUES ('j2','youtube','ocean','2026-07-25',1,'done','https://youtu.be/abc',1)",
+    ).run()
+    db.prepare(
+      "INSERT INTO publishes (job_id, platform, channel, day, seq, status, url, attempt) " +
+        "VALUES ('j2','instagram','ocean','2026-07-25',2,'failed',NULL,1)",
+    ).run()
+    expect(getJobDetail(db, 'j2')?.links).toEqual([{ platform: 'youtube', url: 'https://youtu.be/abc' }])
     db.close()
   })
 })

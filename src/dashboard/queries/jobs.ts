@@ -133,12 +133,14 @@ export interface JobDetail {
   libraryState: string | null
   videoPath: string | null
   /**
-   * True when the video exists in object storage but its local copy has
-   * been reclaimed from runs/. The dashboard deliberately holds no bucket
-   * credentials (design spec decision 9), so this is detected from the db
-   * (a library_objects row) plus existsSync, never fetched or presigned.
+   * Where this job's video bytes are — same three states the library page
+   * draws, from the database plus existsSync. The dashboard holds no bucket
+   * credentials (design spec decision 9), so this is never fetched or
+   * presigned. Null when the job has no library row at all.
    */
-  archived: boolean
+  bytes: 'local' | 'archived' | 'reclaimed' | null
+  /** Live post urls, one per platform that published. */
+  links: { platform: string; url: string }[]
 }
 
 export function getJobDetail(db: Database, jobId: string): JobDetail | null {
@@ -192,24 +194,38 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
     createdAt: c.created_at,
   }))
 
-  const lib = db
+  const libraryRow = db
     .prepare(
-      `SELECT l.state AS state, l.video_path AS video_path,
-              CASE WHEN lo.job_id IS NULL THEN 0 ELSE 1 END AS stored
+      `SELECT l.state AS state, l.video_path AS videoPath, lo.reclaimed_at AS reclaimedAt
        FROM library l LEFT JOIN library_objects lo ON lo.job_id = l.job_id
        WHERE l.job_id = ?`,
     )
-    .get(jobId) as { state: string; video_path: string; stored: number } | undefined
+    .get(jobId) as { state: string; videoPath: string; reclaimedAt: string | null } | undefined
+
+  // Same precedence as the library page: a reclaimed object is reclaimed even
+  // if a stale runs/ file survives, because the durable copy is the one gone.
+  const bytes: JobDetail['bytes'] =
+    libraryRow === undefined
+      ? null
+      : libraryRow.reclaimedAt !== null
+        ? 'reclaimed'
+        : existsSync(libraryRow.videoPath)
+          ? 'local'
+          : 'archived'
+
+  const links = db
+    .prepare(
+      "SELECT platform, url FROM publishes WHERE job_id = ? AND status = 'done' AND url IS NOT NULL ORDER BY platform",
+    )
+    .all(jobId) as { platform: string; url: string }[]
 
   return {
     job: toJobRow(row),
     stages,
     costs,
-    libraryState: lib?.state ?? null,
-    videoPath: lib?.video_path ?? null,
-    // The video exists in object storage but its local copy has been
-    // reclaimed. The dashboard deliberately holds no bucket credentials
-    // (design spec decision 9), so it can say so but not play it.
-    archived: lib !== undefined && lib.stored === 1 && !existsSync(lib.video_path),
+    libraryState: libraryRow?.state ?? null,
+    videoPath: libraryRow?.videoPath ?? null,
+    bytes,
+    links,
   }
 }

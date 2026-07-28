@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { LibraryEntry } from '../../queries/library.js'
-import { renderLibraryPage } from '../library.js'
+import { renderLibraryPage, type LibraryPageData } from '../library.js'
 
-const entry: LibraryEntry = {
+const baseEntry: LibraryEntry = {
   jobId: 'j1',
   channel: 'space',
   topic: 'Why Venus is hot',
@@ -10,12 +10,33 @@ const entry: LibraryEntry = {
   videoPath: 'runs/j1/assemble/final.mp4',
   createdAt: '2026-07-25T10:00:00.000Z',
   qc: { kind: 'ok' },
+  bytes: 'local',
+  links: [],
+}
+
+function entry(overrides: Partial<LibraryEntry> = {}): LibraryEntry {
+  return {
+    jobId: 'job-1',
+    channel: 'chan-a',
+    topic: 'a topic',
+    state: 'published',
+    videoPath: '/runs/job-1/assemble/final.mp4',
+    createdAt: '2026-07-26T00:00:00.000Z',
+    qc: { kind: 'ok' },
+    bytes: 'local',
+    links: [],
+    ...overrides,
+  }
+}
+
+function pageData(entries: LibraryEntry[]): LibraryPageData {
+  return { entries, channels: ['chan-a'], filter: {}, dbChoice: 'prod' }
 }
 
 describe('renderLibraryPage', () => {
   it('embeds a player pointing at the streaming route', () => {
     const out = renderLibraryPage({
-      entries: [entry],
+      entries: [baseEntry],
       channels: ['space'],
       filter: {},
       dbChoice: 'prod',
@@ -25,7 +46,7 @@ describe('renderLibraryPage', () => {
 
   it('keeps the dev selection on the video URL', () => {
     const out = renderLibraryPage({
-      entries: [entry],
+      entries: [baseEntry],
       channels: [],
       filter: {},
       dbChoice: 'dev',
@@ -35,7 +56,7 @@ describe('renderLibraryPage', () => {
 
   it('lists qc issues', () => {
     const out = renderLibraryPage({
-      entries: [{ ...entry, qc: { kind: 'issues', issues: ['duration 71s > 60s'] } }],
+      entries: [{ ...baseEntry, qc: { kind: 'issues', issues: ['duration 71s > 60s'] } }],
       channels: [],
       filter: {},
       dbChoice: 'prod',
@@ -45,7 +66,7 @@ describe('renderLibraryPage', () => {
 
   it('says unparseable rather than pretending qc passed', () => {
     const out = renderLibraryPage({
-      entries: [{ ...entry, qc: { kind: 'unparseable' } }],
+      entries: [{ ...baseEntry, qc: { kind: 'unparseable' } }],
       channels: [],
       filter: {},
       dbChoice: 'prod',
@@ -55,7 +76,7 @@ describe('renderLibraryPage', () => {
 
   it('links back to the job drill-in', () => {
     const out = renderLibraryPage({
-      entries: [entry],
+      entries: [baseEntry],
       channels: [],
       filter: {},
       dbChoice: 'prod',
@@ -75,7 +96,7 @@ describe('renderLibraryPage', () => {
 
   it('escapes a hostile topic', () => {
     const out = renderLibraryPage({
-      entries: [{ ...entry, topic: '<img src=x onerror=alert(1)>' }],
+      entries: [{ ...baseEntry, topic: '<img src=x onerror=alert(1)>' }],
       channels: [],
       filter: {},
       dbChoice: 'prod',
@@ -85,7 +106,7 @@ describe('renderLibraryPage', () => {
 
   it('shows a truncation notice when the 200-row cap cut the list', () => {
     const out = renderLibraryPage({
-      entries: [entry],
+      entries: [baseEntry],
       total: 1432,
       channels: [],
       filter: {},
@@ -96,12 +117,44 @@ describe('renderLibraryPage', () => {
 
   it('shows no truncation notice when the total equals what is shown', () => {
     const out = renderLibraryPage({
-      entries: [entry],
+      entries: [baseEntry],
       total: 1,
       channels: [],
       filter: {},
       dbChoice: 'prod',
     }).value
     expect(out).not.toContain('showing')
+  })
+
+  it('renders a player for a local video', () => {
+    const html = renderLibraryPage(pageData([entry({ bytes: 'local' })])).value
+    expect(html).toContain('<video controls')
+  })
+
+  it('renders the archived note instead of a player', () => {
+    const html = renderLibraryPage(pageData([entry({ bytes: 'archived' })])).value
+    expect(html).not.toContain('<video controls')
+    expect(html).toContain('archived to object storage')
+  })
+
+  it('renders the reclaimed note instead of a player', () => {
+    const html = renderLibraryPage(pageData([entry({ bytes: 'reclaimed' })])).value
+    expect(html).not.toContain('<video controls')
+    expect(html).toContain('reclaimed')
+  })
+
+  it('renders one link per platform', () => {
+    const html = renderLibraryPage(
+      pageData([entry({ links: [{ platform: 'youtube', url: 'https://youtu.be/abc' }] })]),
+    ).value
+    expect(html).toContain('href="https://youtu.be/abc"')
+    expect(html).toContain('youtube')
+  })
+
+  it('escapes a hostile url', () => {
+    const html = renderLibraryPage(
+      pageData([entry({ links: [{ platform: 'youtube', url: 'https://x/"><script>alert(1)</script>' }] })]),
+    ).value
+    expect(html).not.toContain('<script>alert(1)</script>')
   })
 })

@@ -120,7 +120,8 @@ describe('renderJobDetailPage', () => {
     ],
     libraryState: null,
     videoPath: null,
-    archived: false,
+    bytes: null,
+    links: [],
   }
 
   it('renders the stage timeline with durations and the raw error', () => {
@@ -142,6 +143,7 @@ describe('renderJobDetailPage', () => {
       ...detail,
       libraryState: 'ready',
       videoPath: 'runs/j1/assemble/final.mp4',
+      bytes: 'local',
     }
     expect(renderJobDetailPage(withVideo, 'prod').value).toContain('/library/j1/video')
   })
@@ -151,12 +153,38 @@ describe('renderJobDetailPage', () => {
       ...detail,
       libraryState: 'ready',
       videoPath: 'runs/j1/assemble/final.mp4',
-      archived: true,
+      bytes: 'archived',
     }
     const out = renderJobDetailPage(archived, 'prod').value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
     expect(out).toContain('archived to object storage — not available locally')
+  })
+
+  it('says the video is reclaimed instead of rendering a dead player', () => {
+    const reclaimed: JobDetail = {
+      ...detail,
+      libraryState: 'published',
+      videoPath: 'runs/j1/assemble/final.mp4',
+      bytes: 'reclaimed',
+    }
+    const out = renderJobDetailPage(reclaimed, 'prod').value
+    expect(out).not.toContain('/library/j1/video')
+    expect(out).not.toContain('<video')
+    expect(out).toContain('reclaimed — the stored object was deleted after every platform settled')
+  })
+
+  it('renders a live link per platform that published', () => {
+    const withLinks: JobDetail = {
+      ...detail,
+      libraryState: 'published',
+      videoPath: 'runs/j1/assemble/final.mp4',
+      bytes: 'local',
+      links: [{ platform: 'youtube', url: 'https://youtu.be/abc' }],
+    }
+    const out = renderJobDetailPage(withLinks, 'prod').value
+    expect(out).toContain('href="https://youtu.be/abc"')
+    expect(out).toContain('youtube')
   })
 
   it('escapes an error message containing markup', () => {
