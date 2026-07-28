@@ -33,7 +33,7 @@ import {
 } from './_publish-next.fixtures.js'
 import { runCli } from '../../testing/run-cli.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { memDb } from '../../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPublish } from '../../testing/db.js'
 
 /**
  * publish-next's full tick: the gates a candidate must clear, which
@@ -80,7 +80,11 @@ describe('publishNextTick — gates', () => {
     const channelsDir = tmpDir('brainrot-publish-nodue-')
     writeChannel(channelsDir, { name: 'chan-a' })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'no-publish-channel' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'no-publish-channel',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -94,7 +98,11 @@ describe('publishNextTick — gates', () => {
     seedToken(db, 'chan-a')
     seedQuotaRows(db, { count: 6 })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'platform-quota',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -110,7 +118,11 @@ describe('publishNextTick — gates', () => {
     seedQuotaRows(db, { count: 1 })
     vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'platform-quota',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -120,7 +132,11 @@ describe('publishNextTick — gates', () => {
     writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedToken(db, 'chan-a')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'no-ready-video' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'no-ready-video',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -131,7 +147,11 @@ describe('publishNextTick — gates', () => {
     seedReadyVideo(db, { channel: 'chan-a' })
     vi.stubEnv('YT_CLIENT_ID', '')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'no-auth' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'no-auth',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -141,7 +161,11 @@ describe('publishNextTick — gates', () => {
     writeChannel(channelsDir, { name: 'chan-a', publish: true })
     seedReadyVideo(db, { channel: 'chan-a' })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'no-auth' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'no-auth',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -232,7 +256,11 @@ describe('quota pre-filter', () => {
     seedQuotaRows(db, { count: 1 })
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, { channelsDir, now })
-    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'platform-quota',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 })
@@ -350,6 +378,7 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
           url: 'https://youtube.com/shorts/yt-old',
         },
       ],
+      reclaimed: { count: 0, bytes: 0 },
     })
     db.close()
   })
@@ -370,7 +399,11 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
     })
     seedToken(db, 'chan-a')
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'no-video-file' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'no-video-file',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 0 })
     db.close()
   })
@@ -437,7 +470,11 @@ describe('publishNextTick — the due gate', () => {
       adapters: publishingAdapters(),
       now: () => new Date(2026, 6, 22, 8, 30),
     })
-    expect(result).toEqual({ action: 'noop', reason: 'not-in-window' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'not-in-window',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -460,7 +497,11 @@ describe('publishNextTick — the due gate', () => {
       adapters: publishingAdapters(),
       now: () => new Date(2026, 6, 22, 19, 0),
     })
-    expect(result).toEqual({ action: 'noop', reason: 'daily-count-met' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'daily-count-met',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -479,7 +520,11 @@ describe('publishNextTick — the due gate', () => {
       adapters: publishingAdapters(),
       now: () => new Date(2026, 6, 22, 12, 0),
     })
-    expect(result).toEqual({ action: 'noop', reason: 'paced' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'paced',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -534,7 +579,11 @@ describe('publishNextTick — the due gate', () => {
       force: true,
       now: () => new Date(2026, 6, 22, 12, 0),
     })
-    expect(result).toEqual({ action: 'noop', reason: 'platform-quota' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'platform-quota',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -584,6 +633,7 @@ describe('publishNextTick — publish', () => {
           url: 'https://youtube.com/shorts/yt123',
         },
       ],
+      reclaimed: { count: 0, bytes: 0 },
     })
     const row = db
       .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
@@ -631,6 +681,7 @@ describe('publishNextTick — publish', () => {
           error: 'upload: invalid metadata',
         },
       ],
+      reclaimed: { count: 0, bytes: 0 },
     })
     const row = db
       .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
@@ -743,6 +794,7 @@ describe('publishNextTick — publish', () => {
           error: 'youtubeTarget: accepted the upload but its success body carried no video id',
         },
       ],
+      reclaimed: { count: 0, bytes: 0 },
     })
     const row = db
       .prepare('SELECT status, error_kind FROM publishes WHERE job_id = ?')
@@ -800,6 +852,7 @@ describe('publishNextTick — publish', () => {
       channel: 'chan-a',
       jobId,
       results: [{ platform: 'youtube', status: 'failed', error: 'claim conflict' }],
+      reclaimed: { count: 0, bytes: 0 },
     })
     db.close()
   })
@@ -851,7 +904,11 @@ describe('publishNextTick — media resolved from object storage', () => {
       now,
       adapters: { instagram: urlResolvingAdapter() },
     })
-    expect(result).toEqual({ action: 'noop', reason: 'no-video-file' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'no-video-file',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     db.close()
   })
 
@@ -1318,7 +1375,11 @@ describe('publishNextTick — lease and sweep', () => {
         "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', 1, 'claimed', 1, ?)",
     ).run(new Date(NOW().getTime() - 65 * 60_000).toISOString())
     const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({ action: 'noop', reason: 'paced' })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'paced',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     const row = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as {
       status: string
     }
@@ -1363,6 +1424,75 @@ describe('publishNextTick — lease and sweep', () => {
     expect(count).toBe(0)
     const lease = db.prepare("SELECT * FROM leases WHERE name = 'publish'").get()
     expect(lease).toBeUndefined()
+    db.close()
+  })
+})
+
+describe('reclaim sweep', () => {
+  it('deletes and reports the object of a fully-published video', async () => {
+    const db = memDb()
+    const channelsDir = tmpDir('brainrot-publish-reclaim-')
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    const store = fakeStore(tmpDir('brainrot-publish-reclaim-store-'))
+    await store.put('videos/chan-a/job-old.mp4', Buffer.from('video'), 'video/mp4')
+    seedJob(db, 'job-old', { channel: 'chan-a' })
+    seedLibrary(db, 'job-old', { state: 'published', createdAt: '2026-07-01T00:00:00.000Z' })
+    seedLibraryObject(db, 'job-old', { objectKey: 'videos/chan-a/job-old.mp4', bytes: 4096 })
+    seedPublish(db, 'job-old', { platform: 'youtube', channel: 'chan-a', status: 'done', seq: 1 })
+
+    const result = await publishNextTick(db, {
+      channelsDir,
+      store,
+      now: () => new Date('2026-07-27T10:00:00.000Z'),
+    })
+
+    expect(result.reclaimed).toEqual({ count: 1, bytes: 4096 })
+    expect(await store.head('videos/chan-a/job-old.mp4')).toBeNull()
+    db.close()
+  })
+
+  it('leaves a half-published video alone', async () => {
+    const db = memDb()
+    const channelsDir = tmpDir('brainrot-publish-reclaim-half-')
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    const store = fakeStore(tmpDir('brainrot-publish-reclaim-half-store-'))
+    await store.put('videos/chan-a/job-new.mp4', Buffer.from('video'), 'video/mp4')
+    seedJob(db, 'job-new', { channel: 'chan-a' })
+    seedLibrary(db, 'job-new', { state: 'published', createdAt: '2026-07-27T09:00:00.000Z' })
+    seedLibraryObject(db, 'job-new', { objectKey: 'videos/chan-a/job-new.mp4', bytes: 4096 })
+    seedPublish(db, 'job-new', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
+
+    const result = await publishNextTick(db, {
+      channelsDir,
+      store,
+      now: () => new Date('2026-07-27T10:00:00.000Z'),
+    })
+
+    expect(result.reclaimed).toEqual({ count: 0, bytes: 0 })
+    expect(await store.head('videos/chan-a/job-new.mp4')).not.toBeNull()
+    db.close()
+  })
+
+  it('does not sweep on a dry run', async () => {
+    const db = memDb()
+    const channelsDir = tmpDir('brainrot-publish-reclaim-dryrun-')
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    const store = fakeStore(tmpDir('brainrot-publish-reclaim-dryrun-store-'))
+    await store.put('videos/chan-a/job-old.mp4', Buffer.from('video'), 'video/mp4')
+    seedJob(db, 'job-old', { channel: 'chan-a' })
+    seedLibrary(db, 'job-old', { state: 'published', createdAt: '2026-07-01T00:00:00.000Z' })
+    seedLibraryObject(db, 'job-old', { objectKey: 'videos/chan-a/job-old.mp4', bytes: 4096 })
+    seedPublish(db, 'job-old', { platform: 'youtube', channel: 'chan-a', status: 'done', seq: 1 })
+
+    const result = await publishNextTick(db, {
+      channelsDir,
+      store,
+      dryRun: true,
+      now: () => new Date('2026-07-27T10:00:00.000Z'),
+    })
+
+    expect(result.reclaimed).toBeUndefined()
+    expect(await store.head('videos/chan-a/job-old.mp4')).not.toBeNull()
     db.close()
   })
 })
@@ -1461,7 +1591,11 @@ describe('publish-next CLI', () => {
       ])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
-      expect(JSON.parse(result.stdout)).toEqual({ action: 'noop', reason: 'no-publish-channel' })
+      expect(JSON.parse(result.stdout)).toEqual({
+        action: 'noop',
+        reason: 'no-publish-channel',
+        reclaimed: { count: 0, bytes: 0 },
+      })
     },
     60000,
   )

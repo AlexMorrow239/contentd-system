@@ -288,7 +288,11 @@ describe('golden-path loop e2e', () => {
     // the real ADAPTERS.youtube credential check (client env presence, then a
     // decryptable stored token), which the fakeAdapter above would bypass.
     const noGrant = await publishNextTick(db, { channelsDir, now: publishNow })
-    expect(noGrant).toEqual({ action: 'noop', reason: 'no-auth' })
+    expect(noGrant).toEqual({
+      action: 'noop',
+      reason: 'no-auth',
+      reclaimed: { count: 0, bytes: 0 },
+    })
     expect(uploadCalls).toEqual([])
 
     // Consent flow output (Task 9): an encrypted refresh token on file.
@@ -312,6 +316,7 @@ describe('golden-path loop e2e', () => {
           url: 'https://youtube.com/shorts/fakeVideoId1',
         },
       ],
+      reclaimed: { count: 0, bytes: 0 },
     })
     expect(uploadCalls).toEqual([
       {

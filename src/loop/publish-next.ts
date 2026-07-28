@@ -18,6 +18,7 @@ import {
   videosPublishedToday,
 } from '../publish/publishes.js'
 import type { ChannelVideoCandidate } from '../publish/publishes.js'
+import { reclaimableObjects, reclaimObjects } from '../publish/reclaim.js'
 import { channelNotDueReason, localDay, orderChannels } from '../publish/schedule.js'
 import type { ChannelCandidate, NotDueReason } from '../publish/schedule.js'
 import { agedCutoff } from '../publish/settled.js'
@@ -78,6 +79,11 @@ export interface PublishTickResult {
     title: string
     platforms: Platform[]
   } | null
+  /**
+   * What the reclaim sweep freed this tick. Absent on a dry run, which never
+   * sweeps. `{ count: 0, bytes: 0 }` means the sweep ran and found nothing.
+   */
+  reclaimed?: { count: number; bytes: number }
 }
 
 // Checks BRAINROT_TOKEN_KEY and every registered platform's quota env var —
@@ -111,6 +117,58 @@ function badEnvMessage(): string | undefined {
 // runs/ prune with no stored objects), and giving up is harmless: the next tick
 // starts the scan over.
 const MAX_VIDEO_CANDIDATES = 50
+
+// How many objects one tick may delete. A large accumulated backlog must not
+// eat the lease window mid-sweep; the next tick continues where this stopped.
+const MAX_RECLAIM_PER_TICK = 25
+
+/**
+ * Deletes the stored object of every video whose declared platforms have all
+ * settled (publish/reclaim.ts), across every channel that publishes.
+ *
+ * Runs at the top of the lease window, beside sweepInterrupted, and that
+ * placement is what makes it self-healing: a video becomes reclaimable through
+ * a normal fan-out, a manual `publish mark-done`, a `publish retry` that
+ * finally landed, or simply by ageing out — and a sweep here catches all four.
+ * Attached to the end of a fan-out instead, it would only ever catch the video
+ * it had just published.
+ *
+ * A null store (no credentials configured) is a silent no-op, consistent with
+ * how resolveStore() already degrades: a YouTube-only deployment with no
+ * bucket has nothing to reclaim.
+ */
+async function sweepReclaimable(
+  db: Database,
+  channels: ChannelConfig[],
+  store: ObjectStore | null,
+  now: Date,
+): Promise<{ count: number; bytes: number }> {
+  if (store === null) return { count: 0, bytes: 0 }
+  let count = 0
+  let bytes = 0
+  for (const channel of channels) {
+    if (channel.publish === null) continue
+    const remaining = MAX_RECLAIM_PER_TICK - count
+    if (remaining <= 0) break
+    const objects = reclaimableObjects(db, {
+      channel: channel.name,
+      declared: channel.publish.targets.map((t) => t.platform),
+      // TASK 6 replaces the literal with channel.backlogDays.
+      createdAfter: agedCutoff(now, 2),
+      limit: remaining,
+    })
+    if (objects.length === 0) continue
+    const result = await reclaimObjects({
+      db,
+      objects,
+      store,
+      warn: (message) => console.error(`publish-next: reclaim: ${message}`),
+    })
+    count += result.reclaimed.length
+    bytes += result.bytes
+  }
+  return { count, bytes }
+}
 
 /**
  * Selects ONE video and fans it out to every platform that still wants it: env
@@ -192,11 +250,16 @@ export async function publishNextTick(
   }
   try {
     const now = nowFn()
+    let reclaimed: { count: number; bytes: number } | undefined
     if (!dryRun) {
       // Repair sweep (publish-analog of produce-next's topic sweep): a tick
       // that died mid-upload leaves a stale 'claimed' row — heal it to
       // 'interrupted' before planning this tick's attempt.
       sweepInterrupted(db, PUBLISH_LEASE_TTL_MS, now)
+      // Then free the bytes of everything nothing can publish any more. Ahead
+      // of candidate selection, so a video reclaimed here is already excluded
+      // from this tick's own scan rather than picked and then failed.
+      reclaimed = await sweepReclaimable(db, channels, await resolveStore(), now)
     }
     const day = localDay(now)
 
@@ -248,7 +311,9 @@ export async function publishNextTick(
       // none to report — notDue is only ever set inside the loop above,
       // which a channel must clear the `publish === null` skip to reach.
       const reason = anyChannelConsidered ? notDue : 'no-publish-channel'
-      return dryRun ? { action: 'dry-run', wouldPublish: null, reason } : { action: 'noop', reason }
+      return dryRun
+        ? { action: 'dry-run', wouldPublish: null, reason }
+        : { action: 'noop', reason, reclaimed }
     }
 
     const ordered = orderChannels(candidates)
@@ -346,7 +411,7 @@ export async function publishNextTick(
     if (picked === undefined) {
       return dryRun
         ? { action: 'dry-run', wouldPublish: null, reason: firstReason }
-        : { action: 'noop', reason: firstReason }
+        : { action: 'noop', reason: firstReason, reclaimed }
     }
 
     const { channel: pickedChannel, video, targets, tokenKey: pickedTokenKey } = picked
@@ -490,6 +555,7 @@ export async function publishNextTick(
       channel: pickedChannel.name,
       jobId: video.jobId,
       results,
+      reclaimed,
     }
   } finally {
     if (!dryRun) releaseLease(db, 'publish', holder)
