@@ -522,6 +522,12 @@ library
         `not approved — stored object already reclaimed, nothing left to publish: ${reclaimed.join(', ')} ` +
           `— retire with brainrot library reject ${reclaimed.join(' ')}`,
       )
+      // Refusal is an outcome a wrapper has to see. exitCode rather than
+      // process.exit for the same reason every other command here uses it: a
+      // piped stdout must flush the line above first. Ids that were simply in
+      // the wrong state stay exit 0 — `approved N of M` already says so, and
+      // re-approving an already-approved id is a no-op, not a failure.
+      process.exitCode = 1
     }
   })
 

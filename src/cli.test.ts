@@ -14,7 +14,7 @@ import { visualsVolumeStage } from './stages/visuals-volume.js'
 import { openDb } from './db/index.js'
 import { runCli } from './testing/run-cli.js'
 import { storageEnvVars } from './testing/storage.js'
-import { countJobs, seedPublishRow, tmpDbPath } from './testing/cli.js'
+import { countJobs, seedLibraryRow, seedPublishRow, tmpDbPath } from './testing/cli.js'
 import { tmpDir } from './testing/tmp.js'
 
 /**
@@ -512,6 +512,40 @@ describe('brainrot CLI — digest', () => {
       expect(result.stdout).toContain('Jobs (last 24h)')
       expect(result.stdout).toContain('the channels dir did not load')
       expect(result.stdout).toContain('broken.toml')
+    },
+    60000,
+  )
+})
+
+describe('brainrot CLI — library', () => {
+  it.concurrent(
+    '`library approve` exits 1 when every id was refused for having been reclaimed',
+    async () => {
+      // A wrapper script reads the exit code, not the stderr line: approving
+      // nothing at all is a failed operation, not a quiet no-op.
+      const dbPath = tmpDbPath()
+      seedLibraryRow(dbPath, {
+        jobId: 'job-gone-1',
+        channel: 'demo',
+        state: 'needs-review',
+        reclaimed: true,
+      })
+      const result = await runCli(['library', 'approve', 'job-gone-1', '--db', dbPath])
+      expect(result.exitCode).toBe(1)
+      expect(result.stdout).toContain('approved 0 of 1')
+      expect(result.stderr).toContain('already reclaimed')
+    },
+    60000,
+  )
+
+  it.concurrent(
+    '`library approve` exits 0 when an id approves normally',
+    async () => {
+      const dbPath = tmpDbPath()
+      seedLibraryRow(dbPath, { jobId: 'job-ok-1', channel: 'demo', state: 'needs-review' })
+      const result = await runCli(['library', 'approve', 'job-ok-1', '--db', dbPath])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('approved 1 of 1')
     },
     60000,
   )
