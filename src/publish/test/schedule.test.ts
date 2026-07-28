@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { channelNotDueReason, localDay, orderChannels, PUBLISH_COOLDOWN_MS } from '../schedule.js'
 
+// Offset-less ISO strings (no trailing 'Z' or '+HH:MM') parse as LOCAL time,
+// not UTC — the 03:17-local and midnight-crossing tests below depend on this.
 const at = (iso: string): Date => new Date(iso)
 
 describe('localDay', () => {
@@ -15,7 +17,7 @@ describe('localDay', () => {
 
 describe('channelNotDueReason', () => {
   it('is due at any hour of the day once past the cooldown', () => {
-    // 03:17 local — would have been 'not-in-window' under the old design
+    // 03:17 local — outside the old 09:00-21:00 posting window
     expect(
       channelNotDueReason({
         videosPerDay: 3,
@@ -27,10 +29,22 @@ describe('channelNotDueReason', () => {
   })
 
   it('returns daily-count-met at the quota regardless of cooldown', () => {
+    const now = at('2026-07-28T10:00:00')
     expect(
       channelNotDueReason({
         videosPerDay: 3,
         publishedToday: 3,
+        lastAttemptAt: new Date(now.getTime() - 1),
+        now,
+      }),
+    ).toBe('daily-count-met')
+  })
+
+  it('returns daily-count-met when publishedToday exceeds the quota', () => {
+    expect(
+      channelNotDueReason({
+        videosPerDay: 3,
+        publishedToday: 4,
         lastAttemptAt: null,
         now: at('2026-07-28T10:00:00'),
       }),
