@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { localDay } from '../../publish/schedule.js'
 import { upsertToken } from '../../publish/tokens.js'
-import { memDb } from '../../testing/db.js'
+import { memDb, seedLibraryObject } from '../../testing/db.js'
 import { testChannel } from '../../testing/channel.js'
 import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from '../digest.js'
 import {
@@ -826,6 +826,84 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
       status: 'done',
       seq: 1,
     })
+    // Aged out means OUTRANKED, so a newer video must actually have published:
+    // job-2 has no library row, so it supplies the evidence without being
+    // reported itself.
+    seedJob(db, { id: 'job-2', channel: 'chan-a' })
+    seedPublish(db, {
+      jobId: 'job-2',
+      channel: 'chan-a',
+      platform: 'instagram',
+      status: 'done',
+      seq: 2,
+    })
+    const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
+    expect(digest).toContain('chan-a: 1 video aged out unpublished on youtube')
+    db.close()
+  })
+
+  it('reports none while nothing has outranked the old videos', () => {
+    // A publish outage longer than backlog_days is not a wave of passed-over
+    // videos: every one of them is still publishable.
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      backlogDays: 2,
+      publish: {
+        targets: [
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    seedLibrary(db, 'job-1', 'ready', isoAgo(72 * HOUR_MS))
+    const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
+    expect(digest).toContain('  Aged out:\n    none')
+    db.close()
+  })
+
+  it('still reports at a backlog_days the old fixed 7-day window made unreachable', () => {
+    // windowStart used to be `now - 7 days` regardless of backlog_days, so at
+    // backlog_days >= 7 the reported range was empty or inverted and the
+    // section was permanently silent. backlog_days has no upper bound.
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      backlogDays: 10,
+      publish: {
+        targets: [
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    db.prepare(
+      "INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES ('job-1', '/tmp/out.mp4', '{}', 'published', ?)",
+    ).run(isoAgo(12 * 24 * HOUR_MS))
+    seedPublish(db, {
+      jobId: 'job-1',
+      channel: 'chan-a',
+      platform: 'instagram',
+      status: 'done',
+      seq: 1,
+      createdAt: isoAgo(11 * 24 * HOUR_MS),
+    })
+    seedJob(db, { id: 'job-2', channel: 'chan-a' })
+    seedPublish(db, {
+      jobId: 'job-2',
+      channel: 'chan-a',
+      platform: 'instagram',
+      status: 'done',
+      seq: 2,
+      createdAt: isoAgo(HOUR_MS),
+    })
+
     const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
     expect(digest).toContain('chan-a: 1 video aged out unpublished on youtube')
     db.close()
@@ -879,6 +957,78 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     seedLibrary(db, 'job-1', 'ready', isoAgo(HOUR_MS))
     const digest = buildDigest(db, [channel], { tokenKeyHex: undefined })
     expect(digest).toContain('  Aged out:\n    none')
+    db.close()
+  })
+})
+
+describe('buildDigest — reclaimed but unreviewed videos', () => {
+  it('names a needs-review video whose bytes were freed, with the reject remedy', () => {
+    // The accepted consequence of not exempting needs-review from the reclaim
+    // sweep: nobody reviewed it inside backlog_days, so its object is gone.
+    // `library approve` refuses it, so this line is the only way an operator
+    // learns the row is dead weight.
+    const db = memDb()
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    seedLibrary(db, 'job-1', 'needs-review')
+    seedLibraryObject(db, 'job-1', { reclaimedAt: isoAgo(HOUR_MS) })
+
+    expect(buildDigest(db, [], ENV_OK)).toContain(
+      'job job-1 (chan-a) is still needs-review but its stored object was reclaimed',
+    )
+    db.close()
+  })
+
+  it('says nothing about a needs-review video whose object is still held', () => {
+    const db = memDb()
+    seedJob(db, { id: 'job-1', channel: 'chan-a' })
+    seedLibrary(db, 'job-1', 'needs-review')
+    seedLibraryObject(db, 'job-1')
+
+    expect(buildDigest(db, [], ENV_OK)).not.toContain('its stored object was reclaimed')
+    db.close()
+  })
+})
+
+describe('buildDigest — channels at their backlog cap', () => {
+  it('names a publishing channel whose production has halted, with inventory and cap', () => {
+    // videos_per_day 2 x backlog_days 2 = a cap of 4. Nothing else in the
+    // digest shows this: the Backlog subsection counts only 'ready' rows and
+    // the Jobs section is windowed to 24h, so a halted channel just vanishes.
+    const db = memDb()
+    for (let i = 1; i <= 4; i++) {
+      seedJob(db, { id: `job-${i}`, channel: 'chan-a' })
+      seedLibrary(db, `job-${i}`, 'ready', isoAgo(HOUR_MS))
+    }
+
+    expect(buildDigest(db, [publishChannel('chan-a')], ENV_OK)).toContain(
+      'chan-a: holding 4 of 4 finished videos (backlog_days 2 x videos_per_day 2) — production is paused until these publish or are rejected',
+    )
+    db.close()
+  })
+
+  it('names a channel with no [publish] table too — nothing drains it', () => {
+    const db = memDb()
+    for (let i = 1; i <= 4; i++) {
+      seedJob(db, { id: `job-${i}`, channel: 'chan-a' })
+      seedLibrary(db, `job-${i}`, 'ready', isoAgo(HOUR_MS))
+    }
+
+    expect(buildDigest(db, [testChannel({ name: 'chan-a' })], ENV_OK)).toContain(
+      'chan-a: holding 4 of 4 finished videos (backlog_days 2 x videos_per_day 2) — nothing publishes this channel',
+    )
+    db.close()
+  })
+
+  it('says nothing about a channel still under its cap', () => {
+    const db = memDb()
+    for (let i = 1; i <= 3; i++) {
+      seedJob(db, { id: `job-${i}`, channel: 'chan-a' })
+      seedLibrary(db, `job-${i}`, 'ready', isoAgo(HOUR_MS))
+    }
+
+    expect(buildDigest(db, [publishChannel('chan-a')], ENV_OK)).not.toContain(
+      'finished videos (backlog_days',
+    )
     db.close()
   })
 })

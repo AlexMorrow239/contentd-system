@@ -32,7 +32,12 @@ export type TickPlan =
 // hold before it stops producing. Derived from videos_per_day rather than set
 // directly, so videos_per_day stays the one cadence knob the whole system
 // reads from — the publish window, the minimum gap, and now this.
-function backlogCap(channel: ChannelConfig): number {
+//
+// Exported for the digest, which reports channels sitting at this cap: a
+// halted channel is otherwise invisible (the digest's other sections are
+// windowed to the last 24h, so it simply disappears), and two definitions of
+// the ceiling would let the report and the gate disagree about who is halted.
+export function backlogCap(channel: ChannelConfig): number {
   return Math.ceil(channel.videosPerDay * channel.backlogDays)
 }
 

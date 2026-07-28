@@ -1,12 +1,24 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
 import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } from '../jobs/costs.js'
-import { PUBLISHABLE_LIBRARY_STATES, unstoredLibraryJobs } from '../jobs/library.js'
+import {
+  PUBLISHABLE_LIBRARY_STATES,
+  pendingInventory,
+  reclaimedUnreviewedJobs,
+  unstoredLibraryJobs,
+} from '../jobs/library.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { MAX_PUBLISH_ATTEMPTS, videosPublishedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
-import { agedCutoff, isLegSettled, legFactsByJob } from '../publish/settled.js'
+import { backlogCap } from './plan-tick.js'
+import {
+  agedCutoff,
+  contentionFacts,
+  isAged,
+  isLegSettled,
+  legFactsByJob,
+} from '../publish/settled.js'
 import { loadToken } from '../publish/tokens.js'
 import { resolvePlatformMeta } from '../publish/types.js'
 import type { Platform } from '../publish/types.js'
@@ -28,10 +40,17 @@ export const STRANDED_QUEUED_MS = 3_600_000 // 1 h
 // has already seen. The remainder is still counted, never silently dropped.
 export const FAILED_JOBS_LIMIT = 10
 
-// How far back the aged-out report reaches. Current state, not last-24h: a
-// structural shortfall (a channel declaring more videos_per_day than a
-// platform's cap allows) ages out videos every single day, and a one-day
-// window would show it as a trickle rather than the standing condition it is.
+// How far back PAST a channel's aged-out cutoff the report reaches. Current
+// state, not last-24h: a structural shortfall (a channel declaring more
+// videos_per_day than a platform's cap allows) ages out videos every single
+// day, and a one-day window would show it as a trickle rather than the
+// standing condition it is.
+//
+// Relative to backlog_days, not absolute. A video only becomes aged out at
+// `now - backlog_days`, so an absolute 7-day window measured from `now`
+// reported an EMPTY range at backlog_days = 7 and an inverted one above it —
+// the section was dead for exactly the channels most likely to need it, and
+// backlog_days has no upper bound in the config schema.
 export const AGED_OUT_WINDOW_DAYS = 7
 
 /**
@@ -241,17 +260,25 @@ export function buildDigest(
   // videos_per_day exceeds what one of its platforms can absorb.
   lines.push('  Aged out:')
   const agedStart = lines.length
-  const windowStart = agedCutoff(now, AGED_OUT_WINDOW_DAYS)
   for (const channel of channels) {
     if (channel.publish === null) continue
     const cutoff = agedCutoff(now, channel.backlogDays)
-    const rows = db
+    const windowStart = agedCutoff(now, channel.backlogDays + AGED_OUT_WINDOW_DAYS)
+    const windowed = db
       .prepare(
-        `SELECT l.job_id AS jobId FROM library l JOIN jobs j ON j.id = l.job_id
+        `SELECT l.job_id AS jobId, l.created_at AS createdAt
+         FROM library l JOIN jobs j ON j.id = l.job_id
          WHERE j.channel = ? AND l.state != 'blocked'
                AND l.created_at < ? AND l.created_at >= ?`,
       )
-      .all(channel.name, cutoff, windowStart) as { jobId: string }[]
+      .all(channel.name, cutoff, windowStart) as { jobId: string; createdAt: string }[]
+    // Old enough is not the whole test: ageing out also requires that another
+    // job actually published after this video was produced (isAged,
+    // publish/settled.ts). Without the second half a publish outage would be
+    // reported here as a wave of passed-over videos, when in fact nothing
+    // outranked them and every one is still publishable.
+    const contention = contentionFacts(db, channel.name)
+    const rows = windowed.filter((r) => isAged(contention, r, cutoff))
     if (rows.length === 0) continue
     const legs = legFactsByJob(
       db,
@@ -538,6 +565,16 @@ export function buildDigest(
       `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,
     )
   }
+  // The other half of that story, and the accepted consequence of not exempting
+  // needs-review from the reclaim sweep (design spec §3): a video nobody
+  // reviewed in backlog_days had its bytes freed. `library approve` now refuses
+  // it, so without this line it would sit as inventory nothing drains and
+  // nothing reports.
+  for (const r of reclaimedUnreviewedJobs(db)) {
+    lines.push(
+      `  job ${r.jobId} (${r.channel}) is still needs-review but its stored object was reclaimed — it can no longer publish; run brainrot library reject ${r.jobId}`,
+    )
+  }
   // Volume shortfall, replacing the old lapsed-slots report: with cadence
   // derived from videos_per_day there are no named slots to lapse, so the
   // signal is the count. The per-platform split is what makes a
@@ -565,6 +602,33 @@ export function buildDigest(
       .join(', ')
     lines.push(
       `  ${channel.name}: published ${published} of ${channel.videosPerDay} videos yesterday (${yesterday}) — ${split}`,
+    )
+  }
+  // Channels whose production is halted by their own inventory cap (planTick's
+  // 'backlog-full' noop). Nothing else in the digest shows this: the Backlog
+  // subsection counts only 'ready' rows on publishing channels, and the Jobs
+  // section is windowed to the last 24h — so a halted channel simply stops
+  // appearing, which reads identically to a healthy quiet one.
+  //
+  // Channels with NO [publish] table are included deliberately. That is the
+  // spec's accepted consequence #2: nothing drains such a channel, so it fills
+  // to its cap once and stops for good, waiting on `library reject`. Same
+  // pendingInventory and same backlogCap the gate itself uses, so the report
+  // can never name a different set of channels than the one being gated.
+  for (const channel of channels) {
+    const inventory = pendingInventory(db, {
+      channel: channel.name,
+      declared: channel.publish?.targets.map((t) => t.platform) ?? [],
+      createdAfter: agedCutoff(now, channel.backlogDays),
+    })
+    const cap = backlogCap(channel)
+    if (inventory < cap) continue
+    const drain =
+      channel.publish === null
+        ? 'nothing publishes this channel — retire videos with brainrot library approve/reject'
+        : 'production is paused until these publish or are rejected'
+    lines.push(
+      `  ${channel.name}: holding ${inventory} of ${cap} finished videos (backlog_days ${channel.backlogDays} x videos_per_day ${channel.videosPerDay}) — ${drain}`,
     )
   }
   pushNoneIfEmpty(lines, actionItemsStart, '  none')
