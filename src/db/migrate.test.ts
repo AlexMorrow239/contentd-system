@@ -5,6 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openDb } from './index.js'
 import { migrate } from './migrate.js'
+import { memDb } from '../testing/db.js'
 import { tmpDir } from '../testing/tmp.js'
 
 // The CURRENT canonical schema — the same text openDb hands migrate(). Read
@@ -232,6 +233,38 @@ describe('migrate', () => {
     db.pragma('foreign_keys = OFF')
     db.exec(CURRENT_SHAPE_NO_INDEX)
     expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+  })
+
+  it('adds library_objects.reclaimed_at to a database that predates it', () => {
+    const db = memDb()
+    db.exec('DROP TABLE library_objects')
+    db.exec(`CREATE TABLE library_objects (
+      job_id TEXT PRIMARY KEY,
+      object_key TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      etag TEXT NOT NULL,
+      uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    )`)
+
+    migrate(db, SCHEMA_SQL, () => {})
+
+    const cols = (db.prepare('PRAGMA table_info(library_objects)').all() as { name: string }[]).map(
+      (c) => c.name,
+    )
+    expect(cols).toContain('reclaimed_at')
+  })
+
+  it('leaves an already-migrated library_objects alone', () => {
+    const db = memDb()
+    db.prepare(
+      'INSERT INTO library_objects (job_id, object_key, bytes, etag, reclaimed_at) VALUES (?, ?, ?, ?, ?)',
+    ).run('job-1', 'videos/a.mp4', 10, 'etag', '2026-07-01T00:00:00.000Z')
+
+    migrate(db, SCHEMA_SQL, () => {})
+
+    const row = db.prepare('SELECT reclaimed_at AS at FROM library_objects WHERE job_id = ?').get('job-1') as
+      { at: string | null }
+    expect(row.at).toBe('2026-07-01T00:00:00.000Z')
   })
 })
 

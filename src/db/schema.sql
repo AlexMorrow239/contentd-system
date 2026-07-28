@@ -21,7 +21,13 @@ CREATE TABLE IF NOT EXISTS library_objects (
   object_key TEXT NOT NULL,
   bytes INTEGER NOT NULL,
   etag TEXT NOT NULL,
-  uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+  uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  -- Set when the sweep in publish/reclaim.ts deleted the object because every
+  -- platform the channel declares had a settled leg. The row itself SURVIVES
+  -- as the record of what was there: unstoredLibraryJobs finds backfill
+  -- candidates by the ABSENCE of a row, so keeping it is what stops
+  -- `library backfill-store` from re-uploading what the sweep deleted.
+  reclaimed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS costs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES jobs(id),
