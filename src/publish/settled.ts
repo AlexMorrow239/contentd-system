@@ -30,6 +30,61 @@ export function agedCutoff(now: Date, backlogDays: number): string {
 }
 
 /**
+ * The channel-wide evidence that ageing out is a real outcome and not just a
+ * stopped clock: the newest 'done' publish per job, newest first, at most two
+ * rows.
+ *
+ * Two rows is exactly enough, and that is the point of the shape. The question
+ * asked of these facts is "did some OTHER job of this channel publish after
+ * this video was produced" — so only the newest done publish belonging to a
+ * different job can ever answer it. Grouping by job_id makes each row a
+ * distinct job, so the top row answers unless it is the video's own job, in
+ * which case the second row does. Everything below them is dominated.
+ *
+ * One read per channel, not per video — the same discipline legFactsByJob
+ * follows.
+ */
+export interface ContentionFacts {
+  /** (job, newest done publish) pairs, newest first. At most two. */
+  readonly recentDone: readonly { jobId: string; at: string }[]
+}
+
+export function contentionFacts(db: Database, channel: string): ContentionFacts {
+  const recentDone = db
+    .prepare(
+      `SELECT job_id AS jobId, MAX(created_at) AS at
+       FROM publishes WHERE channel = ? AND status = 'done'
+       GROUP BY job_id ORDER BY at DESC, job_id ASC LIMIT 2`,
+    )
+    .all(channel) as { jobId: string; at: string }[]
+  return { recentDone }
+}
+
+/**
+ * Has this video aged out — i.e. is it old enough to write off, AND did
+ * something actually outrank it?
+ *
+ * The age clause's whole justification is contention: newer videos took the
+ * scarce platform's slots ahead of this one, permanently. That argument needs
+ * newer videos to have actually published. Without the second clause a publish
+ * outage longer than backlog_days (host down, expired credential) would make
+ * the first recovering tick declare EVERY stored video aged out — deleting the
+ * bytes of videos nothing ever outranked, and simultaneously refusing to
+ * publish them. Nothing was passed over there; publishing simply never ran.
+ *
+ * Both comparisons are lexicographic on the same fixed-width ISO-8601 UTC
+ * format, so string order IS chronological order.
+ */
+export function isAged(
+  facts: ContentionFacts,
+  video: { jobId: string; createdAt: string },
+  cutoff: string,
+): boolean {
+  if (video.createdAt >= cutoff) return false
+  return facts.recentDone.some((r) => r.jobId !== video.jobId && r.at > video.createdAt)
+}
+
+/**
  * Is this (video, platform) leg settled — i.e. can this platform never take
  * this video again?
  *
@@ -37,7 +92,8 @@ export function agedCutoff(now: Date, backlogDays: number): string {
  *   - the platform published it (`doneCount > 0`);
  *   - the platform is attempt-capped (MAX_PUBLISH_ATTEMPTS 'rejected'
  *     failures — the same poison-video guard channelVideoCandidates applies);
- *   - the video aged out with no live row.
+ *   - the video aged out with no live row (`aged`, which means aged AND
+ *     contended — see isAged below; never the bare date comparison).
  *
  * The third clause is the one that makes the design correct, because PASSED
  * OVER is a real outcome distinct from failed. A channel publishing 10 videos

@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { deleteStoredObjects } from '../jobs/library.js'
 import type { ObjectStore } from '../storage/types.js'
-import { isFullySettled, legFactsByJob } from './settled.js'
+import { contentionFacts, isAged, isFullySettled, legFactsByJob } from './settled.js'
 import type { Platform } from './types.js'
 
 /** One video's stored object, ready to delete. `bytes` is for reporting only. */
@@ -27,9 +27,13 @@ interface DbCandidateRow {
  * comparison AND on per-(job, platform) aggregates that do not exist as rows
  * for a platform never attempted. Expressing "count the declared platforms
  * with no row at all" in SQL means a second correlated subquery whose bind
- * order is easy to get silently wrong. The candidate set is bounded by
- * inventory — a few dozen rows at most — so the two-read-then-filter shape
- * costs nothing and stays readable.
+ * order is easy to get silently wrong. The scan is bounded by
+ * RECLAIM_SCAN_LIMIT rows (oldest first), so the two-read-then-filter shape —
+ * and the `IN (...)` legFactsByJob builds from its job ids — costs a fixed
+ * ceiling no matter how many objects a channel accumulates. Real inventory is
+ * a few dozen rows; the limit only exists so a pathological database cannot
+ * bind thousands of ids into one statement. Oldest-first means the rows most
+ * likely to be settled are always the ones scanned.
  *
  * `declared` is the channel's target list as plain data, never a
  * ChannelConfig: this module stays config-free like the publishes DAO. An
@@ -40,6 +44,8 @@ interface DbCandidateRow {
  * `limit` caps the batch so a large accumulated backlog cannot eat the publish
  * lease window; the next tick continues where this one left off.
  */
+export const RECLAIM_SCAN_LIMIT = 500
+
 export function reclaimableObjects(
   db: Database,
   opts: {
@@ -58,21 +64,25 @@ export function reclaimableObjects(
        JOIN jobs j ON j.id = l.job_id
        JOIN library_objects lo ON lo.job_id = l.job_id
        WHERE j.channel = ? AND lo.reclaimed_at IS NULL
-       ORDER BY l.created_at ASC, l.job_id ASC`,
+       ORDER BY l.created_at ASC, l.job_id ASC
+       LIMIT ?`,
     )
-    .all(opts.channel) as DbCandidateRow[]
+    .all(opts.channel, RECLAIM_SCAN_LIMIT) as DbCandidateRow[]
   if (rows.length === 0) return []
 
   const legs = legFactsByJob(
     db,
     rows.map((r) => r.jobId),
   )
+  // One channel-wide read, reused for every row: ageing out requires evidence
+  // that a DIFFERENT job published after this video was produced (./settled.ts).
+  const contention = contentionFacts(db, opts.channel)
   const out: ReclaimableObject[] = []
   for (const row of rows) {
     const settled = isFullySettled({
       declared: opts.declared,
       legs: legs.get(row.jobId) ?? [],
-      aged: row.createdAt < opts.createdAfter,
+      aged: isAged(contention, row, opts.createdAfter),
     })
     if (!settled) continue
     out.push({ jobId: row.jobId, objectKey: row.objectKey, bytes: row.bytes })

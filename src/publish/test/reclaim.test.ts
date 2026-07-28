@@ -25,6 +25,21 @@ function seedVideo(
   }
 }
 
+/**
+ * The contention evidence ageing out requires: a DIFFERENT job of this channel
+ * that actually published after the video under test was produced. Without it
+ * nothing outranked the video — publishing simply never ran — and the horizon
+ * must not fire (settled.ts, isAged).
+ *
+ * Deliberately fresh, and published to instagram only, so it is never itself
+ * reclaimable for any channel these tests declare: it adds contention without
+ * adding a candidate.
+ */
+function seedContention(db: ReturnType<typeof memDb>, jobId = 'newer-job'): void {
+  seedVideo(db, jobId, { createdAt: FRESH })
+  seedPublish(db, jobId, { platform: 'instagram', status: 'done', seq: 9 })
+}
+
 describe('reclaim', () => {
   describe('reclaimableObjects', () => {
     it('returns a video every declared platform has published', () => {
@@ -62,6 +77,7 @@ describe('reclaim', () => {
       const db = memDb()
       seedVideo(db, 'job-1', { createdAt: AGED })
       seedPublish(db, 'job-1', { platform: 'instagram', status: 'done', seq: 1 })
+      seedContention(db)
 
       expect(
         reclaimableObjects(db, {
@@ -78,6 +94,7 @@ describe('reclaim', () => {
       seedVideo(db, 'job-1', { createdAt: AGED })
       seedPublish(db, 'job-1', { platform: 'instagram', status: 'done', seq: 1 })
       seedPublish(db, 'job-1', { platform: 'youtube', status: 'interrupted', seq: 2 })
+      seedContention(db)
 
       expect(
         reclaimableObjects(db, {
@@ -141,6 +158,7 @@ describe('reclaim', () => {
       for (const id of ['job-1', 'job-2', 'job-3']) {
         seedVideo(db, id, { createdAt: YEAR_AGO })
       }
+      seedContention(db)
 
       const rows = reclaimableObjects(db, {
         channel: 'chan-a',
@@ -150,6 +168,92 @@ describe('reclaim', () => {
       })
 
       expect(rows).toHaveLength(2)
+    })
+
+    it('holds every aged video when the channel has published nothing at all', () => {
+      // The publish outage: the host was down (or a credential expired) for
+      // longer than backlog_days. Nothing outranked these videos — publishing
+      // never ran — so the first recovering tick must not delete the bytes of
+      // the whole channel and then refuse to publish any of it.
+      const db = memDb()
+      for (const id of ['job-1', 'job-2', 'job-3']) {
+        seedVideo(db, id, { createdAt: YEAR_AGO })
+      }
+
+      expect(
+        reclaimableObjects(db, {
+          channel: 'chan-a',
+          declared: ['youtube', 'instagram'],
+          createdAfter: CUTOFF,
+          limit: 25,
+        }),
+      ).toEqual([])
+    })
+
+    it('does not treat a video’s own publish as contention', () => {
+      // One video, published to instagram long ago, youtube never attempted.
+      // Its OWN done row is the only publish on the channel, so nothing
+      // outranked it — it is old, not passed over.
+      const db = memDb()
+      seedVideo(db, 'job-1', { createdAt: YEAR_AGO })
+      seedPublish(db, 'job-1', {
+        platform: 'instagram',
+        status: 'done',
+        seq: 1,
+        createdAt: AGED,
+      })
+
+      expect(
+        reclaimableObjects(db, {
+          channel: 'chan-a',
+          declared: ['youtube', 'instagram'],
+          createdAfter: CUTOFF,
+          limit: 25,
+        }),
+      ).toEqual([])
+    })
+
+    it('ignores a done publish that predates the video', () => {
+      // Contention means something published AFTER this video was produced.
+      // An older sibling's post did not take a slot this video was waiting for.
+      const db = memDb()
+      seedVideo(db, 'job-1', { createdAt: AGED })
+      seedPublish(db, 'job-1', { platform: 'instagram', status: 'done', seq: 1 })
+      // No stored object of its own, so the only candidate here is job-1.
+      seedVideo(db, 'older-job', { createdAt: YEAR_AGO, object: false })
+      seedPublish(db, 'older-job', {
+        platform: 'youtube',
+        status: 'done',
+        seq: 2,
+        createdAt: YEAR_AGO,
+      })
+
+      expect(
+        reclaimableObjects(db, {
+          channel: 'chan-a',
+          declared: ['youtube', 'instagram'],
+          createdAfter: CUTOFF,
+          limit: 25,
+        }).map((r) => r.jobId),
+      ).toEqual([])
+    })
+
+    it('counts another channel’s publishes as no contention at all', () => {
+      const db = memDb()
+      seedVideo(db, 'job-1', { createdAt: AGED })
+      seedPublish(db, 'job-1', { platform: 'instagram', status: 'done', seq: 1 })
+      seedJob(db, 'job-b', { channel: 'chan-b' })
+      seedLibrary(db, 'job-b', { state: 'published', createdAt: FRESH })
+      seedPublish(db, 'job-b', { platform: 'youtube', channel: 'chan-b', status: 'done', seq: 1 })
+
+      expect(
+        reclaimableObjects(db, {
+          channel: 'chan-a',
+          declared: ['youtube', 'instagram'],
+          createdAfter: CUTOFF,
+          limit: 25,
+        }),
+      ).toEqual([])
     })
 
     it('returns nothing for a channel declaring no platforms', () => {

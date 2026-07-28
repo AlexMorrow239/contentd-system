@@ -9,11 +9,13 @@ import {
 } from '../../testing/db.js'
 import {
   agedCutoff,
+  contentionFacts,
+  isAged,
   isFullySettled,
   isLegSettled,
   legFactsByJob,
 } from '../settled.js'
-import type { LegFacts } from '../settled.js'
+import type { ContentionFacts, LegFacts } from '../settled.js'
 import { MAX_PUBLISH_ATTEMPTS, channelVideoCandidates } from '../publishes.js'
 import { pendingInventory } from '../../jobs/library.js'
 import { reclaimableObjects } from '../reclaim.js'
@@ -150,6 +152,104 @@ describe('settled', () => {
     })
   })
 
+  describe('isAged', () => {
+    const CUTOFF = '2026-07-25T00:00:00.000Z'
+    const facts = (rows: { jobId: string; at: string }[]): ContentionFacts => ({ recentDone: rows })
+
+    it('is false for a video newer than the cutoff, contended or not', () => {
+      expect(
+        isAged(facts([{ jobId: 'other', at: '2026-07-28T00:00:00.000Z' }]), {
+          jobId: 'job-1',
+          createdAt: '2026-07-26T00:00:00.000Z',
+        }, CUTOFF),
+      ).toBe(false)
+    })
+
+    it('is false for an old video no other job published past', () => {
+      // The publish outage: old enough, but nothing outranked it.
+      expect(
+        isAged(facts([]), { jobId: 'job-1', createdAt: '2026-07-20T00:00:00.000Z' }, CUTOFF),
+      ).toBe(false)
+    })
+
+    it('does not count the video’s own publish as contention', () => {
+      expect(
+        isAged(facts([{ jobId: 'job-1', at: '2026-07-28T00:00:00.000Z' }]), {
+          jobId: 'job-1',
+          createdAt: '2026-07-20T00:00:00.000Z',
+        }, CUTOFF),
+      ).toBe(false)
+    })
+
+    it('does not count a publish that predates the video', () => {
+      expect(
+        isAged(facts([{ jobId: 'other', at: '2026-07-19T00:00:00.000Z' }]), {
+          jobId: 'job-1',
+          createdAt: '2026-07-20T00:00:00.000Z',
+        }, CUTOFF),
+      ).toBe(false)
+    })
+
+    it('is true when another job published after this old video was produced', () => {
+      expect(
+        isAged(facts([{ jobId: 'other', at: '2026-07-26T00:00:00.000Z' }]), {
+          jobId: 'job-1',
+          createdAt: '2026-07-20T00:00:00.000Z',
+        }, CUTOFF),
+      ).toBe(true)
+    })
+
+    it('sees past the video’s own row to the runner-up', () => {
+      // Two rows is the whole read (contentionFacts LIMIT 2): the newest done
+      // publish being the video's own must not hide the one behind it.
+      expect(
+        isAged(
+          facts([
+            { jobId: 'job-1', at: '2026-07-28T00:00:00.000Z' },
+            { jobId: 'other', at: '2026-07-27T00:00:00.000Z' },
+          ]),
+          { jobId: 'job-1', createdAt: '2026-07-20T00:00:00.000Z' },
+          CUTOFF,
+        ),
+      ).toBe(true)
+    })
+  })
+
+  describe('contentionFacts', () => {
+    it('reads the newest done publish per job, newest first, capped at two', () => {
+      const db = memDb()
+      for (const id of ['job-1', 'job-2', 'job-3']) {
+        seedJob(db, id, { channel: 'chan-a' })
+        seedLibrary(db, id)
+      }
+      seedPublish(db, 'job-1', { status: 'done', seq: 1, createdAt: '2026-07-21T00:00:00.000Z' })
+      seedPublish(db, 'job-2', { status: 'done', seq: 2, createdAt: '2026-07-22T00:00:00.000Z' })
+      seedPublish(db, 'job-3', { status: 'done', seq: 3, createdAt: '2026-07-23T00:00:00.000Z' })
+      // Not done, and another channel's: neither is evidence.
+      seedPublish(db, 'job-1', { status: 'failed', seq: 4, createdAt: '2026-07-24T00:00:00.000Z' })
+      seedJob(db, 'job-b', { channel: 'chan-b' })
+      seedLibrary(db, 'job-b')
+      seedPublish(db, 'job-b', {
+        channel: 'chan-b',
+        status: 'done',
+        seq: 1,
+        createdAt: '2026-07-25T00:00:00.000Z',
+      })
+
+      expect(contentionFacts(db, 'chan-a').recentDone).toEqual([
+        { jobId: 'job-3', at: '2026-07-23T00:00:00.000Z' },
+        { jobId: 'job-2', at: '2026-07-22T00:00:00.000Z' },
+      ])
+      db.close()
+    })
+
+    it('is empty for a channel that has never published', () => {
+      const db = memDb()
+      expect(contentionFacts(db, 'chan-a').recentDone).toEqual([])
+      db.close()
+    })
+  })
+
   describe('the passed-over video, end to end', () => {
     // The 10-a-day-against-YouTube's-6 case: instagram published it, youtube
     // never attempted it, tomorrow's videos outrank it forever. Reclaimable,
@@ -165,6 +265,22 @@ describe('settled', () => {
       seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
     }
 
+    // What "passed over" actually means: a NEWER video took the slot. Seeded
+    // separately from the video under test because it is the thing being
+    // asserted about — with no contention the horizon must not fire at all
+    // (the outage case below).
+    function seedOutranker(db: Database): void {
+      seedJob(db, 'job-2', { channel: 'chan-a' })
+      seedLibrary(db, 'job-2', { state: 'published', createdAt: '2026-07-26T00:00:00.000Z' })
+      seedPublish(db, 'job-2', {
+        platform: 'instagram',
+        channel: 'chan-a',
+        status: 'done',
+        seq: 2,
+        createdAt: '2026-07-26T00:00:00.000Z',
+      })
+    }
+
     it('is held by all three while it is still fresh', () => {
       const db = memDb()
       seedPassedOver(db, '2026-07-26T00:00:00.000Z')
@@ -176,17 +292,36 @@ describe('settled', () => {
       expect(channelVideoCandidates(db, 'chan-a', DECLARED, 50, CUTOFF).map((r) => r.jobId)).toEqual(['job-1'])
     })
 
-    it('is released by all three once it ages out', () => {
+    it('is released by all three once it ages out behind a newer video', () => {
       const db = memDb()
       seedPassedOver(db, '2026-07-20T00:00:00.000Z')
+      seedOutranker(db)
 
       expect(
         reclaimableObjects(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF, limit: 25 }).map(
           (r) => r.jobId,
         ),
       ).toEqual(['job-1'])
-      expect(pendingInventory(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF })).toBe(0)
-      expect(channelVideoCandidates(db, 'chan-a', DECLARED, 50, CUTOFF)).toEqual([])
+      // job-2 is fresh and still owed to youtube, so it is the only inventory.
+      expect(pendingInventory(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF })).toBe(1)
+      expect(channelVideoCandidates(db, 'chan-a', DECLARED, 50, CUTOFF).map((r) => r.jobId)).toEqual(['job-2'])
+    })
+
+    it('is held by all three when nothing ever outranked it', () => {
+      // The publish outage — host down, credential expired — for longer than
+      // backlog_days. All three consumers must agree that the horizon has NOT
+      // fired: reclaim it and the bytes of a still-publishable video are gone;
+      // drop it from candidates while still counting it as inventory and the
+      // channel's production wedges behind a backlog nothing can drain.
+      const db = memDb()
+      seedPassedOver(db, '2026-07-20T00:00:00.000Z')
+      db.prepare("DELETE FROM publishes WHERE job_id = 'job-1'").run()
+
+      expect(
+        reclaimableObjects(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF, limit: 25 }),
+      ).toEqual([])
+      expect(pendingInventory(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF })).toBe(1)
+      expect(channelVideoCandidates(db, 'chan-a', DECLARED, 50, CUTOFF).map((r) => r.jobId)).toEqual(['job-1'])
     })
   })
 })
