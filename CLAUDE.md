@@ -131,6 +131,30 @@ Manual commands (`produce`, `resume`, `auth <platform>`,
 **outside** these leases — they are operator actions that can race a live
 cron tick if the corresponding loop isn't stopped first.
 
+`publish-next` runs a second sweep in the same window: `publish/reclaim.ts`
+deletes the stored object of every video whose declared platforms have all
+**settled** — published, attempt-capped, or aged past `backlog_days` with no
+live row (`publish/settled.ts`). That last clause exists because *passed over*
+is a real outcome: a channel doing 10 videos/day against YouTube's ~6/day cap
+never publishes 4 of them, and `channelVideoCandidates` orders `created_at
+DESC`, so tomorrow's videos outrank them forever. No `publishes` row is ever
+written for such a leg, so without an age clause those objects would live
+forever and their videos would count as inventory forever. The row in
+`library_objects` survives with `reclaimed_at` stamped — `unstoredLibraryJobs`
+finds backfill candidates by the ABSENCE of a row, so keeping it is what stops
+`library backfill-store` from re-uploading what the sweep deleted.
+
+Both loops are demand-gated, not just rate-gated. `planTick` skips a channel
+holding `ceil(videos_per_day × backlog_days)` unconsumed videos
+(`pendingInventory`, `jobs/library.ts`) and reports `backlog-full`;
+`scoutChannel` returns `skipped: 'queue-full'` before fetching or scoring
+anything once a channel has `ceil(videos_per_day × queue_days)` candidate
+topics. The settled predicate is shared by the reclaim sweep,
+`pendingInventory`, and (through its age clause alone) `channelVideoCandidates`
+— that sharing is load-bearing: define inventory independently and an
+attempt-capped or passed-over video counts forever, wedging the channel's
+production permanently.
+
 ### Config: channel TOML is the unit of everything
 
 Each channel is one `channels/<name>.toml`, loaded by `src/config/channel.ts`
@@ -148,6 +172,11 @@ option schema — no schedule of its own, since cadence comes from the
 channel's `videos_per_day`. A stale `slots` key at either level is a load
 error naming its replacement. A channel declaring both `[publish.youtube]`
 and `[publish.instagram]` cross-posts the same rendered video to both.
+
+`backlog_days` (default 2) is the inventory depth cap AND the aged-out horizon
+— one number, because "hold more inventory" and "give each video longer to
+find a slot" are the same statement. `[scout] queue_days` (default 3) is its
+scout-side analogue.
 
 ### The scout filters media before it reaches the scorer
 
@@ -287,6 +316,13 @@ which escapes by default — topic titles come from scraped sources, so this is
 a live path. `queries/jobs.ts` hardcodes `DASHBOARD_STAGE_ORDER` rather than
 calling `pipelineStages()`, which would drag remotion and kokoro into a
 viewer; a test asserts the two lists match so they cannot drift.
+
+The library page draws four byte states — `local` (runs/ file present),
+`archived` (bucket only), `reclaimed` (object deleted after every declared
+platform settled), and `unstored` (no `library_objects` row at all, i.e. the
+`library backfill-store` backlog) — plus a `live` column of post urls from
+`publishes`. All four come from the database plus `existsSync`; the dashboard
+still holds no bucket credentials.
 
 ### Remotion rendering
 

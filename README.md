@@ -316,6 +316,14 @@ has no makeup post; the digest reports any channel that published fewer
 videos than its `videos_per_day` yesterday, with a per-platform split, so the
 shortfall is visible without hunting through logs.
 
+`backlog_days` (default `2`) caps how many finished, unpublished videos a
+channel may hold before `produce-next` stops producing more for it — and
+doubles as the horizon a video is given to find a publish slot before it's
+written off as aged out and its stored object is reclaimed. `[scout]
+queue_days` (default `3`) is the same idea one stage earlier: it caps how many
+scored candidate topics a channel may hold queued before `scout` stops
+fetching and scoring more for it.
+
 ### Quota
 
 The two platforms' quotas are scoped differently and enforced for you at
