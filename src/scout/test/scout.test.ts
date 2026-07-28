@@ -140,6 +140,32 @@ describe('scoutChannel', () => {
     db.close()
   })
 
+  it('stores a topic at SCOUT_MIN_SCORE and rejects one just under it', async () => {
+    const db = memDb()
+    const channel = scoutedChannel() // channel fixture built WITHOUT any min_score override
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([
+        { name: 't3_aaa', title: 'Exactly at the gate' },
+        { name: 't3_bbb', title: 'Just under the gate' },
+      ]),
+    })
+    const { client } = fakeClient(
+      emitScores([
+        { candidateIndex: 0, score: 80, topic: 'At the gate', reason: 'borderline pass' },
+        { candidateIndex: 1, score: 79, topic: 'Under the gate', reason: 'borderline fail' },
+      ]),
+    )
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+    expect(result.queued).toBe(1)
+    expect(result.rejected).toBe(1)
+    const topics = listTopics(db, { channel: 'chan-a' })
+    const at = topics.find((t) => t.title === 'At the gate')
+    const under = topics.find((t) => t.title === 'Under the gate')
+    expect(at?.status).toBe('candidate')
+    expect(under?.status).toBe('rejected')
+    db.close()
+  })
+
   it('drops image candidates before scoring and counts them', async () => {
     const db = memDb()
     const channel = scoutedChannel()
@@ -272,7 +298,7 @@ describe('scoutChannel', () => {
     })
     const { client } = fakeClient(
       emitScores([
-        { candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' },
+        { candidateIndex: 0, score: 80, topic: 'Sky color explained', reason: 'classic' },
       ]),
     )
     const result = await scoutChannel(db, channel, { client, fetchImpl })
@@ -294,7 +320,7 @@ describe('scoutChannel', () => {
     })
     const { client } = fakeClient(
       emitScores([
-        { candidateIndex: 0, score: 70, topic: 'Sky color explained', reason: 'classic' },
+        { candidateIndex: 0, score: 80, topic: 'Sky color explained', reason: 'classic' },
       ]),
     )
     const result = await scoutChannel(db, channel, { client, fetchImpl })
@@ -478,7 +504,7 @@ describe('scoutAll', () => {
     // one healthy source flips it back to a normal (partial) run
     const mixed = fetchStub({ '/r/two/.rss': redditFeed([{ name: 't3_x', title: 'X' }]) })
     const { client: client2 } = fakeClient(
-      emitScores([{ candidateIndex: 0, score: 70, topic: 'X topic', reason: 'ok' }]),
+      emitScores([{ candidateIndex: 0, score: 80, topic: 'X topic', reason: 'ok' }]),
     )
     const results = await scoutAll(db, [a, b], { client: client2, fetchImpl: mixed })
     expect(results).toHaveLength(2)

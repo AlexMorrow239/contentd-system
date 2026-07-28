@@ -14,6 +14,11 @@ import type { ScoredCandidate } from './score.js'
 import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
 import type { NewTopic } from './topics.js'
 
+// The one score gate. A constant, not config (design 2026-07-28): topics
+// below this are never stored, so the queue only ever holds topics worth
+// producing. min_score was removed from channel TOML in the same change.
+export const SCOUT_MIN_SCORE = 80
+
 export interface ScoutChannelResult {
   channel: string
   fetched: number
@@ -213,7 +218,7 @@ export async function scoutChannel(
       reason: s.reason,
       // At/above the channel threshold → production queue; below → remembered
       // rejection (the hash filter keeps it away from Haiku forever).
-      status: s.score >= channel.scout.minScore ? 'candidate' : 'rejected',
+      status: s.score >= SCOUT_MIN_SCORE ? 'candidate' : 'rejected',
     }
   })
   result.queued = rows.filter((r) => r.status === 'candidate').length
