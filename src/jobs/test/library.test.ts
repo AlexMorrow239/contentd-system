@@ -8,12 +8,19 @@ import {
   deleteRejectedObjects,
   libraryObjectKeys,
   listLibrary,
+  pendingInventory,
   rejectLibrary,
 } from '../library.js'
 import type { LibraryState } from '../library.js'
 import { runCli } from '../../testing/run-cli.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { memDb, seedLibraryObject } from '../../testing/db.js'
+import {
+  memDb,
+  seedJob as seedJobRow,
+  seedLibraryObject,
+  seedPublish,
+} from '../../testing/db.js'
+import { MAX_PUBLISH_ATTEMPTS } from '../../publish/publishes.js'
 
 // Raw-insert seed: the DAO only ever writes library.state, so tests control
 // every other column — the owning jobs row included — directly.
@@ -324,6 +331,102 @@ describe('deleteRejectedObjects', () => {
       db.prepare('SELECT object_key AS k FROM library_objects WHERE job_id = ?').get(jobId),
     ).toEqual({ k: 'videos/chan-a/job-1.mp4' })
     db.close()
+  })
+})
+
+describe('pendingInventory', () => {
+  const CUTOFF = '2026-07-25T00:00:00.000Z'
+  const FRESH = '2026-07-26T00:00:00.000Z'
+  const AGED = '2026-07-20T00:00:00.000Z'
+
+  function seedVideo(db: Database, jobId: string, state: LibraryState, createdAt: string): void {
+    seedJobRow(db, jobId, { channel: 'chan-a' })
+    seedLibrary(db, jobId, { state, createdAt })
+  }
+
+  it('counts a ready video with no publishes rows', () => {
+    const db = memDb()
+    seedVideo(db, 'job-1', 'ready', FRESH)
+    expect(
+      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
+    ).toBe(1)
+  })
+
+  it('counts a needs-review video', () => {
+    const db = memDb()
+    seedVideo(db, 'job-1', 'needs-review', FRESH)
+    expect(
+      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
+    ).toBe(1)
+  })
+
+  it('does not count a blocked video', () => {
+    const db = memDb()
+    seedVideo(db, 'job-1', 'blocked', FRESH)
+    expect(
+      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
+    ).toBe(0)
+  })
+
+  it('counts a video published on one of two declared platforms', () => {
+    const db = memDb()
+    seedVideo(db, 'job-1', 'published', FRESH)
+    seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
+    expect(
+      pendingInventory(db, {
+        channel: 'chan-a',
+        declared: ['youtube', 'instagram'],
+        createdAfter: CUTOFF,
+      }),
+    ).toBe(1)
+  })
+
+  it('does not count a video published on every declared platform', () => {
+    const db = memDb()
+    seedVideo(db, 'job-1', 'published', FRESH)
+    seedPublish(db, 'job-1', { platform: 'youtube', channel: 'chan-a', status: 'done', seq: 1 })
+    expect(
+      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
+    ).toBe(0)
+  })
+
+  it('does not count an attempt-capped video — nothing can ever drain it', () => {
+    const db = memDb()
+    seedVideo(db, 'job-1', 'ready', FRESH)
+    for (let i = 0; i < MAX_PUBLISH_ATTEMPTS; i++) {
+      seedPublish(db, 'job-1', {
+        platform: 'youtube',
+        channel: 'chan-a',
+        status: 'failed',
+        errorKind: 'rejected',
+        seq: i + 1,
+      })
+    }
+    expect(
+      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
+    ).toBe(0)
+  })
+
+  it('does not count a passed-over video once it ages out', () => {
+    const db = memDb()
+    seedVideo(db, 'job-1', 'published', AGED)
+    seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
+    expect(
+      pendingInventory(db, {
+        channel: 'chan-a',
+        declared: ['youtube', 'instagram'],
+        createdAfter: CUTOFF,
+      }),
+    ).toBe(0)
+  })
+
+  it('ignores other channels', () => {
+    const db = memDb()
+    seedJobRow(db, 'job-b', { channel: 'chan-b' })
+    seedLibrary(db, 'job-b', { state: 'ready', createdAt: FRESH })
+    expect(
+      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
+    ).toBe(0)
   })
 })
 

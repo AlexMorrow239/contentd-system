@@ -2,6 +2,8 @@ import type { StoreArtifact } from '../stages/store.js'
 import type { Database } from 'better-sqlite3'
 import { errorMessage } from '../errors.js'
 import type { ObjectStore } from '../storage/types.js'
+import { isFullySettled, legFactsByJob } from '../publish/settled.js'
+import type { Platform } from '../publish/types.js'
 
 export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
 
@@ -137,6 +139,57 @@ export function unstoredLibraryJobs(db: Database): UnstoredLibraryJob[] {
        ORDER BY l.job_id`,
     )
     .all() as UnstoredLibraryJob[]
+}
+
+/**
+ * How many finished videos this channel is still holding — the depth the
+ * production gate (loop/plan-tick.ts) reads.
+ *
+ * Counted: every 'needs-review' row (it becomes publishable the moment it is
+ * approved, and it is bytes on hand either way) plus every 'ready'/'published'
+ * row with at least one UNSETTLED leg. 'blocked' is excluded — a rejected
+ * video is retired and its object already deleted.
+ *
+ * The settled predicate (publish/settled.ts) is shared with the reclaim sweep
+ * and, through its age clause, with the candidate scan. That sharing is
+ * load-bearing rather than incidental tidiness: it is what stops the three
+ * from ever disagreeing about whether a video is still wanted. Define
+ * inventory independently and two videos wedge a channel's production
+ * permanently — one attempt-capped on a platform after publishing to another,
+ * and one passed over for a scarce platform's slots. Neither will ever be
+ * consumed by anything, so nothing could ever drain them back below the cap.
+ */
+export function pendingInventory(
+  db: Database,
+  opts: { channel: string; declared: readonly Platform[]; createdAfter: string },
+): number {
+  const rows = db
+    .prepare(
+      `SELECT l.job_id AS jobId, l.state AS state, l.created_at AS createdAt
+       FROM library l JOIN jobs j ON j.id = l.job_id
+       WHERE j.channel = ? AND l.state IN ('needs-review', ${PUBLISHABLE_LIBRARY_STATES})`,
+    )
+    .all(opts.channel) as { jobId: string; state: LibraryState; createdAt: string }[]
+  if (rows.length === 0) return 0
+
+  const legs = legFactsByJob(
+    db,
+    rows.map((r) => r.jobId),
+  )
+  let count = 0
+  for (const row of rows) {
+    if (row.state === 'needs-review') {
+      count += 1
+      continue
+    }
+    const settled = isFullySettled({
+      declared: opts.declared,
+      legs: legs.get(row.jobId) ?? [],
+      aged: row.createdAt < opts.createdAfter,
+    })
+    if (!settled) count += 1
+  }
+  return count
 }
 
 /**

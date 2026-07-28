@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3'
 import { recordCost } from '../../jobs/costs.js'
 import { testChannel } from '../../testing/channel.js'
 import { planTick, RESUME_MIN_HEADROOM_USD_MICROS } from '../plan-tick.js'
-import { memDb } from '../../testing/db.js'
+import { memDb, seedLibrary } from '../../testing/db.js'
 
 const NOOP = { kind: 'noop', reason: 'no-eligible-work' } as const
 
@@ -317,6 +317,54 @@ describe('claim pass channel fairness', () => {
       kind: 'produce',
       channel: 'chan-b',
       topicId: bTopic,
+    })
+    db.close()
+  })
+})
+
+describe('claim pass backlog gate', () => {
+  it('skips a channel already holding its full backlog', () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', videosPerDay: 2, backlogDays: 2 })
+    seedTopic(db, { channel: 'chan-a', status: 'candidate' })
+    for (const id of ['job-1', 'job-2', 'job-3', 'job-4']) {
+      seedJob(db, { id, channel: 'chan-a', createdAt: '2026-07-26T00:00:00.000Z' })
+      seedLibrary(db, id, { state: 'ready', createdAt: '2026-07-26T00:00:00.000Z' })
+    }
+
+    expect(planTick(db, [channel])).toEqual({ kind: 'noop', reason: 'backlog-full' })
+    db.close()
+  })
+
+  it('produces when the backlog is one short of the cap', () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', videosPerDay: 2, backlogDays: 2 })
+    const topicId = seedTopic(db, { channel: 'chan-a', status: 'candidate' })
+    for (const id of ['job-1', 'job-2', 'job-3']) {
+      seedJob(db, { id, channel: 'chan-a', createdAt: '2026-07-26T00:00:00.000Z' })
+      seedLibrary(db, id, { state: 'ready', createdAt: '2026-07-26T00:00:00.000Z' })
+    }
+
+    const plan = planTick(db, [channel])
+
+    expect(plan.kind).toBe('produce')
+    expect((plan as { topicId: number }).topicId).toBe(topicId)
+    db.close()
+  })
+
+  it('still resumes a blocked job on a backlogged channel', () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', videosPerDay: 2, backlogDays: 2 })
+    seedJob(db, { id: 'job-blocked', channel: 'chan-a', status: 'blocked' })
+    for (const id of ['job-1', 'job-2', 'job-3', 'job-4']) {
+      seedJob(db, { id, channel: 'chan-a', createdAt: '2026-07-26T00:00:00.000Z' })
+      seedLibrary(db, id, { state: 'ready', createdAt: '2026-07-26T00:00:00.000Z' })
+    }
+
+    expect(planTick(db, [channel])).toEqual({
+      kind: 'resume',
+      jobId: 'job-blocked',
+      channel: 'chan-a',
     })
     db.close()
   })

@@ -6,6 +6,8 @@ import {
   globalDaySpentMicros,
   jobSpentMicros,
 } from '../jobs/costs.js'
+import { pendingInventory } from '../jobs/library.js'
+import { agedCutoff } from '../publish/settled.js'
 import { eligibleTopic } from '../scout/topics.js'
 
 // Resuming under this headroom would only re-park the job 'blocked' at the
@@ -24,11 +26,19 @@ function resumeFloorMicros(capMicros: number): number {
 export type TickPlan =
   | { kind: 'resume'; jobId: string; channel: string }
   | { kind: 'produce'; channel: string; topicId: number; topic: string }
-  | { kind: 'noop'; reason: 'no-eligible-work' }
+  | { kind: 'noop'; reason: 'no-eligible-work' | 'backlog-full' }
+
+// The inventory ceiling: how many finished, unconsumed videos a channel may
+// hold before it stops producing. Derived from videos_per_day rather than set
+// directly, so videos_per_day stays the one cadence knob the whole system
+// reads from — the publish window, the minimum gap, and now this.
+function backlogCap(channel: ChannelConfig): number {
+  return Math.ceil(channel.videosPerDay * channel.backlogDays)
+}
 
 // Pure decision function: SELECTs only. produce-next executes the plan and
 // owns every write, so a crashed tick never leaves half a decision behind.
-export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
+export function planTick(db: Database, channels: ChannelConfig[], now = new Date()): TickPlan {
   const byName = new Map(channels.map((c) => [c.name, c]))
 
   // RESUME PASS: blocked jobs were healthy when parked — recovering their
@@ -63,12 +73,24 @@ export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
       "AND substr(created_at, 1, 10) = strftime('%Y-%m-%d','now')",
   )
   const jobsToday = (name: string): number => (quotaStmt.get(name) as { n: number }).n
+  // Depth gate, ahead of the daily rate gate: producing into a full backlog
+  // is how object storage grows faster than videos are consumed. A channel
+  // with no [publish] table is gated the same way — nothing drains it, so it
+  // fills once and then waits for `library reject`.
+  let anyBacklogged = false
   const candidates = channels
     .map((channel) => {
       const today = jobsToday(channel.name)
+      const inventory = pendingInventory(db, {
+        channel: channel.name,
+        declared: channel.publish?.targets.map((t) => t.platform) ?? [],
+        createdAfter: agedCutoff(now, channel.backlogDays),
+      })
+      const backlogged = inventory >= backlogCap(channel)
+      if (backlogged) anyBacklogged = true
       return {
         channel,
-        open: today < channel.videosPerDay,
+        open: today < channel.videosPerDay && !backlogged,
         filledFraction: today / channel.videosPerDay,
       }
     })
@@ -84,5 +106,11 @@ export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
     }
   }
 
-  return { kind: 'noop', reason: 'no-eligible-work' }
+  // 'backlog-full' only when a gated channel is the reason there is nothing to
+  // do — a channel that was open but had no eligible topic is 'no-eligible-work'
+  // regardless of what its neighbours were holding.
+  return {
+    kind: 'noop',
+    reason: anyBacklogged && candidates.length === 0 ? 'backlog-full' : 'no-eligible-work',
+  }
 }

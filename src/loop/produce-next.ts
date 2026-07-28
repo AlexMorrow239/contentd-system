@@ -18,6 +18,7 @@ export interface TickResult {
   reason?:
     | 'lease-held'
     | 'no-eligible-work'
+    | 'backlog-full'
     | 'claim-conflict'
     | 'resume-refused'
     | 'config-error'

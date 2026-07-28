@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { memDb, seedJob, seedLibrary, seedPublish } from '../../testing/db.js'
+import type { Database } from 'better-sqlite3'
+import {
+  memDb,
+  seedJob,
+  seedLibrary,
+  seedLibraryObject,
+  seedPublish,
+} from '../../testing/db.js'
 import {
   agedCutoff,
   isFullySettled,
@@ -7,7 +14,10 @@ import {
   legFactsByJob,
 } from '../settled.js'
 import type { LegFacts } from '../settled.js'
-import { MAX_PUBLISH_ATTEMPTS } from '../publishes.js'
+import { MAX_PUBLISH_ATTEMPTS, channelVideoCandidates } from '../publishes.js'
+import { pendingInventory } from '../../jobs/library.js'
+import { reclaimableObjects } from '../reclaim.js'
+import type { Platform } from '../types.js'
 
 function leg(overrides: Partial<LegFacts> = {}): LegFacts {
   return { platform: 'youtube', doneCount: 0, pendingCount: 0, rejectedCount: 0, ...overrides }
@@ -137,6 +147,46 @@ describe('settled', () => {
       seedJob(db, 'job-1')
       seedLibrary(db, 'job-1')
       expect(legFactsByJob(db, ['job-1']).has('job-1')).toBe(false)
+    })
+  })
+
+  describe('the passed-over video, end to end', () => {
+    // The 10-a-day-against-YouTube's-6 case: instagram published it, youtube
+    // never attempted it, tomorrow's videos outrank it forever. Reclaimable,
+    // not inventory, and not a candidate — the three must agree, or the
+    // channel either leaks bytes or wedges its own production.
+    const DECLARED: Platform[] = ['youtube', 'instagram']
+    const CUTOFF = '2026-07-25T00:00:00.000Z'
+
+    function seedPassedOver(db: Database, createdAt: string): void {
+      seedJob(db, 'job-1', { channel: 'chan-a' })
+      seedLibrary(db, 'job-1', { state: 'published', createdAt })
+      seedLibraryObject(db, 'job-1', { objectKey: 'videos/chan-a/job-1.mp4', bytes: 2048 })
+      seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
+    }
+
+    it('is held by all three while it is still fresh', () => {
+      const db = memDb()
+      seedPassedOver(db, '2026-07-26T00:00:00.000Z')
+
+      expect(
+        reclaimableObjects(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF, limit: 25 }),
+      ).toEqual([])
+      expect(pendingInventory(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF })).toBe(1)
+      expect(channelVideoCandidates(db, 'chan-a', DECLARED, 50, CUTOFF).map((r) => r.jobId)).toEqual(['job-1'])
+    })
+
+    it('is released by all three once it ages out', () => {
+      const db = memDb()
+      seedPassedOver(db, '2026-07-20T00:00:00.000Z')
+
+      expect(
+        reclaimableObjects(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF, limit: 25 }).map(
+          (r) => r.jobId,
+        ),
+      ).toEqual(['job-1'])
+      expect(pendingInventory(db, { channel: 'chan-a', declared: DECLARED, createdAfter: CUTOFF })).toBe(0)
+      expect(channelVideoCandidates(db, 'chan-a', DECLARED, 50, CUTOFF)).toEqual([])
     })
   })
 })
