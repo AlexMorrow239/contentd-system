@@ -11,7 +11,7 @@ import { redditSource } from './sources/reddit.js'
 import { rssSource } from './sources/rss.js'
 import { ESTIMATED_SCOUT_COST_MICROS, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
-import { insertTopics, knownHashes, recentTopicTitles } from './topics.js'
+import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
 import type { NewTopic } from './topics.js'
 
 export interface ScoutChannelResult {
@@ -26,6 +26,13 @@ export interface ScoutChannelResult {
   sourceErrors: string[]
   costUsdMicros: number
   scoringError?: string
+  /**
+   * Set when the channel was not scouted at all. 'queue-full' means it already
+   * holds queue_days' worth of candidates — a healthy outcome, not a failure,
+   * and distinguishable from the all-zero result a channel with no fresh
+   * candidates produces.
+   */
+  skipped?: 'queue-full'
 }
 
 // A source before construction: the raw config entry the loop builds a source
@@ -82,6 +89,27 @@ export async function scoutChannel(
   channel: ChannelConfig,
   opts: { client?: Anthropic; fetchImpl?: FetchLike } = {},
 ): Promise<ScoutChannelResult> {
+  // Depth gate FIRST — ahead of the source loop, so a channel with enough
+  // queued candidates costs neither a network fetch nor a Haiku scoring call.
+  // The scoring calls are where the money is, so gating after fetching would
+  // save almost nothing.
+  const queueCap = Math.ceil(channel.videosPerDay * channel.scout.queueDays)
+  if (candidateTopicCount(db, channel.name) >= queueCap) {
+    return {
+      channel: channel.name,
+      fetched: 0,
+      droppedMedia: 0,
+      droppedAutomated: 0,
+      alreadyKnown: 0,
+      scored: 0,
+      queued: 0,
+      rejected: 0,
+      sourceErrors: [],
+      costUsdMicros: 0,
+      skipped: 'queue-full',
+    }
+  }
+
   // Iterate DESCRIPTORS, not pre-built sources: rssSource runs `new URL(url)`
   // at construction, so building every source up front let one malformed feed
   // URL abort the whole channel before per-source isolation began. Constructing
@@ -261,12 +289,18 @@ export async function scoutAll(
     const sourceCount = channel.scout.subreddits.length + channel.scout.rss.length
     // No [scout] sources → not a scouted channel; manual produce only.
     if (sourceCount === 0) continue
-    totalSources += sourceCount
     try {
       const result = await scoutChannel(db, channel, opts)
+      // A skipped channel never touched its sources, so it must not count
+      // toward the all-sources-failed test — otherwise a fully-stocked
+      // deployment would read as a total source outage.
+      if (result.skipped === undefined) totalSources += sourceCount
       failedSources += result.sourceErrors.length
       results.push(result)
     } catch (err) {
+      // A channel that threw did reach its sources (the gate returns, never
+      // throws), so its sources still count.
+      totalSources += sourceCount
       // Per-channel isolation: one channel's scoring failure (including the
       // global-day budget gate) must not starve the others.
       const info = classify(err)

@@ -15,7 +15,7 @@ import {
   scoutChannel,
 } from '../scout.js'
 import type { ScoutChannelResult } from '../scout.js'
-import { memDb } from '../../testing/db.js'
+import { memDb, seedTopic } from '../../testing/db.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {
@@ -365,6 +365,61 @@ describe('scoutChannel', () => {
     expect(listTopics(db)).toHaveLength(0)
     db.close()
   })
+
+  it('skips a channel whose candidate queue is already deep enough', async () => {
+    const db = memDb()
+    const fetchImpl = vi.fn()
+    const channel = testChannel({
+      name: 'chan-a',
+      videosPerDay: 2,
+      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+    })
+    for (let i = 0; i < 6; i++) {
+      seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
+    }
+
+    const result = await scoutChannel(db, channel, { fetchImpl })
+
+    expect(result.skipped).toBe('queue-full')
+    expect(result.fetched).toBe(0)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('scouts when the queue is one short of the cap', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      videosPerDay: 2,
+      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+    })
+    for (let i = 0; i < 5; i++) {
+      seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
+    }
+    const fetchImpl = vi.fn(() => Promise.reject(new Error('source down')))
+
+    const result = await scoutChannel(db, channel, { fetchImpl })
+
+    expect(result.skipped).toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalled()
+  })
+
+  it('does not count rejected or used topics toward the queue', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      videosPerDay: 2,
+      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+    })
+    for (let i = 0; i < 10; i++) {
+      seedTopic(db, { channel: 'chan-a', status: 'rejected', dedupeHash: `r-${String(i)}` })
+    }
+    const fetchImpl = vi.fn(() => Promise.reject(new Error('source down')))
+
+    const result = await scoutChannel(db, channel, { fetchImpl })
+
+    expect(result.skipped).toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalled()
+  })
 })
 
 describe('scoutAll', () => {
@@ -567,6 +622,23 @@ describe('scoutAll', () => {
     ])
     expect(create).toHaveBeenCalledTimes(1)
     db.close()
+  })
+
+  it('does not count a skipped channel toward the all-sources-failed test', async () => {
+    const db = memDb()
+    const full = testChannel({
+      name: 'chan-full',
+      videosPerDay: 2,
+      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+    })
+    for (let i = 0; i < 6; i++) {
+      seedTopic(db, { channel: 'chan-full', status: 'candidate', dedupeHash: `h-${String(i)}` })
+    }
+
+    const results = await scoutAll(db, [full], { fetchImpl: vi.fn() })
+
+    expect(results).toHaveLength(1)
+    expect(results[0].skipped).toBe('queue-full')
   })
 })
 

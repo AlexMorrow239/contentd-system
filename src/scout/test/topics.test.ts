@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import {
+  candidateTopicCount,
   claimTopic,
   eligibleTopic,
   insertTopics,
@@ -192,6 +193,22 @@ describe('recentTopicTitles', () => {
       seedTopic(db, { createdAt: `2026-07-19T00:00:${String(i).padStart(2, '0')}.000Z` })
     }
     expect(recentTopicTitles(db, 'chan-a')).toHaveLength(30)
+    db.close()
+  })
+})
+
+describe('candidateTopicCount', () => {
+  it('counts only candidate rows for that channel', () => {
+    const db = memDb()
+    seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: 'c1' })
+    seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: 'c2' })
+    seedTopic(db, { channel: 'chan-a', status: 'rejected', dedupeHash: 'c3' })
+    seedTopic(db, { channel: 'chan-a', status: 'used', dedupeHash: 'c4' })
+    seedTopic(db, { channel: 'chan-a', status: 'claimed', dedupeHash: 'c5', jobId: 'job-1' })
+    seedTopic(db, { channel: 'chan-b', status: 'candidate', dedupeHash: 'c6' })
+    expect(candidateTopicCount(db, 'chan-a')).toBe(2)
+    expect(candidateTopicCount(db, 'chan-b')).toBe(1)
+    expect(candidateTopicCount(db, 'chan-c')).toBe(0)
     db.close()
   })
 })

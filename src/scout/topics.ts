@@ -136,6 +136,16 @@ export function recentTopicTitles(
   return rows.map((r) => r.title)
 }
 
+// Queue depth for the scout's own gate: only 'candidate' rows count. A
+// 'claimed' topic is already in a job, and 'used'/'rejected' are history —
+// counting any of them would let a channel's past keep it from scouting.
+export function candidateTopicCount(db: Database, channel: string): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS n FROM topics WHERE channel = ? AND status = 'candidate'")
+    .get(channel) as { n: number }
+  return row.n
+}
+
 // Operator veto. The status guard in the WHERE clause makes this idempotent
 // and blind to ids in the wrong state — the returned count is what actually
 // changed, which the CLI reports against ids.length.
