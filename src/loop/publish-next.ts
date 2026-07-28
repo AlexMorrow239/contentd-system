@@ -55,7 +55,6 @@ export interface PublishTickResult {
   reason?:
     | 'lease-held'
     | 'no-publish-channel'
-    | 'not-in-window'
     | 'paced'
     | 'daily-count-met'
     | 'platform-quota'
@@ -173,7 +172,7 @@ async function sweepReclaimable(
 
 /**
  * Selects ONE video and fans it out to every platform that still wants it: env
- * check -> per-channel due gate (window, pacing gap, day count) -> fairness
+ * check -> per-channel due gate (cooldown gap, day count) -> fairness
  * order -> candidate scan (bytes reachable, then per-platform quota and
  * credential) -> per platform: claim -> resolveCredential -> upload ->
  * finalize. The publish lease and repair sweep wrap this in the next cycle.
@@ -280,8 +279,8 @@ export async function publishNextTick(
       if (channel.publish === null) continue
       anyChannelConsidered = true
       const publishedToday = videosPublishedToday(db, channel.name, day)
-      // --force is the local-testing bypass: it skips the window, the min
-      // gap, and the day count so ticks can be fired back to back. It never
+      // --force is the local-testing bypass: it skips the cooldown gap and
+      // the day count so ticks can be fired back to back. It never
       // skips quota, credentials, or eligibility — a forced test must not be
       // able to overrun a platform's real daily cap.
       const reason = force

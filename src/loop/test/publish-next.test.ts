@@ -463,34 +463,30 @@ describe('publishNextTick — the due gate', () => {
     return { youtube: { ...base, quota: PLATFORM_QUOTAS.youtube } }
   }
 
-  it('noops with not-in-window before 09:00 local', async () => {
-    const { db, dir } = dueFixture('brainrot-publish-window-')
+  it('publishes at any hour — there is no posting window', async () => {
+    const { db, dir } = dueFixture('brainrot-publish-anyhour-')
     const result = await publishNextTick(db, {
       channelsDir: dir,
       adapters: publishingAdapters(),
-      now: () => new Date(2026, 6, 22, 8, 30),
+      now: () => new Date(2026, 6, 22, 3, 0),
     })
-    expect(result).toEqual({
-      action: 'noop',
-      reason: 'not-in-window',
-      reclaimed: { count: 0, bytes: 0 },
-    })
+    expect(result.action).toBe('published')
     db.close()
   })
 
   it('noops with daily-count-met once videos_per_day videos were attempted', async () => {
     const { db, dir } = dueFixture('brainrot-publish-count-', 1)
-    // createdAt pinned inside the min gap for videosPerDay=1 (a 12h gap) as
-    // measured from `now` below: if the gates were ever reordered to check
-    // pacing before the day count, this fixture would report 'paced' instead
-    // and fail the assertion honestly, rather than passing by coincidence on
-    // whatever the real wall clock happened to be.
+    // createdAt pinned inside the 10 min PUBLISH_COOLDOWN_MS as measured from
+    // `now` below: if the gates were ever reordered to check pacing before
+    // the day count, this fixture would report 'paced' instead and fail the
+    // assertion honestly, rather than passing by coincidence on whatever the
+    // real wall clock happened to be.
     seedAttempt(db, {
       jobId: 'job-old',
       channel: 'test',
       platform: 'youtube',
       day: '2026-07-22',
-      createdAt: new Date(2026, 6, 22, 9, 0).toISOString(),
+      createdAt: new Date(2026, 6, 22, 18, 55).toISOString(),
     })
     const result = await publishNextTick(db, {
       channelsDir: dir,
@@ -506,14 +502,15 @@ describe('publishNextTick — the due gate', () => {
   })
 
   it('noops with paced inside the min gap', async () => {
-    // videos_per_day = 3 -> a 4h gap. Last attempt 10:00 local, now 12:00.
+    // PUBLISH_COOLDOWN_MS is a flat 10 min, independent of videos_per_day.
+    // Last attempt 11:55 local, now 12:00 -> a 5 min gap, inside the cooldown.
     const { db, dir } = dueFixture('brainrot-publish-paced-', 3)
     seedAttempt(db, {
       jobId: 'job-old',
       channel: 'test',
       platform: 'youtube',
       day: '2026-07-22',
-      createdAt: new Date(2026, 6, 22, 10, 0).toISOString(),
+      createdAt: new Date(2026, 6, 22, 11, 55).toISOString(),
     })
     const result = await publishNextTick(db, {
       channelsDir: dir,
@@ -546,7 +543,7 @@ describe('publishNextTick — the due gate', () => {
     db.close()
   })
 
-  it('--force publishes despite window, gap, and count', async () => {
+  it('--force publishes despite the cooldown gap and day count', async () => {
     const { db, dir } = dueFixture('brainrot-publish-force-', 1)
     seedAttempt(db, {
       jobId: 'job-old',
@@ -1366,10 +1363,11 @@ describe('publishNextTick — lease and sweep', () => {
     const db = memDb()
     const channelsDir = tmpDir('brainrot-publish-sweep-')
     writeChannel(channelsDir, { name: 'chan-a', publish: true })
-    // Seed the stale claim RELATIVE to NOW (65 min ago > 30-min TTL) so the
-    // age is identical in every timezone the suite runs in. 65 min is also
-    // inside the 6h min gap for videos_per_day = 2, so the planning half then
-    // reports 'paced' — the point of the test is that the sweep ran first.
+    // Seed the stale claim RELATIVE to NOW (65 min ago > 30-min TTL, and also
+    // past the 10 min PUBLISH_COOLDOWN_MS) so the age is identical in every
+    // timezone the suite runs in. No ready video is seeded for chan-a, so the
+    // planning half then reports 'no-ready-video' — the point of the test is
+    // that the sweep ran first, proven below by the row's status flip.
     db.prepare(
       'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, created_at) ' +
         "VALUES ('stale-job', 'youtube', 'chan-a', '2026-07-22', 1, 'claimed', 1, ?)",
@@ -1377,7 +1375,7 @@ describe('publishNextTick — lease and sweep', () => {
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({
       action: 'noop',
-      reason: 'paced',
+      reason: 'no-ready-video',
       reclaimed: { count: 0, bytes: 0 },
     })
     const row = db.prepare("SELECT status FROM publishes WHERE job_id = 'stale-job'").get() as {
@@ -1693,7 +1691,6 @@ describe('publishExitCode (in-process)', () => {
     const reasons: PublishTickResult[] = [
       { action: 'noop', reason: 'lease-held' },
       { action: 'noop', reason: 'no-publish-channel' },
-      { action: 'noop', reason: 'not-in-window' },
       { action: 'noop', reason: 'paced' },
       { action: 'noop', reason: 'daily-count-met' },
       { action: 'noop', reason: 'platform-quota' },
