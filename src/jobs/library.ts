@@ -173,12 +173,43 @@ export function libraryObjectKeys(
 }
 
 /**
+ * The store-delete loop both retirement paths share: reject (which drops the
+ * library_objects row) and reclaim (which stamps reclaimed_at instead). One
+ * text, so the two can never drift on error handling.
+ *
+ * One bad key must not stop the rest, so each delete is its own try/catch, and
+ * `onDeleted` runs only after its delete succeeds — a failure therefore leaves
+ * the row's record untouched, which is what makes the next sweep retry it
+ * rather than orphan the object silently.
+ */
+export async function deleteStoredObjects(opts: {
+  objects: readonly { jobId: string; objectKey: string }[]
+  store: ObjectStore
+  onDeleted: (jobId: string) => void
+  warn: (message: string) => void
+}): Promise<{ deleted: string[]; failed: string[] }> {
+  const deleted: string[] = []
+  const failed: string[] = []
+  for (const o of opts.objects) {
+    try {
+      await opts.store.delete(o.objectKey)
+      opts.onDeleted(o.jobId)
+      deleted.push(o.jobId)
+    } catch (err) {
+      opts.warn(
+        `could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${errorMessage(err)}`,
+      )
+      failed.push(o.jobId)
+    }
+  }
+  return { deleted, failed }
+}
+
+/**
  * Deletes each rejected video's stored object, store-injected so the loop is
  * unit-testable against a fake store with no S3/MinIO (mirrors backfillStore
- * in ./backfill-store.ts). One bad key must not stop the rest: each delete is
- * its own try/catch, and the `library_objects` row is cleared only after its
- * delete succeeds, so a failure leaves the row in place as the orphan marker
- * the CLI's warning line points the operator at.
+ * in ./backfill-store.ts). The `library_objects` row is dropped entirely here
+ * — a rejected video is retired, not published, so there is nothing to record.
  */
 export async function deleteRejectedObjects(opts: {
   db: Database
@@ -186,20 +217,13 @@ export async function deleteRejectedObjects(opts: {
   store: ObjectStore
   warn?: (message: string) => void
 }): Promise<{ deleted: string[]; failed: string[] }> {
-  const warn = opts.warn ?? (() => {})
   const deleteStmt = opts.db.prepare('DELETE FROM library_objects WHERE job_id = ?')
-
-  const deleted: string[] = []
-  const failed: string[] = []
-  for (const o of opts.objects) {
-    try {
-      await opts.store.delete(o.objectKey)
-      deleteStmt.run(o.jobId)
-      deleted.push(o.jobId)
-    } catch (err) {
-      warn(`could not delete ${o.objectKey} for ${o.jobId} (left orphaned): ${errorMessage(err)}`)
-      failed.push(o.jobId)
-    }
-  }
-  return { deleted, failed }
+  return deleteStoredObjects({
+    objects: opts.objects,
+    store: opts.store,
+    onDeleted: (jobId) => {
+      deleteStmt.run(jobId)
+    },
+    warn: opts.warn ?? (() => {}),
+  })
 }
