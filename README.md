@@ -316,10 +316,21 @@ has no makeup post; the digest reports any channel that published fewer
 videos than its `videos_per_day` yesterday, with a per-platform split, so the
 shortfall is visible without hunting through logs.
 
-`backlog_days` (default `2`) caps how many finished, unpublished videos a
-channel may hold before `produce-next` stops producing more for it — and
-doubles as the horizon a video is given to find a publish slot before it's
-written off as aged out and its stored object is reclaimed. `[scout]
+`backlog_days` (default `2`) caps how many finished videos a channel may hold
+before `produce-next` stops producing more for it. "Held" means every video
+the channel has not finished with: awaiting review, awaiting its first
+platform, and already live on one declared platform but still owed to
+another. A video leaves the count once every platform the channel declares
+has published it, given up on it after three rejections, or run out of time
+for it.
+
+That last case is the other half of the knob: `backlog_days` doubles as the
+horizon a video is given to find a publish slot. Past it — and only once
+newer videos have actually published ahead of it, so a publish outage never
+counts — the video is written off as aged out and its stored object is
+deleted. That includes a video still awaiting review: approve it within
+`backlog_days` or its bytes are reclaimed, `library approve` refuses it, and
+the daily digest tells you to reject it. `[scout]
 queue_days` (default `3`) is the same idea one stage earlier: it caps how many
 scored candidate topics a channel may hold queued before `scout` stops
 fetching and scoring more for it.

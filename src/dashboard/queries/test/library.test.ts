@@ -130,7 +130,7 @@ describe('listLibraryEntries', () => {
     expect(listLibraryEntries(db)[0].bytes).toBe('local')
   })
 
-  it('lists one link per platform that published, newest first', () => {
+  it('lists one link per platform that published, ordered by job id then platform', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedLibrary(db, 'job-1', { state: 'published' })
