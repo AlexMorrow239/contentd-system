@@ -160,7 +160,6 @@ describe('golden-path loop e2e', () => {
         '',
         '[scout]',
         'subreddits = ["space"]',
-        'min_score = 60',
         '',
         '[publish]',
         '',

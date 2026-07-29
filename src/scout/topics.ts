@@ -21,7 +21,7 @@ export interface TopicRow {
   createdAt: string
 }
 
-// Scorer output lands as 'candidate' (score >= min_score) or 'rejected';
+// Scorer output lands as 'candidate' (score >= SCOUT_MIN_SCORE) or 'rejected';
 // the operator lifecycle states are reached only via the transition fns below.
 export interface NewTopic {
   channel: string

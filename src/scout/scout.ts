@@ -216,7 +216,7 @@ export async function scoutChannel(
       dedupeHash: hash,
       score: s.score,
       reason: s.reason,
-      // At/above the channel threshold → production queue; below → remembered
+      // At/above SCOUT_MIN_SCORE → production queue; below → remembered
       // rejection (the hash filter keeps it away from Haiku forever).
       status: s.score >= SCOUT_MIN_SCORE ? 'candidate' : 'rejected',
     }

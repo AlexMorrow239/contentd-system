@@ -20,7 +20,6 @@ rss = [
   "https://phys.org/rss-feed/space-news/",
   "https://earthsky.org/feed/",
 ]
-min_score = 60
 per_source_limit = 25
 
 [caption_style]

@@ -127,14 +127,12 @@ describe('[scout] config', () => {
     expect(cfg.scout).toEqual({
       subreddits: [],
       rss: [],
-      minScore: 60,
       perSourceLimit: 25,
       queueDays: 3,
     })
     expect(DEFAULT_SCOUT).toEqual({
       subreddits: [],
       rss: [],
-      minScore: 60,
       perSourceLimit: 25,
       queueDays: 3,
     })
@@ -147,14 +145,12 @@ describe('[scout] config', () => {
         '[scout]',
         'subreddits = ["space", "askscience"]',
         'rss = ["https://www.sciencedaily.com/rss/space_time.xml"]',
-        'min_score = 75',
         'per_source_limit = 10',
       ]),
     )
     expect(cfg.scout).toEqual({
       subreddits: ['space', 'askscience'],
       rss: ['https://www.sciencedaily.com/rss/space_time.xml'],
-      minScore: 75,
       perSourceLimit: 10,
       queueDays: 3,
     })
@@ -165,19 +161,12 @@ describe('[scout] config', () => {
     expect(cfg.scout).toEqual({
       subreddits: ['space'],
       rss: [],
-      minScore: 60,
       perSourceLimit: 25,
       queueDays: 3,
     })
   })
 
   it('rejects out-of-range scout numbers', () => {
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'min_score = 101'])),
-    ).toThrow()
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'min_score = -1'])),
-    ).toThrow()
     expect(() =>
       loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'per_source_limit = 0'])),
     ).toThrow()
@@ -305,6 +294,12 @@ describe('[publish] — per-platform targets', () => {
         writeToml([...PLAN1_LINES, '[publish]', '', '[publish.youtube]', 'slots = ["10:00"]', '']),
       ),
     ).toThrow(/slots were removed; daily volume now comes from videos_per_day/)
+  })
+
+  it('rejects a stale scout min_score key naming the replacement', () => {
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'min_score = 60'])),
+    ).toThrow(/min_score was removed; the scout stores only topics scoring >= 80/)
   })
 
   it('still requires at least one platform sub-table', () => {

@@ -34,7 +34,6 @@ export interface PremiumVoiceConfig {
 export interface ScoutConfig {
   subreddits: string[]
   rss: string[]
-  minScore: number
   perSourceLimit: number
   /**
    * How many days of scored candidate topics to keep queued before the scout
@@ -79,7 +78,6 @@ export interface ChannelConfig {
 export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
   subreddits: Object.freeze([] as string[]),
   rss: Object.freeze([] as string[]),
-  minScore: 60,
   perSourceLimit: 25,
   queueDays: 3,
 }) as ScoutConfig
@@ -99,6 +97,14 @@ function rejectStaleSlots(slots: unknown, ctx: z.RefinementCtx): void {
     ctx.addIssue({ code: 'custom', message: REMOVED_SLOTS_MESSAGE, path: ['slots'] })
   }
 }
+
+// Same pattern as REMOVED_SLOTS_MESSAGE: min_score used to gate which scored
+// topics got stored. It is now a constant in code (SCOUT_MIN_SCORE, in
+// src/scout/scout.ts) rather than a per-channel dial, so a channel TOML that
+// still sets it is a load error naming the replacement rather than a silently
+// ignored key.
+const REMOVED_MIN_SCORE_MESSAGE =
+  'min_score was removed; the scout stores only topics scoring >= 80 (SCOUT_MIN_SCORE)'
 
 // .strict() is applied AFTER .extend() (not on the base options schema): a
 // non-strict base can be extended freely, and strictness on the final,
@@ -169,13 +175,18 @@ const rawSchema = z.object({
     .object({
       subreddits: z.array(z.string()).default([]),
       rss: z.array(z.string()).default([]),
-      min_score: z.number().int().min(0).max(100).default(DEFAULT_SCOUT.minScore),
+      min_score: z.unknown().optional(),
       per_source_limit: z.number().int().min(1).max(100).default(DEFAULT_SCOUT.perSourceLimit),
       queue_days: z
         .number()
         .int('queue_days must be a whole number of days')
         .positive('queue_days must be greater than 0')
         .default(DEFAULT_SCOUT.queueDays),
+    })
+    .superRefine((scout, ctx) => {
+      if (scout?.min_score !== undefined) {
+        ctx.addIssue({ code: 'custom', message: REMOVED_MIN_SCORE_MESSAGE, path: ['min_score'] })
+      }
     })
     .optional(),
   publish: publishSchema,
@@ -268,7 +279,6 @@ export function loadChannelConfig(path: string): ChannelConfig {
       ? {
           subreddits: raw.scout.subreddits,
           rss: raw.scout.rss,
-          minScore: raw.scout.min_score,
           perSourceLimit: raw.scout.per_source_limit,
           queueDays: raw.scout.queue_days,
         }

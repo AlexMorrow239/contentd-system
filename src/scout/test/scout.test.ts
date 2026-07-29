@@ -88,7 +88,7 @@ afterEach(() => {
 describe('scoutChannel', () => {
   it('fetches, scores, inserts, and ledgers under the scout sentinel', async () => {
     const db = memDb()
-    const channel = scoutedChannel() // minScore 60
+    const channel = scoutedChannel() // gate is SCOUT_MIN_SCORE (80), not per-channel
     const fetchImpl = fetchStub({
       '/r/space/.rss': redditFeed([
         { name: 't3_aaa', title: 'Moon drifting measured' },
@@ -142,7 +142,7 @@ describe('scoutChannel', () => {
 
   it('stores a topic at SCOUT_MIN_SCORE and rejects one just under it', async () => {
     const db = memDb()
-    const channel = scoutedChannel() // channel fixture built WITHOUT any min_score override
+    const channel = scoutedChannel() // gate is the SCOUT_MIN_SCORE constant, not channel config
     const fetchImpl = fetchStub({
       '/r/space/.rss': redditFeed([
         { name: 't3_aaa', title: 'Exactly at the gate' },
@@ -398,7 +398,7 @@ describe('scoutChannel', () => {
     const channel = testChannel({
       name: 'chan-a',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
     })
     for (let i = 0; i < 6; i++) {
       seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
@@ -416,7 +416,7 @@ describe('scoutChannel', () => {
     const channel = testChannel({
       name: 'chan-a',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
     })
     for (let i = 0; i < 5; i++) {
       seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
@@ -434,7 +434,7 @@ describe('scoutChannel', () => {
     const channel = testChannel({
       name: 'chan-a',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
     })
     for (let i = 0; i < 10; i++) {
       seedTopic(db, { channel: 'chan-a', status: 'rejected', dedupeHash: `r-${String(i)}` })
@@ -655,7 +655,7 @@ describe('scoutAll', () => {
     const full = testChannel({
       name: 'chan-full',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
     })
     for (let i = 0; i < 6; i++) {
       seedTopic(db, { channel: 'chan-full', status: 'candidate', dedupeHash: `h-${String(i)}` })
@@ -677,7 +677,7 @@ describe('scoutAll', () => {
     const full = testChannel({
       name: 'chan-full',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], minScore: 60, perSourceLimit: 25, queueDays: 3 },
+      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
     })
     for (let i = 0; i < 6; i++) {
       seedTopic(db, { channel: 'chan-full', status: 'candidate', dedupeHash: `h-${String(i)}` })
