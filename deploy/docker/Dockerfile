@@ -21,15 +21,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && fc-cache -f \
  && rm -rf /var/lib/apt/lists/*
 
-# supercronic: cron built for containers — logs every job to stdout, runs fine as
-# PID 1 and as a non-root user, and does not overlap a job with itself.
-ENV SUPERCRONIC_VERSION=v0.2.48 \
-    SUPERCRONIC_SHA256SUM=50ae8755e04fa72812d0a1bc47a112a856811cc91cce7b6c875c378a850788bc
-RUN curl -fsSLO "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-arm64" \
- && echo "${SUPERCRONIC_SHA256SUM}  supercronic-linux-arm64" | sha256sum -c - \
- && chmod +x supercronic-linux-arm64 \
- && mv supercronic-linux-arm64 /usr/local/bin/supercronic
-
 ENV TZ=America/Chicago
 RUN corepack enable && corepack prepare pnpm@11.12.0 --activate
 
@@ -54,8 +45,4 @@ COPY --chown=node:node . .
 # browser layer above it genuinely needs the source copy and must stay below it.
 RUN pnpm exec tsx deploy/docker/warm-kokoro.ts
 
-# -passthrough-logs: without it supercronic wraps each job's stdout in its own
-# logfmt line (`msg="{...}"`, braces/quotes escaped), which breaks the CLI's
-# one-JSON-line-per-tick contract relied on by ~10 source comments and the
-# README. With the flag, a tick's own JSON reaches `docker compose logs` bare.
-CMD ["supercronic", "-passthrough-logs", "/app/deploy/docker/crontab"]
+CMD ["pnpm", "brainrot", "run"]
