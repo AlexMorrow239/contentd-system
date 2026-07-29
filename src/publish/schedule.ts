@@ -1,6 +1,7 @@
 // 'YYYY-MM-DD' in the MACHINE's local time zone — never toISOString() (that
-// renders UTC). The publish day is deliberately local (design spec §13): a
-// channel's posting window is wall-clock time on this machine, not UTC.
+// renders UTC). The publish day is deliberately local (design spec §13): the
+// videos_per_day quota resets at local midnight, not UTC midnight, because
+// the day it's counting against is the operator's calendar day, not UTC's.
 export function localDay(now: Date): string {
   const year = now.getFullYear()
   const month = String(now.getMonth() + 1).padStart(2, '0')

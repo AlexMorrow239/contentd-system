@@ -299,10 +299,17 @@ share_to_feed = true
 
 `videos_per_day` is the only volume knob: the pipeline produces that many
 videos a day and publishes each one to every platform the channel declares.
-Posting times are derived, not configured — attempts are spread across a
-09:00-21:00 local window with a `12h / videos_per_day` minimum gap, so 3/day
-lands roughly every four hours. The count is a ceiling reached over the day,
-not a guarantee: a machine asleep until 20:00 gets one video out, not three.
+There is no posting window anymore — the daemon's publish worker checks
+every channel continuously and fires the instant one is due. "Due" means two
+things: under its `videos_per_day` count for the local calendar day, and
+past a fixed 10-minute cooldown (`PUBLISH_COOLDOWN_MS`) since that channel's
+last attempt. The cooldown is an anti-burst guard, not a schedule — a
+platform seeing six uploads land in three minutes reads it as spam — so
+nothing spreads a day's quota evenly; a channel with several videos ready at
+once can post all of them back-to-back, ten minutes apart, rather than every
+few hours. The count is still a same-day ceiling, not a guarantee: a channel
+with nothing ready, or already at its daily count, simply stays idle until
+there's more to do.
 
 Platform limits are enforced for you at config load. YouTube's Data API
 allows about 6 uploads/day per Google Cloud project shared across every
@@ -360,13 +367,22 @@ operator setting.
 
 ## Automation
 
-The production loop is four commands, scheduled inside the container by
-supercronic — there is no host cron and no launchd agent anymore. `scout`
-fills the topic queue, `produce-next` performs one unit of work per tick
-(resume one blocked job or produce one video), `publish-next` picks one
-`ready` video from the channel furthest behind its `videos_per_day` pace and
-fans it out to every platform that channel declares (see Publishing above),
-and `digest` prints a daily report.
+Production is one long-running process: `brainrot run` is the container's
+`CMD` and starts a daemon with four workers running concurrently — there is
+no host cron, no launchd agent, and no per-worker container anymore. Each
+worker polls in a tight loop: check demand, do one unit of work if there is
+any, and re-check immediately; an idle worker sleeps 30 seconds before
+checking again, and a worker whose unit throws logs the error and sleeps 60
+seconds rather than taking the daemon down. `scout` fills the topic queue,
+`produce` performs one unit of work per pass (resume one blocked job or
+produce one video), `publish` picks one `ready` video from the channel
+furthest behind its `videos_per_day` pace and fans it out to every platform
+that channel declares (see Publishing above), and `digest` prints a daily
+report once per local day. Because throughput now follows demand rather than
+a clock, there's nothing scheduled to fall behind: a channel with videos
+ready gets them produced and published as fast as its own gates (backlog
+caps, cooldowns, quotas) allow, and a channel with nothing to do costs
+nothing but an idle poll.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
@@ -419,48 +435,66 @@ means "start" can silently run old code. `--build` makes it always build (or
 confirm current) first.
 
 This brings up both services: `whisperx` (the caption-alignment sidecar) and
-`brainrot` (supercronic running the schedule below), which waits on
-`whisperx`'s healthcheck before its own ticks begin. There is one log
-stream for everything the loop does:
+`brainrot` (the daemon: `brainrot run`, four workers polling for demand),
+which waits on `whisperx`'s healthcheck before its workers start. There is
+one log stream for everything the daemon does:
 
 ```bash
 docker compose logs -f brainrot
 ```
 
-Each tick prints one JSON line, and a `noop` line is normal, not a failure —
-`produce-next` noops with `lease-held`, `no-eligible-work`, `claim-conflict`
-(an operator command won a topic or job mid-tick), `bad-env` (object storage is
-not configured — checked before the lease, so a full render is never paid for
-just to fail at the `store` stage), or `config-error`;
-`publish-next` with `lease-held`, `not-in-window` (outside the 09:00-21:00
-local posting window), `paced` (inside the window but under the
-`12h / videos_per_day` minimum gap), `daily-count-met`, `no-publish-channel`
+Each worker prints one JSON line per unit of work, prefixed with which
+worker it came from (`{"worker":"produce",...}`), and a `noop` line is
+normal, not a failure — `produce` noops with `lease-held`,
+`no-eligible-work`, `backlog-full`, `claim-conflict` (an operator command won
+a topic or job mid-unit), `bad-env` (object storage is not configured —
+checked before the lease, so a full render is never paid for just to fail at
+the `store` stage), or `config-error`; `publish` noops with `lease-held`,
+`paced` (this channel attempted less than `PUBLISH_COOLDOWN_MS`, 10 minutes,
+ago — an anti-burst guard, not a schedule), `daily-count-met` (this channel
+already hit `videos_per_day` for the local calendar day), `no-publish-channel`
 (no channel in the dir declares `[publish]`), `platform-quota`,
 `no-ready-video`, `no-video-file` (the `ready` row's file was pruned from
 `runs/`), `no-auth`, `bad-env` (a malformed `BRAINROT_TOKEN_KEY` or
 `BRAINROT_YT_UPLOADS_PER_DAY`), or `config-error` (the channels dir would not
-load — the message also goes to stderr); `scout` with `lease-held` or that
-same `config-error`. All of those exit `0`. Exit `1` means real work failed: a
-`failed`/`blocked` produce, a fan-out with any platform entry not
-`published` (a `publish-failed` tick, or a `published` one carrying a
+load — the message also goes to stderr); `scout` with `lease-held`,
+`queue-full`, or that same `config-error`. A worker whose unit throws instead
+logs `{"worker":...,"action":"worker-error","error":...}` and backs off for
+60 seconds rather than retrying immediately or taking the daemon down — that
+line, not an exit code, is the daemon's failure signal, since the daemon
+itself never exits under normal operation.
+
+The standalone `pnpm brainrot produce-next` / `publish-next` / `scout` /
+`digest` commands (useful for a manual, one-shot run outside the daemon)
+keep the old exit-code contract: exit `0` for any noop or
+successful action, exit `1` when real work failed — a `failed`/`blocked`
+produce, a fan-out with any platform entry not `published` (a
+`publish-failed` result, or a `published` one carrying a
 `failed`/`unknown`/`skipped` leg), or a scout run whose every channel died.
 
-### Schedule
+### Cadence
 
-| Command        | Cadence                                                                                                                                                               |
-| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `scout`        | 07:05, 12:05, 17:05 — staggered 5 min off the hour so it never co-fires with `produce-next`                                                                           |
-| `produce-next` | every 25 min                                                                                                                                                          |
-| `publish-next` | every 15 min — deliberately not staggered off `produce-next`; the two touch disjoint rows and WAL plus the `busy_timeout=5000` pragma make a same-minute co-fire safe |
-| `digest`       | 08:00 — printed to the log stream only, nothing else delivers it                                                                                                      |
+There is no schedule to configure — throughput comes from the poll loop
+itself (`src/loop/daemon.ts`). Each of the four workers checks demand, does
+one unit of work if there is any, and re-checks immediately; an idle worker
+sleeps 30 seconds (`IDLE_SLEEP_MS`) before its next check, and a worker whose
+unit throws sleeps 60 seconds (`ERROR_SLEEP_MS`) instead. `scout` layers a
+per-channel clock on top of that poll, `SCOUT_RECHECK_MS` (20 minutes), so a
+channel isn't refetched on every 30-second idle poll even when nothing about
+it changed — the clock is in-memory, so a daemon restart resets it and
+re-scouts immediately, which is harmless. `digest` is the one worker still on
+a real clock: it fires once per local day at or after 08:00 (`DIGEST_HOUR`),
+printed to the log stream only — nothing else delivers it — and a restart
+later the same day can re-fire it once.
 
-Times are container-local (`TZ=America/Chicago`, set in
+Times that matter are container-local (`TZ=America/Chicago`, set in
 `deploy/docker/Dockerfile` and pinned again in `docker-compose.yml`'s
 `environment:` block — an `env_file` value of the same name would otherwise
-override the image's `ENV`), regardless of the host Mac's own timezone. The
-schedule itself is `deploy/docker/crontab`, baked into the image — changing
-it means editing that file and running `docker compose build brainrot`,
-same as any other source change. There is no hot reload.
+override the image's `ENV`), regardless of the host Mac's own timezone.
+Changing any of the constants above, or `PUBLISH_COOLDOWN_MS`
+(`src/publish/schedule.ts`), means editing the source and running
+`docker compose build brainrot`, same as any other source change. There is
+no hot reload.
 
 ### Dashboard
 
@@ -484,7 +518,7 @@ database; the header says which one you are looking at and dev shows a banner.
 The dashboard **never writes**. Its connection opens read-only, so
 `library approve/reject`, `topics requeue/reject/prune-media` and
 `publish retry/mark-done`
-remain CLI-only — those race a live cron tick, and a button is not the right
+remain CLI-only — those race a live daemon worker, and a button is not the right
 affordance for that. The `./data` mount is read-write on purpose: SQLite must
 create the `-shm` file to read a WAL database, so the read-only guarantee lives
 in the connection flag rather than the mount.
@@ -608,22 +642,28 @@ is done — ticks stay paused until you do.
 
 ### Operational caveats
 
-- **A sleeping Mac drops ticks, with no catch-up firing.** launchd used to
-  coalesce missed runs after the machine woke up; supercronic does not. A
-  channel that stayed under its `videos_per_day` count while the machine
-  slept simply stays due — the next `publish-next` tick still finds it behind
-  pace and publishes — but there is no catch-up beyond the day's own ceiling;
-  a slept-through `scout` window is skipped until its next scheduled firing.
+- **A sleeping Mac pauses the daemon, but nothing is "missed" — there is no
+  schedule to fall behind on.** The old cron loop fired at specific wall-clock
+  times; a machine asleep at one of those moments lost that firing outright,
+  and supercronic never made it up. The daemon has no firings to lose:
+  triggers are demand-based, not scheduled, so a slept-through period is
+  simply picked up at the next wake. The instant the machine wakes and the
+  container resumes, each worker's next poll sees whatever demand piled up
+  (topics to scout, videos to produce or publish) and acts on it right away,
+  subject to the same gates as always — `videos_per_day`,
+  `PUBLISH_COOLDOWN_MS`, `backlog_days`. A channel that stayed under its
+  `videos_per_day` count while the machine slept simply stays due; there is
+  still no makeup once that count is met for the day.
 - **Docker Desktop must be set to start at login**, or nothing runs after a
   reboot and there is no alarm that fires — the failure looks identical to an
   idle day.
 - **`depends_on: service_healthy` only gates a `compose up`.** It does not
   survive a Docker Desktop restart: on reboot the engine starts every
   `restart: unless-stopped` container independently of the dependency graph,
-  so `brainrot` can start ticking, including a `produce-next` that needs
-  captions, before `whisperx`'s healthcheck reports healthy. Nothing crashes
-  — the affected job just fails or blocks at the captions stage and is
-  recoverable the normal way — but it means a reboot is not guaranteed to
+  so `brainrot`'s workers can start polling, including a `produce` unit that
+  needs captions, before `whisperx`'s healthcheck reports healthy. Nothing
+  crashes — the affected job just fails or blocks at the captions stage and
+  is recoverable the normal way — but it means a reboot is not guaranteed to
   reproduce the startup ordering `docker compose up -d` gives you.
 
 ### Timezones: two different clocks
@@ -634,15 +674,17 @@ is done — ticks stay paused until you do.
   `jobs.created_at`, which is UTC, so "today" for those flips at midnight
   UTC — 7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern —
   not at local midnight. Expect a fresh production quota and budget headroom
-  in the early evening. The publish window/pace (`src/publish/schedule.ts`)
-  and both platforms' per-day upload counters (YouTube's project-wide one and
-  Instagram's per-channel one) are the opposite: they key off the
-  **container's** local wall-clock day (`TZ` is pinned to `America/Chicago`
-  in `docker-compose.yml`'s `environment:` block regardless of the host Mac's
-  own timezone), so they roll over at local midnight, not UTC midnight.
-  A `{"action":"noop","reason":"lease-held"}` tick is normal while a long
-  render from the previous firing is still running — `scout` takes a lease of
-  its own (30 min) and prints the same line if a previous run is still going.
+  in the early evening. The publish quota and cooldown
+  (`src/publish/schedule.ts`) and both platforms' per-day upload counters
+  (YouTube's project-wide one and Instagram's per-channel one) are the
+  opposite: they key off the **container's** local wall-clock day (`TZ` is
+  pinned to `America/Chicago` in `docker-compose.yml`'s `environment:` block
+  regardless of the host Mac's own timezone), so they roll over at local
+  midnight, not UTC midnight.
+  A `{"worker":"produce","action":"noop","reason":"lease-held"}` line is
+  normal while a long render from an earlier unit is still running — `scout`
+  takes a lease of its own (30 min) and prints the same shape of line if a
+  previous scout run is still going.
 
 ## Tests
 

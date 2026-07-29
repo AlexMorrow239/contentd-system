@@ -33,9 +33,12 @@ stroke_px = 8
 per_video_usd = 0.5
 per_day_usd = 10.0
 
-# Cadence comes from videos_per_day above: a 12h local window (09:00-21:00)
-# split into that many evenly spaced attempts. A window missed while the Mac
-# sleeps is simply not made up — the count is a ceiling, not a guarantee.
+# Cadence comes from videos_per_day above: the daemon's publish worker fires
+# whenever a video is ready, gated only by the per-local-day videos_per_day
+# quota and a fixed 10-minute cooldown between attempts (PUBLISH_COOLDOWN_MS,
+# an anti-burst guard, not a schedule). There is no posting window; the count
+# is a same-day ceiling, not a guarantee — falling short just means demand
+# (a ready video) or the cap (per-platform quota) ran out first.
 [publish]
 
 [publish.youtube]

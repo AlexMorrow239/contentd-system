@@ -28,7 +28,8 @@ pnpm test:coverage            # same run + v8 coverage -> coverage/ (report-only
 pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one LLM call
 
 pnpm brainrot produce --channel channels/<name>.toml --topic "..."
-pnpm brainrot scout | produce-next | publish-next | digest
+pnpm brainrot run                    # the demand-driven daemon: produce/publish/scout workers + digest
+pnpm brainrot scout | produce-next | publish-next | digest  # one manual/debug unit of each, outside the daemon
 pnpm brainrot jobs | costs
 pnpm brainrot topics list|reject <ids...>
 pnpm brainrot topics requeue <id>   # orphaned 'claimed' topic -> 'candidate'; refuses while a live job holds it
@@ -84,27 +85,47 @@ duration. Voice synthesis has its own independent fallback chain
 on failure or absence — this is a plain per-channel setting, not a pipeline
 branch.
 
-### Two cron loops share one SQLite file
+### One daemon, four workers share one SQLite file
 
-`src/loop/produce-next.ts` and `src/loop/publish-next.ts` are the two
-long-running cycles, each doing **one unit of work per invocation** — cron
-cadence controls throughput, not a loop inside the code. Both:
+`brainrot run` (`src/loop/daemon.ts`) is the container's `CMD` and the only
+long-running process — there is no host cron and no per-loop container
+anymore. It starts four workers concurrently: produce, publish, scout,
+digest. Every worker shares one shape (`runWorker`): check demand → do one
+unit of work → re-check immediately, so throughput now follows demand, not
+a schedule. An idle unit sleeps `IDLE_SLEEP_MS` (30s) before its next check;
+a unit that throws logs a `worker-error` line and sleeps `ERROR_SLEEP_MS`
+(60s) instead of taking the daemon down. Consecutive identical idle lines
+are deduped (keyed on the emitted JSON) so a quiet night is silent rather
+than one line every 30 seconds forever — any worked unit or error resets the
+dedupe so the next idle reason is still reported once. `digest` is the one
+worker that isn't demand-driven: it's time-gated, firing once per local day
+at or after `DIGEST_HOUR` (08:00), with an in-memory guard so a same-day
+restart can re-fire it once — acceptable for a read-only report whose only
+delivery is the log stream.
+
+`produce` and `publish` wrap `src/loop/produce-next.ts` and
+`src/loop/publish-next.ts`, which still each do **one unit of work per
+call** — the daemon's poll loop controls throughput now, not cron cadence,
+but the tick functions' own shape is unchanged. Both:
 
 - take a named lease (`src/loop/lease.ts`, `leases` table) so only one
   process is doing that kind of work at a time; a held lease is a normal
-  no-op, not an error. `scout` takes one too (name `scout`, 30-min TTL,
-  acquired in its CLI action) and prints the same `lease-held` noop line.
-  `produce-next` heartbeats its lease at every stage start (`runJob`'s
-  `heartbeat` option, threaded through `resumeJob` as well) so a render
-  longer than the TTL is not taken over mid-flight.
+  no-op, not an error. This now guards **daemon-vs-manual-CLI** races rather
+  than daemon-vs-daemon ones — see "outside these leases" below. `scout`
+  takes one too (name `scout`, 30-min TTL, acquired inside `scoutUnit`) and
+  prints the same `lease-held` noop line. `produce-next` heartbeats its
+  lease at every stage start (`runJob`'s `heartbeat` option, threaded
+  through `resumeJob` as well) so a render longer than the TTL is not taken
+  over mid-flight.
 - run an idempotent **repair sweep** at the top of the lease window to heal
   state left inconsistent by a crash between two writes that should have been
   atomic (e.g. a topic left `claimed` after its job already landed in
   `library`; a `publishes` row left `claimed` after an upload that never
   confirmed).
-- read `channels/*.toml` fresh every tick — via `tryLoadChannelsDir`, before
+- read `channels/*.toml` fresh every unit — via `tryLoadChannelsDir`, before
   the lease: a broken TOML is reported as a `config-error` noop line rather
-  than thrown, because a tick that throws prints no JSON line at all.
+  than thrown, because a unit that throws logs a `worker-error` line, not a
+  structured noop.
 - validate the env they depend on before the lease too, as a `bad-env` noop:
   `publish-next` checks `BRAINROT_TOKEN_KEY` and the quota vars
   (`badEnvMessage`), `produce-next` checks that object storage is configured
@@ -116,20 +137,36 @@ cadence controls throughput, not a loop inside the code. Both:
 
 `produce-next` asks `planTick` (`src/loop/plan-tick.ts`) whether to resume a
 blocked job or claim+produce a new topic; `publish-next` asks
-`src/publish/schedule.ts` which channels are due — inside a 09:00–21:00 local
-window, under their `videos_per_day` count for the day, and past a derived
-`12h / videos_per_day` minimum gap since their last attempt — orders them by
-how far behind that count they are, and fans the chosen video out to every
-declared platform that still wants it. Each platform's real daily cap
-(YouTube's ~6/day per Google Cloud project, shared across channels;
-Instagram's 50/day per account) is enforced twice: once at config load, where
-a channel set declaring more `videos_per_day` than a platform allows is a
-hard error, and once per tick as a backstop.
+`src/publish/schedule.ts` which channels are due — under their
+`videos_per_day` count for the local calendar day (`localDay`, deliberately
+local, never `toISOString()`) and past `PUBLISH_COOLDOWN_MS` (10 minutes, a
+code constant, not config) since their last attempt — orders them by how far
+behind that count they are, and fans the chosen video out to every declared
+platform that still wants it. There is no posting window anymore: the
+cooldown is an anti-burst guard, not a schedule (a platform seeing six
+uploads land in three minutes reads it as spam), and demand — `videos_per_day`
+still unmet today — is the only thing that makes a channel due, so nothing
+stops a whole day's quota firing back-to-back once each video clears its own
+cooldown. Each platform's real daily cap (YouTube's ~6/day per Google Cloud
+project, shared across channels; Instagram's 50/day per account) is enforced
+twice: once at config load, where a channel set declaring more
+`videos_per_day` than a platform allows is a hard error, and once per unit
+as a backstop.
 
 Manual commands (`produce`, `resume`, `auth <platform>`,
 `library approve/reject`, `publish retry/mark-done`) deliberately run
 **outside** these leases — they are operator actions that can race a live
-cron tick if the corresponding loop isn't stopped first.
+daemon worker if the daemon container isn't stopped first.
+
+The scout side gates on score rather than a window: `scoutChannel` stores
+only topics scoring at or above `SCOUT_MIN_SCORE` (80, a code constant in
+`src/scout/scout.ts`) — a channel TOML that still sets the old `min_score`
+key is a load error naming the replacement, same treatment as a stale
+`slots` key. `scoutUnit` (`src/loop/daemon.ts`) adds a per-channel clock on
+top, `SCOUT_RECHECK_MS` (20 minutes), so a quiet subreddit isn't refetched
+on every 30-second idle poll; the clock is in-memory, so a daemon restart
+resets it and re-scouts immediately, which is harmless. The queue-depth
+gate (`skipped: 'queue-full'`, below) is unchanged.
 
 `publish-next` runs a second sweep in the same window: `publish/reclaim.ts`
 deletes the stored object of every video whose declared platforms have all
@@ -154,7 +191,7 @@ is what pins them together. The row in
 finds backfill candidates by the ABSENCE of a row, so keeping it is what stops
 `library backfill-store` from re-uploading what the sweep deleted.
 
-Both loops are demand-gated, not just rate-gated. `planTick` skips a channel
+Both `produce` and `scout` are demand-gated, not just rate-gated. `planTick` skips a channel
 holding `ceil(videos_per_day × backlog_days)` unconsumed videos
 (`pendingInventory`, `jobs/library.ts`) and reports `backlog-full`;
 `scoutChannel` returns `skipped: 'queue-full'` before fetching or scoring
@@ -169,7 +206,7 @@ production permanently.
 
 Each channel is one `channels/<name>.toml`, loaded by `src/config/channel.ts`
 through a zod schema with defaults, then normalized into camelCase
-`ChannelConfig`. `loadChannelsDir` enforces an invariant the whole loop system
+`ChannelConfig`. `loadChannelsDir` enforces an invariant the whole daemon
 depends on: **the file's basename must equal the TOML's `name` field** —
 `resumeJob` resolves a job's channel config by filename
 (`<channelsDir>/<job.channel>.toml`), so a mismatch would silently wedge
@@ -179,8 +216,10 @@ TOML with no `[publish]` table never enters the publish pool; one with no
 table holds one `[publish.<platform>]` sub-table per platform the channel
 targets (`youtube`, `instagram`), each validated against that platform's own
 option schema — no schedule of its own, since cadence comes from the
-channel's `videos_per_day`. A stale `slots` key at either level is a load
-error naming its replacement. A channel declaring both `[publish.youtube]`
+channel's `videos_per_day`. A stale `slots` key at either level, or a stale
+`[scout] min_score` key, is a load error naming its replacement (`slots` ->
+`videos_per_day`; `min_score` -> the code constant `SCOUT_MIN_SCORE`). A
+channel declaring both `[publish.youtube]`
 and `[publish.instagram]` cross-posts the same rendered video to both.
 
 `backlog_days` (default 2) is the inventory depth cap AND the aged-out horizon
@@ -298,8 +337,10 @@ for Instagram's ~60-day long-lived token), `platforms/youtube.ts` and
 `platforms/instagram.ts` each implement upload mechanics and credential
 resolution behind the shared `PublishAdapter` seam (`platforms/index.ts` is
 the one-line-per-platform registry `publish-next` drives generically),
-`schedule.ts` derives the publish window and minimum gap from `videos_per_day`,
-and `publishes.ts` is the DAO for the `publishes` table's
+`schedule.ts` reads `videos_per_day` as the day's quota and pairs it with
+the fixed `PUBLISH_COOLDOWN_MS` cooldown (no window, no per-video gap
+derived from `videos_per_day` anymore), and `publishes.ts` is the DAO for
+the `publishes` table's
 claim/done/failed/interrupted state machine, keyed per (channel, platform),
 with a `seq` ordinal per local day standing in for the old clock-time slot.
 The two platforms' credential-resolution shapes differ: YouTube mints a
@@ -344,8 +385,9 @@ install/version.
 
 ### Data flow summary
 
-SQLite (`data/brainrot.db`, WAL mode, `busy_timeout=5000` since multiple cron
-processes touch the same file) holds all state: `jobs`/`job_stages` (pipeline
+SQLite (`data/brainrot.db`, WAL mode, `busy_timeout=5000` since the daemon's
+concurrent workers and manual CLI commands can touch the same file at once)
+holds all state: `jobs`/`job_stages` (pipeline
 progress), `library` (finished videos awaiting review/publish), `topics`
 (scout queue), `costs` (spend ledger), `leases`, `publishes`, `oauth_tokens`.
 Per-job filesystem artifacts live under `runs/<jobId>/<stage>/`. Schema lives
