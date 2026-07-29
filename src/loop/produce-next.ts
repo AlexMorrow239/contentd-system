@@ -61,10 +61,10 @@ export async function produceNextTick(
   // unconfigured deployment discovers the problem only after paying for a
   // full Remotion render, then fails the job with no library row to show for
   // it. Same shape as publish-next's badEnvMessage(): one JSON line, exit 0,
-  // a named cause, plus the message on stderr where cron mail will show it.
+  // a named cause. The human-readable stderr copy is the one-shot CLI's job
+  // (src/cli.ts), not this function's — see the config-error note below.
   const storageError = s3ConfigError()
   if (storageError !== undefined) {
-    console.error(`produce-next: ${storageError}`)
     return { action: 'noop', reason: 'bad-env', error: storageError }
   }
   // Config load comes BEFORE the lease: a broken channel TOML (or a missing
@@ -73,11 +73,14 @@ export async function produceNextTick(
   // do work. Reported like every other blocked-tick outcome — one JSON line,
   // exit 0, a named cause — instead of escaping to the CLI's catch as exit 1
   // with no JSON line at all, every firing, for as long as the file stays bad.
-  // The message also goes to stderr, because a JSON line the operator only
-  // greps for `action` would otherwise carry the whole story silently.
+  // The cause travels in `error` only. It used to be printed to stderr here as
+  // well, which was free under cron (one process, one line) but became spam
+  // under the daemon: this tick reruns every 30 seconds, and an unstructured
+  // print bypasses runWorker's idle dedupe, so a single bad TOML wrote 2,880
+  // stderr lines a day. The one-shot `brainrot produce-next` CLI prints it
+  // instead (src/cli.ts), which is the surface that ever had a reader for it.
   const loaded = tryLoadChannelsDir(opts.channelsDir)
   if (loaded.error !== undefined) {
-    console.error(`produce-next: ${loaded.error}`)
     return { action: 'noop', reason: 'config-error', error: loaded.error }
   }
   const channels = loaded.channels

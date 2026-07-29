@@ -128,6 +128,27 @@ export function applyDevFlag(dev?: boolean): void {
   if (dev) process.env[DEV_VOICE_ENV] = '1'
 }
 
+/**
+ * Prints the human-readable cause of a tick that could not run at all, on
+ * stderr, beside the JSON line stdout gets — an operator grepping only for
+ * `action` would otherwise see a bare `config-error` and no file name.
+ *
+ * This lives at the ONE-SHOT CLI, not inside the tick functions, and that is
+ * the whole point: the same ticks now run under `brainrot run` every 30
+ * seconds, where an unstructured print bypasses runWorker's idle dedupe and
+ * turns one bad channel TOML into 2,880 stderr lines a day. The daemon
+ * reports these through the deduped `{"action":"noop","reason":...}` line
+ * instead; a one-shot invocation has a human reading its stderr right now.
+ */
+function reportBlockedTick(
+  command: string,
+  result: { action: string; reason?: string; error?: string },
+): void {
+  if (result.action !== 'noop') return
+  if (result.reason !== 'config-error' && result.reason !== 'bad-env') return
+  if (result.error !== undefined) console.error(`${command}: ${result.error}`)
+}
+
 const program = new Command()
 program.name('brainrot').description('Brainrot Machine CLI')
 
@@ -320,6 +341,7 @@ program
         channelsDir,
         runsRoot,
       })
+      reportBlockedTick('produce-next', result)
       // One cron-greppable JSON line. Exit mirrors produce: 0 for
       // ready/needs-review and benign no-ops, 1 for failed AND blocked (the
       // JSON line carries the finer distinction). status is undefined on
@@ -373,6 +395,7 @@ program
           dryRun: opts.dryRun,
           force: opts.force,
         })
+        reportBlockedTick('publish-next', result)
         // One cron-greppable JSON line. Exit 1 when ANY platform in the fan-out
         // is not 'published' — failed, unknown, or skipped all need operator
         // attention — a partial success still needs to be visible to cron —

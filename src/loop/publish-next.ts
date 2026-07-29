@@ -234,10 +234,12 @@ export async function publishNextTick(
   }
   // Same rule for the channels dir, and for the same reason it sits ahead of
   // the lease: a broken channel TOML (or a missing dir) blocks every candidate,
-  // so nothing should be leased on its behalf.
+  // so nothing should be leased on its behalf. The cause travels in `error`
+  // only: printing it here too was harmless under cron but is spam under the
+  // daemon, where this tick reruns every 30 seconds and an unstructured print
+  // bypasses runWorker's idle dedupe. The one-shot CLI prints it (src/cli.ts).
   const loaded = tryLoadChannelsDir(opts.channelsDir)
   if (loaded.error !== undefined) {
-    console.error(`publish-next: ${loaded.error}`)
     return { action: 'noop', reason: 'config-error', error: loaded.error }
   }
   const channels = loaded.channels

@@ -233,7 +233,10 @@ describe('produceNextTick — object storage not configured', () => {
     expect(result.action).toBe('noop')
     expect(result.reason).toBe('bad-env')
     expect(result.error).toContain('BRAINROT_S3_BUCKET')
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('BRAINROT_S3_BUCKET'))
+    // The cause travels in the result, never on stderr: this tick reruns every
+    // 30s under the daemon, where an unstructured print bypasses runWorker's
+    // idle dedupe. `brainrot produce-next` prints it for a human (cli.ts).
+    expect(stderr).not.toHaveBeenCalled()
     stderr.mockRestore()
     db.close()
   })
@@ -259,7 +262,7 @@ describe('produceNextTick — object storage not configured', () => {
 })
 
 describe('produceNextTick — config errors', () => {
-  it('no-ops with reason config-error on an unparseable channel TOML, naming the file on stderr', async () => {
+  it('no-ops with reason config-error on an unparseable channel TOML, naming the file', async () => {
     const { db, runsRoot } = setup()
     const brokenDir = tmpDir('brainrot-loop-broken-')
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
@@ -274,8 +277,10 @@ describe('produceNextTick — config errors', () => {
     expect(result.action).toBe('noop')
     expect(result.reason).toBe('config-error')
     expect(result.error).toContain('broken.toml')
-    // ...and the cause on stderr, where cron mail (or the log) will show it.
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('broken.toml'))
+    // ...and nothing on stderr: see the bad-env case above. The one-shot CLI's
+    // own test ('`produce-next` over a broken channels dir ...') pins the
+    // human-readable copy at the surface that still prints it.
+    expect(stderr).not.toHaveBeenCalled()
     stderr.mockRestore()
     db.close()
   })

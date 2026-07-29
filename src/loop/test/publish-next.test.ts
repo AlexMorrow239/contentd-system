@@ -1497,7 +1497,7 @@ describe('reclaim sweep', () => {
 })
 
 describe('publishNextTick — config errors', () => {
-  it('no-ops with reason config-error on an unparseable channel TOML, naming the file on stderr', async () => {
+  it('no-ops with reason config-error on an unparseable channel TOML, naming the file', async () => {
     const db = memDb()
     const brokenDir = tmpDir('brainrot-publish-broken-')
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
@@ -1508,7 +1508,10 @@ describe('publishNextTick — config errors', () => {
     expect(result.action).toBe('noop')
     expect(result.reason).toBe('config-error')
     expect(result.error).toContain('broken.toml')
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining('broken.toml'))
+    // The cause travels in the result, never on stderr: this tick reruns every
+    // 30s under the daemon, where an unstructured print bypasses runWorker's
+    // idle dedupe. `brainrot publish-next` prints it for a human (cli.ts).
+    expect(stderr).not.toHaveBeenCalled()
     stderr.mockRestore()
     db.close()
   })
@@ -1620,6 +1623,32 @@ describe('publish-next CLI', () => {
         wouldPublish: null,
         reason: 'no-publish-channel',
       })
+    },
+    60000,
+  )
+
+  // The tick itself is silent now (it reruns every 30s under the daemon); the
+  // one-shot command is where a human is reading stderr, so this is where the
+  // cause has to stay legible.
+  it.concurrent(
+    '`publish-next` over a broken channels dir names the file on stderr, one JSON line, exit 0',
+    async () => {
+      const root = tmpDir('brainrot-publish-cli-broken-')
+      const brokenDir = tmpDir('brainrot-publish-cli-broken-channels-')
+      writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli([
+        'publish-next',
+        '--db',
+        join(root, 'brainrot.db'),
+        '--channels-dir',
+        brokenDir,
+      ])
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.trim().split('\n')).toHaveLength(1)
+      const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
+      expect(line.action).toBe('noop')
+      expect(line.reason).toBe('config-error')
+      expect(result.stderr).toContain('broken.toml')
     },
     60000,
   )

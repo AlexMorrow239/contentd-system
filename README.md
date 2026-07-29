@@ -334,7 +334,7 @@ for it.
 
 That last case is the other half of the knob: `backlog_days` doubles as the
 horizon a video is given to find a publish slot. Past it — and only once
-another video actually published *while this one was waiting*, so neither a
+another video actually published _while this one was waiting_, so neither a
 publish outage nor the first upload that recovers from one ever counts — the
 video is written off as aged out and its stored object is deleted. That includes a video still awaiting review: approve it within
 `backlog_days` or its bytes are reclaimed, `library approve` refuses it, and
@@ -419,7 +419,7 @@ BRAINROT_DB=data/brainrot.db pnpm brainrot topics prune-media --dry-run
 
 Drop `--dry-run` once the verdicts look right. Reddit rate-limits this endpoint
 hard, so it paces itself at ~20s per row and retries a 429 once — budget
-roughly *20 seconds per reddit candidate*, and watch the per-row progress on
+roughly _20 seconds per reddit candidate_, and watch the per-row progress on
 stderr. Any row it cannot resolve is left untouched and reported; re-running
 picks those up. Like the other manual commands it runs outside the scout lease,
 so stop the daemon first if a unit of scout work may be live.
@@ -464,8 +464,13 @@ already hit `videos_per_day` for the local calendar day), `no-publish-channel`
 `no-ready-video`, `no-video-file` (the `ready` row's file was pruned from
 `runs/`), `no-auth`, `bad-env` (a malformed `BRAINROT_TOKEN_KEY` or
 `BRAINROT_YT_UPLOADS_PER_DAY`), or `config-error` (the channels dir would not
-load — the message also goes to stderr); `scout` with `lease-held`,
-`queue-full`, or that same `config-error`. A worker whose unit throws instead
+load); `scout` with `lease-held`, `queue-full`, `no-scout-sources` (a channel
+was due for a recheck but none of the due ones declares a `[scout]` source),
+or that same `config-error`. The `error` field of a `config-error` or
+`bad-env` line carries the cause — under the daemon that JSON line is the
+only report, deliberately: an unstructured stderr print would bypass the idle
+dedupe and repeat every 30 seconds. The one-shot commands below still echo it
+to stderr, where a human is watching. A worker whose unit throws instead
 logs `{"worker":...,"action":"worker-error","error":...}` and backs off for
 60 seconds rather than retrying immediately or taking the daemon down — that
 line, not an exit code, is the daemon's failure signal, since the daemon
@@ -633,7 +638,11 @@ recovery is done — its workers stay paused until you do.
   scenario.** The daemon (`src/loop/daemon.ts`) does handle SIGTERM/SIGINT:
   a `process.once` handler aborts a controller, `abortableSleep` ends an
   idle worker's sleep in milliseconds instead of waiting out the full 30s,
-  and no worker starts a new unit once the signal fires. But the abort is
+  and no worker starts a new unit once the signal fires. (A clean stop still
+  reports **exit 143** in `docker compose ps`/`logs`: `tsx` re-raises SIGTERM
+  after the process unwinds, and 128+15 is what Docker records. That is the
+  expected shape of a graceful stop, not a failure, and the restart policy
+  does not treat it as one.) But the abort is
   not threaded into `runJob` itself, so a unit already mid-render keeps
   rendering — `docker compose stop`/`restart`/`down`, and every
   rebuild-deploy since that's a stop-then-recreate, still fall back to

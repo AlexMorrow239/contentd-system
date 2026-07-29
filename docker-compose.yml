@@ -66,6 +66,12 @@ services:
     # building a second copy of a ~2 GB layer stack.
     image: brainrot:latest
     restart: unless-stopped
+    # PID 1 here is pnpm, which reaps nothing. Every Remotion render forks a
+    # headless Chrome (plus ffmpeg), and any that outlives its parent is
+    # re-parented to PID 1 and stays a zombie forever — harmless per render,
+    # fatal over the weeks a long-lived daemon container runs, since the pid
+    # table is finite. tini (init: true) reaps them.
+    init: true
     depends_on:
       whisperx:
         condition: service_healthy
