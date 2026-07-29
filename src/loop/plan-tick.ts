@@ -30,8 +30,10 @@ export type TickPlan =
 
 // The inventory ceiling: how many finished, unconsumed videos a channel may
 // hold before it stops producing. Derived from videos_per_day rather than set
-// directly, so videos_per_day stays the one cadence knob the whole system
-// reads from — the publish window, the minimum gap, and now this.
+// directly, so videos_per_day stays the cadence knob most of the system reads
+// from — the per-channel-day publish quota and the behind-schedule ordering
+// the cooldown-paced publish tick uses to pick a channel (both
+// src/publish/schedule.ts), and now this inventory cap.
 //
 // Exported for the digest, which reports channels sitting at this cap: a
 // halted channel is otherwise invisible (the digest's other sections are

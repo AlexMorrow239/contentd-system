@@ -29,8 +29,8 @@ import { tmpDir } from '../../testing/tmp.js'
 export const NOW = () => new Date(2026, 6, 22, 14, 5)
 
 /**
- * 10:00 local on the fixture day: inside the 09:00–21:00 window, and with no
- * prior attempt the min gap is clear too, so the fan-out tests are never
+ * 10:00 local on the fixture day: no prior attempt for either channel, so
+ * the PUBLISH_COOLDOWN_MS cooldown is clear and the fan-out tests are never
  * gated by pacing.
  */
 export const FANOUT_NOW = () => new Date(2026, 6, 22, 10, 0)

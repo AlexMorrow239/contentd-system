@@ -173,10 +173,11 @@ Real Instagram publishing always needs real R2.
 
 ## Publishing
 
-`ready` library videos upload automatically via the `publish-next` tick (see
-Automation below), at a per-channel pace derived from `videos_per_day`, to
-every platform a channel declares — a video is not "done" until every
-declared platform has taken it.
+`ready` library videos upload automatically via the `publish` worker (see
+Automation below), one channel-day's `videos_per_day` quota at a time, paced
+only by a fixed 10-minute anti-burst cooldown between attempts — not by any
+pace derived from `videos_per_day` — to every platform a channel declares. A
+video is not "done" until every declared platform has taken it.
 
 ### YouTube
 
@@ -347,8 +348,8 @@ fetching and scoring more for it.
 The two platforms' quotas are scoped differently and enforced for you at
 config load — a channel set declaring more `videos_per_day` than a platform
 allows fails to load with a message naming the offending channels, before
-`produce` or any loop tick can run at all. `publish-next` re-checks the same
-cap per tick as a backstop.
+`produce` or any daemon worker unit can run at all. `publish-next` re-checks
+the same cap per unit as a backstop.
 
 - **YouTube** is per Google Cloud **project**, not per channel: 10,000
   units/day at 1,600 units/upload works out to roughly **6 uploads a day,
@@ -421,7 +422,7 @@ hard, so it paces itself at ~20s per row and retries a 429 once — budget
 roughly *20 seconds per reddit candidate*, and watch the per-row progress on
 stderr. Any row it cannot resolve is left untouched and reported; re-running
 picks those up. Like the other manual commands it runs outside the scout lease,
-so stop the loop first if a tick may be live.
+so stop the daemon first if a unit of scout work may be live.
 
 ### Start
 
@@ -445,9 +446,15 @@ docker compose logs -f brainrot
 
 Each worker prints one JSON line per unit of work, prefixed with which
 worker it came from (`{"worker":"produce",...}`), and a `noop` line is
-normal, not a failure — `produce` noops with `lease-held`,
+normal, not a failure. Consecutive identical idle lines are deduped, though —
+a channel that stays idle for the same reason logs it once, not once every
+30 seconds — so a quiet daemon can produce no output at all for hours; that
+silence in `docker compose logs -f` is expected, not a hang. `produce` noops
+with `lease-held`,
 `no-eligible-work`, `backlog-full`, `claim-conflict` (an operator command won
-a topic or job mid-unit), `bad-env` (object storage is not configured —
+a topic or job mid-unit), `resume-refused` (a blocked job's channel TOML or
+the job itself is gone, so no tick can heal it — the message names which),
+`bad-env` (object storage is not configured —
 checked before the lease, so a full render is never paid for just to fail at
 the `store` stage), or `config-error`; `publish` noops with `lease-held`,
 `paced` (this channel attempted less than `PUBLISH_COOLDOWN_MS`, 10 minutes,
@@ -553,8 +560,9 @@ the ledger the production budget caps read.
 ### Promotion
 
 Once a channel developed under `channels-dev/` is ready to go live, stop the
-loop first — `publish-next` reads `oauth_tokens` from inside the container
-every 15 minutes, and this writes that table from the host:
+daemon first — the `publish` worker reads `oauth_tokens` from inside the
+container on every unit it does (immediately after work, at most every 30s
+while idle), and this writes that table from the host:
 
 ```bash
 docker compose stop brainrot
@@ -590,10 +598,10 @@ malformed promotion fails at promotion time, not at the next tick.
 Everything else that renders or mutates job state goes through the
 container, not the host — same binary, same filesystem layout, no drift.
 Manual commands take no lease of their own, so a hand-run invocation can
-execute concurrently with a live tick and both may act on the same
+execute concurrently with a live daemon worker and both may act on the same
 job/topic — `produce-next` holds a `produce` lease and `publish-next` holds
 its own separate `publish` lease, but neither one covers a manual command.
-Stop the loop first, then run the command as a one-shot container:
+Stop the daemon first, then run the command as a one-shot container:
 `docker compose exec` requires a running service, and `stop` just took it
 down, so recovery commands use `docker compose run --rm --no-deps` instead —
 it starts a fresh container from the same image, with the same env and
@@ -609,8 +617,8 @@ docker compose start brainrot
 ```
 
 The same pattern covers `produce`, `library reject`, and `publish
-mark-done`. Restart the loop (`docker compose start brainrot`) once recovery
-is done — ticks stay paused until you do.
+mark-done`. Restart the daemon (`docker compose start brainrot`) once
+recovery is done — its workers stay paused until you do.
 
 - **A stranded topic can be returned to the queue.** A topic stays `claimed`
   for as long as its job might still run, so a job abandoned for good leaves
@@ -621,12 +629,20 @@ is done — ticks stay paused until you do.
   config behind it, and unbinding is safe because a later resume of that job
   keys its `used` flip on `job_id`, which by then matches nothing.
 
-- **A stranded `running` job is now a per-deploy event, not just a crash
-  scenario.** There is no SIGTERM handling in `src/` and no
-  `stop_grace_period` in `docker-compose.yml`, so Docker's 10-second default
-  grace period applies: `docker compose stop`/`restart`/`down` — and every
-  rebuild-deploy, since that's a stop-then-recreate — can kill a render
-  mid-stage. That leaves `jobs.status='running'`, the current stage
+- **A stranded `running` job is still a per-deploy risk, not just a crash
+  scenario.** The daemon (`src/loop/daemon.ts`) does handle SIGTERM/SIGINT:
+  a `process.once` handler aborts a controller, `abortableSleep` ends an
+  idle worker's sleep in milliseconds instead of waiting out the full 30s,
+  and no worker starts a new unit once the signal fires. But the abort is
+  not threaded into `runJob` itself, so a unit already mid-render keeps
+  rendering — `docker compose stop`/`restart`/`down`, and every
+  rebuild-deploy since that's a stop-then-recreate, still fall back to
+  Docker's stop grace period (10s default, no `stop_grace_period` override
+  in `docker-compose.yml`) and can kill it mid-stage. What heals that is
+  stage-resume — `runJob` skips any stage already `done`, so a later
+  `resume` picks up where the render died instead of redoing it — but
+  getting there is not automatic here: that leaves `jobs.status='running'`,
+  the current stage
   `running`, and the topic still `claimed`, and nothing auto-recovers it:
   `planTick` only resumes `blocked` jobs, the repair sweep only heals topics
   whose job already reached `library`, `topics requeue` refuses while a

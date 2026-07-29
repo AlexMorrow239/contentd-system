@@ -260,9 +260,10 @@ describe('golden-path loop e2e', () => {
     vi.stubEnv('BRAINROT_TOKEN_KEY', 'a'.repeat(64))
     const tokenKey = parseTokenKey('a'.repeat(64))
 
-    // A LOCAL-time constructor (month is 0-based): 12:00 local sits inside
-    // the 09:00-21:00 publish window in every timezone the suite runs in,
-    // which a fixed UTC instant would not.
+    // A LOCAL-time constructor (month is 0-based): with no prior attempt for
+    // this channel, PUBLISH_COOLDOWN_MS is clear and today's videos_per_day
+    // quota is unmet regardless of which local hour this resolves to, which
+    // a fixed UTC instant would not guarantee.
     const publishNow = () => new Date(2024, 0, 1, 12, 0)
 
     const uploadCalls: { videoPath: string; meta: PlatformMeta }[] = []

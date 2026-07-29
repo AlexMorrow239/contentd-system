@@ -411,8 +411,9 @@ describe('publishNextTick — candidate selection (dry-run)', () => {
   it('picks the emptier channel over the fuller one regardless of name order', async () => {
     const db = memDb()
     const channelsDir = tmpDir('brainrot-publish-fair-')
-    // chan-a at 3/day (a 4h gap) so its 09:00 attempt is 5h05m behind NOW and
-    // therefore NOT paced — the ordering, not the gap, is what this asserts.
+    // chan-a at 3/day so its 09:00 attempt is 5h05m behind NOW — well past
+    // the 10-minute PUBLISH_COOLDOWN_MS — and therefore NOT paced; the
+    // ordering, not the cooldown, is what this asserts.
     writeChannel(channelsDir, { name: 'chan-a', publish: true, videosPerDay: 3 })
     writeChannel(channelsDir, { name: 'chan-b', publish: true })
     seedAttempt(db, {
