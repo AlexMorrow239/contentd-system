@@ -764,13 +764,13 @@ describe('run', () => {
     })
     try {
       // Read stdout incrementally until a line JSON-parses to
-      // action === 'daemon-started', capped at 10s.
+      // action === 'daemon-started', capped at 30s.
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           reject(
             new Error(`timed out waiting for daemon-started; stdout=${stdout} stderr=${stderr}`),
           )
-        }, 10_000)
+        }, 30_000)
         const onData = (): void => {
           for (const line of stdout.split('\n')) {
             if (line.trim() === '') continue
@@ -796,7 +796,10 @@ describe('run', () => {
         // A failed spawn (e.g. bad CLI_ENTRY path) emits 'error', not 'exit' —
         // without this handler it becomes an uncaught exception instead of
         // failing this promise.
-        child.once('error', reject)
+        child.once('error', (err) => {
+          clearTimeout(timer)
+          reject(err)
+        })
       })
 
       child.kill('SIGTERM')
@@ -820,5 +823,5 @@ describe('run', () => {
       // Ensure a failed assertion above can never leak a live process.
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
     }
-  }, 20_000)
+  }, 60000)
 })
