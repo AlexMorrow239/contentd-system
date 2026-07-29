@@ -70,7 +70,11 @@ function scoutResult(channel: string, over: Partial<ScoutChannelResult> = {}): S
   }
 }
 
-/** One scoutable channel on disk plus a counting stub in place of scoutAll. */
+/**
+ * One channel on disk plus a counting stub in place of scoutAll. The channel
+ * declares no `[scout]` table — it exists only to be *due*, and the stub
+ * decides what scouting it "returns", so the real source list never matters.
+ */
 function scoutFixture(scout: () => Promise<ScoutChannelResult[]>): {
   db: ReturnType<typeof memDb>
   channelsDir: string
@@ -91,6 +95,10 @@ function scoutFixture(scout: () => Promise<ScoutChannelResult[]>): {
 
 // Midday, so the scout recheck arithmetic never straddles a day boundary.
 const SCOUT_NOW = new Date(2026, 6, 28, 12, 0, 0)
+
+// Before DIGEST_HOUR, so the digest worker in the runDaemon tests stays idle
+// instead of building a report they don't care about.
+const BEFORE_DIGEST = new Date(2026, 6, 28, DIGEST_HOUR - 1, 0, 0)
 
 describe('runWorker', () => {
   it('re-checks immediately after a worked unit — no sleep', async () => {
@@ -281,6 +289,26 @@ describe('scoutUnit', () => {
     expect(fx.calls()).toBe(1)
   })
 
+  it('names an empty scout pass no-scout-sources, not queue-full, and bumps the clock', async () => {
+    // Real scoutAll here, not the stub: the fixture channel declares no
+    // `[scout]` table, so scoutAll skips it without touching a source and
+    // returns []. `[].every(...)` is vacuously true, which used to report
+    // this as `queue-full` — a queue depth nothing ever measured.
+    const db = memDb()
+    const channelsDir = writeChannelsDir({ 'a.toml': channelToml({ name: 'a' }) })
+    const clock = fakeClock(SCOUT_NOW)
+    const unit = scoutUnit(db, { channelsDir, now: clock.now })
+
+    expect(await unit()).toEqual({
+      worked: false,
+      line: { action: 'noop', reason: 'no-scout-sources' },
+    })
+    // The attempt still happened, so the recheck clock moves: the next poll
+    // 5 minutes later is line-less idle, not a second identical pass.
+    clock.advance(300_000)
+    expect(await unit()).toEqual({ worked: false })
+  })
+
   it('reports lease-held as idle without bumping the recheck clock', async () => {
     const fx = scoutFixture(async () => [scoutResult('a', { queued: 1 })])
     const clock = fakeClock(SCOUT_NOW)
@@ -395,5 +423,61 @@ describe('runDaemon', () => {
     })
 
     expect(lines[0]).toEqual({ action: 'daemon-started', pid: process.pid })
+  })
+
+  it('stops every other worker before rejecting when one throws outside its unit', async () => {
+    const db = memDb()
+    const channelsDir = writeChannelsDir({})
+    // An external signal that never fires: only the daemon's own internal
+    // controller can stop the survivors. Without it they keep looping while
+    // cli.ts's `finally` closes the db handle out from under them.
+    const external = new AbortController()
+    let sleeps = 0
+
+    const running = runDaemon(db, {
+      channelsDir,
+      runsRoot: '/nowhere',
+      now: () => BEFORE_DIGEST,
+      signal: external.signal,
+      // emit is called OUTSIDE runWorker's try/catch — an EPIPE on stdout is
+      // the real shape of this, and no unit-level handler can catch it.
+      emit: (line) => {
+        if (line.worker === 'produce') throw new Error('emit exploded')
+      },
+      sleep: async () => {
+        sleeps++
+      },
+    })
+
+    await expect(running).rejects.toThrow('emit exploded')
+    // Everything is settled by the time the rejection surfaces: no worker
+    // takes another sleep after this point.
+    const atRejection = sleeps
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sleeps).toBe(atRejection)
+  })
+
+  it('chains an external signal that aborts mid-run', async () => {
+    const db = memDb()
+    const channelsDir = writeChannelsDir({})
+    const external = new AbortController()
+    let sleeps = 0
+
+    const running = runDaemon(db, {
+      channelsDir,
+      runsRoot: '/nowhere',
+      now: () => BEFORE_DIGEST,
+      signal: external.signal,
+      emit: () => {},
+      sleep: async () => {
+        sleeps++
+      },
+    })
+    external.abort()
+    await running
+
+    const atReturn = sleeps
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(sleeps).toBe(atReturn)
   })
 })
