@@ -38,6 +38,18 @@ pnpm brainrot library list|approve|reject <jobIds...>
 pnpm brainrot publish retry|mark-done <jobId>
 pnpm brainrot publishes list [--days N]
 pnpm brainrot auth youtube|instagram --channel <name>
+
+# A bare `pnpm brainrot ...` on the host reads the DEV triple (data/dev.db,
+# channels-dev/, runs-dev/) — an empty `jobs` table means wrong database, not
+# a lost job. Production state lives in a container-only volume:
+docker compose exec brainrot pnpm brainrot jobs   # read-only; safe while the daemon runs
+# Mutating commands take no lease and race live workers — stop the daemon first:
+docker compose stop brainrot && docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId>
+# `auth` needs --headless in the container (prints the consent url, binds
+# 0.0.0.0 so the published callback port reaches it) and needs NO daemon stop:
+docker compose exec brainrot pnpm brainrot auth youtube --channel <name> --headless
+# src/ is baked into the image, not mounted — code changes need a rebuild:
+docker compose build brainrot
 ```
 
 Run a single test file: `pnpm vitest run src/jobs/test/runner.test.ts`.
@@ -395,9 +407,18 @@ install/version.
 
 ### Data flow summary
 
-SQLite (`data/brainrot.db`, WAL mode, `busy_timeout=5000` since the daemon's
-concurrent workers and manual CLI commands can touch the same file at once)
-holds all state: `jobs`/`job_stages` (pipeline
+SQLite holds all state, at `data/brainrot.db` **inside the container** — the
+`brainrot-data` named volume, deliberately NOT a bind mount. WAL mode
+coordinates through an mmap'd `-shm` file every opener must share coherently;
+a bind mount from macOS reaches the Linux VM over virtiofs, so the daemon and
+a host CLI become two kernels sharing one file, which SQLite documents WAL as
+unsupported on. It corrupted silently in practice (`database disk image is
+malformed`, then committed transactions vanishing while the pipeline logged
+success and published for real — two videos posted to YouTube/Instagram with
+no rows to show for it). Never move this back to a bind mount.
+`busy_timeout=5000` because the daemon's concurrent workers, the dashboard,
+and `docker compose exec` CLI runs all open it at once. It holds:
+`jobs`/`job_stages` (pipeline
 progress), `library` (finished videos awaiting review/publish), `topics`
 (scout queue), `scout_state` (per-channel last-scout-attempt timestamp),
 `costs` (spend ledger), `leases`, `publishes`, `oauth_tokens`.

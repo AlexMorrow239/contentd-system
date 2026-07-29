@@ -149,10 +149,46 @@ services:
       # Never set for production: presigning must sign against the real R2
       # endpoint. This exists only so a dev .env's MinIO value cannot leak in.
       BRAINROT_S3_PUBLIC_ENDPOINT: ''
+    # The two OAuth callback ports, for `auth <platform> --headless` run via
+    # `docker compose exec` against this container. Nothing listens on them
+    # except during a 5-minute consent flow — they are published so the
+    # operator's browser, which is on the host, can reach a callback listener
+    # that lives in here.
+    #
+    # Bound to 127.0.0.1 on the HOST deliberately: the flow binds 0.0.0.0
+    # INSIDE the container (a container-loopback listener is unreachable
+    # through a published port), and this is what keeps that from being
+    # reachable off-machine. The ports must match src/publish/oauth-flow.ts's
+    # IG_AUTH_DEFAULT_PORT / YT_AUTH_DEFAULT_PORT, and Instagram's is
+    # additionally pre-registered with Meta, so it cannot be renumbered here
+    # alone.
+    ports:
+      - '127.0.0.1:51834:51834' # instagram consent callback (https, self-signed)
+      - '127.0.0.1:51835:51835' # youtube consent callback (http)
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       - ./channels:/app/channels:ro # production config, re-read every tick
-      - ./data:/app/data # the SQLite file, shared with host-side OAuth
+      # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
+      # mode (src/db/index.ts), and WAL coordinates readers/writers through a
+      # shared-memory `-shm` file that every process touching the database
+      # must mmap coherently. A bind mount from macOS reaches the Linux VM
+      # over virtiofs, so the daemon (VM kernel) and any host-side CLI (macOS
+      # kernel) are two different kernels sharing one APFS file — coherent
+      # shared memory is impossible there, which is exactly the configuration
+      # SQLite documents WAL as unsupported on. In practice it corrupted:
+      # `database disk image is malformed`, then committed transactions
+      # silently vanishing while the pipeline logged success and published for
+      # real (two jobs rendered and posted to YouTube/Instagram with no rows
+      # to show for it, and two more left `runs/` artifacts with no `jobs` row
+      # at all). A named volume lives on the VM's own ext4, so every opener is
+      # one kernel on one real filesystem.
+      #
+      # The cost is that the host can no longer open this file: operator
+      # commands run `docker exec project-brainrot-brainrot-1 pnpm brainrot
+      # <cmd>`. See README "Operating the database" for that and for the
+      # backup one-liner. `runs/` below stays a bind mount — plain file I/O
+      # over virtiofs is fine, and host-inspectable artifacts are worth it.
+      - brainrot-data:/app/data
       - ./runs:/app/runs # per-job artifacts, inspectable from the host
     # Chrome's default 64 MB /dev/shm in Docker is the classic renderer crash.
     shm_size: 1gb
@@ -203,7 +239,12 @@ services:
       # -shm file to read a WAL database, so a :ro mount breaks the dashboard
       # outright; the read-only guarantee lives in openDbReadonly's connection
       # flag, where better-sqlite3 hard-errors on any write.
-      - ./data:/app/data
+      #
+      # Same named volume as the brainrot service, for the WAL/virtiofs reason
+      # documented there — and doubly so here, since the dashboard is a SECOND
+      # concurrent opener of the same database and so exactly the cross-kernel
+      # sharing that broke it.
+      - brainrot-data:/app/data
       - ./runs:/app/runs:ro # video playback only
       - ./channels:/app/channels:ro
     logging:
@@ -215,3 +256,8 @@ services:
 volumes:
   whisperx-cache:
   minio-data:
+  # All persistent state: jobs, library, topics, costs, leases, publishes and
+  # the encrypted oauth_tokens. Not a bind mount — see the brainrot service's
+  # mount comment for why, and treat `docker volume rm brainrot-data` as
+  # destroying every OAuth grant along with the run history.
+  brainrot-data:

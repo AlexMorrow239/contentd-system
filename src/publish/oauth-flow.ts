@@ -19,6 +19,71 @@ async function defaultOpenBrowser(url: string): Promise<void> {
   await execa('open', [url])
 }
 
+/**
+ * The `openBrowser` for a run whose operator is NOT at the machine running
+ * the flow — `auth --headless`, i.e. inside the container. `open` does not
+ * exist in the Debian image, and even where it does it would launch a
+ * browser nobody is looking at.
+ *
+ * Safe to print: a consent URL carries the client id, the scopes and this
+ * run's CSRF state, none of which are credentials. The token that comes back
+ * never reaches stdout (house rule) — only this pre-grant URL does.
+ */
+export function printConsentUrl(url: string): void {
+  process.stdout.write(
+    `\nOpen this URL in a browser on your own machine to grant consent:\n\n  ${url}\n\n`,
+  )
+}
+
+// What --headless binds instead of loopback. A listener on 127.0.0.1 INSIDE a
+// container is reachable only from that container, so a published port never
+// reaches it; binding all interfaces is what makes `ports:` work. This widens
+// exposure to whatever can reach the container's network, which is acceptable
+// only because Compose publishes to 127.0.0.1 on the host (so the callback is
+// still loopback-only from outside), the window is one 5-minute flow, and a
+// forged redirect still has to guess the 128-bit CSRF state. Never make this
+// the default — it is opt-in per run.
+export const HEADLESS_LISTEN_HOST = '0.0.0.0'
+
+// The host-side default for both flows: a browser on this machine only ever
+// needs to reach the loopback interface.
+const DEFAULT_LISTEN_HOST = '127.0.0.1'
+
+// Compose has to publish a port before the flow starts, so it cannot use the
+// OS-assigned ephemeral port the host-side default relies on. Unlike Meta,
+// Google accepts ANY loopback redirect URI for installed-app clients, so this
+// needs no pre-registration — it just has to be fixed, and not collide with
+// IG_AUTH_DEFAULT_PORT.
+export const YT_AUTH_DEFAULT_PORT = 51835
+
+/**
+ * Maps the `auth` CLI's `--headless` / `--port` flags onto the transport
+ * options every flow shares. Three settings have to move together — bind all
+ * interfaces, pin the port Compose published, print the URL instead of
+ * launching a browser — and getting one of the three wrong fails in a way
+ * that looks like a hang, so they are decided in one place rather than at
+ * each call site.
+ *
+ * Returns `undefined` for anything not being overridden, so a plain host run
+ * spreads to nothing and keeps each flow's own defaults (ephemeral port for
+ * YouTube, IG_AUTH_DEFAULT_PORT for Instagram, `open` for both).
+ */
+export function authFlowTransport(
+  opts: { headless?: boolean; port?: number },
+  headlessDefaultPort: number,
+): {
+  listenHost?: string
+  listenPort?: number
+  openBrowser?: (url: string) => void | Promise<void>
+} {
+  if (!opts.headless) return { listenPort: opts.port }
+  return {
+    listenHost: HEADLESS_LISTEN_HOST,
+    listenPort: opts.port ?? headlessDefaultPort,
+    openBrowser: printConsentUrl,
+  }
+}
+
 const REDIRECT_PAGE =
   '<!doctype html><html><body><p>Signed in. You can close this tab.</p></body></html>'
 
@@ -48,6 +113,10 @@ async function awaitConsentCode(opts: {
   flowName: string
   server: LoopbackServer
   listenPort: number
+  // Which interface the callback listener binds. Loopback for a browser on
+  // this machine; HEADLESS_LISTEN_HOST when the browser is on the other side
+  // of a published container port. Defaults to DEFAULT_LISTEN_HOST.
+  listenHost?: string
   redirectUri: (port: number) => string
   consentUrl: (redirectUri: string, state: string) => URL
   openBrowser: (url: string) => void | Promise<void>
@@ -93,7 +162,9 @@ async function awaitConsentCode(opts: {
   })
 
   try {
-    await new Promise<void>((resolve) => server.listen(opts.listenPort, '127.0.0.1', resolve))
+    await new Promise<void>((resolve) =>
+      server.listen(opts.listenPort, opts.listenHost ?? DEFAULT_LISTEN_HOST, resolve),
+    )
     const redirectUri = opts.redirectUri((server.address() as AddressInfo).port)
 
     await opts.openBrowser(opts.consentUrl(redirectUri, state).toString())
@@ -126,13 +197,25 @@ export async function runYoutubeAuthFlow(opts: {
   openBrowser?: (url: string) => void | Promise<void>
   fetchImpl?: typeof fetch
   listenPort?: number
+  listenHost?: string
+  // Test-only seam: YouTube has no protocol choice to make (unlike
+  // Instagram's http/https createServer below), so the only reason this
+  // exists is to let a test observe which host the listener actually bound.
+  createServer?: () => Promise<{ server: LoopbackServer }>
 }): Promise<{ refreshToken: string; scopes: string }> {
   const fetchImpl = opts.fetchImpl ?? fetch
 
+  const { server } = (await opts.createServer?.()) ?? { server: http.createServer() }
+
   const { code, redirectUri } = await awaitConsentCode({
     flowName: 'runYoutubeAuthFlow',
-    server: http.createServer(),
+    server,
     listenPort: opts.listenPort ?? 0,
+    // Stays 127.0.0.1 even under --headless: this is the address the
+    // OPERATOR's browser resolves, and Compose publishes the container port
+    // to the host's loopback. What listenHost changes is which interface the
+    // listener accepts on, inside the container — a different question.
+    listenHost: opts.listenHost,
     redirectUri: (port) => `http://127.0.0.1:${port}`,
     openBrowser: opts.openBrowser ?? defaultOpenBrowser,
     consentUrl: (redirect, state) => {
@@ -257,6 +340,7 @@ export async function runInstagramAuthFlow(opts: {
   openBrowser?: (url: string) => void | Promise<void>
   fetchImpl?: typeof fetch
   listenPort?: number
+  listenHost?: string
   createServer?: () => Promise<{ server: LoopbackServer; protocol: 'http' | 'https' }>
 }): Promise<{ token: string; scopes: string; expiresAt: string }> {
   const fetchImpl = opts.fetchImpl ?? fetch
@@ -266,6 +350,7 @@ export async function runInstagramAuthFlow(opts: {
     flowName: 'runInstagramAuthFlow',
     server,
     listenPort: opts.listenPort ?? IG_AUTH_DEFAULT_PORT,
+    listenHost: opts.listenHost,
     openBrowser: opts.openBrowser ?? defaultOpenBrowser,
     // Trailing slash is required: the App Dashboard silently normalizes a
     // saved redirect URI to end in one, and the token-exchange step (unlike

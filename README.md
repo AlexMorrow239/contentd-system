@@ -531,9 +531,15 @@ The dashboard **never writes**. Its connection opens read-only, so
 `library approve/reject`, `topics requeue/reject/prune-media` and
 `publish retry/mark-done`
 remain CLI-only — those race a live daemon worker, and a button is not the right
-affordance for that. The `./data` mount is read-write on purpose: SQLite must
-create the `-shm` file to read a WAL database, so the read-only guarantee lives
-in the connection flag rather than the mount.
+affordance for that. The `brainrot-data` mount is read-write on purpose: SQLite
+must create the `-shm` file to read a WAL database, so the read-only guarantee
+lives in the connection flag rather than the mount.
+
+Note the dashboard mounts that database from the same named volume the daemon
+uses, so `?db=dev` now answers **503** in the container: `data/dev.db` is a
+host-side file that lives outside the volume, and `BRAINROT_DEV_DB` points at
+a path the container has no access to. To browse the dev database, run the
+dashboard on the host (`pnpm exec tsx src/dashboard/server.ts`) instead.
 
 The port is bound to `127.0.0.1` and there is no authentication. Do not
 republish it on `0.0.0.0`.
@@ -570,33 +576,83 @@ container on every unit it does (immediately after work, at most every 30s
 while idle), and this writes that table from the host:
 
 ```bash
-docker compose stop brainrot
-
 cp channels-dev/<name>.toml channels/<name>.toml   # edit as needed
 
-BRAINROT_DB=data/brainrot.db BRAINROT_CHANNELS_DIR=channels \
-  pnpm brainrot auth youtube --channel <name>
-  # (and/or `auth instagram --channel <name>`, for whichever platforms
-  # the channel's [publish] table declares)
-
-docker compose start brainrot
+docker compose exec brainrot pnpm brainrot auth youtube --channel <name> --headless
+# (and/or `auth instagram --channel <name> --headless`, for whichever
+# platforms the channel's [publish] table declares)
 ```
 
-`auth <platform>` is the one command family that still runs on the host
-instead of through a container, and the explicit
-`BRAINROT_DB`/`BRAINROT_CHANNELS_DIR` above is what points it at production
-rather than the host's own dev defaults. Two things force it out of the
-container for every platform: `src/publish/oauth-flow.ts`'s
-`defaultOpenBrowser` shells out to macOS `open` to launch the consent screen,
-which does not exist in the Debian image, and each flow binds an ephemeral
-loopback port that Compose has no way to publish in advance (the port isn't
-chosen until the flow starts). Because `data/` is a bind mount shared with
-the container, the AES-256-GCM-encrypted credential still lands in the
-production DB regardless of which side wrote it. Running on the host costs
-nothing in validation: `auth <platform>` still calls `loadChannelsDir()`
+`--headless` prints a consent URL instead of launching a browser. Open it on
+your own machine, grant consent, and the redirect lands back in the container;
+the command then prints its confirmation and exits. Instagram's callback is
+HTTPS with a per-run self-signed cert, so the browser shows a
+"connection not private" interstitial once — clicking through is expected.
+
+The daemon does **not** need to be stopped. `auth` writes one `oauth_tokens`
+row, and the publish worker reading that table concurrently is exactly what
+WAL plus `busy_timeout` is for — unlike the recovery commands below, which
+mutate job state a live worker may also be acting on.
+
+Three things have to line up for the callback to arrive, which is why
+`--headless` sets all three at once rather than leaving them as separate
+flags (`authFlowTransport` in `src/publish/oauth-flow.ts`):
+
+- **The listener binds `0.0.0.0`, not `127.0.0.1`.** A container-loopback
+  listener is unreachable through a published port. Compose publishes to
+  `127.0.0.1` on the _host_, so the callback still is not reachable
+  off-machine.
+- **The port is fixed**, since Compose must publish it before the flow starts
+  and cannot learn an ephemeral one chosen at runtime — `YT_AUTH_DEFAULT_PORT`
+  (51835) and `IG_AUTH_DEFAULT_PORT` (51834). `--port` overrides, but must
+  then match `docker-compose.yml`, and Instagram's is additionally
+  pre-registered with Meta so it cannot be renumbered unilaterally.
+- **The consent URL is printed** rather than opened, because `open` is a macOS
+  binary absent from the Debian image, and there is no browser in there to
+  look at anyway.
+
+Validation is unaffected: `auth <platform>` still calls `loadChannelsDir()`
 against the directory it's pointed at, which enforces the
 basename-equals-`name` invariant and rejects duplicate declared names — a
 malformed promotion fails at promotion time, not at the next tick.
+
+Note that `src/` is baked into the image, not mounted, so a code change to the
+auth flow needs `docker compose build brainrot` before `exec` will run it.
+
+### Operating the database
+
+All persistent state — jobs, library, topics, costs, leases, publishes and
+the encrypted `oauth_tokens` — lives in the `brainrot-data` **named volume**,
+not under `data/`. `docker-compose.yml`'s mount comment carries the full
+reasoning; the short version is that SQLite's WAL mode needs coherent shared
+memory across every process that opens the file, a macOS bind mount reaches
+the Linux VM over virtiofs, and a host CLI plus the containerised daemon are
+then two different kernels sharing one file — the configuration SQLite
+documents WAL as unsupported on. It did not fail loudly: transactions went
+missing while the pipeline logged success and published for real.
+
+Read-only inspection needs no downtime — the daemon can keep running:
+
+```bash
+docker compose exec brainrot pnpm brainrot jobs
+docker compose exec brainrot pnpm brainrot costs
+docker compose exec brainrot pnpm brainrot topics list
+```
+
+Back it up with `VACUUM INTO` rather than `cp`: it takes a crash-consistent
+snapshot of a live database, where copying a file mid-write does not.
+
+```bash
+docker compose exec brainrot node -e "
+  new (require('better-sqlite3'))('data/brainrot.db')
+    .exec(\"VACUUM INTO '/app/data/backup.db'\")"
+docker run --rm -v project-brainrot_brainrot-data:/d -v "$PWD":/out alpine \
+  sh -c 'mv /d/backup.db /out/brainrot-backup.db'
+```
+
+`docker volume rm brainrot-data` destroys every OAuth grant along with the
+run history — re-granting consent per channel per platform is the only way
+back, so take a snapshot before anything that recreates volumes.
 
 ### Recovery
 
