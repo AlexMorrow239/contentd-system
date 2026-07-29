@@ -11,6 +11,7 @@ import { acquireLease, releaseLease } from './loop/lease.js'
 import { produceNextTick } from './loop/produce-next.js'
 import { publishExitCode, publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
+import { runDaemon } from './loop/daemon.js'
 import { openDb } from './db/index.js'
 import {
   interruptedPlatform,
@@ -325,6 +326,24 @@ program
       // noops, so the ternary lands on 0 for them.
       process.stdout.write(JSON.stringify(result) + '\n')
       process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
+    } finally {
+      db.close()
+    }
+  })
+
+program
+  .command('run')
+  .description('run the demand-driven daemon: produce, publish and scout workers plus the daily digest')
+  .option('--db <path>', 'sqlite db path')
+  .option(
+    '--channels-dir <dir>',
+    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
+  )
+  .action(async (opts: { db?: string; channelsDir?: string }) => {
+    const channelsDir = resolveChannelsDir(opts.channelsDir)
+    const db = openDb(resolveDbPath(opts.db))
+    try {
+      await runDaemon(db, { channelsDir, runsRoot: resolveRunsRoot() })
     } finally {
       db.close()
     }
