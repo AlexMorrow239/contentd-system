@@ -333,7 +333,9 @@ program
 
 program
   .command('run')
-  .description('run the demand-driven daemon: produce, publish and scout workers plus the daily digest')
+  .description(
+    'run the demand-driven daemon: produce, publish and scout workers plus the daily digest',
+  )
   .option('--db <path>', 'sqlite db path')
   .option(
     '--channels-dir <dir>',

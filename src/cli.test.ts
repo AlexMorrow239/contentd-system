@@ -733,81 +733,92 @@ describe('brainrot CLI — publish and publishes', () => {
 })
 
 describe('run', () => {
-  it(
-    'starts, emits daemon-started, and exits 0 on SIGTERM',
-    async () => {
-      const dbPath = tmpDbPath()
-      const channelsDir = tmpDir('brainrot-run-channels-')
-      const child = spawn(
-        'node',
-        [CLI_ENTRY, 'run', '--db', dbPath, '--channels-dir', channelsDir],
-        { stdio: ['ignore', 'pipe', 'pipe'] },
-      )
-      let stdout = ''
-      let stderr = ''
-      child.stdout?.on('data', (chunk: Buffer) => {
-        stdout += chunk.toString()
-      })
-      child.stderr?.on('data', (chunk: Buffer) => {
-        stderr += chunk.toString()
-      })
-      try {
-        // Read stdout incrementally until a line JSON-parses to
-        // action === 'daemon-started', capped at 10s.
-        await new Promise<void>((resolve, reject) => {
-          const timer = setTimeout(() => {
-            reject(
-              new Error(
-                `timed out waiting for daemon-started; stdout=${stdout} stderr=${stderr}`,
-              ),
-            )
-          }, 10_000)
-          const onData = (): void => {
-            for (const line of stdout.split('\n')) {
-              if (line.trim() === '') continue
-              try {
-                const parsed = JSON.parse(line) as { action?: string }
-                if (parsed.action === 'daemon-started') {
-                  clearTimeout(timer)
-                  child.stdout?.off('data', onData)
-                  resolve()
-                  return
-                }
-              } catch {
-                // not a complete/parseable JSON line yet — keep waiting
+  it('starts, emits daemon-started, and exits 0 on SIGTERM', async () => {
+    const dbPath = tmpDbPath()
+    const channelsDir = tmpDir('brainrot-run-channels-')
+    const child = spawn('node', [CLI_ENTRY, 'run', '--db', dbPath, '--channels-dir', channelsDir], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      // Unlike execa's runCli (which merges onto process.env), node:child_process's
+      // spawn REPLACES env entirely when the option is passed — so process.env must
+      // be spread explicitly here. The four storage keys are set to empty strings,
+      // not omitted: dotenv will not override a key already present in the child
+      // env, so an omitted key would let a real .env on this machine fill it back
+      // in, and the "daemon boots with no storage env" property this test exists to
+      // prove would silently stop being tested (see src/testing/storage.ts:75-77's
+      // "mirror case" note).
+      env: {
+        ...process.env,
+        BRAINROT_S3_ENDPOINT: '',
+        BRAINROT_S3_BUCKET: '',
+        BRAINROT_S3_ACCESS_KEY_ID: '',
+        BRAINROT_S3_SECRET_ACCESS_KEY: '',
+      },
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString()
+    })
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+    try {
+      // Read stdout incrementally until a line JSON-parses to
+      // action === 'daemon-started', capped at 10s.
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(
+            new Error(`timed out waiting for daemon-started; stdout=${stdout} stderr=${stderr}`),
+          )
+        }, 10_000)
+        const onData = (): void => {
+          for (const line of stdout.split('\n')) {
+            if (line.trim() === '') continue
+            try {
+              const parsed = JSON.parse(line) as { action?: string }
+              if (parsed.action === 'daemon-started') {
+                clearTimeout(timer)
+                child.stdout?.off('data', onData)
+                resolve()
+                return
               }
+            } catch {
+              // not a complete/parseable JSON line yet — keep waiting
             }
           }
-          child.stdout?.on('data', onData)
-          onData() // in case daemon-started already arrived before this listener attached
-          child.once('exit', (code, signal) => {
-            clearTimeout(timer)
-            reject(new Error(`child exited early: code=${code} signal=${signal} stderr=${stderr}`))
-          })
+        }
+        child.stdout?.on('data', onData)
+        onData() // in case daemon-started already arrived before this listener attached
+        child.once('exit', (code, signal) => {
+          clearTimeout(timer)
+          reject(new Error(`child exited early: code=${code} signal=${signal} stderr=${stderr}`))
         })
+        // A failed spawn (e.g. bad CLI_ENTRY path) emits 'error', not 'exit' —
+        // without this handler it becomes an uncaught exception instead of
+        // failing this promise.
+        child.once('error', reject)
+      })
 
-        child.kill('SIGTERM')
+      child.kill('SIGTERM')
 
-        const { code, signal } = await new Promise<{ code: number | null; signal: string | null }>(
-          (resolve, reject) => {
-            const timer = setTimeout(() => {
-              reject(new Error(`timed out waiting for exit after SIGTERM; stderr=${stderr}`))
-            }, 10_000)
-            child.once('exit', (exitCode, exitSignal) => {
-              clearTimeout(timer)
-              resolve({ code: exitCode, signal: exitSignal })
-            })
-          },
-        )
-        // A SIGTERM that lands as signal-terminated (code null, signal set)
-        // means the handler in runDaemon did NOT run — a real bug, not
-        // something to accommodate here.
-        expect({ code, signal }).toEqual({ code: 0, signal: null })
-      } finally {
-        // Ensure a failed assertion above can never leak a live process.
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-      }
-    },
-    20_000,
-  )
+      const { code, signal } = await new Promise<{ code: number | null; signal: string | null }>(
+        (resolve, reject) => {
+          const timer = setTimeout(() => {
+            reject(new Error(`timed out waiting for exit after SIGTERM; stderr=${stderr}`))
+          }, 10_000)
+          child.once('exit', (exitCode, exitSignal) => {
+            clearTimeout(timer)
+            resolve({ code: exitCode, signal: exitSignal })
+          })
+        },
+      )
+      // A SIGTERM that lands as signal-terminated (code null, signal set)
+      // means the handler in runDaemon did NOT run — a real bug, not
+      // something to accommodate here.
+      expect({ code, signal }).toEqual({ code: 0, signal: null })
+    } finally {
+      // Ensure a failed assertion above can never leak a live process.
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    }
+  }, 20_000)
 })
