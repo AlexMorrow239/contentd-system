@@ -2,14 +2,14 @@ import type { Database } from 'better-sqlite3'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ChannelConfig } from '../config/channel.js'
 import { assertGlobalDayBudget, recordCost } from '../jobs/costs.js'
-import { BrainrotError, classify, errorMessage, tagError } from '../errors.js'
+import { BrainrotError, classify, errorMessage, retagWithContext } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
 import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
 import { isMediaPostKind } from './sources/post-kind.js'
 import { redditSource } from './sources/reddit.js'
 import { rssSource } from './sources/rss.js'
-import { ESTIMATED_SCOUT_COST_MICROS, scoreCandidates } from './score.js'
+import { ESTIMATED_SCOUT_COST_MICROS, estimatedChunkCount, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
 import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
 import type { NewTopic } from './topics.js'
@@ -83,8 +83,10 @@ async function scoreWithLedger(
 ): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
   try {
     // The scout has no job row to hang assertBudget on; gate the estimated
-    // spend against the global daily cap directly (design spec §8).
-    assertGlobalDayBudget(db, ESTIMATED_SCOUT_COST_MICROS)
+    // spend against the global daily cap directly (design spec §8). Scored in
+    // chunks now, so the estimate scales with how many calls this batch will
+    // actually make.
+    assertGlobalDayBudget(db, ESTIMATED_SCOUT_COST_MICROS * estimatedChunkCount(fresh.length))
     return await scoreCandidates({
       candidates: fresh.map((f) => f.candidate),
       niche: channel.niche,
@@ -101,18 +103,7 @@ async function scoreWithLedger(
     // report real fetch/dedupe counts for a channel whose scoring failed.
     // Tagged rather than subclassed: the original error identity must survive
     // (callers match on BudgetExceededError / ZodError).
-    //
-    // Re-tag with the classification the error already has so tagging never
-    // downgrades a BudgetExceededError to internal/internal. Fields are copied
-    // explicitly, not spread: ErrorInfo also carries `code` and `message`,
-    // which do not belong in an ErrorTag.
-    const info = classify(err)
-    tagError(err, {
-      domain: info.domain,
-      kind: info.kind,
-      context: { ...info.context, partial: result },
-    })
-    throw err
+    throw retagWithContext(err, { partial: result })
   }
 }
 
@@ -379,9 +370,7 @@ export async function scoutAll(
   // from totalSources above: they never reached scoring, so they can carry no
   // scoringError — and left in, ONE of them made `every` false and swallowed a
   // genuine scoring outage on every other channel, exiting 0.
-  const spendable = results.filter(
-    (r) => !budgetBlocked.has(r.channel) && r.skipped === undefined,
-  )
+  const spendable = results.filter((r) => !budgetBlocked.has(r.channel) && r.skipped === undefined)
   if (spendable.length > 0 && spendable.every((r) => r.scoringError !== undefined)) {
     // The count is of the channels the test actually ranged over, with any
     // budget-blocked ones named separately rather than folded into a total

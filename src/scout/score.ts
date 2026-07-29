@@ -1,16 +1,29 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { structuredCompletion } from '../providers/anthropic.js'
+import { retagWithContext } from '../errors.js'
+import { errorCostUsdMicros } from '../providers/errors.js'
 import type { TrendCandidate } from './sources/types.js'
 
 // The alias, NOT the dated model id: it is the PRICE_TABLE key in
 // src/providers/anthropic.ts, so cost computation resolves before the call.
 export const SCOUT_MODEL = 'claude-haiku-4-5'
 export const SCOUT_MAX_TOKENS = 4096
-// Typical-cost reservation for the batched call (mirrors
-// ESTIMATED_SCRIPT_COST_MICROS): the scout orchestrator gates it against the
-// global day cap before calling, then trues up from response.usage after.
+// A single forced-tool call scoring every fetched candidate at once can
+// overflow SCOUT_MAX_TOKENS once a channel's fetch returns enough candidates
+// (observed live: 75 candidates truncated the emit call mid-generation,
+// failing schema validation with "scores" missing entirely). Chunking bounds
+// per-call output regardless of batch size.
+export const SCOUT_SCORE_CHUNK_SIZE = 20
+// Typical-cost reservation for ONE chunked call (mirrors
+// ESTIMATED_SCRIPT_COST_MICROS): the scout orchestrator multiplies this by
+// estimatedChunkCount() and gates it against the global day cap before
+// calling, then trues up from response.usage after.
 export const ESTIMATED_SCOUT_COST_MICROS = 20_000
+
+export function estimatedChunkCount(candidateCount: number): number {
+  return Math.max(1, Math.ceil(candidateCount / SCOUT_SCORE_CHUNK_SIZE))
+}
 
 export interface ScoredCandidate {
   candidateIndex: number
@@ -75,10 +88,10 @@ export function candidateLine(c: TrendCandidate, index: number): string {
 function buildPrompt(
   candidates: TrendCandidate[],
   niche: string[],
-  recentTitles: string[],
+  recent: string,
+  offset: number,
 ): string {
-  const list = candidates.map((c, i) => candidateLine(c, i)).join('\n')
-  const recent = recentTitles.length > 0 ? recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
+  const list = candidates.map((c, i) => candidateLine(c, offset + i)).join('\n')
   return `Score each candidate headline as a video topic for the "${niche.join(', ')}" niche.
 
 Candidates (score every one by its index):
@@ -100,36 +113,61 @@ Scoring rules:
 
 // Pure scoring: no db access here — budget gating and cost ledgering live in
 // scoutChannel, which owns the 'scout:<channel>' sentinel rows.
+//
+// Chunks are scored sequentially, not concurrently: this keeps cost
+// accumulation and the partial-spend-on-failure path simple, and scout runs
+// are not latency-sensitive (20-minute recheck cadence per channel).
 export async function scoreCandidates(opts: {
   candidates: TrendCandidate[]
   niche: string[]
   recentTitles: string[]
   client?: Anthropic
 }): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
-  const { data, cost } = await structuredCompletion({
-    model: SCOUT_MODEL,
-    system: buildSystem(opts.niche),
-    prompt: buildPrompt(opts.candidates, opts.niche, opts.recentTitles),
-    schema: ScoresSchema,
-    maxTokens: SCOUT_MAX_TOKENS,
-    client: opts.client,
-  })
-  // The model's list is untrusted: out-of-range indexes (either side) are
-  // dropped, scores are clamped to 0-100 (the wire schema cannot carry bounds),
-  // a duplicated index keeps its first entry, and any candidate the model
-  // skipped scores 0 — it lands 'rejected' in the queue instead of vanishing.
   const byIndex = new Map<number, ScoredCandidate>()
-  for (const entry of data.scores) {
-    if (entry.candidateIndex < 0 || entry.candidateIndex >= opts.candidates.length) continue
-    if (byIndex.has(entry.candidateIndex)) continue
-    byIndex.set(entry.candidateIndex, {
-      ...entry,
-      score: Math.min(100, Math.max(0, entry.score)),
-    })
+  let totalCostUsdMicros = 0
+  const system = buildSystem(opts.niche)
+  const recent =
+    opts.recentTitles.length > 0 ? opts.recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
+
+  try {
+    for (let offset = 0; offset < opts.candidates.length; offset += SCOUT_SCORE_CHUNK_SIZE) {
+      const chunk = opts.candidates.slice(offset, offset + SCOUT_SCORE_CHUNK_SIZE)
+      const { data, cost } = await structuredCompletion({
+        model: SCOUT_MODEL,
+        system,
+        prompt: buildPrompt(chunk, opts.niche, recent, offset),
+        schema: ScoresSchema,
+        maxTokens: SCOUT_MAX_TOKENS,
+        client: opts.client,
+      })
+      totalCostUsdMicros += cost.usdMicros
+
+      // The model's list is untrusted: out-of-range indexes (either side) are
+      // dropped, scores are clamped to 0-100 (the wire schema cannot carry
+      // bounds), a duplicated index keeps its first entry, and any candidate
+      // the model skipped scores 0 — it lands 'rejected' in the queue instead
+      // of vanishing.
+      for (const entry of data.scores) {
+        if (entry.candidateIndex < 0 || entry.candidateIndex >= opts.candidates.length) continue
+        if (byIndex.has(entry.candidateIndex)) continue
+        byIndex.set(entry.candidateIndex, {
+          ...entry,
+          score: Math.min(100, Math.max(0, entry.score)),
+        })
+      }
+    }
+  } catch (err) {
+    // Carry forward every prior chunk's already-billed spend plus this
+    // chunk's own (the provider bills a paid-but-invalid response too), so
+    // the caller ledgers the true multi-call cost instead of only the
+    // failing chunk's.
+    const chunkCost = errorCostUsdMicros(err) ?? 0
+    throw retagWithContext(err, { costUsdMicros: totalCostUsdMicros + chunkCost })
   }
+
   const scored = opts.candidates.map(
     (c, i) =>
       byIndex.get(i) ?? { candidateIndex: i, score: 0, topic: c.title, reason: 'not scored' },
   )
-  return { scored, costUsdMicros: cost.usdMicros }
+  return { scored, costUsdMicros: totalCostUsdMicros }
 }

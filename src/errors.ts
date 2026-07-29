@@ -209,6 +209,23 @@ export function errorContext(err: unknown): Readonly<Record<string, unknown>> {
 }
 
 /**
+ * Re-tags `err` with extra context while preserving its existing
+ * domain/kind classification, so a later `classify(err)` sees both old and
+ * new context merged. Replaces the classify()+tagError() idiom that grew up
+ * identically in scout.ts and score.ts to smuggle a partial result / an
+ * accumulated cost across a rethrow without downgrading the classification
+ * (e.g. a BudgetExceededError must not read back as internal/internal).
+ */
+export function retagWithContext<E>(err: E, context: Record<string, unknown>): E {
+  const info = classify(err)
+  return tagError(err, {
+    domain: info.domain,
+    kind: info.kind,
+    context: { ...info.context, ...context },
+  })
+}
+
+/**
  * True for the errors `AbortSignal.timeout()` produces on expiry or abort.
  * Replaces the `err.name === 'TimeoutError' || err.name === 'AbortError'`
  * check that appeared verbatim in three files.

@@ -17,6 +17,7 @@ import {
 } from '../scout.js'
 import type { ScoutChannelResult } from '../scout.js'
 import { lastScoutAttemptAt } from '../scout-state.js'
+import { SCOUT_SCORE_CHUNK_SIZE } from '../score.js'
 import { memDb, seedScoutState, seedTopic } from '../../testing/db.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
@@ -139,6 +140,40 @@ describe('scoutChannel', () => {
     ])
     // ONE batched call for the whole channel
     expect(create).toHaveBeenCalledTimes(1)
+    db.close()
+  })
+
+  it('scores a fetch spanning multiple score chunks, summing cost and queuing every candidate', async () => {
+    const db = memDb()
+    const channel = scoutedChannel()
+    const total = SCOUT_SCORE_CHUNK_SIZE + 5 // forces 2 chunks: 20 + 5
+    const posts = Array.from({ length: total }, (_, i) => ({
+      name: `t3_${i}`,
+      title: `Story ${i}`,
+    }))
+    const fetchImpl = fetchStub({ '/r/space/.rss': redditFeed(posts) })
+    const create = vi.fn()
+    for (let offset = 0; offset < total; offset += SCOUT_SCORE_CHUNK_SIZE) {
+      const chunkLen = Math.min(SCOUT_SCORE_CHUNK_SIZE, total - offset)
+      const scores = Array.from({ length: chunkLen }, (_, i) => ({
+        candidateIndex: offset + i,
+        score: 85,
+        topic: `Topic ${offset + i}`,
+        reason: 'ok',
+      }))
+      create.mockResolvedValueOnce(emitScores(scores, { input_tokens: 100, output_tokens: 50 }))
+    }
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(create).toHaveBeenCalledTimes(2)
+    expect(result.fetched).toBe(total)
+    expect(result.scored).toBe(total)
+    expect(result.queued).toBe(total)
+    // 100×1 + 50×5 = 350 usd-micros per chunk, two chunks
+    expect(result.costUsdMicros).toBe(350 * 2)
+    expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(total)
     db.close()
   })
 

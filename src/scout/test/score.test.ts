@@ -6,7 +6,9 @@ import {
   ESTIMATED_SCOUT_COST_MICROS,
   SCOUT_MAX_TOKENS,
   SCOUT_MODEL,
+  SCOUT_SCORE_CHUNK_SIZE,
   candidateLine,
+  estimatedChunkCount,
   scoreCandidates,
 } from '../score.js'
 
@@ -32,6 +34,15 @@ function emit(scores: unknown, usage = { input_tokens: 1000, output_tokens: 500 
     content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores } }],
     usage,
   }
+}
+
+function scoreEntries(count: number, score: number, offset = 0) {
+  return Array.from({ length: count }, (_, i) => ({
+    candidateIndex: offset + i,
+    score,
+    topic: `Topic ${offset + i}`,
+    reason: 'ok',
+  }))
 }
 
 describe('candidateLine', () => {
@@ -63,16 +74,16 @@ describe('candidateLine', () => {
 
   it('renders an unannotated RSS candidate exactly as before', () => {
     expect(
-      candidateLine(
-        candidate(2, { title: 'A galaxy assembles', sourceId: 'rss:phys.org' }),
-        2,
-      ),
+      candidateLine(candidate(2, { title: 'A galaxy assembles', sourceId: 'rss:phys.org' }), 2),
     ).toBe('2. [rss:phys.org] A galaxy assembles')
   })
 
   it('omits the host when the target is unparseable', () => {
     expect(
-      candidateLine(candidate(3, { title: 'Odd one', postKind: 'link', targetUrl: 'not a url' }), 3),
+      candidateLine(
+        candidate(3, { title: 'Odd one', postKind: 'link', targetUrl: 'not a url' }),
+        3,
+      ),
     ).toBe('3. [reddit:r/space] (link) Odd one')
   })
 })
@@ -198,5 +209,94 @@ describe('scoreCandidates normalization', () => {
       { candidateIndex: 0, score: 0, topic: 'Headline 0', reason: 'not scored' },
       { candidateIndex: 1, score: 0, topic: 'Headline 1', reason: 'not scored' },
     ])
+  })
+})
+
+describe('estimatedChunkCount', () => {
+  it('is 1 below and up to exactly the chunk size, including zero candidates', () => {
+    expect(estimatedChunkCount(0)).toBe(1)
+    expect(estimatedChunkCount(1)).toBe(1)
+    expect(estimatedChunkCount(SCOUT_SCORE_CHUNK_SIZE)).toBe(1)
+  })
+
+  it('is 2 just past the chunk size', () => {
+    expect(estimatedChunkCount(SCOUT_SCORE_CHUNK_SIZE + 1)).toBe(2)
+  })
+})
+
+describe('scoreCandidates chunking', () => {
+  it('scores a batch at exactly the chunk size in a single call', async () => {
+    const candidates = Array.from({ length: SCOUT_SCORE_CHUNK_SIZE }, (_, i) => candidate(i))
+    const scores = scoreEntries(SCOUT_SCORE_CHUNK_SIZE, 60)
+    const { client, create } = fakeClient(emit(scores))
+    await scoreCandidates({ candidates, niche: ['space facts'], recentTitles: [], client })
+    expect(create).toHaveBeenCalledTimes(1)
+  })
+
+  it('splits a batch past the chunk size into multiple sequential calls with global indexes', async () => {
+    const total = SCOUT_SCORE_CHUNK_SIZE * 2 + 5 // 3 chunks: 20, 20, 5
+    const candidates = Array.from({ length: total }, (_, i) => candidate(i))
+    const create = vi.fn()
+    // Each chunk's response scores only its own global indexes, proving the
+    // model was told global (not chunk-local) index numbers.
+    for (let offset = 0; offset < total; offset += SCOUT_SCORE_CHUNK_SIZE) {
+      const chunkLen = Math.min(SCOUT_SCORE_CHUNK_SIZE, total - offset)
+      const scores = scoreEntries(chunkLen, 70, offset)
+      create.mockResolvedValueOnce(emit(scores, { input_tokens: 100, output_tokens: 50 }))
+    }
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const result = await scoreCandidates({
+      candidates,
+      niche: ['space facts'],
+      recentTitles: [],
+      client,
+    })
+
+    expect(create).toHaveBeenCalledTimes(3)
+    // second chunk's prompt must number its first candidate 20, not 0
+    const secondPrompt = create.mock.calls[1][0].messages[0].content as string
+    expect(secondPrompt).toContain(
+      `${SCOUT_SCORE_CHUNK_SIZE}. [reddit:r/space] Headline ${SCOUT_SCORE_CHUNK_SIZE}`,
+    )
+    // no candidate is renumbered back to a chunk-local 0 in the second call
+    expect(secondPrompt).not.toMatch(/^0\. \[reddit:r\/space\]/m)
+    // every candidate scored, in original order, with its true global index
+    expect(result.scored).toHaveLength(total)
+    result.scored.forEach((s, i) => {
+      expect(s.candidateIndex).toBe(i)
+      expect(s.score).toBe(70)
+    })
+    // cost is the sum of all three chunked calls (100×1 + 50×5 = 350 each)
+    expect(result.costUsdMicros).toBe(350 * 3)
+  })
+
+  it('rejects the whole call when a non-first chunk fails, carrying accumulated cost', async () => {
+    const total = SCOUT_SCORE_CHUNK_SIZE + 5 // 2 chunks
+    const candidates = Array.from({ length: total }, (_, i) => candidate(i))
+    const create = vi
+      .fn()
+      // chunk 1 succeeds and bills 350 usd-micros
+      .mockResolvedValueOnce(
+        emit(scoreEntries(SCOUT_SCORE_CHUNK_SIZE, 50), { input_tokens: 100, output_tokens: 50 }),
+      )
+      // chunk 2 comes back schema-invalid (truncated), billed 100 usd-micros
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', name: 'emit', id: 't2', input: { scores: 'not-an-array' } }],
+        usage: { input_tokens: 100, output_tokens: 0 },
+      })
+    const client = { messages: { create } } as unknown as Anthropic
+
+    let caught: unknown
+    try {
+      await scoreCandidates({ candidates, niche: ['space facts'], recentTitles: [], client })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeDefined()
+    expect(create).toHaveBeenCalledTimes(2)
+    // 350 (chunk 1, billed+kept) + 100 (chunk 2, billed but invalid) = 450
+    const { errorCostUsdMicros } = await import('../../providers/errors.js')
+    expect(errorCostUsdMicros(caught)).toBe(450)
   })
 })
