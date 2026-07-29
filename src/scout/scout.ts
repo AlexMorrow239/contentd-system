@@ -13,11 +13,18 @@ import { ESTIMATED_SCOUT_COST_MICROS, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
 import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
 import type { NewTopic } from './topics.js'
+import { lastScoutAttemptAt, recordScoutAttempt } from './scout-state.js'
 
 // The one score gate. A constant, not config (design 2026-07-28): topics
 // below this are never stored, so the queue only ever holds topics worth
 // producing. min_score was removed from channel TOML in the same change.
 export const SCOUT_MIN_SCORE = 80
+
+// The floor between two scout attempts for ONE channel, so a quiet subreddit
+// isn't refetched on every 30-second daemon poll. Persisted in `scout_state`
+// (not in-memory) so the gate survives a daemon restart and is shared with a
+// manual `brainrot scout` run — see `--force` on that command to bypass it.
+export const SCOUT_RECHECK_MS = 1_200_000 // 20 min
 
 export interface ScoutChannelResult {
   channel: string
@@ -33,11 +40,31 @@ export interface ScoutChannelResult {
   scoringError?: string
   /**
    * Set when the channel was not scouted at all. 'queue-full' means it already
-   * holds queue_days' worth of candidates — a healthy outcome, not a failure,
-   * and distinguishable from the all-zero result a channel with no fresh
+   * holds queue_days' worth of candidates — a healthy outcome, not a failure.
+   * 'recheck-not-due' means an attempt landed within SCOUT_RECHECK_MS of now.
+   * Both are distinguishable from the all-zero result a channel with no fresh
    * candidates produces.
    */
-  skipped?: 'queue-full'
+  skipped?: 'queue-full' | 'recheck-not-due'
+}
+
+function emptySkippedResult(
+  channel: string,
+  skipped: NonNullable<ScoutChannelResult['skipped']>,
+): ScoutChannelResult {
+  return {
+    channel,
+    fetched: 0,
+    droppedMedia: 0,
+    droppedAutomated: 0,
+    alreadyKnown: 0,
+    scored: 0,
+    queued: 0,
+    rejected: 0,
+    sourceErrors: [],
+    costUsdMicros: 0,
+    skipped,
+  }
 }
 
 // A source before construction: the raw config entry the loop builds a source
@@ -92,27 +119,33 @@ async function scoreWithLedger(
 export async function scoutChannel(
   db: Database,
   channel: ChannelConfig,
-  opts: { client?: Anthropic; fetchImpl?: FetchLike } = {},
+  opts: { client?: Anthropic; fetchImpl?: FetchLike; now?: Date; force?: boolean } = {},
 ): Promise<ScoutChannelResult> {
-  // Depth gate FIRST — ahead of the source loop, so a channel with enough
-  // queued candidates costs neither a network fetch nor a Haiku scoring call.
-  // The scoring calls are where the money is, so gating after fetching would
-  // save almost nothing.
+  const now = opts.now ?? new Date()
+
+  // Recheck gate FIRST — cheaper than the depth query below (a single indexed
+  // lookup vs a COUNT), and a channel whose last attempt is still fresh has
+  // nothing new to learn from either query.
+  if (!opts.force) {
+    const last = lastScoutAttemptAt(db, channel.name)
+    if (last !== null && now.getTime() - last.getTime() < SCOUT_RECHECK_MS) {
+      return emptySkippedResult(channel.name, 'recheck-not-due')
+    }
+  }
+  // The attempt is recorded as soon as the channel clears the recheck gate —
+  // BEFORE the queue-full check and before any fetch/score work — so the
+  // clock bumps for every channel actually attempted (queue-full, real work,
+  // or a scoring failure that throws below), matching what a caller means by
+  // "we looked at this channel just now".
+  recordScoutAttempt(db, channel.name, now)
+
+  // Depth gate — ahead of the source loop, so a channel with enough queued
+  // candidates costs neither a network fetch nor a Haiku scoring call. The
+  // scoring calls are where the money is, so gating after fetching would save
+  // almost nothing.
   const queueCap = Math.ceil(channel.videosPerDay * channel.scout.queueDays)
   if (candidateTopicCount(db, channel.name) >= queueCap) {
-    return {
-      channel: channel.name,
-      fetched: 0,
-      droppedMedia: 0,
-      droppedAutomated: 0,
-      alreadyKnown: 0,
-      scored: 0,
-      queued: 0,
-      rejected: 0,
-      sourceErrors: [],
-      costUsdMicros: 0,
-      skipped: 'queue-full',
-    }
+    return emptySkippedResult(channel.name, 'queue-full')
   }
 
   // Iterate DESCRIPTORS, not pre-built sources: rssSource runs `new URL(url)`
@@ -278,7 +311,7 @@ export const SCOUT_LEASE_TTL_MS = 1_800_000 // 30 min
 export async function scoutAll(
   db: Database,
   channels: ChannelConfig[],
-  opts: { client?: Anthropic; fetchImpl?: FetchLike } = {},
+  opts: { client?: Anthropic; fetchImpl?: FetchLike; now?: Date; force?: boolean } = {},
 ): Promise<ScoutChannelResult[]> {
   const results: ScoutChannelResult[] = []
   // Channels that failed the budget gate rather than scoring itself. The

@@ -86,7 +86,6 @@ export async function runWorker(
   }
 }
 
-export const SCOUT_RECHECK_MS = 1_200_000 // 20 min between scout attempts per channel
 export const DIGEST_HOUR = 8
 
 export function produceUnit(
@@ -115,23 +114,20 @@ export function publishUnit(
 }
 
 /**
- * One unit = one scoutAll pass over the channels past their per-channel
- * recheck window. The queue-depth demand check lives INSIDE scoutChannel
- * (skipped: 'queue-full'), so the recheck clock is the only thing this unit
- * owns: it stops a quiet subreddit being fetched every 30 seconds. The clock
- * is in-memory — a daemon restart re-scouts immediately, and one redundant
- * fetch is harmless. queue-full still bumps the clock: the next real chance
- * to need topics is minutes away (a produce consumes one), not seconds.
- * lease-held does NOT bump it — nothing was attempted.
+ * One unit = one scoutAll pass over every configured channel. The recheck
+ * cadence AND the queue-depth demand check both live INSIDE scoutChannel now
+ * (skipped: 'recheck-not-due' / 'queue-full'), backed by the persisted
+ * `scout_state` table — so this unit is a thin wrapper, like produceUnit and
+ * publishUnit, with no scheduling state of its own. lease-held never reaches
+ * scoutChannel at all, so it never records an attempt, for free.
  */
 export function scoutUnit(
   db: Database,
   opts: { channelsDir: string; now?: () => Date; scout?: typeof scoutAll },
 ): () => Promise<UnitResult> {
   const scout = opts.scout ?? scoutAll
-  const lastAttempt = new Map<string, number>()
   return async () => {
-    const nowMs = (opts.now?.() ?? new Date()).getTime()
+    const now = opts.now?.() ?? new Date()
     const loaded = tryLoadChannelsDir(opts.channelsDir)
     if (loaded.error !== undefined) {
       return {
@@ -139,10 +135,7 @@ export function scoutUnit(
         line: { action: 'noop', reason: 'config-error', error: loaded.error },
       }
     }
-    const due = loaded.channels.filter(
-      (c) => (lastAttempt.get(c.name) ?? 0) + SCOUT_RECHECK_MS <= nowMs,
-    )
-    if (due.length === 0) return { worked: false }
+    if (loaded.channels.length === 0) return { worked: false }
     const holder = `pid:${process.pid}`
     if (!acquireLease(db, 'scout', holder, SCOUT_LEASE_TTL_MS)) {
       return { worked: false, line: { action: 'noop', reason: 'lease-held' } }
@@ -150,10 +143,9 @@ export function scoutUnit(
     try {
       let results: ScoutChannelResult[]
       try {
-        results = await scout(db, due)
+        results = await scout(db, loaded.channels, { now })
       } catch (err) {
         if (err instanceof ScoutRunFailedError) {
-          for (const c of due) lastAttempt.set(c.name, nowMs)
           return {
             worked: true,
             line: { action: 'scouted', channels: err.results, error: errorMessage(err) },
@@ -161,16 +153,24 @@ export function scoutUnit(
         }
         throw err
       }
-      for (const c of due) lastAttempt.set(c.name, nowMs)
       // scoutAll drops channels with no [scout] sources before running any of
-      // them, so `results` can be empty while `due` is not. `[].every(...)` is
-      // vacuously true, which reported "nothing is scoutable" as `queue-full`
-      // — a queue depth nothing measured. Name the two apart.
+      // them, so `results` can be empty while `loaded.channels` is not.
+      // `[].every(...)` is vacuously true, which reported "nothing is
+      // scoutable" as `queue-full` — a queue depth nothing measured. Name the
+      // two apart.
       if (results.length === 0) {
         return { worked: false, line: { action: 'noop', reason: 'no-scout-sources' } }
       }
-      if (results.every((r) => r.skipped === 'queue-full')) {
-        return { worked: false, line: { action: 'noop', reason: 'queue-full' } }
+      if (results.every((r) => r.skipped !== undefined)) {
+        // Every channel was gated, either by queue depth or by not being due
+        // for a recheck yet. The latter is the common every-30s case (most
+        // channels sit inside SCOUT_RECHECK_MS most of the time) and stays
+        // silent; queue-full is the rarer, more informative state worth
+        // surfacing once via runWorker's idle dedupe.
+        const anyQueueFull = results.some((r) => r.skipped === 'queue-full')
+        return anyQueueFull
+          ? { worked: false, line: { action: 'noop', reason: 'queue-full' } }
+          : { worked: false }
       }
       return { worked: true, line: { action: 'scouted', channels: results } }
     } finally {

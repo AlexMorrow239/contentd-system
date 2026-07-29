@@ -10,12 +10,14 @@ import { listTopics } from '../topics.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
+  SCOUT_RECHECK_MS,
   ScoutRunFailedError,
   scoutAll,
   scoutChannel,
 } from '../scout.js'
 import type { ScoutChannelResult } from '../scout.js'
-import { memDb, seedTopic } from '../../testing/db.js'
+import { lastScoutAttemptAt } from '../scout-state.js'
+import { memDb, seedScoutState, seedTopic } from '../../testing/db.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {
@@ -268,8 +270,11 @@ describe('scoutChannel', () => {
     const { client, create } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 20, topic: 'Moon', reason: 'dull' }]),
     )
-    await scoutChannel(db, channel, { client, fetchImpl })
-    const second = await scoutChannel(db, channel, { client, fetchImpl })
+    // force: true bypasses the recheck gate — this test is about dedup
+    // across repeat runs, not the recheck cadence itself (scout.test.ts's
+    // recheck-gate cases cover that).
+    await scoutChannel(db, channel, { client, fetchImpl, force: true })
+    const second = await scoutChannel(db, channel, { client, fetchImpl, force: true })
     expect(second).toEqual({
       channel: 'chan-a',
       fetched: 1,
@@ -446,6 +451,79 @@ describe('scoutChannel', () => {
     expect(result.skipped).toBeUndefined()
     expect(fetchImpl).toHaveBeenCalled()
   })
+
+  it('skips a channel scouted within SCOUT_RECHECK_MS, without touching sources', async () => {
+    const db = memDb()
+    const fetchImpl = vi.fn()
+    const channel = scoutedChannel()
+    const now = new Date(2026, 6, 28, 12, 0, 0)
+    seedScoutState(db, 'chan-a', new Date(now.getTime() - 5 * 60_000))
+
+    const result = await scoutChannel(db, channel, { fetchImpl, now })
+
+    expect(result.skipped).toBe('recheck-not-due')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('scouts again once SCOUT_RECHECK_MS has elapsed since the last attempt', async () => {
+    const db = memDb()
+    const channel = scoutedChannel()
+    const now = new Date(2026, 6, 28, 12, 0, 0)
+    seedScoutState(db, 'chan-a', new Date(now.getTime() - SCOUT_RECHECK_MS))
+    const fetchImpl = vi.fn(() => Promise.reject(new Error('source down')))
+
+    const result = await scoutChannel(db, channel, { fetchImpl, now })
+
+    expect(result.skipped).toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalled()
+  })
+
+  it('records the attempt even when the channel is queue-full', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      videosPerDay: 2,
+      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
+    })
+    for (let i = 0; i < 6; i++) {
+      seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
+    }
+    const now = new Date(2026, 6, 28, 12, 0, 0)
+
+    const result = await scoutChannel(db, channel, { fetchImpl: vi.fn(), now })
+
+    expect(result.skipped).toBe('queue-full')
+    expect(lastScoutAttemptAt(db, 'chan-a')).toEqual(now)
+  })
+
+  it('records the attempt even when scoring later throws', async () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    const db = memDb()
+    const channel = scoutedChannel()
+    const now = new Date(2026, 6, 28, 12, 0, 0)
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+    })
+    const { client } = fakeClient(emitScores([]))
+
+    await expect(scoutChannel(db, channel, { client, fetchImpl, now })).rejects.toThrow(
+      BudgetExceededError,
+    )
+    expect(lastScoutAttemptAt(db, 'chan-a')).toEqual(now)
+  })
+
+  it('force bypasses the recheck gate regardless of the last attempt', async () => {
+    const db = memDb()
+    const channel = scoutedChannel()
+    const now = new Date(2026, 6, 28, 12, 0, 0)
+    seedScoutState(db, 'chan-a', new Date(now.getTime() - 1))
+    const fetchImpl = vi.fn(() => Promise.reject(new Error('source down')))
+
+    const result = await scoutChannel(db, channel, { fetchImpl, now, force: true })
+
+    expect(result.skipped).toBeUndefined()
+    expect(fetchImpl).toHaveBeenCalled()
+  })
 })
 
 describe('scoutAll', () => {
@@ -492,7 +570,7 @@ describe('scoutAll', () => {
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
     // fetchStub({}) rejects every URL — total source failure
     const { client, create } = fakeClient(emitScores([]))
-    const err = await scoutAll(db, [a, b], { client, fetchImpl: fetchStub({}) }).then(
+    const err = await scoutAll(db, [a, b], { client, fetchImpl: fetchStub({}), force: true }).then(
       () => null,
       (e: unknown) => e,
     )
@@ -501,12 +579,14 @@ describe('scoutAll', () => {
     expect((err as AllSourcesFailedError).results.map((r) => r.channel)).toEqual(['a', 'b'])
     expect(create).not.toHaveBeenCalled()
 
-    // one healthy source flips it back to a normal (partial) run
+    // one healthy source flips it back to a normal (partial) run. force: true
+    // again — this test is about the all-sources-failed transition, not the
+    // recheck cadence (covered separately in scoutChannel's own tests).
     const mixed = fetchStub({ '/r/two/.rss': redditFeed([{ name: 't3_x', title: 'X' }]) })
     const { client: client2 } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 80, topic: 'X topic', reason: 'ok' }]),
     )
-    const results = await scoutAll(db, [a, b], { client: client2, fetchImpl: mixed })
+    const results = await scoutAll(db, [a, b], { client: client2, fetchImpl: mixed, force: true })
     expect(results).toHaveLength(2)
     expect(results[0].sourceErrors).toHaveLength(1)
     expect(results[1].queued).toBe(1)
@@ -628,10 +708,11 @@ describe('scoutAll', () => {
     const { client, create } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 70, topic: 'A topic', reason: 'ok' }]),
     )
-    await scoutAll(db, [a], { client, fetchImpl })
+    await scoutAll(db, [a], { client, fetchImpl, force: true })
     // second pass: the hash filter empties the batch before scoring — zero
-    // topics, zero spend, and NOT a failure
-    const results = await scoutAll(db, [a], { client, fetchImpl })
+    // topics, zero spend, and NOT a failure. force: true bypasses the recheck
+    // gate, which isn't what this test is about.
+    const results = await scoutAll(db, [a], { client, fetchImpl, force: true })
     expect(results).toEqual([
       {
         channel: 'a',

@@ -83,6 +83,15 @@ CREATE TABLE IF NOT EXISTS publishes (
 -- instead. See ensureLivePublishIndex there for the full rationale.
 --   CREATE UNIQUE INDEX ux_publishes_live ON publishes (job_id, platform)
 --     WHERE status IN ('claimed','done','interrupted');
+-- Per-channel scout attempt cadence: channels are config-file entities, not DB
+-- rows, so this is the one small table keyed on channel name (mirrors
+-- `leases`' PK-keyed shape) recording when a channel was last actually
+-- scouted. Backs the SCOUT_RECHECK_MS gate in src/scout/scout.ts, so the gate
+-- survives a daemon restart and is shared between the daemon's scout worker
+-- and a manual `brainrot scout` run.
+CREATE TABLE IF NOT EXISTS scout_state (
+  channel TEXT PRIMARY KEY, last_attempt_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS oauth_tokens (
   platform TEXT NOT NULL,
   channel TEXT NOT NULL,

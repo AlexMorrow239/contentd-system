@@ -204,7 +204,8 @@ program
     '--channels-dir <dir>',
     'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
   )
-  .action(async (opts: { db?: string; channelsDir?: string }) => {
+  .option('--force', 'bypass the per-channel scout recheck cooldown (SCOUT_RECHECK_MS)')
+  .action(async (opts: { db?: string; channelsDir?: string; force?: boolean }) => {
     const channelsDir = resolveChannelsDir(opts.channelsDir)
     // Config load precedes the db handle AND the lease, exactly as in
     // produce-next/publish-next: a broken channel TOML blocks the whole run
@@ -233,7 +234,7 @@ program
       return
     }
     try {
-      const results = await scoutAll(db, channels)
+      const results = await scoutAll(db, channels, { force: opts.force })
       // One cron-greppable JSON line; diagnostics went to stderr.
       process.stdout.write(JSON.stringify({ channels: results }) + '\n')
     } catch (err) {

@@ -350,6 +350,61 @@ describe('brainrot CLI — scout', () => {
     },
     60000,
   )
+
+  it.concurrent('`scout --help` lists --force', async () => {
+    const result = await runCli(['scout', '--help'])
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain('--force')
+  })
+
+  it.concurrent(
+    '`scout` respects the recheck cooldown by default, and --force bypasses it',
+    async () => {
+      const dbPath = tmpDbPath()
+      const channelsDir = tmpDir('brainrot-scout-force-')
+      // A channel WITH a scout source, so it reaches scoutChannel's recheck
+      // gate instead of being dropped as sourceless before ever reaching it.
+      // The rss URL is deliberately malformed: rssSource's constructor throws
+      // synchronously on it (no network I/O), so --force's bypass is provable
+      // without a real fetch — see scout.test.ts's "isolates a source whose
+      // constructor throws on a malformed rss URL" for the same trick.
+      writeFileSync(
+        path.join(channelsDir, 'cli-scout-force-test.toml'),
+        [
+          SCOUTLESS_TOML.replace('cli-scout-test', 'cli-scout-force-test'),
+          '',
+          '[scout]',
+          'rss = ["not a url"]',
+        ].join('\n'),
+      )
+      const seeded = openDb(dbPath)
+      // Recorded "just now" — well inside SCOUT_RECHECK_MS (20 min) — so the
+      // channel is not due, and scoutChannel returns before touching any
+      // source (no network I/O, hermetic).
+      seeded
+        .prepare('INSERT INTO scout_state (channel, last_attempt_at) VALUES (?, ?)')
+        .run('cli-scout-force-test', new Date().toISOString())
+      seeded.close()
+
+      const args = ['scout', '--db', dbPath, '--channels-dir', channelsDir]
+      const gated = await runCli(args)
+      expect(gated.exitCode).toBe(0)
+      const gatedChannels = (JSON.parse(gated.stdout) as { channels: { skipped?: string }[] })
+        .channels
+      expect(gatedChannels).toEqual([expect.objectContaining({ skipped: 'recheck-not-due' })])
+
+      const forced = await runCli([...args, '--force'])
+      // --force bypassed the gate, so the channel was actually attempted —
+      // this test does not depend on whether the real source fetch (no
+      // network in this sandbox) succeeds or fails the whole run; either way
+      // the CLI still prints its one JSON line (the failure-outcome contract
+      // `scoutAll` and the CLI both hold).
+      const forcedChannels = (JSON.parse(forced.stdout) as { channels: { skipped?: string }[] })
+        .channels
+      expect(forcedChannels[0]?.skipped).not.toBe('recheck-not-due')
+    },
+    60000,
+  )
 })
 
 describe('brainrot CLI — topics', () => {

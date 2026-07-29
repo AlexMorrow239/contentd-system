@@ -162,11 +162,21 @@ The scout side gates on score rather than a window: `scoutChannel` stores
 only topics scoring at or above `SCOUT_MIN_SCORE` (80, a code constant in
 `src/scout/scout.ts`) — a channel TOML that still sets the old `min_score`
 key is a load error naming the replacement, same treatment as a stale
-`slots` key. `scoutUnit` (`src/loop/daemon.ts`) adds a per-channel clock on
-top, `SCOUT_RECHECK_MS` (20 minutes), so a quiet subreddit isn't refetched
-on every 30-second idle poll; the clock is in-memory, so a daemon restart
-resets it and re-scouts immediately, which is harmless. The queue-depth
-gate (`skipped: 'queue-full'`, below) is unchanged.
+`slots` key. `scoutChannel` also owns a per-channel recheck cadence,
+`SCOUT_RECHECK_MS` (20 minutes, also in `src/scout/scout.ts`), so a quiet
+subreddit isn't refetched on every 30-second idle poll — backed by the
+`scout_state` table (one row per channel, last-attempt timestamp) rather than
+in-memory state, so it survives a daemon restart. Because the gate lives
+inside `scoutChannel`/`scoutAll` rather than in the daemon's `scoutUnit`, it
+applies equally to a manual `pnpm brainrot scout` run — pass `--force` to
+bypass it immediately, the same shape `publish-next --force` already uses.
+`scoutUnit` (`src/loop/daemon.ts`) is consequently a thin wrapper like
+`produceUnit`/`publishUnit`, carrying no scheduling state of its own: it
+calls `scoutAll` on every configured channel every poll and maps the result
+(reporting `queue-full` when at least one channel hit the depth gate, staying
+silent when every channel is simply not due for a recheck yet — the common
+case). The queue-depth gate itself (`skipped: 'queue-full'`, below) is
+unchanged, and now sits alongside a sibling `skipped: 'recheck-not-due'`.
 
 `publish-next` runs a second sweep in the same window: `publish/reclaim.ts`
 deletes the stored object of every video whose declared platforms have all
@@ -389,7 +399,8 @@ SQLite (`data/brainrot.db`, WAL mode, `busy_timeout=5000` since the daemon's
 concurrent workers and manual CLI commands can touch the same file at once)
 holds all state: `jobs`/`job_stages` (pipeline
 progress), `library` (finished videos awaiting review/publish), `topics`
-(scout queue), `costs` (spend ledger), `leases`, `publishes`, `oauth_tokens`.
+(scout queue), `scout_state` (per-channel last-scout-attempt timestamp),
+`costs` (spend ledger), `leases`, `publishes`, `oauth_tokens`.
 Per-job filesystem artifacts live under `runs/<jobId>/<stage>/`. Schema lives
 in `src/db/schema.sql`, applied via `db.exec` on every `openDb` call (plain
 `CREATE TABLE IF NOT EXISTS`) — so schema.sql alone is the declarative shape

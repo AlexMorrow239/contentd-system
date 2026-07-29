@@ -3,7 +3,6 @@ import {
   DIGEST_HOUR,
   ERROR_SLEEP_MS,
   IDLE_SLEEP_MS,
-  SCOUT_RECHECK_MS,
   abortableSleep,
   digestUnit,
   produceUnit,
@@ -71,9 +70,9 @@ function scoutResult(channel: string, over: Partial<ScoutChannelResult> = {}): S
 }
 
 /**
- * One channel on disk plus a counting stub in place of scoutAll. The channel
- * declares no `[scout]` table — it exists only to be *due*, and the stub
- * decides what scouting it "returns", so the real source list never matters.
+ * One channel on disk plus a counting stub in place of scoutAll — the channel
+ * declares no `[scout]` table since the stub decides what scouting "returns",
+ * so the real source list never matters.
  */
 function scoutFixture(scout: () => Promise<ScoutChannelResult[]>): {
   db: ReturnType<typeof memDb>
@@ -256,89 +255,96 @@ describe('publishUnit', () => {
 })
 
 describe('scoutUnit', () => {
-  it('is idle with no line while every channel is inside the recheck window', async () => {
+  // The recheck cadence and the queue-depth gate both live inside
+  // scoutChannel/scoutAll now (backed by the persisted scout_state table),
+  // so scoutUnit itself carries no scheduling state — it calls `scout` on
+  // every loaded channel on every invocation and just maps the outcome.
+  // Recheck/queue-depth behavior itself is covered in scout.test.ts.
+
+  it('scouts on every call — no per-channel scheduling of its own', async () => {
     const fx = scoutFixture(async () => [scoutResult('a', { queued: 1 })])
-    const clock = fakeClock(SCOUT_NOW)
-    const unit = scoutUnit(fx.db, { channelsDir: fx.channelsDir, now: clock.now, scout: fx.scout })
+    const unit = scoutUnit(fx.db, {
+      channelsDir: fx.channelsDir,
+      now: () => SCOUT_NOW,
+      scout: fx.scout,
+    })
 
     expect((await unit()).worked).toBe(true)
-    clock.advance(300_000)
-    expect(await unit()).toEqual({ worked: false })
-    expect(fx.calls()).toBe(1)
-  })
-
-  it('scouts again once the recheck window passes', async () => {
-    const fx = scoutFixture(async () => [scoutResult('a', { queued: 1 })])
-    const clock = fakeClock(SCOUT_NOW)
-    const unit = scoutUnit(fx.db, { channelsDir: fx.channelsDir, now: clock.now, scout: fx.scout })
-
-    await unit()
-    clock.advance(SCOUT_RECHECK_MS)
     expect((await unit()).worked).toBe(true)
     expect(fx.calls()).toBe(2)
   })
 
-  it('bumps the recheck clock even when every result is queue-full, and reports idle', async () => {
-    const fx = scoutFixture(async () => [scoutResult('a', { skipped: 'queue-full' })])
-    const clock = fakeClock(SCOUT_NOW)
-    const unit = scoutUnit(fx.db, { channelsDir: fx.channelsDir, now: clock.now, scout: fx.scout })
+  it('is idle without a line when every channel is skipped as not-yet-due', async () => {
+    const fx = scoutFixture(async () => [scoutResult('a', { skipped: 'recheck-not-due' })])
+    const unit = scoutUnit(fx.db, {
+      channelsDir: fx.channelsDir,
+      now: () => SCOUT_NOW,
+      scout: fx.scout,
+    })
 
-    expect(await unit()).toEqual({ worked: false, line: { action: 'noop', reason: 'queue-full' } })
-    clock.advance(300_000)
     expect(await unit()).toEqual({ worked: false })
-    expect(fx.calls()).toBe(1)
   })
 
-  it('names an empty scout pass no-scout-sources, not queue-full, and bumps the clock', async () => {
+  it('reports queue-full when every skipped result includes at least one queue-full', async () => {
+    const fx = scoutFixture(async () => [
+      scoutResult('a', { skipped: 'queue-full' }),
+      scoutResult('b', { skipped: 'recheck-not-due' }),
+    ])
+    const unit = scoutUnit(fx.db, {
+      channelsDir: fx.channelsDir,
+      now: () => SCOUT_NOW,
+      scout: fx.scout,
+    })
+
+    expect(await unit()).toEqual({ worked: false, line: { action: 'noop', reason: 'queue-full' } })
+  })
+
+  it('names an empty scout pass no-scout-sources, not queue-full', async () => {
     // Real scoutAll here, not the stub: the fixture channel declares no
     // `[scout]` table, so scoutAll skips it without touching a source and
     // returns []. `[].every(...)` is vacuously true, which used to report
     // this as `queue-full` — a queue depth nothing ever measured.
     const db = memDb()
     const channelsDir = writeChannelsDir({ 'a.toml': channelToml({ name: 'a' }) })
-    const clock = fakeClock(SCOUT_NOW)
-    const unit = scoutUnit(db, { channelsDir, now: clock.now })
+    const unit = scoutUnit(db, { channelsDir, now: () => SCOUT_NOW })
 
     expect(await unit()).toEqual({
       worked: false,
       line: { action: 'noop', reason: 'no-scout-sources' },
     })
-    // The attempt still happened, so the recheck clock moves: the next poll
-    // 5 minutes later is line-less idle, not a second identical pass.
-    clock.advance(300_000)
-    expect(await unit()).toEqual({ worked: false })
   })
 
-  it('reports lease-held as idle without bumping the recheck clock', async () => {
+  it('reports lease-held as idle without calling scout', async () => {
     const fx = scoutFixture(async () => [scoutResult('a', { queued: 1 })])
-    const clock = fakeClock(SCOUT_NOW)
-    const unit = scoutUnit(fx.db, { channelsDir: fx.channelsDir, now: clock.now, scout: fx.scout })
+    const unit = scoutUnit(fx.db, {
+      channelsDir: fx.channelsDir,
+      now: () => SCOUT_NOW,
+      scout: fx.scout,
+    })
     expect(acquireLease(fx.db, 'scout', 'someone-else', 600_000)).toBe(true)
 
     expect(await unit()).toEqual({ worked: false, line: { action: 'noop', reason: 'lease-held' } })
     expect(fx.calls()).toBe(0)
 
-    // Nothing was attempted, so the same instant is still due once the lease goes.
     releaseLease(fx.db, 'scout', 'someone-else')
     expect((await unit()).worked).toBe(true)
     expect(fx.calls()).toBe(1)
   })
 
-  it('a ScoutRunFailedError still counts as worked and bumps the clock', async () => {
+  it('a ScoutRunFailedError still counts as worked', async () => {
     const fx = scoutFixture(async () => {
       throw new ScoutRunFailedError('every source failed', [])
     })
-    const clock = fakeClock(SCOUT_NOW)
-    const unit = scoutUnit(fx.db, { channelsDir: fx.channelsDir, now: clock.now, scout: fx.scout })
+    const unit = scoutUnit(fx.db, {
+      channelsDir: fx.channelsDir,
+      now: () => SCOUT_NOW,
+      scout: fx.scout,
+    })
 
     const result = await unit()
     expect(result.worked).toBe(true)
     expect(result.line).toMatchObject({ action: 'scouted', channels: [] })
     expect(String(result.line?.error)).toContain('every source failed')
-
-    clock.advance(300_000)
-    expect(await unit()).toEqual({ worked: false })
-    expect(fx.calls()).toBe(1)
   })
 
   it('reports a broken channels dir as a config-error noop', async () => {

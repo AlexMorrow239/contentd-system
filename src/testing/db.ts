@@ -202,6 +202,13 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
   return Number(info.lastInsertRowid)
 }
 
+export function seedScoutState(db: Database, channel: string, lastAttemptAt: Date): void {
+  db.prepare('INSERT INTO scout_state (channel, last_attempt_at) VALUES (?, ?)').run(
+    channel,
+    lastAttemptAt.toISOString(),
+  )
+}
+
 export interface PublishRow {
   platform: string
   channel: string
