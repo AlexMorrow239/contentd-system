@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadChannelsDir } from './channel.js'
@@ -36,10 +36,18 @@ describe('checked-in channel configs', () => {
    * with the schema. A developer who has channels there gets a loud
    * failure; everyone else gets a reported SKIP.
    *
+   * Gate on the directory containing at least one entry, not just existing:
+   * loadChannelsDir tolerates an empty directory (returns zero channels
+   * without throwing), so a present-but-empty local/channels/ would run this
+   * test, load nothing, assert nothing, and report PASS — the same vacuity
+   * this file's prod case was already fixed for.
+   *
    * skipIf, not an early `return`: a bare return reports a PASS for work that
    * never ran, which is how this check could have gone silently dead.
    */
-  it.skipIf(!existsSync(LOCAL_CHANNELS))('local/channels/ loads when present locally', () => {
+  const hasLocalChannels =
+    existsSync(LOCAL_CHANNELS) && readdirSync(LOCAL_CHANNELS).length > 0
+  it.skipIf(!hasLocalChannels)('local/channels/ loads when present locally', () => {
     expect(() => loadChannelsDir(LOCAL_CHANNELS)).not.toThrow()
   })
 })
