@@ -41,7 +41,7 @@ export async function runJob(
   channel: ChannelConfig,
   jobId: string,
   stages: StageDef[],
-  options: { runsRoot?: string; heartbeat?: () => void } = {},
+  options: { runsRoot: string; heartbeat?: () => void },
 ): Promise<JobResult> {
   // Guard against path traversal: jobId is interpolated straight into runDir, so a
   // non-canonical id (e.g. '../outside') would escape runsRoot. nanoid ids only ever
@@ -50,8 +50,7 @@ export async function runJob(
     throw new Error(`invalid job id: ${jobId}`)
   }
 
-  const runsRoot = options.runsRoot ?? 'runs'
-  const runDir = join(runsRoot, jobId)
+  const runDir = join(options.runsRoot, jobId)
 
   const jobRow = db.prepare('SELECT topic FROM jobs WHERE id = ?').get(jobId) as
     { topic: string } | undefined
