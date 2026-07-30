@@ -13,6 +13,8 @@ const job: JobListRow = {
   costUsdMicros: 42000,
 }
 
+const RUNS_ROOT = '/app/state/runs'
+
 describe('formatUsd', () => {
   it('renders micros as dollars', () => {
     expect(formatUsd(42000)).toBe('$0.04')
@@ -115,27 +117,33 @@ describe('renderJobDetailPage', () => {
   }
 
   it('renders the stage timeline with durations and the raw error', () => {
-    const out = renderJobDetailPage(detail).value
+    const out = renderJobDetailPage(detail, RUNS_ROOT).value
     expect(out).toContain('script')
     expect(out).toContain('30s')
     expect(out).toContain('elevenlabs 401')
     expect(out).toContain('pending')
   })
 
-  it('shows the artifact directory', () => {
-    const out = renderJobDetailPage(detail).value
-    expect(out).toContain('runs/j1/')
+  it('shows the artifact directory using the supplied runs root', () => {
+    const out = renderJobDetailPage(detail, RUNS_ROOT).value
+    expect(out).toContain(`${RUNS_ROOT}/j1/`)
+  })
+
+  it('reflects a different runs root when supplied', () => {
+    const out = renderJobDetailPage(detail, 'local/runs').value
+    expect(out).toContain('local/runs/j1/')
+    expect(out).not.toContain(`${RUNS_ROOT}/j1/`)
   })
 
   it('links to the video only when the library row has one', () => {
-    expect(renderJobDetailPage(detail).value).not.toContain('/library/j1/video')
+    expect(renderJobDetailPage(detail, RUNS_ROOT).value).not.toContain('/library/j1/video')
     const withVideo: JobDetail = {
       ...detail,
       libraryState: 'ready',
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'local',
     }
-    expect(renderJobDetailPage(withVideo).value).toContain('/library/j1/video')
+    expect(renderJobDetailPage(withVideo, RUNS_ROOT).value).toContain('/library/j1/video')
   })
 
   it('says the video is archived instead of rendering a dead player', () => {
@@ -145,7 +153,7 @@ describe('renderJobDetailPage', () => {
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'archived',
     }
-    const out = renderJobDetailPage(archived).value
+    const out = renderJobDetailPage(archived, RUNS_ROOT).value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
     expect(out).toContain('archived to object storage — not available locally')
@@ -158,7 +166,7 @@ describe('renderJobDetailPage', () => {
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'reclaimed',
     }
-    const out = renderJobDetailPage(reclaimed).value
+    const out = renderJobDetailPage(reclaimed, RUNS_ROOT).value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
     expect(out).toContain('reclaimed — the stored object was deleted after every platform settled')
@@ -171,7 +179,7 @@ describe('renderJobDetailPage', () => {
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'unstored',
     }
-    const out = renderJobDetailPage(unstored).value
+    const out = renderJobDetailPage(unstored, RUNS_ROOT).value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
     expect(out).toContain('library backfill-store')
@@ -185,7 +193,7 @@ describe('renderJobDetailPage', () => {
       bytes: 'local',
       links: [{ platform: 'youtube', url: 'javascript:alert(1)' }],
     }
-    const out = renderJobDetailPage(hostile).value
+    const out = renderJobDetailPage(hostile, RUNS_ROOT).value
     expect(out).not.toContain('href="javascript:alert(1)"')
     expect(out).not.toMatch(/href=["']javascript:/i)
   })
@@ -198,7 +206,7 @@ describe('renderJobDetailPage', () => {
       bytes: 'local',
       links: [{ platform: 'youtube', url: 'https://youtu.be/abc' }],
     }
-    const out = renderJobDetailPage(withLinks).value
+    const out = renderJobDetailPage(withLinks, RUNS_ROOT).value
     expect(out).toContain('href="https://youtu.be/abc"')
     expect(out).toContain('youtube')
   })
@@ -208,7 +216,7 @@ describe('renderJobDetailPage', () => {
       ...detail,
       stages: [{ ...detail.stages[1], error: '<img src=x onerror=alert(1)>' }],
     }
-    const out = renderJobDetailPage(hostile).value
+    const out = renderJobDetailPage(hostile, RUNS_ROOT).value
     expect(out).not.toContain('<img src=x')
     expect(out).toContain('&lt;img src=x')
   })

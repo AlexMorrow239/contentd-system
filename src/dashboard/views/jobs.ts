@@ -106,7 +106,7 @@ function stageRow(stage: StageRow): SafeHtml {
   </tr>`
 }
 
-export function renderJobDetailPage(detail: JobDetail): SafeHtml {
+export function renderJobDetailPage(detail: JobDetail, runsRoot: string): SafeHtml {
   const { job } = detail
 
   const video =
@@ -158,7 +158,7 @@ export function renderJobDetailPage(detail: JobDetail): SafeHtml {
           <tr><th>finished</th><td>${formatTime(job.finishedAt)}</td></tr>
           <tr><th>total spend</th><td>${formatUsd(job.costUsdMicros)}</td></tr>
           <tr><th>library</th><td>${libraryState}</td></tr>
-          <tr><th>artifacts</th><td><code>runs/${job.id}/</code></td></tr>
+          <tr><th>artifacts</th><td><code>${runsRoot}/${job.id}/</code></td></tr>
         </tbody>
       </table>
     </div>

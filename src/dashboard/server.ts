@@ -149,7 +149,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         title: `job ${detail.job.id}`,
         root: deps.config.paths.root,
         activeNav: 'jobs',
-        body: renderJobDetailPage(detail),
+        body: renderJobDetailPage(detail, deps.config.paths.runsRoot),
       }),
     )
   })
