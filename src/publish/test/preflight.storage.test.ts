@@ -1,11 +1,9 @@
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../../db/index.js'
 import { ensureBucket, minioConfig } from '../../testing/storage.js'
 import { s3Store } from '../../storage/s3.js'
 import { runCli } from '../../testing/run-cli.js'
+import { testRoot } from '../../testing/tmp.js'
 
 const CONFIG = minioConfig()
 
@@ -26,9 +24,8 @@ const VIDEO = Buffer.concat([
 describe('brainrot publish preflight (MinIO)', () => {
   it('reports every check ok for a well-formed stored object', async () => {
     await ensureBucket(CONFIG)
-    const dir = mkdtempSync(path.join(tmpdir(), 'brainrot-preflight-cli-'))
-    const dbPath = path.join(dir, 'test.db')
-    const db = openDb(dbPath)
+    const root = testRoot('brainrot-preflight-cli-')
+    const db = openDb(root.dbPath)
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-pf','example','volume','a topic','done')",
     ).run()
@@ -42,13 +39,12 @@ describe('brainrot publish preflight (MinIO)', () => {
 
     await s3Store(CONFIG).put('videos/example/job-pf.mp4', VIDEO, 'video/mp4')
 
-    const res = await runCli(['publish', 'preflight', 'job-pf', '--db', dbPath], { env: ENV })
+    const res = await runCli(['publish', 'preflight', 'job-pf', '--root', root.root], { env: ENV })
 
     expect(res.exitCode).toBe(0)
     expect(res.stdout).toContain('ok   http-status')
     expect(res.stdout).toContain('ok   content-type')
     expect(res.stdout).toContain('ok   byte-length')
     expect(res.stdout).toContain('ok   mp4-header')
-    rmSync(dir, { recursive: true, force: true })
   })
 })

@@ -9,15 +9,13 @@ import {
   parsePublishDays,
   parseTopicIds,
   pipelineStages,
-  resolveChannelsDir,
-  resolveRunsRoot,
 } from './cli.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 import { openDb } from './db/index.js'
 import { runCli } from './testing/run-cli.js'
 import { storageEnvVars } from './testing/storage.js'
-import { countJobs, seedLibraryRow, seedPublishRow, tmpDbPath } from './testing/cli.js'
-import { tmpDir } from './testing/tmp.js'
+import { countJobs, seedLibraryRow, seedPublishRow } from './testing/cli.js'
+import { tmpDir, testRoot } from './testing/tmp.js'
 
 // Mirrors run-cli.ts's CLI_ENTRY resolution (dist/cli.js, built by the Vitest
 // globalSetup) — duplicated here rather than imported because the `run`
@@ -26,47 +24,23 @@ import { tmpDir } from './testing/tmp.js'
 const CLI_ENTRY = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 
 /**
- * The CLI's pure, in-process surface (parsers, path resolvers, the stage
- * list) alongside its subprocess-spawning coverage of every subcommand. One
- * file: each subcommand's tests share the same `runCli`/`tmpDbPath` testkit
+ * The CLI's pure, in-process surface (parsers, the stage list) alongside its
+ * subprocess-spawning coverage of every subcommand. One file: each
+ * subcommand's tests share the same `runCli`/`testRoot` testkit
  * abstractions regardless of file boundaries, so splitting by subcommand
  * bought nothing beyond a lower line count. `it.concurrent` batches at
  * maxConcurrency within this one file/worker.
  */
 
-describe('path resolvers', () => {
-  // These mirror resolveDbPath's flag > env > default precedence. They are
-  // exported (not just exercised through a subprocess) because the dev/prod
-  // split depends on the env tier existing at all — a literal commander
-  // default would silently shadow it.
-  it('resolveChannelsDir prefers the flag over the env var', () => {
-    vi.stubEnv('BRAINROT_CHANNELS_DIR', 'channels-dev')
-    expect(resolveChannelsDir('channels')).toBe('channels')
-  })
-
-  it('resolveChannelsDir falls back to the env var when no flag is passed', () => {
-    vi.stubEnv('BRAINROT_CHANNELS_DIR', 'channels-dev')
-    expect(resolveChannelsDir(undefined)).toBe('channels-dev')
-  })
-
-  it('resolveChannelsDir defaults to channels when neither is set', () => {
-    vi.stubEnv('BRAINROT_CHANNELS_DIR', undefined)
-    expect(resolveChannelsDir(undefined)).toBe('channels')
-  })
-
-  it('resolveRunsRoot prefers the flag over the env var', () => {
-    vi.stubEnv('BRAINROT_RUNS_ROOT', 'runs-dev')
-    expect(resolveRunsRoot('runs')).toBe('runs')
-  })
-
-  it('resolveRunsRoot falls back to the env var when no flag is passed', () => {
-    vi.stubEnv('BRAINROT_RUNS_ROOT', 'runs-dev')
-    expect(resolveRunsRoot(undefined)).toBe('runs-dev')
-  })
-
-  it('resolveRunsRoot defaults to runs when neither is set', () => {
-    vi.stubEnv('BRAINROT_RUNS_ROOT', undefined)
-    expect(resolveRunsRoot(undefined)).toBe('runs')
+describe('legacy path env vars', () => {
+  it('exits 1 naming the replacement when a removed var is still set', async () => {
+    // A spawned CLI cannot see vi.stubEnv, so this goes through runCli's env.
+    const result = await runCli(['jobs', '--root', tmpDir('brainrot-legacy-')], {
+      env: { BRAINROT_DB: 'data/dev.db' },
+    })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain('BRAINROT_DB')
+    expect(result.stderr).toContain('BRAINROT_ROOT')
   })
 })
 
@@ -139,15 +113,15 @@ describe('brainrot CLI — jobs and produce', () => {
   it.concurrent(
     '`jobs` opens the db and prints a table header, exiting 0',
     async () => {
-      const dbPath = tmpDbPath()
+      const root = testRoot()
       // Seed one job so console.table renders column headers (empty tables print nothing).
-      const db = openDb(dbPath)
+      const db = openDb(root.dbPath)
       db.prepare(
         "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1', 'example', 'volume', 'venus', 'queued')",
       ).run()
       db.close()
 
-      const result = await runCli(['jobs', '--db', dbPath])
+      const result = await runCli(['jobs', '--root', root.root])
       expect(result.exitCode).toBe(0)
       // console.table header row names the selected columns.
       expect(result.stdout).toContain('status')
@@ -189,19 +163,27 @@ describe('brainrot CLI — jobs and produce', () => {
   it.concurrent(
     '`produce` with a nonexistent --channel exits 1 with a clean one-line error (no stack)',
     async () => {
-      const dbPath = tmpDbPath()
+      const root = testRoot()
       // Storage env passed explicitly: produce gates on it before opening the
       // channel file, so without this the assertion below depends on whether
       // the machine happens to have a .env.
       const result = await runCli(
-        ['produce', '--channel', '/no/such/channel.toml', '--topic', 'venus', '--db', dbPath],
+        [
+          'produce',
+          '--channel',
+          '/no/such/channel.toml',
+          '--topic',
+          'venus',
+          '--root',
+          root.root,
+        ],
         { env: storageEnvVars() },
       )
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toMatch(/ENOENT|no such file/)
       // Just the message — no raw unhandled-rejection stack frames ("    at ...").
       expect(result.stderr).not.toMatch(/\n\s+at /)
-      expect(countJobs(dbPath)).toBe(0)
+      expect(countJobs(root.dbPath)).toBe(0)
     },
     60000,
   )
@@ -212,9 +194,9 @@ describe('brainrot CLI — jobs and produce', () => {
   it.concurrent(
     '`produce` exits 1 naming the missing storage keys, before creating a job',
     async () => {
-      const dbPath = tmpDbPath()
+      const root = testRoot()
       const result = await runCli(
-        ['produce', '--channel', 'channels/test.toml', '--topic', 'venus', '--db', dbPath],
+        ['produce', '--channel', 'channels/test.toml', '--topic', 'venus', '--root', root.root],
         // Empty, not absent: dotenv does not override a key already present in
         // the child env, so this holds whether or not the machine has a .env
         // with real R2 credentials in it.
@@ -230,7 +212,7 @@ describe('brainrot CLI — jobs and produce', () => {
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('BRAINROT_S3_BUCKET')
       expect(result.stderr).toContain('object storage is not configured')
-      expect(countJobs(dbPath)).toBe(0)
+      expect(countJobs(root.dbPath)).toBe(0)
     },
     60000,
   )
@@ -262,12 +244,12 @@ describe('brainrot CLI — scout', () => {
   ].join('\n')
 
   it.concurrent(
-    '`scout --help` prints usage with --db/--channels-dir',
+    '`scout --help` prints usage with --root',
     async () => {
       const result = await runCli(['scout', '--help'])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('--db')
-      expect(result.stdout).toContain('--channels-dir')
+      expect(result.stdout).toContain('--root')
+      expect(result.stdout).not.toContain('--channels-dir')
     },
     60000,
   )
@@ -275,11 +257,10 @@ describe('brainrot CLI — scout', () => {
   it.concurrent(
     '`scout` over a sourceless channels dir prints one JSON line and exits 0',
     async () => {
-      const dbPath = tmpDbPath()
-      const channelsDir = tmpDir('brainrot-channels-')
+      const root = testRoot()
       // filename must equal the channel name (loadChannelsDir invariant)
-      writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
-      const result = await runCli(['scout', '--db', dbPath, '--channels-dir', channelsDir])
+      writeFileSync(path.join(root.channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
+      const result = await runCli(['scout', '--root', root.root])
       expect(result.exitCode).toBe(0)
       // exactly one cron-greppable JSON line on stdout
       expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
@@ -293,10 +274,9 @@ describe('brainrot CLI — scout', () => {
   it.concurrent(
     '`scout` over a broken channels dir still prints one JSON line and exits 0',
     async () => {
-      const dbPath = tmpDbPath()
-      const brokenDir = tmpDir('brainrot-scout-broken-')
-      writeFileSync(path.join(brokenDir, 'broken.toml'), 'this is not toml [')
-      const result = await runCli(['scout', '--db', dbPath, '--channels-dir', brokenDir])
+      const root = testRoot()
+      writeFileSync(path.join(root.channelsDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli(['scout', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
       const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
@@ -306,7 +286,7 @@ describe('brainrot CLI — scout', () => {
       // stderr keeps the cause visible where the JSON line is only grepped
       expect(result.stderr).toContain('broken.toml')
       // The failure precedes the lease: nothing was leased on a config's behalf.
-      const after = openDb(dbPath)
+      const after = openDb(root.dbPath)
       const leases = after.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
       after.close()
       expect(leases).toEqual({ n: 0 })
@@ -317,21 +297,20 @@ describe('brainrot CLI — scout', () => {
   it.concurrent(
     '`scout` no-ops under a held lease, and releases its own lease on a clean run',
     async () => {
-      const dbPath = tmpDbPath()
-      const channelsDir = tmpDir('brainrot-scout-lease-')
-      writeFileSync(path.join(channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
-      const seeded = openDb(dbPath)
+      const root = testRoot()
+      writeFileSync(path.join(root.channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
+      const seeded = openDb(root.dbPath)
       seeded
         .prepare('INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)')
         .run('scout', 'pid:999999', new Date(Date.now() + 600_000).toISOString())
       seeded.close()
 
-      const args = ['scout', '--db', dbPath, '--channels-dir', channelsDir]
+      const args = ['scout', '--root', root.root]
       const held = await runCli(args)
       // A held lease is the normal overlap case: benign one-line noop, exit 0.
       expect(held.exitCode).toBe(0)
       expect(JSON.parse(held.stdout)).toEqual({ action: 'noop', reason: 'lease-held' })
-      const afterNoop = openDb(dbPath)
+      const afterNoop = openDb(root.dbPath)
       const foreign = afterNoop.prepare("SELECT holder FROM leases WHERE name = 'scout'").get() as {
         holder: string
       }
@@ -343,7 +322,7 @@ describe('brainrot CLI — scout', () => {
       const free = await runCli(args)
       expect(free.exitCode).toBe(0)
       expect(JSON.parse(free.stdout)).toEqual({ channels: [] })
-      const afterRun = openDb(dbPath)
+      const afterRun = openDb(root.dbPath)
       const leases = afterRun.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'scout'").get()
       afterRun.close()
       expect(leases).toEqual({ n: 0 })
@@ -360,8 +339,7 @@ describe('brainrot CLI — scout', () => {
   it.concurrent(
     '`scout` respects the recheck cooldown by default, and --force bypasses it',
     async () => {
-      const dbPath = tmpDbPath()
-      const channelsDir = tmpDir('brainrot-scout-force-')
+      const root = testRoot()
       // A channel WITH a scout source, so it reaches scoutChannel's recheck
       // gate instead of being dropped as sourceless before ever reaching it.
       // The rss URL is deliberately malformed: rssSource's constructor throws
@@ -369,7 +347,7 @@ describe('brainrot CLI — scout', () => {
       // without a real fetch — see scout.test.ts's "isolates a source whose
       // constructor throws on a malformed rss URL" for the same trick.
       writeFileSync(
-        path.join(channelsDir, 'cli-scout-force-test.toml'),
+        path.join(root.channelsDir, 'cli-scout-force-test.toml'),
         [
           SCOUTLESS_TOML.replace('cli-scout-test', 'cli-scout-force-test'),
           '',
@@ -377,7 +355,7 @@ describe('brainrot CLI — scout', () => {
           'rss = ["not a url"]',
         ].join('\n'),
       )
-      const seeded = openDb(dbPath)
+      const seeded = openDb(root.dbPath)
       // Recorded "just now" — well inside SCOUT_RECHECK_MS (20 min) — so the
       // channel is not due, and scoutChannel returns before touching any
       // source (no network I/O, hermetic).
@@ -386,7 +364,7 @@ describe('brainrot CLI — scout', () => {
         .run('cli-scout-force-test', new Date().toISOString())
       seeded.close()
 
-      const args = ['scout', '--db', dbPath, '--channels-dir', channelsDir]
+      const args = ['scout', '--root', root.root]
       const gated = await runCli(args)
       expect(gated.exitCode).toBe(0)
       const gatedChannels = (JSON.parse(gated.stdout) as { channels: { skipped?: string }[] })
@@ -443,12 +421,12 @@ describe('brainrot CLI — topics', () => {
   it.concurrent(
     '`topics requeue` returns an orphaned claimed topic to the queue',
     async () => {
-      const dbPath = tmpDbPath()
-      const id = seedClaimedTopic(dbPath, { jobId: 'job-stranded', jobStatus: 'failed' })
-      const result = await runCli(['topics', 'requeue', String(id), '--db', dbPath])
+      const root = testRoot()
+      const id = seedClaimedTopic(root.dbPath, { jobId: 'job-stranded', jobStatus: 'failed' })
+      const result = await runCli(['topics', 'requeue', String(id), '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(JSON.parse(result.stdout)).toEqual({ action: 'requeued', topicId: id })
-      const db = openDb(dbPath)
+      const db = openDb(root.dbPath)
       const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
         status: string
         job_id: string | null
@@ -462,9 +440,9 @@ describe('brainrot CLI — topics', () => {
   it.concurrent(
     '`topics requeue` refuses while a live job holds the topic, naming the job',
     async () => {
-      const dbPath = tmpDbPath()
-      const id = seedClaimedTopic(dbPath, { jobId: 'job-live', jobStatus: 'running' })
-      const result = await runCli(['topics', 'requeue', String(id), '--db', dbPath])
+      const root = testRoot()
+      const id = seedClaimedTopic(root.dbPath, { jobId: 'job-live', jobStatus: 'running' })
+      const result = await runCli(['topics', 'requeue', String(id), '--root', root.root])
       expect(result.exitCode).toBe(1)
       expect(JSON.parse(result.stdout)).toEqual({
         action: 'refused',
@@ -474,7 +452,7 @@ describe('brainrot CLI — topics', () => {
         jobStatus: 'running',
       })
       expect(result.stderr).toContain('job-live')
-      const db = openDb(dbPath)
+      const db = openDb(root.dbPath)
       const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
         status: string
         job_id: string | null
@@ -488,8 +466,8 @@ describe('brainrot CLI — topics', () => {
   it.concurrent(
     '`topics requeue` on an unknown id exits 1 with one JSON line and no stack',
     async () => {
-      const dbPath = tmpDbPath()
-      const result = await runCli(['topics', 'requeue', '9999', '--db', dbPath])
+      const root = testRoot()
+      const result = await runCli(['topics', 'requeue', '9999', '--root', root.root])
       expect(result.exitCode).toBe(1)
       expect(JSON.parse(result.stdout)).toEqual({
         action: 'refused',
@@ -504,8 +482,8 @@ describe('brainrot CLI — topics', () => {
   it.concurrent(
     '`topics requeue` rejects a non-integer id before opening the db',
     async () => {
-      const dbPath = tmpDbPath()
-      const result = await runCli(['topics', 'requeue', 'abc', '--db', dbPath])
+      const root = testRoot()
+      const result = await runCli(['topics', 'requeue', 'abc', '--root', root.root])
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('invalid topic id "abc"')
     },
@@ -515,12 +493,12 @@ describe('brainrot CLI — topics', () => {
 
 describe('brainrot CLI — digest', () => {
   it.concurrent(
-    '`digest --help` prints usage with --db/--channels-dir',
+    '`digest --help` prints usage with --root',
     async () => {
       const result = await runCli(['digest', '--help'])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('--db')
-      expect(result.stdout).toContain('--channels-dir')
+      expect(result.stdout).toContain('--root')
+      expect(result.stdout).not.toContain('--channels-dir')
     },
     60000,
   )
@@ -528,9 +506,8 @@ describe('brainrot CLI — digest', () => {
   it.concurrent(
     '`digest` over an empty channels dir prints all four sections and exits 0',
     async () => {
-      const dbPath = tmpDbPath()
-      const channelsDir = tmpDir('brainrot-digest-channels-')
-      const result = await runCli(['digest', '--db', dbPath, '--channels-dir', channelsDir])
+      const root = testRoot()
+      const result = await runCli(['digest', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('Topics (last 24h)')
       expect(result.stdout).toContain('Jobs (last 24h)')
@@ -545,14 +522,11 @@ describe('brainrot CLI — digest', () => {
   it.concurrent(
     '`digest` with a missing channels dir still prints the db sections and names the config error',
     async () => {
-      const dbPath = tmpDbPath()
-      const result = await runCli([
-        'digest',
-        '--db',
-        dbPath,
-        '--channels-dir',
-        '/no/such/channels-dir',
-      ])
+      // A bare tmpDir, deliberately not testRoot(): testRoot() pre-creates
+      // channels/, and this test needs it absent so tryLoadChannelsDir fails.
+      // openDb still creates db/'s parent on its own.
+      const bareRoot = tmpDir('brainrot-digest-missing-')
+      const result = await runCli(['digest', '--root', bareRoot])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('Topics (last 24h)')
       expect(result.stdout).toContain('Jobs (last 24h)')
@@ -566,10 +540,9 @@ describe('brainrot CLI — digest', () => {
   it.concurrent(
     '`digest` with an unparseable channel TOML still prints the db sections and names the file',
     async () => {
-      const dbPath = tmpDbPath()
-      const channelsDir = tmpDir('brainrot-digest-broken-')
-      writeFileSync(path.join(channelsDir, 'broken.toml'), 'this is not toml [')
-      const result = await runCli(['digest', '--db', dbPath, '--channels-dir', channelsDir])
+      const root = testRoot()
+      writeFileSync(path.join(root.channelsDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli(['digest', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('Topics (last 24h)')
       expect(result.stdout).toContain('Jobs (last 24h)')
@@ -586,14 +559,14 @@ describe('brainrot CLI — library', () => {
     async () => {
       // A wrapper script reads the exit code, not the stderr line: approving
       // nothing at all is a failed operation, not a quiet no-op.
-      const dbPath = tmpDbPath()
-      seedLibraryRow(dbPath, {
+      const root = testRoot()
+      seedLibraryRow(root.dbPath, {
         jobId: 'job-gone-1',
         channel: 'demo',
         state: 'needs-review',
         reclaimed: true,
       })
-      const result = await runCli(['library', 'approve', 'job-gone-1', '--db', dbPath])
+      const result = await runCli(['library', 'approve', 'job-gone-1', '--root', root.root])
       expect(result.exitCode).toBe(1)
       expect(result.stdout).toContain('approved 0 of 1')
       expect(result.stderr).toContain('already reclaimed')
@@ -604,9 +577,9 @@ describe('brainrot CLI — library', () => {
   it.concurrent(
     '`library approve` exits 0 when an id approves normally',
     async () => {
-      const dbPath = tmpDbPath()
-      seedLibraryRow(dbPath, { jobId: 'job-ok-1', channel: 'demo', state: 'needs-review' })
-      const result = await runCli(['library', 'approve', 'job-ok-1', '--db', dbPath])
+      const root = testRoot()
+      seedLibraryRow(root.dbPath, { jobId: 'job-ok-1', channel: 'demo', state: 'needs-review' })
+      const result = await runCli(['library', 'approve', 'job-ok-1', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('approved 1 of 1')
     },
@@ -629,8 +602,8 @@ describe('brainrot CLI — publish and publishes', () => {
   it.concurrent(
     '`publish retry` on a job with no interrupted publish exits 1 naming the job',
     async () => {
-      const dbPath = tmpDbPath()
-      const result = await runCli(['publish', 'retry', 'no-such-job', '--db', dbPath])
+      const root = testRoot()
+      const result = await runCli(['publish', 'retry', 'no-such-job', '--root', root.root])
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('no interrupted publish for job no-such-job')
     },
@@ -640,18 +613,18 @@ describe('brainrot CLI — publish and publishes', () => {
   it.concurrent(
     '`publish retry` on a job with an interrupted publish clears it and returns the job to the pool',
     async () => {
-      const dbPath = tmpDbPath()
-      seedPublishRow(dbPath, {
+      const root = testRoot()
+      seedPublishRow(root.dbPath, {
         jobId: 'job-retry-1',
         channel: 'demo',
         day: '2026-07-22',
         seq: 1,
         status: 'interrupted',
       })
-      const result = await runCli(['publish', 'retry', 'job-retry-1', '--db', dbPath])
+      const result = await runCli(['publish', 'retry', 'job-retry-1', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('job-retry-1')
-      const db = openDb(dbPath)
+      const db = openDb(root.dbPath)
       const row = db
         .prepare('SELECT status, error_kind, error FROM publishes WHERE job_id = ?')
         .get('job-retry-1') as { status: string; error_kind: string; error: string }
@@ -666,14 +639,14 @@ describe('brainrot CLI — publish and publishes', () => {
   it.concurrent(
     '`publish mark-done` on a job with no interrupted publish exits 1 naming the job',
     async () => {
-      const dbPath = tmpDbPath()
+      const root = testRoot()
       const result = await runCli([
         'publish',
         'mark-done',
         'no-such-job',
         'yt-post-1',
-        '--db',
-        dbPath,
+        '--root',
+        root.root,
       ])
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('no interrupted publish for job no-such-job')
@@ -684,8 +657,8 @@ describe('brainrot CLI — publish and publishes', () => {
   it.concurrent(
     '`publish mark-done` on a job with an interrupted publish marks it done and flips the library row',
     async () => {
-      const dbPath = tmpDbPath()
-      seedPublishRow(dbPath, {
+      const root = testRoot()
+      seedPublishRow(root.dbPath, {
         jobId: 'job-done-1',
         channel: 'demo',
         day: '2026-07-22',
@@ -697,12 +670,12 @@ describe('brainrot CLI — publish and publishes', () => {
         'mark-done',
         'job-done-1',
         'yt-post-1',
-        '--db',
-        dbPath,
+        '--root',
+        root.root,
       ])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('https://youtube.com/shorts/yt-post-1')
-      const db = openDb(dbPath)
+      const db = openDb(root.dbPath)
       const publishRow = db
         .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
         .get('job-done-1') as { status: string; post_id: string; url: string }
@@ -731,8 +704,8 @@ describe('brainrot CLI — publish and publishes', () => {
   it.concurrent(
     '`publishes list` on an empty db prints a friendly empty message',
     async () => {
-      const dbPath = tmpDbPath()
-      const result = await runCli(['publishes', 'list', '--db', dbPath])
+      const root = testRoot()
+      const result = await runCli(['publishes', 'list', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('no publishes in the last 7 days')
     },
@@ -742,8 +715,8 @@ describe('brainrot CLI — publish and publishes', () => {
   it.concurrent(
     '`publishes list` prints day/seq/channel/platform/status/attempt/jobId and the url or error',
     async () => {
-      const dbPath = tmpDbPath()
-      seedPublishRow(dbPath, {
+      const root = testRoot()
+      seedPublishRow(root.dbPath, {
         jobId: 'job-list-done',
         channel: 'demo',
         day: '2026-07-22',
@@ -753,7 +726,7 @@ describe('brainrot CLI — publish and publishes', () => {
         url: 'https://youtube.com/shorts/yt-1',
         attempt: 1,
       })
-      seedPublishRow(dbPath, {
+      seedPublishRow(root.dbPath, {
         jobId: 'job-list-failed',
         channel: 'demo',
         day: '2026-07-22',
@@ -763,7 +736,7 @@ describe('brainrot CLI — publish and publishes', () => {
         errorKind: 'rejected',
         attempt: 2,
       })
-      const result = await runCli(['publishes', 'list', '--db', dbPath])
+      const result = await runCli(['publishes', 'list', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain(
         '2026-07-22 #1 demo youtube done attempt 1 job-list-done https://youtube.com/shorts/yt-1',
@@ -778,8 +751,8 @@ describe('brainrot CLI — publish and publishes', () => {
   it.concurrent(
     '`publishes list --days garbage` exits 1 before opening the db',
     async () => {
-      const dbPath = tmpDbPath()
-      const result = await runCli(['publishes', 'list', '--days', 'garbage', '--db', dbPath])
+      const root = testRoot()
+      const result = await runCli(['publishes', 'list', '--days', 'garbage', '--root', root.root])
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('invalid --days "garbage"')
     },
@@ -789,9 +762,8 @@ describe('brainrot CLI — publish and publishes', () => {
 
 describe('run', () => {
   it('starts, emits daemon-started, and exits 0 on SIGTERM', async () => {
-    const dbPath = tmpDbPath()
-    const channelsDir = tmpDir('brainrot-run-channels-')
-    const child = spawn('node', [CLI_ENTRY, 'run', '--db', dbPath, '--channels-dir', channelsDir], {
+    const root = testRoot()
+    const child = spawn('node', [CLI_ENTRY, 'run', '--root', root.root], {
       stdio: ['ignore', 'pipe', 'pipe'],
       // Unlike execa's runCli (which merges onto process.env), node:child_process's
       // spawn REPLACES env entirely when the option is passed — so process.env must

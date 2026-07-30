@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest'
 import type { TestContext } from 'vitest'
 import { fileURLToPath } from 'node:url'
 import { openDb } from '../../../db/index.js'
+import { resolveBrainrotPaths } from '../../../config/paths.js'
 import { parseTokenKey } from '../../crypto.js'
 import { publishMedia } from '../../media.js'
 import { loadToken } from '../../tokens.js'
@@ -15,12 +16,11 @@ import { mintAccessToken, youtubeTarget } from '../youtube.js'
 // (~1,650 units for the upload + delete), no USD spend. Needs a real
 // per-channel grant already on file: run
 // `pnpm brainrot auth youtube --channel <CONTRACT_YT_CHANNEL>` against
-// BRAINROT_DB first (README's Publishing (YouTube) section).
+// $BRAINROT_ROOT (or "local") first (README's Publishing (YouTube) section).
 const REQUIRED_ENV = [
   'YT_CLIENT_ID',
   'YT_CLIENT_SECRET',
   'BRAINROT_TOKEN_KEY',
-  'BRAINROT_DB',
   'CONTRACT_YT_CHANNEL',
 ] as const
 
@@ -35,7 +35,7 @@ describe('youtube adapter (contract)', () => {
       )
     }
 
-    const db = openDb(process.env.BRAINROT_DB!)
+    const db = openDb(resolveBrainrotPaths().dbPath)
     try {
       const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
       const channel = process.env.CONTRACT_YT_CHANNEL!
@@ -43,7 +43,7 @@ describe('youtube adapter (contract)', () => {
       if (stored === null) {
         ctx.skip(
           `no stored youtube refresh token for channel "${channel}" — run ` +
-            `\`pnpm brainrot auth youtube --channel ${channel}\` against BRAINROT_DB first`,
+            `\`pnpm brainrot auth youtube --channel ${channel}\` against $BRAINROT_ROOT (or "local") first`,
         )
       }
 

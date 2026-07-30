@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +11,7 @@ import { pipelineStages } from '../pipeline.js'
 import { claimJobForResume, ResumeError, resumeJob } from '../resume.js'
 import { runCli } from '../../testing/run-cli.js'
 import { memDb } from '../../testing/db.js'
+import { testRoot } from '../../testing/tmp.js'
 import { BrainrotError, classify, errorMessage } from '../../errors.js'
 
 // Real minimal channel TOML (plan-1 shape; [scout] is optional): resumeJob
@@ -304,24 +305,14 @@ describe('resumeJob', () => {
 })
 
 describe('brainrot resume CLI', () => {
-  const cleanup: string[] = []
-  function tmpDir(prefix: string): string {
-    const d = mkdtempSync(join(tmpdir(), prefix))
-    cleanup.push(d)
-    return d
-  }
-  afterAll(() => {
-    for (const d of cleanup) rmSync(d, { recursive: true, force: true })
-  })
-
   it.concurrent(
-    '`resume --help` prints usage with --db/--runs-root/--channels-dir/--force',
+    '`resume --help` prints usage with --root/--force',
     async () => {
       const result = await runCli(['resume', '--help'])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('--db')
-      expect(result.stdout).toContain('--runs-root')
-      expect(result.stdout).toContain('--channels-dir')
+      expect(result.stdout).toContain('--root')
+      expect(result.stdout).not.toContain('--runs-root')
+      expect(result.stdout).not.toContain('--channels-dir')
       expect(result.stdout).toContain('--force')
     },
     60000,
@@ -330,9 +321,8 @@ describe('brainrot resume CLI', () => {
   it.concurrent(
     'a refusal prints the reason to stderr and exits 1 with no JSON on stdout',
     async () => {
-      const dbPath = join(tmpDir('brainrot-resume-db-'), 'brainrot.db')
-      openDb(dbPath).close() // create the schema
-      const result = await runCli(['resume', 'no-such-job', '--db', dbPath])
+      const root = testRoot()
+      const result = await runCli(['resume', 'no-such-job', '--root', root.root])
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toContain('job not found: no-such-job')
       // just the message — no raw unhandled-rejection stack frames
@@ -345,17 +335,13 @@ describe('brainrot resume CLI', () => {
   it.concurrent(
     'resumes a final-gate-crashed job end to end, printing the JobResult JSON line and exiting 0',
     async () => {
-      const root = tmpDir('brainrot-resume-e2e-')
-      const dbPath = join(root, 'brainrot.db')
-      const runsRootDir = join(root, 'runs')
-      const channelsDirPath = join(root, 'channels')
-      mkdirSync(channelsDirPath, { recursive: true })
-      writeFileSync(join(channelsDirPath, 'resume-test.toml'), CHANNEL_TOML)
+      const root = testRoot()
+      writeFileSync(join(root.channelsDir, 'resume-test.toml'), CHANNEL_TOML)
 
       // A job that crashed at the final gate: every stage 'done' but status
       // 'failed'. Resume skips all stages and re-runs only the final gate —
       // the one real-stage-free path a subprocess test can drive.
-      const db = openDb(dbPath)
+      const db = openDb(root.dbPath)
       db.prepare(
         "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('e2e-job', 'resume-test', 'volume', 't', 'failed')",
       ).run()
@@ -365,23 +351,14 @@ describe('brainrot resume CLI', () => {
         ).run(stage)
       }
       db.close()
-      const qcDir = join(runsRootDir, 'e2e-job', 'qc')
+      const qcDir = join(root.runsRoot, 'e2e-job', 'qc')
       mkdirSync(qcDir, { recursive: true })
       writeFileSync(join(qcDir, 'qc.json'), JSON.stringify({ passed: true, checks: [] }))
-      const assembleDir = join(runsRootDir, 'e2e-job', 'assemble')
+      const assembleDir = join(root.runsRoot, 'e2e-job', 'assemble')
       mkdirSync(assembleDir, { recursive: true })
       writeFileSync(join(assembleDir, 'final.mp4'), 'FAKEMP4')
 
-      const result = await runCli([
-        'resume',
-        'e2e-job',
-        '--db',
-        dbPath,
-        '--runs-root',
-        runsRootDir,
-        '--channels-dir',
-        channelsDirPath,
-      ])
+      const result = await runCli(['resume', 'e2e-job', '--root', root.root])
       expect(result.exitCode).toBe(0)
       const line = JSON.parse(result.stdout) as {
         jobId: string
@@ -390,7 +367,7 @@ describe('brainrot resume CLI', () => {
       }
       expect(line.jobId).toBe('e2e-job')
       expect(line.status).toBe('ready')
-      expect(line.videoPath).toBe(join(runsRootDir, 'e2e-job', 'assemble', 'final.mp4'))
+      expect(line.videoPath).toBe(join(root.runsRoot, 'e2e-job', 'assemble', 'final.mp4'))
     },
     60000,
   )

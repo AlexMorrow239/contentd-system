@@ -32,7 +32,7 @@ import {
   writeChannel,
 } from './_publish-next.fixtures.js'
 import { runCli } from '../../testing/run-cli.js'
-import { tmpDir } from '../../testing/tmp.js'
+import { tmpDir, testRoot } from '../../testing/tmp.js'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPublish } from '../../testing/db.js'
 
 /**
@@ -1566,12 +1566,12 @@ describe('publishNextTick — config errors', () => {
 
 describe('publish-next CLI', () => {
   it.concurrent(
-    '`publish-next --help` prints usage with --db/--channels-dir/--dry-run/--force',
+    '`publish-next --help` prints usage with --root/--dry-run/--force',
     async () => {
       const result = await runCli(['publish-next', '--help'])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('--db')
-      expect(result.stdout).toContain('--channels-dir')
+      expect(result.stdout).toContain('--root')
+      expect(result.stdout).not.toContain('--channels-dir')
       expect(result.stdout).toContain('--dry-run')
       expect(result.stdout).toContain('--force')
     },
@@ -1581,16 +1581,9 @@ describe('publish-next CLI', () => {
   it.concurrent(
     '`publish-next` with no publishing channel prints one noop JSON line and exits 0',
     async () => {
-      const root = tmpDir('brainrot-publish-cli-')
-      const channelsDir = tmpDir('brainrot-publish-cli-channels-')
-      writeChannel(channelsDir, { name: 'chan-a' })
-      const result = await runCli([
-        'publish-next',
-        '--db',
-        join(root, 'brainrot.db'),
-        '--channels-dir',
-        channelsDir,
-      ])
+      const root = testRoot('brainrot-publish-cli-')
+      writeChannel(root.channelsDir, { name: 'chan-a' })
+      const result = await runCli(['publish-next', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
       expect(JSON.parse(result.stdout)).toEqual({
@@ -1605,17 +1598,9 @@ describe('publish-next CLI', () => {
   it.concurrent(
     '`publish-next --dry-run` with no publishing channel prints one dry-run JSON line and exits 0',
     async () => {
-      const root = tmpDir('brainrot-publish-cli-dry-')
-      const channelsDir = tmpDir('brainrot-publish-cli-dry-channels-')
-      writeChannel(channelsDir, { name: 'chan-a' })
-      const result = await runCli([
-        'publish-next',
-        '--db',
-        join(root, 'brainrot.db'),
-        '--channels-dir',
-        channelsDir,
-        '--dry-run',
-      ])
+      const root = testRoot('brainrot-publish-cli-dry-')
+      writeChannel(root.channelsDir, { name: 'chan-a' })
+      const result = await runCli(['publish-next', '--root', root.root, '--dry-run'])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
       expect(JSON.parse(result.stdout)).toEqual({
@@ -1633,16 +1618,9 @@ describe('publish-next CLI', () => {
   it.concurrent(
     '`publish-next` over a broken channels dir names the file on stderr, one JSON line, exit 0',
     async () => {
-      const root = tmpDir('brainrot-publish-cli-broken-')
-      const brokenDir = tmpDir('brainrot-publish-cli-broken-channels-')
-      writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
-      const result = await runCli([
-        'publish-next',
-        '--db',
-        join(root, 'brainrot.db'),
-        '--channels-dir',
-        brokenDir,
-      ])
+      const root = testRoot('brainrot-publish-cli-broken-')
+      writeFileSync(join(root.channelsDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli(['publish-next', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
       const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }

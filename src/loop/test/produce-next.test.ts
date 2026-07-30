@@ -13,6 +13,7 @@ import { claimTopic } from '../../scout/topics.js'
 import { produceNextTick } from '../produce-next.js'
 import { acquireLease, PRODUCE_LEASE_TTL_MS } from '../lease.js'
 import { memDb } from '../../testing/db.js'
+import { testRoot } from '../../testing/tmp.js'
 
 // Both lost-claim races are single-instant windows between planning and
 // executing that no in-process seeding can open, so the two losing calls are
@@ -563,13 +564,13 @@ describe('produceNextTick — lease heartbeat', () => {
 
 describe('produce-next CLI', () => {
   it.concurrent(
-    '`produce-next --help` prints usage with --db/--channels-dir/--runs-root',
+    '`produce-next --help` prints usage with --root',
     async () => {
       const result = await runCli(['produce-next', '--help'])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('--db')
-      expect(result.stdout).toContain('--channels-dir')
-      expect(result.stdout).toContain('--runs-root')
+      expect(result.stdout).toContain('--root')
+      expect(result.stdout).not.toContain('--channels-dir')
+      expect(result.stdout).not.toContain('--runs-root')
     },
     60000,
   )
@@ -577,16 +578,9 @@ describe('produce-next CLI', () => {
   it.concurrent(
     '`produce-next` with no eligible work prints one noop JSON line and exits 0',
     async () => {
-      const root = tmpDir('brainrot-loop-cli-')
-      const result = await runCli([
-        'produce-next',
-        '--db',
-        join(root, 'brainrot.db'),
-        '--channels-dir',
-        channelsDir,
-        '--runs-root',
-        join(root, 'runs'),
-      ])
+      const root = testRoot('brainrot-loop-cli-')
+      writeFileSync(join(root.channelsDir, 'loop-chan.toml'), CHANNEL_TOML)
+      const result = await runCli(['produce-next', '--root', root.root])
       expect(result.exitCode).toBe(0)
       // exactly one cron-greppable JSON line
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
@@ -600,18 +594,9 @@ describe('produce-next CLI', () => {
   it.concurrent(
     '`produce-next` over a broken channels dir still prints one JSON line and exits 0',
     async () => {
-      const root = tmpDir('brainrot-loop-cli-broken-')
-      const brokenDir = tmpDir('brainrot-loop-cli-broken-channels-')
-      writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
-      const result = await runCli([
-        'produce-next',
-        '--db',
-        join(root, 'brainrot.db'),
-        '--channels-dir',
-        brokenDir,
-        '--runs-root',
-        join(root, 'runs'),
-      ])
+      const root = testRoot('brainrot-loop-cli-broken-')
+      writeFileSync(join(root.channelsDir, 'broken.toml'), 'this is not toml [')
+      const result = await runCli(['produce-next', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
       const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }

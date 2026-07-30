@@ -50,6 +50,7 @@ import { PUBLISH_PLATFORMS, type Platform } from './publish/types.js'
 import { s3ConfigError } from './storage/config.js'
 import type { ObjectStore } from './storage/types.js'
 import { DEV_VOICE_ENV } from './stages/voice.js'
+import { resolveBrainrotPaths } from './config/paths.js'
 
 /**
  * Validate `topics reject`/`requeue` id arguments. Throws naming the FIRST bad
@@ -106,6 +107,12 @@ function parseAuthPort(raw: string): number {
   return Number(raw)
 }
 
+// One flag, not three. The container/host split is built on this single value:
+// compose pins BRAINROT_ROOT=/app/state, the host .env sets `local`, and an
+// unset value means development — so a command can never reach production by
+// omission, and "dev db + prod runs" is not a representable state.
+const ROOT_OPTION_DESC = 'mode root holding db/, runs/ and channels/ (default: $BRAINROT_ROOT or local)'
+
 // Moved to src/jobs/pipeline.ts so the loop code (resume, produce-next) shares
 // the exact produce wiring; re-exported so in-process importers (cli.test.ts)
 // keep their import path.
@@ -115,25 +122,6 @@ export { pipelineStages } from './jobs/pipeline.js'
 // same constant applyDevFlag uses, without a second import path into
 // src/stages/voice.ts.
 export { DEV_VOICE_ENV } from './stages/voice.js'
-
-function resolveDbPath(flagDb?: string): string {
-  return flagDb ?? process.env.BRAINROT_DB ?? 'data/brainrot.db'
-}
-
-/**
- * flag > env > default, exactly like resolveDbPath. Exported so cli.test.ts can
- * assert the precedence in-process, and because the container/host split is
- * built entirely on the env tier: the compose service sets the production
- * triple, the host .env sets the dev triple, and neither can be shadowed by a
- * commander default.
- */
-export function resolveChannelsDir(flagChannelsDir?: string): string {
-  return flagChannelsDir ?? process.env.BRAINROT_CHANNELS_DIR ?? 'channels'
-}
-
-export function resolveRunsRoot(flagRunsRoot?: string): string {
-  return flagRunsRoot ?? process.env.BRAINROT_RUNS_ROOT ?? 'runs'
-}
 
 /**
  * Sets BRAINROT_DEV_VOICE for the current process when --dev is passed, so
@@ -172,20 +160,13 @@ program
   .command('produce')
   .requiredOption('--channel <path>', 'path to channel TOML')
   .requiredOption('--topic <text>', 'topic text')
-  .option('--db <path>', 'sqlite db path')
-  .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option(
     '--dev',
     'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
   )
   .action(
-    async (opts: {
-      channel: string
-      topic: string
-      db?: string
-      runsRoot?: string
-      dev?: boolean
-    }) => {
+    async (opts: { channel: string; topic: string; root?: string; dev?: boolean }) => {
       applyDevFlag(opts.dev)
       // Refuse before the render, not after it: the `store` stage runs last,
       // so an unconfigured deployment would otherwise pay for a full Remotion
@@ -197,11 +178,13 @@ program
         process.exitCode = 1
         return
       }
-      const runsRoot = resolveRunsRoot(opts.runsRoot)
+      const paths = resolveBrainrotPaths(opts.root)
       const channel = loadChannelConfig(opts.channel)
-      const db = openDb(resolveDbPath(opts.db))
+      const db = openDb(paths.dbPath)
       const jobId = createJob(db, channel, { topic: opts.topic })
-      const result = await runJob(db, channel, jobId, pipelineStages(), { runsRoot })
+      const result = await runJob(db, channel, jobId, pipelineStages(), {
+        runsRoot: paths.runsRoot,
+      })
       // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
       // event loop alive, letting the process drain stdout and exit on its own.
       db.close()
@@ -215,21 +198,17 @@ program
 
 program
   .command('scout')
-  .option('--db <path>', 'sqlite db path')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--force', 'bypass the per-channel scout recheck cooldown (SCOUT_RECHECK_MS)')
-  .action(async (opts: { db?: string; channelsDir?: string; force?: boolean }) => {
-    const channelsDir = resolveChannelsDir(opts.channelsDir)
+  .action(async (opts: { root?: string; force?: boolean }) => {
+    const paths = resolveBrainrotPaths(opts.root)
     // Config load precedes the db handle AND the lease, exactly as in
     // produce-next/publish-next: a broken channel TOML blocks the whole run
     // either way, and letting it throw meant exit 1 with NO JSON line every
     // firing — the one shape the cron log's every-tick-prints-a-line contract
     // cannot survive. The message also goes to stderr, since a line grepped
     // only for `action` would otherwise carry the cause silently.
-    const loaded = tryLoadChannelsDir(channelsDir)
+    const loaded = tryLoadChannelsDir(paths.channelsDir)
     if (loaded.error !== undefined) {
       console.error(`scout: ${loaded.error}`)
       process.stdout.write(
@@ -238,7 +217,7 @@ program
       return
     }
     const channels = loaded.channels
-    const db = openDb(resolveDbPath(opts.db))
+    const db = openDb(paths.dbPath)
     // Same lease discipline as the produce/publish loops: two overlapping scout
     // runs would race the global-budget check and double-spend. A held lease is
     // a benign no-op, exit 0. The pid-tagged holder means an expiry takeover can
@@ -271,12 +250,7 @@ program
 program
   .command('resume')
   .argument('<jobId>', 'job id to resume (failed or blocked; running needs --force)')
-  .option('--db <path>', 'sqlite db path')
-  .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--force', 'resume a job stuck in running (asserts no live process holds it)')
   .option(
     '--dev',
@@ -286,21 +260,18 @@ program
     async (
       jobId: string,
       opts: {
-        db?: string
-        runsRoot?: string
-        channelsDir?: string
+        root?: string
         force?: boolean
         dev?: boolean
       },
     ) => {
       applyDevFlag(opts.dev)
-      const runsRoot = resolveRunsRoot(opts.runsRoot)
-      const channelsDir = resolveChannelsDir(opts.channelsDir)
-      const db = openDb(resolveDbPath(opts.db))
+      const paths = resolveBrainrotPaths(opts.root)
+      const db = openDb(paths.dbPath)
       try {
         const result = await resumeJob(db, jobId, {
-          runsRoot,
-          channelsDir,
+          runsRoot: paths.runsRoot,
+          channelsDir: paths.channelsDir,
           force: opts.force,
         })
         process.stdout.write(JSON.stringify(result) + '\n')
@@ -315,9 +286,9 @@ program
 
 program
   .command('jobs')
-  .option('--db <path>', 'sqlite db path')
-  .action((opts: { db?: string }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((opts: { root?: string }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     const rows = db
       .prepare('SELECT id, channel, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 20')
       .all()
@@ -326,9 +297,9 @@ program
 
 program
   .command('costs')
-  .option('--db <path>', 'sqlite db path')
-  .action((opts: { db?: string }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((opts: { root?: string }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     const rows = db
       .prepare(
         `SELECT substr(created_at, 1, 10) AS day, SUM(usd_micros) AS micros
@@ -343,20 +314,14 @@ program
 
 program
   .command('produce-next')
-  .option('--db <path>', 'sqlite db path')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
-  .option('--runs-root <path>', 'runs root directory (default: $BRAINROT_RUNS_ROOT or runs)')
-  .action(async (opts: { db?: string; channelsDir?: string; runsRoot?: string }) => {
-    const channelsDir = resolveChannelsDir(opts.channelsDir)
-    const runsRoot = resolveRunsRoot(opts.runsRoot)
-    const db = openDb(resolveDbPath(opts.db))
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action(async (opts: { root?: string }) => {
+    const paths = resolveBrainrotPaths(opts.root)
+    const db = openDb(paths.dbPath)
     try {
       const result = await produceNextTick(db, {
-        channelsDir,
-        runsRoot,
+        channelsDir: paths.channelsDir,
+        runsRoot: paths.runsRoot,
       })
       reportBlockedTick('produce-next', result)
       // One cron-greppable JSON line. Exit mirrors produce: 0 for
@@ -375,16 +340,12 @@ program
   .description(
     'run the demand-driven daemon: produce, publish and scout workers plus the daily digest',
   )
-  .option('--db <path>', 'sqlite db path')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
-  .action(async (opts: { db?: string; channelsDir?: string }) => {
-    const channelsDir = resolveChannelsDir(opts.channelsDir)
-    const db = openDb(resolveDbPath(opts.db))
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action(async (opts: { root?: string }) => {
+    const paths = resolveBrainrotPaths(opts.root)
+    const db = openDb(paths.dbPath)
     try {
-      await runDaemon(db, { channelsDir, runsRoot: resolveRunsRoot() })
+      await runDaemon(db, { channelsDir: paths.channelsDir, runsRoot: paths.runsRoot })
     } finally {
       db.close()
     }
@@ -392,23 +353,19 @@ program
 
 program
   .command('publish-next')
-  .option('--db <path>', 'sqlite db path')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--dry-run', 'preview the next publish without writing anything')
   .option(
     '--force',
     'ignore the publish window, the pacing gap, and the daily count (local testing; platform quotas still apply)',
   )
   .action(
-    async (opts: { db?: string; channelsDir?: string; dryRun?: boolean; force?: boolean }) => {
-      const channelsDir = resolveChannelsDir(opts.channelsDir)
-      const db = openDb(resolveDbPath(opts.db))
+    async (opts: { root?: string; dryRun?: boolean; force?: boolean }) => {
+      const paths = resolveBrainrotPaths(opts.root)
+      const db = openDb(paths.dbPath)
       try {
         const result = await publishNextTick(db, {
-          channelsDir,
+          channelsDir: paths.channelsDir,
           dryRun: opts.dryRun,
           force: opts.force,
         })
@@ -432,11 +389,11 @@ const topics = program.command('topics')
 
 topics
   .command('list')
-  .option('--db <path>', 'sqlite db path')
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--channel <name>', 'filter by channel')
   .option('--status <status>', 'filter by topic status')
-  .action((opts: { db?: string; channel?: string; status?: string }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .action((opts: { root?: string; channel?: string; status?: string }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     // An unknown --status matches no rows (the DAO filters verbatim), so the
     // operator sees an empty table rather than an error.
     const rows = listTopics(db, {
@@ -457,10 +414,10 @@ topics
 
 topics
   .command('reject <ids...>')
-  .option('--db <path>', 'sqlite db path')
-  .action((rawIds: string[], opts: { db?: string }) => {
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((rawIds: string[], opts: { root?: string }) => {
     const ids = parseTopicIds(rawIds)
-    const db = openDb(resolveDbPath(opts.db))
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     const changed = rejectTopics(db, ids)
     // reject takes candidate only; claimed/used rows are skipped.
     console.log(`rejected ${changed} of ${ids.length}`)
@@ -468,12 +425,12 @@ topics
 
 topics
   .command('requeue <id>')
-  .option('--db <path>', 'sqlite db path')
-  .action((rawId: string, opts: { db?: string }) => {
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((rawId: string, opts: { root?: string }) => {
     // Same pre-db id validation as reject: a bad token throws to the
     // parseAsync .catch (message on stderr, exit 1) with no writes.
     const [id] = parseTopicIds([rawId])
-    const db = openDb(resolveDbPath(opts.db))
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     try {
       const outcome = requeueTopic(db, id)
       if (outcome.ok) {
@@ -506,11 +463,11 @@ topics
 topics
   .command('prune-media')
   .description('re-check scouted reddit candidates and reject image-sourced ones')
-  .option('--db <path>', 'sqlite db path')
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--channel <name>', 'limit to one channel (default: all)')
   .option('--dry-run', 'report what would change without writing')
-  .action(async (opts: { db?: string; channel?: string; dryRun?: boolean }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .action(async (opts: { root?: string; channel?: string; dryRun?: boolean }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     try {
       const dryRun = opts.dryRun === true
       // Reddit's rate limit forces ~20s per row, so this runs for minutes.
@@ -542,11 +499,11 @@ const library = program.command('library')
 
 library
   .command('list')
-  .option('--db <path>', 'sqlite db path')
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--state <state>', 'filter by library state')
   .option('--channel <name>', 'filter by channel')
-  .action((opts: { db?: string; state?: string; channel?: string }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .action((opts: { root?: string; state?: string; channel?: string }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     // An unknown --state matches no rows (the DAO filters verbatim), so the
     // operator sees an empty table rather than an error.
     const rows = listLibrary(db, {
@@ -566,12 +523,12 @@ library
 
 library
   .command('approve <jobIds...>')
-  .option('--db <path>', 'sqlite db path')
-  .action((rawIds: string[], opts: { db?: string }) => {
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((rawIds: string[], opts: { root?: string }) => {
     // jobIds parse BEFORE the db opens: an empty/whitespace token throws to
     // the parseAsync .catch (message on stderr, exit 1) with no writes.
     const jobIds = parseLibraryJobIds(rawIds)
-    const db = openDb(resolveDbPath(opts.db))
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     const { approved, reclaimed } = approveLibrary(db, jobIds)
     // approved < jobIds.length flags ids that were not in 'needs-review' state.
     console.log(`approved ${approved} of ${jobIds.length}`)
@@ -594,10 +551,10 @@ library
 
 library
   .command('reject <jobIds...>')
-  .option('--db <path>', 'sqlite db path')
-  .action(async (rawIds: string[], opts: { db?: string }) => {
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action(async (rawIds: string[], opts: { root?: string }) => {
     const jobIds = parseLibraryJobIds(rawIds)
-    const db = openDb(resolveDbPath(opts.db))
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     // Read the keys before the state change: rejecting is the operator's
     // explicit statement that the video is worthless, and it is the one
     // deletion that is unambiguously safe.
@@ -632,9 +589,9 @@ library
 library
   .command('backfill-store')
   .description('upload finished videos that have no stored object yet')
-  .option('--db <path>', 'sqlite db path')
-  .action(async (opts: { db?: string }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action(async (opts: { root?: string }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     const res = await backfillStore({
       db,
       store: (await import('./storage/s3.js')).storeFromEnv(),
@@ -670,11 +627,7 @@ function registerAuthCommand(spec: {
   auth
     .command(spec.platform)
     .requiredOption('--channel <name>', 'channel name to authorize')
-    .option('--db <path>', 'sqlite db path')
-    .option(
-      '--channels-dir <dir>',
-      'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-    )
+    .option('--root <path>', ROOT_OPTION_DESC)
     .option(
       '--headless',
       'run where no browser exists (inside the container): print the consent url instead of launching a browser, and bind the callback on all interfaces so a published port reaches it',
@@ -687,20 +640,19 @@ function registerAuthCommand(spec: {
     .action(
       async (opts: {
         channel: string
-        db?: string
-        channelsDir?: string
+        root?: string
         headless?: boolean
         port?: number
       }) => {
         // Channel + env checks precede any db handle or browser launch, so a
         // typo or missing credential fails clean before Alex is asked to click
         // through a consent screen.
-        const channelsDir = resolveChannelsDir(opts.channelsDir)
-        const channels = loadChannelsDir(channelsDir)
+        const paths = resolveBrainrotPaths(opts.root)
+        const channels = loadChannelsDir(paths.channelsDir)
         const channel = channels.find((c) => c.name === opts.channel)
         if (!channel) {
           throw new Error(
-            `auth ${spec.platform}: unknown channel "${opts.channel}" (checked ${channelsDir})`,
+            `auth ${spec.platform}: unknown channel "${opts.channel}" (checked ${paths.channelsDir})`,
           )
         }
         const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
@@ -718,7 +670,7 @@ function registerAuthCommand(spec: {
             spec.headlessDefaultPort,
           ),
         )
-        const db = openDb(resolveDbPath(opts.db))
+        const db = openDb(paths.dbPath)
         try {
           upsertToken(
             db,
@@ -762,12 +714,8 @@ registerAuthCommand({
 
 program
   .command('digest')
-  .option('--db <path>', 'sqlite db path')
-  .option(
-    '--channels-dir <dir>',
-    'channel TOML directory (default: $BRAINROT_CHANNELS_DIR or channels)',
-  )
-  .action((opts: { db?: string; channelsDir?: string }) => {
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((opts: { root?: string }) => {
     // A report, not a check: nothing here may set a non-zero exit — cron
     // MAILTO should deliver whatever printed, so even a config/db error is
     // reported on stderr and the process still exits 0.
@@ -777,8 +725,9 @@ program
       // the report. Every sqlite-derived section still renders; the config
       // failure becomes the first action item instead. The catch below stays
       // for genuinely unexpected digest failures (a db that will not open).
-      const loaded = tryLoadChannelsDir(resolveChannelsDir(opts.channelsDir))
-      const db = openDb(resolveDbPath(opts.db))
+      const paths = resolveBrainrotPaths(opts.root)
+      const loaded = tryLoadChannelsDir(paths.channelsDir)
+      const db = openDb(paths.dbPath)
       try {
         process.stdout.write(
           buildDigest(db, loaded.channels, {}, { channelsError: loaded.error }) + '\n',
@@ -800,9 +749,9 @@ const publish = program.command('publish')
 
 publish
   .command('retry <jobId>')
-  .option('--db <path>', 'sqlite db path')
-  .action((jobId: string, opts: { db?: string }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((jobId: string, opts: { root?: string }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     try {
       const ok = retryInterrupted(db, jobId)
       if (!ok) {
@@ -820,9 +769,9 @@ publish
 
 publish
   .command('mark-done <jobId> <postId>')
-  .option('--db <path>', 'sqlite db path')
-  .action((jobId: string, postId: string, opts: { db?: string }) => {
-    const db = openDb(resolveDbPath(opts.db))
+  .option('--root <path>', ROOT_OPTION_DESC)
+  .action((jobId: string, postId: string, opts: { root?: string }) => {
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     try {
       // The interrupted row names its own platform, so the URL comes from
       // that platform's adapter — no --platform flag, and no chance of
@@ -846,16 +795,16 @@ publish
 publish
   .command('preflight <jobId>')
   .description('verify a stored video is fetchable and well-formed before Meta sees it')
-  .option('--db <path>', 'sqlite db path')
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--platform <platform>', 'publish platform', 'instagram')
-  .action(async (jobId: string, opts: { db?: string; platform?: string }) => {
+  .action(async (jobId: string, opts: { root?: string; platform?: string }) => {
     const platform = opts.platform ?? 'instagram'
     if (!PUBLISH_PLATFORMS.includes(platform as Platform)) {
       console.error(`unknown platform: ${platform}`)
       process.exitCode = 1
       return
     }
-    const db = openDb(resolveDbPath(opts.db))
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     const result = await preflight({
       db,
       jobId,
@@ -877,12 +826,12 @@ const publishes = program.command('publishes')
 
 publishes
   .command('list')
-  .option('--db <path>', 'sqlite db path')
+  .option('--root <path>', ROOT_OPTION_DESC)
   .option('--days <n>', 'lookback window in days', '7')
-  .action((opts: { db?: string; days: string }) => {
+  .action((opts: { root?: string; days: string }) => {
     // Validated BEFORE the db opens, mirroring parseTopicIds.
     const days = parsePublishDays(opts.days)
-    const db = openDb(resolveDbPath(opts.db))
+    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
     try {
       const rows = listPublishes(db, { sinceDays: days })
       if (rows.length === 0) {

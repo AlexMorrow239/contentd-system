@@ -2,6 +2,7 @@ import 'dotenv/config'
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { openDb } from '../../../db/index.js'
+import { resolveBrainrotPaths } from '../../../config/paths.js'
 import { s3ConfigFromEnv, s3Store } from '../../../storage/s3.js'
 import { parseTokenKey } from '../../crypto.js'
 import { publishMedia } from '../../media.js'
@@ -15,8 +16,8 @@ import { IG_TOKEN_REFRESH_WINDOW_MS, instagramAdapter } from '../instagram.js'
 // the configured Instagram Business account — costs real API quota, never
 // run casually. Needs a channel already authorized via
 // `pnpm brainrot auth instagram --channel <name>` against the real
-// BRAINROT_DB, plus a short real video file on disk (README's Publishing
-// (Instagram) section).
+// $BRAINROT_ROOT (or "local"), plus a short real video file on disk
+// (README's Publishing (Instagram) section).
 const CHANNEL = process.env.CONTRACT_IG_CHANNEL
 const IG_USER_ID = process.env.CONTRACT_IG_USER_ID
 const VIDEO_PATH = process.env.CONTRACT_IG_VIDEO_PATH
@@ -27,7 +28,7 @@ const VIDEO_PATH = process.env.CONTRACT_IG_VIDEO_PATH
 // thing that validates Meta's real field names.
 describe.skipIf(!CHANNEL || !IG_USER_ID || !VIDEO_PATH)('instagram adapter (contract)', () => {
   it('publishes a real Reel from a presigned video_url', async () => {
-    const db = openDb(process.env.BRAINROT_DB ?? 'data/brainrot.db')
+    const db = openDb(resolveBrainrotPaths().dbPath)
     const store = s3Store(s3ConfigFromEnv())
     // A `contract/` prefix, never `videos/`: contract objects are not archive
     // material and must not accumulate where backfill-store and the digest
@@ -72,7 +73,7 @@ describe.skipIf(!CHANNEL || !IG_USER_ID || !VIDEO_PATH)('instagram adapter (cont
 // Instagram Login's refresh needs no app id/secret.
 describe.skipIf(!CHANNEL)('instagram token refresh (contract)', () => {
   it('resolveCredential rotates a near-expiry token via the real ig_refresh_token exchange', async () => {
-    const db = openDb(process.env.BRAINROT_DB ?? 'data/brainrot.db')
+    const db = openDb(resolveBrainrotPaths().dbPath)
     try {
       const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
       const original = loadToken(db, 'instagram', CHANNEL!, key)
