@@ -18,11 +18,10 @@ cp .env.example .env          # fill in provider keys (see below)
 docker compose up -d whisperx # caption alignment sidecar
 ```
 
-The working directory this creates is a **development copy**: `.env.example`
-points `BRAINROT_DB`/`BRAINROT_CHANNELS_DIR`/`BRAINROT_RUNS_ROOT` at
-`data/dev.db`, `channels-dev/`, and `runs-dev/`, so a bare `pnpm brainrot ...`
-on the host never touches production state. See Development vs. production
-below for how the container overrides this.
+The working directory this creates is a **development copy**: `BRAINROT_ROOT`
+is unset by `.env.example`, and unset means `local` — the development root —
+so a bare `pnpm brainrot ...` on the host never touches production state. See
+Development vs. production below for how the container overrides this.
 
 Keys in `.env`:
 
@@ -57,8 +56,7 @@ subfolders).
 
 ```bash
 pnpm brainrot produce --channel channels/example.toml --topic "Why is Venus so hot?"
-# host defaults (from .env, dev copy): --db data/dev.db  --runs-root runs-dev
-# production equivalents, used only inside the container: --db data/brainrot.db --runs-root runs
+# host default: --root local
 ```
 
 Prints the `JobResult` as one JSON line; exit code `0` on `ready`/`needs-review`,
@@ -82,16 +80,18 @@ channel.
 ## Where outputs land
 
 Paths below are the **container's** (production) defaults. A host command
-writes into the development copy instead — `runs-dev/` and `data/dev.db` —
-unless you override `--db`/`--runs-root`/`BRAINROT_DB`/`BRAINROT_RUNS_ROOT`.
+writes into the development copy instead — `local/runs/` and
+`local/db/brainrot.db` — unless you override `--root`/`BRAINROT_ROOT`.
 See Development vs. production below.
 
-- Per-job artifacts: `runs/<jobId>/<stage>/` (`script.json`, `narration.wav`,
-  `words.json`, `background.mp4`, `final.mp4`, `qc.json`) — `runs-dev/...` on
-  the host
-- Finished video: `runs/<jobId>/assemble/final.mp4` — `runs-dev/...` on the host
-- State + library + cost ledger: SQLite at `data/brainrot.db` (override with
-  `--db` or `BRAINROT_DB`) — `data/dev.db` on the host
+- Per-job artifacts: `/app/state/runs/<jobId>/<stage>/` (`script.json`,
+  `narration.wav`, `words.json`, `background.mp4`, `final.mp4`, `qc.json`) —
+  `local/runs/<jobId>/<stage>/` on the host
+- Finished video: `/app/state/runs/<jobId>/assemble/final.mp4` —
+  `local/runs/<jobId>/assemble/final.mp4` on the host
+- State + library + cost ledger: SQLite at `/app/state/db/brainrot.db`
+  (override the root with `--root` or `BRAINROT_ROOT`) — `local/db/brainrot.db`
+  on the host
 
 **`runs/<jobId>/` is a disposable local cache, not the durable copy.** Once a
 job's `store` stage completes, the finished video also lives in the object
@@ -409,12 +409,11 @@ it. Each tick reports how many it dropped as `droppedMedia`.
 
 To clean image-sourced topics scouted before this existed, run `topics
 prune-media`. It re-fetches each candidate's permalink and rejects the ones
-whose target is an image. On the host it obeys the same dev defaults as every
-other command, so name the production database explicitly or it will quietly
-find nothing to do:
+whose target is an image. A host process can no longer open the production
+database at all, so run it inside the container:
 
 ```bash
-BRAINROT_DB=data/brainrot.db pnpm brainrot topics prune-media --dry-run
+docker compose exec brainrot pnpm brainrot topics prune-media --dry-run
 ```
 
 Drop `--dry-run` once the verdicts look right. Reddit rate-limits this endpoint
@@ -524,8 +523,14 @@ text, the library with inline video playback, the publish schedule as a
 day-by-ordinal grid including attempts that never happened, and the scout
 topic queue.
 
-Every page takes `?db=dev` to view `data/dev.db` instead of the production
-database; the header says which one you are looking at and dev shows a banner.
+The dashboard serves whichever root it is given, like every other entrypoint —
+there is no in-page database switcher, and the footer names the root being
+served. The compose service reads production. To view development state, run a
+second dashboard against the dev root:
+
+```bash
+BRAINROT_ROOT=local pnpm exec tsx src/dashboard/server.ts
+```
 
 The dashboard **never writes**. Its connection opens read-only, so
 `library approve/reject`, `topics requeue/reject/prune-media` and
@@ -535,33 +540,30 @@ affordance for that. The `brainrot-data` mount is read-write on purpose: SQLite
 must create the `-shm` file to read a WAL database, so the read-only guarantee
 lives in the connection flag rather than the mount.
 
-Note the dashboard mounts that database from the same named volume the daemon
-uses, so `?db=dev` now answers **503** in the container: `data/dev.db` is a
-host-side file that lives outside the volume, and `BRAINROT_DEV_DB` points at
-a path the container has no access to. To browse the dev database, run the
-dashboard on the host (`pnpm exec tsx src/dashboard/server.ts`) instead.
-
 The port is bound to `127.0.0.1` and there is no authentication. Do not
 republish it on `0.0.0.0`.
 
 ### Development vs. production
 
-|          | Production (container) | Development (host)             |
-| -------- | ---------------------- | ------------------------------ |
-| channels | `channels/`            | `channels-dev/`                |
-| db       | `data/brainrot.db`     | `data/dev.db`                  |
-| runs     | `runs/`                | `runs-dev/`                    |
-| voice    | real chain             | `--dev` / `[voice] dev = true` |
+| | root | db | runs | channels |
+| --- | --- | --- | --- | --- |
+| development (host) | `local/` | `local/db/brainrot.db` | `local/runs/` | `local/channels/` |
+| production (container) | `/app/state` | `brainrot-data` volume | `prod/runs/` on the host | `prod/channels/` on the host |
+
+`BRAINROT_ROOT` is the only knob, and **unset means `local`** — a bare
+`pnpm brainrot ...` on this machine cannot read or write production state even
+with no `.env` at all. `docker-compose.yml` pins the container to `/app/state`.
+Every command takes `--root <path>` to override it for one invocation.
 
 A bare `pnpm brainrot ...` on the host reads and writes only the development
-triple — the host's `.env` carries those defaults. The same command run
+root — the host's `.env` leaves `BRAINROT_ROOT` unset. The same command run
 inside the container reads and writes only production, because
-`docker-compose.yml`'s `environment:` block overrides all three no matter
-what the host's `.env` says:
+`docker-compose.yml`'s `environment:` block pins `BRAINROT_ROOT=/app/state` no
+matter what the host's `.env` says:
 
 ```bash
-pnpm brainrot jobs                               # host: reads data/dev.db
-docker compose exec brainrot pnpm brainrot jobs  # container: reads data/brainrot.db
+pnpm brainrot jobs                               # host: reads local/db/brainrot.db
+docker compose exec brainrot pnpm brainrot jobs  # container: reads /app/state/db/brainrot.db
 ```
 
 This is what makes local iteration safe: a half-finished channel's jobs are
@@ -570,13 +572,13 @@ the ledger the production budget caps read.
 
 ### Promotion
 
-Once a channel developed under `channels-dev/` is ready to go live, stop the
+Once a channel developed under `local/channels/` is ready to go live, stop the
 daemon first — the `publish` worker reads `oauth_tokens` from inside the
 container on every unit it does (immediately after work, at most every 30s
 while idle), and this writes that table from the host:
 
 ```bash
-cp channels-dev/<name>.toml channels/<name>.toml   # edit as needed
+cp local/channels/<name>.toml prod/channels/<name>.toml   # edit as needed
 
 docker compose exec brainrot pnpm brainrot auth youtube --channel <name> --headless
 # (and/or `auth instagram --channel <name> --headless`, for whichever
@@ -644,8 +646,8 @@ snapshot of a live database, where copying a file mid-write does not.
 
 ```bash
 docker compose exec brainrot node -e "
-  new (require('better-sqlite3'))('data/brainrot.db')
-    .exec(\"VACUUM INTO '/app/data/backup.db'\")"
+  new (require('better-sqlite3'))('/app/state/db/brainrot.db')
+    .exec(\"VACUUM INTO '/app/state/db/backup.db'\")"
 docker run --rm -v project-brainrot_brainrot-data:/d -v "$PWD":/out alpine \
   sh -c 'mv /d/backup.db /out/brainrot-backup.db'
 ```

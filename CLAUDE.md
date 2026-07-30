@@ -39,9 +39,10 @@ pnpm brainrot publish retry|mark-done <jobId>
 pnpm brainrot publishes list [--days N]
 pnpm brainrot auth youtube|instagram --channel <name>
 
-# A bare `pnpm brainrot ...` on the host reads the DEV triple (data/dev.db,
-# channels-dev/, runs-dev/) — an empty `jobs` table means wrong database, not
-# a lost job. Production state lives in a container-only volume:
+# A bare `pnpm brainrot ...` on the host reads `local/` — unset BRAINROT_ROOT
+# means local, and production is `/app/state` inside the container — an
+# empty `jobs` table means wrong root, not a lost job. Production state lives
+# in a container-only volume:
 docker compose exec brainrot pnpm brainrot jobs   # read-only; safe while the daemon runs
 # Mutating commands take no lease and race live workers — stop the daemon first:
 docker compose stop brainrot && docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId>
@@ -249,6 +250,11 @@ and `[publish.instagram]` cross-posts the same rendered video to both.
 find a slot" are the same statement. `[scout] queue_days` (default 3) is its
 scout-side analogue.
 
+`BRAINROT_ROOT` is the single path knob, resolved by `src/config/paths.ts`
+into `<root>/db/brainrot.db`, `<root>/runs`, and `<root>/channels`; unset
+means `local`. The four separate path variables it replaced are now startup
+errors naming their replacement, the same treatment a stale `slots` key gets.
+
 ### The scout filters media before it reaches the scorer
 
 The scorer sees titles, not posts, so an astrophotography submission reads as
@@ -376,7 +382,10 @@ only confirmations.
 ### The dashboard is read-only, and structurally so
 
 `src/dashboard/` serves a localhost web view of the database (compose service
-`dashboard`, port 8787, loopback-bound). It opens SQLite through
+`dashboard`, port 8787, loopback-bound). It serves one `BRAINROT_ROOT` per
+process — there is no in-page switcher, and the footer names the root being
+served; viewing the other root means running a second dashboard against it.
+It opens SQLite through
 `openDbReadonly` — a sibling of `openDb` that skips the `mkdirSync` and the
 `schema.sql` exec, both of which are writes — so no route can mutate state.
 Operator mutations stay on the CLI, where the lease-race caveats are
@@ -407,8 +416,9 @@ install/version.
 
 ### Data flow summary
 
-SQLite holds all state, at `data/brainrot.db` **inside the container** — the
-`brainrot-data` named volume, deliberately NOT a bind mount. WAL mode
+SQLite holds all state, at `<root>/db/brainrot.db`
+(`/app/state/db/brainrot.db` in the container) — the `brainrot-data` named
+volume, deliberately NOT a bind mount. WAL mode
 coordinates through an mmap'd `-shm` file every opener must share coherently;
 a bind mount from macOS reaches the Linux VM over virtiofs, so the daemon and
 a host CLI become two kernels sharing one file, which SQLite documents WAL as
@@ -422,7 +432,7 @@ and `docker compose exec` CLI runs all open it at once. It holds:
 progress), `library` (finished videos awaiting review/publish), `topics`
 (scout queue), `scout_state` (per-channel last-scout-attempt timestamp),
 `costs` (spend ledger), `leases`, `publishes`, `oauth_tokens`.
-Per-job filesystem artifacts live under `runs/<jobId>/<stage>/`. Schema lives
+Per-job filesystem artifacts live under `<root>/runs/<jobId>/<stage>/`. Schema lives
 in `src/db/schema.sql`, applied via `db.exec` on every `openDb` call (plain
 `CREATE TABLE IF NOT EXISTS`) — so schema.sql alone is the declarative shape
 of a _fresh_ database, and a new table still needs nothing else.
@@ -507,8 +517,9 @@ Conventions:
   every describe for their module, subprocess and in-process tests included).
   A split earns its keep only when it separates a genuinely different concern
   — `src/config/channels.smoke.test.ts` stays apart from `channel.test.ts`
-  because it hits real on-disk `channels/`/`channels-dev/` directories and
-  would otherwise cost `channel.test.ts` its hermeticity, not because of size.
+  because it hits real on-disk channel directories (including a gitignored
+  legacy one predating the mode-root split) and would otherwise cost
+  `channel.test.ts` its hermeticity, not because of size.
 - A `_<module>.fixtures.ts` holds what only that module needs, and **delegates
   row SQL to `src/testing/db.ts`** rather than re-issuing INSERTs. That is what
   lets a module keep an ergonomic local call shape (digest ages rows via

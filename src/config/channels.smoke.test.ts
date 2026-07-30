@@ -22,10 +22,10 @@ describe('checked-in channel configs', () => {
   })
 
   /**
-   * channels-dev/ is gitignored (it is BRAINROT_CHANNELS_DIR's local default),
-   * so nothing in CI ever loads it and it can drift out of sync with the
-   * schema. A developer who has it gets a loud failure; everyone else gets a
-   * reported SKIP.
+   * channels-dev/ is gitignored (it predates local/channels/, the dev mode
+   * root's channel directory), so nothing in CI ever loads it and it can
+   * drift out of sync with the schema. A developer who has it gets a loud
+   * failure; everyone else gets a reported SKIP.
    *
    * skipIf, not an early `return`: a bare return reports a PASS for work that
    * never ran, which is how this check could have gone silently dead.
