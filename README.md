@@ -558,10 +558,10 @@ with no `.env` at all. `docker-compose.yml` pins the container to `/app/state`.
 Every command takes `--root <path>` to override it for one invocation.
 
 A bare `pnpm brainrot ...` on the host reads and writes only the development
-root — the host's `.env` leaves `BRAINROT_ROOT` unset. The same command run
-inside the container reads and writes only production, because
-`docker-compose.yml`'s `environment:` block pins `BRAINROT_ROOT=/app/state` no
-matter what the host's `.env` says:
+root — the host's `.env` sets `BRAINROT_ROOT=local`, and unset also resolves
+to `local`. The same command run inside the container reads and writes only
+production, because `docker-compose.yml`'s `environment:` block pins
+`BRAINROT_ROOT=/app/state` no matter what the host's `.env` says:
 
 ```bash
 pnpm brainrot jobs                               # host: reads local/db/brainrot.db
