@@ -27,7 +27,7 @@ pnpm test                     # vitest run — mocked providers, real ffmpeg/Rem
 pnpm test:coverage            # same run + v8 coverage -> coverage/ (report-only, no thresholds)
 pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one LLM call
 
-pnpm brainrot produce --channel channels/<name>.toml --topic "..."
+pnpm brainrot produce --channel local/channels/<name>.toml --topic "..."
 pnpm brainrot run                    # the demand-driven daemon: produce/publish/scout workers + digest
 pnpm brainrot scout | produce-next | publish-next | digest  # one manual/debug unit of each, outside the daemon
 pnpm brainrot jobs | costs
@@ -252,8 +252,11 @@ scout-side analogue.
 
 `BRAINROT_ROOT` is the single path knob, resolved by `src/config/paths.ts`
 into `<root>/db/brainrot.db`, `<root>/runs`, and `<root>/channels`; unset
-means `local`. The four separate path variables it replaced are now startup
-errors naming their replacement, the same treatment a stale `slots` key gets.
+means `local`. The four separate path variables it replaced are gone and now
+inert — a `.env` still setting one of the old names is silently ignored, not
+a startup error. They lived weeks, not years, so the compatibility guard
+that used to name the replacement was cut rather than carried as debt
+(`44bba57`).
 
 ### The scout filters media before it reaches the scorer
 

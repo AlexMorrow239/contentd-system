@@ -35,10 +35,15 @@ export function parseRange(
 }
 
 /**
- * Containment check for a database-sourced video path. Relative paths resolve
- * against the process cwd, which is how the pipeline writes them:
- * runner.ts's artifactPath joins a relative runsRoot ('runs'), so library rows
- * hold 'runs/<jobId>/assemble/final.mp4'.
+ * Containment check for a database-sourced video path. runsRoot is now an
+ * absolute mode-root path (e.g. '/app/state/runs' in the container,
+ * '<repo>/local/runs' on the host — see src/config/paths.ts), and
+ * runner.ts's artifactPath joins jobId/stage/file onto it, so library rows
+ * written under this branch hold absolute paths like
+ * '/app/state/runs/<jobId>/assemble/final.mp4'. A handful of rows written
+ * before this branch still hold the old relative 'runs/<jobId>/...' shape;
+ * resolve() below anchors those against the process cwd, same as any other
+ * relative path.
  *
  * Returns the absolute path, or null when it escapes runsRoot.
  */
