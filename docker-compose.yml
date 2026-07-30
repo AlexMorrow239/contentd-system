@@ -75,22 +75,14 @@ services:
     depends_on:
       whisperx:
         condition: service_healthy
-    # Two files, evaluated in order — later wins for a duplicate key. This is
-    # what lets the host .env stay pointed at local MinIO (matching the dev
-    # mode root it already carries via BRAINROT_ROOT) while the container gets
-    # real R2, with no manual swapping between them. .env.production is
-    # gitignored and holds only the credentials that cannot be pinned as
-    # literals below.
+    # Forwards EVERY key in the host's (dev-pointing) .env — provider keys,
+    # BRAINROT_TOKEN_KEY, the dev-facing BRAINROT_S3_* (MinIO), etc. — into
+    # this container. The `environment:` block below overrides the keys that
+    # must hold a different value in production; every other .env key passes
+    # through unmodified (intended for provider keys, IG app credentials,
+    # BRAINROT_TOKEN_KEY).
     env_file:
       - .env
-      # required: false so a fresh clone still starts instead of erroring on a
-      # missing file. Note this is only about the FILE being absent — object
-      # storage itself is required to produce at all, YouTube-only included
-      # (README "Object storage"): without the BRAINROT_S3_* keys the produce
-      # tick no-ops with "reason":"bad-env" rather than rendering a video it
-      # cannot durably store.
-      - path: .env.production
-        required: false
     environment:
       # env_file above forwards EVERY key in the host's (dev-pointing) .env —
       # provider keys, BRAINROT_TOKEN_KEY, etc — straight into this container.
@@ -133,21 +125,25 @@ services:
       # already the effective value) rather than leaving it implicit. quota.ts
       # also treats "" as unset, so this must be a real integer, not "".
       BRAINROT_YT_UPLOADS_PER_DAY: '6'
-      # BRAINROT_S3_BUCKET and BRAINROT_S3_PUBLIC_ENDPOINT below are pinned
-      # for the same reason as BRAINROT_DEV_VOICE and BRAINROT_ROOT:
-      # env_file forwards the host's (dev-pointing) .env wholesale, so
-      # without a pin, a .env aimed at the local MinIO container would
-      # silently redirect every production video into a container that is
-      # not even running here.
-      # BRAINROT_S3_ENDPOINT is deliberately NOT listed here. It has to come
-      # from .env.production, and an `environment:` entry would defeat that:
-      # Compose applies `environment` after every env_file, and `${VAR}`
-      # interpolates from the project .env — the dev one — so writing
-      # `BRAINROT_S3_ENDPOINT: ${BRAINROT_S3_ENDPOINT}` would reach in, pick up
-      # the MinIO endpoint, and clobber the real R2 value that .env.production
-      # just supplied. The endpoint embeds the Cloudflare account id, so it
-      # cannot be a committed literal either.
+      # BRAINROT_S3_* below is pinned to the production R2 credentials for
+      # the same reason as BRAINROT_DEV_VOICE and BRAINROT_ROOT: env_file
+      # forwards the host's (dev-pointing) .env wholesale, so without a pin
+      # the container would run against MinIO — not even reachable from
+      # here — instead of R2.
+      #
+      # BRAINROT_R2_* holds the real R2 credentials under distinct names
+      # specifically so this mapping is possible: ${VAR} interpolates from
+      # the project .env, and since BRAINROT_S3_* in that same file is the
+      # MinIO value, `BRAINROT_S3_ENDPOINT: ${BRAINROT_S3_ENDPOINT}` would
+      # just clobber R2 with MinIO. Filling BRAINROT_S3_ENDPOINT directly
+      # here isn't an option either — it embeds the Cloudflare account id,
+      # so it can't be a committed literal.
+      BRAINROT_S3_ENDPOINT: ${BRAINROT_R2_ENDPOINT}
       BRAINROT_S3_BUCKET: brainrot-videos
+      BRAINROT_S3_ACCESS_KEY_ID: ${BRAINROT_R2_ACCESS_KEY_ID}
+      BRAINROT_S3_SECRET_ACCESS_KEY: ${BRAINROT_R2_SECRET_ACCESS_KEY}
+      # R2 ignores region but the SDK requires one.
+      BRAINROT_S3_REGION: 'auto'
       # Never set for production: presigning must sign against the real R2
       # endpoint. This exists only so a dev .env's MinIO value cannot leak in.
       BRAINROT_S3_PUBLIC_ENDPOINT: ''
