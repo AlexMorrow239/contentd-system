@@ -1,5 +1,5 @@
 import { BrainrotError } from '../errors.js'
-import { resolveBrainrotPaths, type BrainrotPaths } from '../config/paths.js'
+import { resolveBrainrotPaths, envValue, type BrainrotPaths } from '../config/paths.js'
 
 export interface DashboardConfig {
   paths: BrainrotPaths
@@ -7,14 +7,6 @@ export interface DashboardConfig {
 }
 
 const DEFAULT_PORT = 8787
-
-// Empty string means unset, matching costs.ts (BRAINROT_GLOBAL_DAILY_USD) and
-// youtube.ts (BRAINROT_YT_UPLOADS_PER_DAY): docker-compose.yml pins some keys
-// to "" deliberately, and "" must never be read as a real value.
-function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
-  const raw = env[key]
-  return raw === undefined || raw.trim() === '' ? undefined : raw
-}
 
 /**
  * One root per process, exactly like every other entrypoint. There is no

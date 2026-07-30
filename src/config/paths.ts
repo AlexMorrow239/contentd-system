@@ -38,8 +38,8 @@ export interface BrainrotPaths {
   channelsDir: string
 }
 
-/** "" is unset, matching dashboard/config.ts's envValue and costs.ts. */
-function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
+/** "" is unset, matching costs.ts. */
+export function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const raw = env[key]
   return raw === undefined || raw.trim() === '' ? undefined : raw
 }
