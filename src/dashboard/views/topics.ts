@@ -1,8 +1,7 @@
 import type { TopicRow, TopicStatus } from '../../scout/topics.js'
-import type { DbChoice } from '../config.js'
 import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import { formatTime, truncationNotice } from './jobs.js'
-import { dbHref } from './layout.js'
+import { href } from './layout.js'
 
 const TOPIC_STATUSES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
 
@@ -18,15 +17,10 @@ export interface TopicsPageData {
   total?: number
   channels: string[]
   filter: { channel?: string; status?: TopicStatus }
-  dbChoice: DbChoice
 }
 
 export function renderTopicsPage(data: TopicsPageData): SafeHtml {
-  const hiddenDb =
-    data.dbChoice === 'dev' ? html`<input type="hidden" name="db" value="dev">` : html``
-
   const filters = html`<form class="filters" method="get" action="/topics">
-    ${hiddenDb}
     <select name="channel">
       <option value="">all channels</option>
       ${data.channels.map((channel) => option(channel, data.filter.channel))}
@@ -57,7 +51,7 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
         ${
           topic.jobId === null
             ? html`<span class="muted">—</span>`
-            : html`<a href="${dbHref(`/jobs/${topic.jobId}`, data.dbChoice)}">${topic.jobId}</a>`
+            : html`<a href="${href(`/jobs/${topic.jobId}`)}">${topic.jobId}</a>`
         }
       </td>
       <td>

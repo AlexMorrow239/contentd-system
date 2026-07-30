@@ -1,10 +1,9 @@
-import type { DbChoice } from '../config.js'
 import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import type { PublishRow } from '../../publish/publishes.js'
 import type { Platform } from '../../publish/types.js'
 import type { ChannelGrid } from '../queries/publishes.js'
 import { cellKey } from '../queries/publishes.js'
-import { dbHref } from './layout.js'
+import { href } from './layout.js'
 
 // One platform's quota, shaped for display rather than for the enforcement
 // check itself (PlatformQuota in publish/types.ts). A 'global' quota
@@ -33,11 +32,10 @@ export interface PublishesPageData {
   grids: ChannelGrid[]
   days: number
   quotas: PlatformQuotaView[]
-  dbChoice: DbChoice
   configError?: string
 }
 
-function renderCell(row: PublishRow | undefined, dbChoice: DbChoice): SafeHtml {
+function renderCell(row: PublishRow | undefined): SafeHtml {
   if (row === undefined) return html`<td class="cell-empty">·</td>`
 
   // Not currently exploitable — url is constructed server-side with a fixed
@@ -46,7 +44,7 @@ function renderCell(row: PublishRow | undefined, dbChoice: DbChoice): SafeHtml {
   const safeUrl = row.url === null ? null : httpUrlOrNull(row.url)
   const link =
     safeUrl === null
-      ? html`<a href="${dbHref(`/jobs/${row.jobId}`, dbChoice)}">${row.status}</a>`
+      ? html`<a href="${href(`/jobs/${row.jobId}`)}">${row.status}</a>`
       : html`<a href="${safeUrl}" rel="noreferrer">${row.status}</a>`
 
   const kind = row.errorKind === null ? html`` : html`<div class="error">${row.errorKind}</div>`
@@ -55,14 +53,12 @@ function renderCell(row: PublishRow | undefined, dbChoice: DbChoice): SafeHtml {
   return html`<td class="status-${row.status}">${link}${kind}${attempt}</td>`
 }
 
-function renderGrid(grid: ChannelGrid, dbChoice: DbChoice): SafeHtml {
+function renderGrid(grid: ChannelGrid): SafeHtml {
   const header = grid.days.map((day) => html`<th>${day}</th>`)
   const rows = grid.rows.map(
     (row) => html`<tr>
       <th>#${String(row.seq)} ${row.platform}</th>
-      ${grid.days.map((day) =>
-        renderCell(grid.cells.get(cellKey(day, row.seq, row.platform)), dbChoice),
-      )}
+      ${grid.days.map((day) => renderCell(grid.cells.get(cellKey(day, row.seq, row.platform))))}
     </tr>`,
   )
   return html`<div class="panel">
@@ -115,5 +111,5 @@ export function renderPublishesPage(data: PublishesPageData): SafeHtml {
 
   return html`<h1>publishes · last ${String(data.days)} days</h1>
     ${warning} ${quota}
-    ${data.grids.map((grid) => renderGrid(grid, data.dbChoice))}`
+    ${data.grids.map((grid) => renderGrid(grid))}`
 }

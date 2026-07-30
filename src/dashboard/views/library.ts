@@ -1,9 +1,8 @@
 import type { LibraryState } from '../../jobs/library.js'
-import type { DbChoice } from '../config.js'
 import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import type { LibraryEntry, QcSummary } from '../queries/library.js'
 import { formatTime, truncationNotice } from './jobs.js'
-import { dbHref } from './layout.js'
+import { href } from './layout.js'
 
 const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
 
@@ -28,10 +27,10 @@ function renderQc(qc: QcSummary): SafeHtml {
   }
 }
 
-function renderBytes(entry: LibraryEntry, dbChoice: DbChoice): SafeHtml {
+function renderBytes(entry: LibraryEntry): SafeHtml {
   switch (entry.bytes) {
     case 'local':
-      return html`<video controls preload="metadata" src="${dbHref(`/library/${entry.jobId}/video`, dbChoice)}"></video>`
+      return html`<video controls preload="metadata" src="${href(`/library/${entry.jobId}/video`)}"></video>`
     case 'archived':
       return html`<span class="muted">archived to object storage</span>`
     case 'reclaimed':
@@ -62,15 +61,10 @@ export interface LibraryPageData {
   total?: number
   channels: string[]
   filter: { state?: LibraryState; channel?: string }
-  dbChoice: DbChoice
 }
 
 export function renderLibraryPage(data: LibraryPageData): SafeHtml {
-  const hiddenDb =
-    data.dbChoice === 'dev' ? html`<input type="hidden" name="db" value="dev">` : html``
-
   const filters = html`<form class="filters" method="get" action="/library">
-    ${hiddenDb}
     <select name="state">
       <option value="">all states</option>
       ${LIBRARY_STATES.map((state) => option(state, data.filter.state))}
@@ -90,9 +84,9 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
 
   const rows = data.entries.map(
     (entry) => html`<tr>
-      <td>${renderBytes(entry, data.dbChoice)}</td>
+      <td>${renderBytes(entry)}</td>
       <td>
-        <a href="${dbHref(`/jobs/${entry.jobId}`, data.dbChoice)}">${entry.jobId}</a>
+        <a href="${href(`/jobs/${entry.jobId}`)}">${entry.jobId}</a>
         <div class="muted">${entry.channel}</div>
       </td>
       <td>${entry.topic}</td>

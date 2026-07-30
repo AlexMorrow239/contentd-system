@@ -27,7 +27,6 @@ describe('renderJobsPage', () => {
       jobs: [job],
       channels: ['space'],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('href="/jobs/j1"')
     expect(out).toContain('Why Venus is hot')
@@ -40,19 +39,13 @@ describe('renderJobsPage', () => {
       jobs: [{ ...job, topic: '<script>alert(1)</script>' }],
       channels: ['space'],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('<script>alert(1)</script>')
     expect(out).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
 
-  it('keeps the dev selection on drill-in links', () => {
-    const out = renderJobsPage({ jobs: [job], channels: [], filter: {}, dbChoice: 'dev' }).value
-    expect(out).toContain('href="/jobs/j1?db=dev"')
-  })
-
   it('says so when nothing matches instead of rendering an empty table', () => {
-    const out = renderJobsPage({ jobs: [], channels: [], filter: {}, dbChoice: 'prod' }).value
+    const out = renderJobsPage({ jobs: [], channels: [], filter: {} }).value
     expect(out).toContain('no jobs match')
   })
 
@@ -61,7 +54,6 @@ describe('renderJobsPage', () => {
       jobs: [],
       channels: ['space', 'ocean'],
       filter: { channel: 'ocean', status: 'failed' },
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('<option value="ocean" selected>ocean</option>')
     expect(out).toContain('<option value="failed" selected>failed</option>')
@@ -73,7 +65,6 @@ describe('renderJobsPage', () => {
       total: 1432,
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('showing 1 of 1,432')
   })
@@ -84,7 +75,6 @@ describe('renderJobsPage', () => {
       total: 1,
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('showing')
   })
@@ -125,7 +115,7 @@ describe('renderJobDetailPage', () => {
   }
 
   it('renders the stage timeline with durations and the raw error', () => {
-    const out = renderJobDetailPage(detail, 'prod').value
+    const out = renderJobDetailPage(detail).value
     expect(out).toContain('script')
     expect(out).toContain('30s')
     expect(out).toContain('elevenlabs 401')
@@ -133,19 +123,19 @@ describe('renderJobDetailPage', () => {
   })
 
   it('shows the artifact directory', () => {
-    const out = renderJobDetailPage(detail, 'prod').value
+    const out = renderJobDetailPage(detail).value
     expect(out).toContain('runs/j1/')
   })
 
   it('links to the video only when the library row has one', () => {
-    expect(renderJobDetailPage(detail, 'prod').value).not.toContain('/library/j1/video')
+    expect(renderJobDetailPage(detail).value).not.toContain('/library/j1/video')
     const withVideo: JobDetail = {
       ...detail,
       libraryState: 'ready',
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'local',
     }
-    expect(renderJobDetailPage(withVideo, 'prod').value).toContain('/library/j1/video')
+    expect(renderJobDetailPage(withVideo).value).toContain('/library/j1/video')
   })
 
   it('says the video is archived instead of rendering a dead player', () => {
@@ -155,7 +145,7 @@ describe('renderJobDetailPage', () => {
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'archived',
     }
-    const out = renderJobDetailPage(archived, 'prod').value
+    const out = renderJobDetailPage(archived).value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
     expect(out).toContain('archived to object storage — not available locally')
@@ -168,7 +158,7 @@ describe('renderJobDetailPage', () => {
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'reclaimed',
     }
-    const out = renderJobDetailPage(reclaimed, 'prod').value
+    const out = renderJobDetailPage(reclaimed).value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
     expect(out).toContain('reclaimed — the stored object was deleted after every platform settled')
@@ -181,7 +171,7 @@ describe('renderJobDetailPage', () => {
       videoPath: 'runs/j1/assemble/final.mp4',
       bytes: 'unstored',
     }
-    const out = renderJobDetailPage(unstored, 'prod').value
+    const out = renderJobDetailPage(unstored).value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
     expect(out).toContain('library backfill-store')
@@ -195,7 +185,7 @@ describe('renderJobDetailPage', () => {
       bytes: 'local',
       links: [{ platform: 'youtube', url: 'javascript:alert(1)' }],
     }
-    const out = renderJobDetailPage(hostile, 'prod').value
+    const out = renderJobDetailPage(hostile).value
     expect(out).not.toContain('href="javascript:alert(1)"')
     expect(out).not.toMatch(/href=["']javascript:/i)
   })
@@ -208,7 +198,7 @@ describe('renderJobDetailPage', () => {
       bytes: 'local',
       links: [{ platform: 'youtube', url: 'https://youtu.be/abc' }],
     }
-    const out = renderJobDetailPage(withLinks, 'prod').value
+    const out = renderJobDetailPage(withLinks).value
     expect(out).toContain('href="https://youtu.be/abc"')
     expect(out).toContain('youtube')
   })
@@ -218,7 +208,7 @@ describe('renderJobDetailPage', () => {
       ...detail,
       stages: [{ ...detail.stages[1], error: '<img src=x onerror=alert(1)>' }],
     }
-    const out = renderJobDetailPage(hostile, 'prod').value
+    const out = renderJobDetailPage(hostile).value
     expect(out).not.toContain('<img src=x')
     expect(out).toContain('&lt;img src=x')
   })

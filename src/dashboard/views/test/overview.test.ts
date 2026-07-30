@@ -20,13 +20,13 @@ function data(overrides: Partial<OverviewData> = {}): OverviewData {
 
 describe('renderOverviewPage', () => {
   it('shows spend against the cap in dollars', () => {
-    const out = renderOverviewPage(data(), 'prod').value
+    const out = renderOverviewPage(data()).value
     expect(out).toContain('$2.50')
     expect(out).toContain('$12.00')
   })
 
   it('says all clear when nothing needs attention', () => {
-    const out = renderOverviewPage(data(), 'prod').value
+    const out = renderOverviewPage(data()).value
     expect(out).toContain('nothing failed or blocked')
   })
 
@@ -44,7 +44,6 @@ describe('renderOverviewPage', () => {
           },
         ],
       }),
-      'prod',
     ).value
     expect(out).toContain('href="/jobs/j1"')
     expect(out).toContain('voice')
@@ -65,7 +64,6 @@ describe('renderOverviewPage', () => {
           },
         ],
       }),
-      'prod',
     ).value
     expect(out).toContain('status-blocked')
     expect(out).toContain('budget')
@@ -83,7 +81,6 @@ describe('renderOverviewPage', () => {
           },
         ],
       }),
-      'prod',
     ).value
     expect(out).toContain('expired')
   })
@@ -91,26 +88,25 @@ describe('renderOverviewPage', () => {
   it('warns when spend is over cap', () => {
     const out = renderOverviewPage(
       data({ globalSpend: { spentUsdMicros: 13_000_000, capUsdMicros: 12_000_000 } }),
-      'prod',
     ).value
     expect(out).toContain('over cap')
   })
 
   it('surfaces a channel config error without hiding the rest', () => {
-    const out = renderOverviewPage(data(), 'prod', 'channels/bad.toml: boom').value
+    const out = renderOverviewPage(data(), 'channels/bad.toml: boom').value
     expect(out).toContain('boom')
     expect(out).toContain('class="warning"')
     expect(out).toContain('$2.50')
   })
 
   it('renders the unattributed spend row when it is greater than zero', () => {
-    const out = renderOverviewPage(data({ unattributedUsdMicros: 1_500_000 }), 'prod').value
+    const out = renderOverviewPage(data({ unattributedUsdMicros: 1_500_000 })).value
     expect(out).toContain('unattributed')
     expect(out).toContain('$1.50')
   })
 
   it('does not render the unattributed spend row when it is zero', () => {
-    const out = renderOverviewPage(data({ unattributedUsdMicros: 0 }), 'prod').value
+    const out = renderOverviewPage(data({ unattributedUsdMicros: 0 })).value
     expect(out).not.toContain('unattributed')
   })
 
@@ -128,7 +124,6 @@ describe('renderOverviewPage', () => {
           },
         ],
       }),
-      'prod',
     ).value
     expect(out).not.toContain('<script>alert(1)</script>')
   })

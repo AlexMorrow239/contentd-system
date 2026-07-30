@@ -1,11 +1,8 @@
 import { BrainrotError } from '../errors.js'
-
-export type DbChoice = 'prod' | 'dev'
+import { resolveBrainrotPaths, type BrainrotPaths } from '../config/paths.js'
 
 export interface DashboardConfig {
-  dbPaths: Record<DbChoice, string>
-  runsRoot: string
-  channelsDir: string
+  paths: BrainrotPaths
   port: number
 }
 
@@ -19,6 +16,13 @@ function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   return raw === undefined || raw.trim() === '' ? undefined : raw
 }
 
+/**
+ * One root per process, exactly like every other entrypoint. There is no
+ * prod/dev switch anymore: `?db=dev` was already dead in the container (the dev
+ * file lived on the host, outside the named volume) and a single process
+ * reading both modes is the cross-mode coupling this design removes. To view
+ * development state, run a second dashboard with BRAINROT_ROOT=local.
+ */
 export function resolveDashboardConfig(env: NodeJS.ProcessEnv = process.env): DashboardConfig {
   const rawPort = envValue(env, 'BRAINROT_DASHBOARD_PORT')
   let port = DEFAULT_PORT
@@ -32,19 +36,5 @@ export function resolveDashboardConfig(env: NodeJS.ProcessEnv = process.env): Da
     }
     port = parsed
   }
-  return {
-    dbPaths: {
-      // Same defaults as the CLI's resolveDbPath/resolveRunsRoot/resolveChannelsDir,
-      // so the dashboard inside the container sees exactly what the loops see.
-      prod: envValue(env, 'BRAINROT_DB') ?? 'data/brainrot.db',
-      dev: envValue(env, 'BRAINROT_DEV_DB') ?? 'data/dev.db',
-    },
-    runsRoot: envValue(env, 'BRAINROT_RUNS_ROOT') ?? 'runs',
-    channelsDir: envValue(env, 'BRAINROT_CHANNELS_DIR') ?? 'channels',
-    port,
-  }
-}
-
-export function resolveDbChoice(raw: string | undefined): DbChoice {
-  return raw === 'dev' ? 'dev' : 'prod'
+  return { paths: resolveBrainrotPaths(undefined, env), port }
 }

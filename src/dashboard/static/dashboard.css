@@ -38,8 +38,7 @@ nav {
   display: flex;
   gap: 1rem;
 }
-nav a,
-.db-switch {
+nav a {
   color: var(--link);
   text-decoration: none;
 }
@@ -47,18 +46,6 @@ nav a.active {
   color: var(--fg);
   font-weight: 700;
   text-decoration: underline;
-}
-.db-switch {
-  color: var(--muted);
-  font-size: 12px;
-}
-
-.env-banner.dev {
-  background: var(--warn);
-  color: #1a1206;
-  padding: 0.4rem 1rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
 }
 
 main {

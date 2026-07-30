@@ -30,7 +30,6 @@ describe('renderTopicsPage', () => {
       ],
       channels: ['space'],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out.indexOf('high')).toBeLessThan(out.indexOf('low'))
   })
@@ -40,7 +39,6 @@ describe('renderTopicsPage', () => {
       topics: [topic()],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('href="https://reddit.com/r/space/1"')
     expect(out).toContain('reddit:r/space')
@@ -51,7 +49,6 @@ describe('renderTopicsPage', () => {
       topics: [topic({ status: 'claimed', jobId: 'j9' })],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('href="/jobs/j9"')
   })
@@ -61,7 +58,6 @@ describe('renderTopicsPage', () => {
       topics: [topic({ reason: 'strong hook' })],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('strong hook')
   })
@@ -72,7 +68,6 @@ describe('renderTopicsPage', () => {
       topics: [topic({ title: '<script>alert(1)</script>' })],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('<script>alert(1)</script>')
   })
@@ -82,7 +77,6 @@ describe('renderTopicsPage', () => {
       topics: [topic({ url: 'https://x/"onmouseover="alert(1)' })],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('onmouseover="alert(1)"')
     expect(out).toContain('&quot;onmouseover=')
@@ -93,7 +87,6 @@ describe('renderTopicsPage', () => {
       topics: [topic({ url: 'javascript:alert(1)', source: 'reddit:r/space' })],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('href="javascript:alert(1)"')
     expect(out).not.toContain('<a href="javascript:')
@@ -105,7 +98,6 @@ describe('renderTopicsPage', () => {
       topics: [],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('no topics match')
   })
@@ -116,7 +108,6 @@ describe('renderTopicsPage', () => {
       total: 1432,
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('showing 1 of 1,432')
   })
@@ -127,7 +118,6 @@ describe('renderTopicsPage', () => {
       total: 1,
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('showing')
   })

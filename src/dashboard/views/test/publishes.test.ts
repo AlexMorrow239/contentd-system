@@ -38,7 +38,6 @@ function pageData(cells: Map<string, PublishRow>) {
     ],
     days: 1,
     quotas: [YOUTUBE_QUOTA],
-    dbChoice: 'prod' as const,
   }
 }
 
@@ -112,7 +111,6 @@ describe('renderPublishesPage', () => {
       ],
       days: 1,
       quotas: [{ platform: 'youtube', scope: 'global', cap: 6, used: 0 }] as PlatformQuotaView[],
-      dbChoice: 'prod' as const,
     }
     const out = renderPublishesPage(data).value
     expect(out).toContain('#2 instagram')
@@ -139,7 +137,6 @@ describe('renderPublishesPage', () => {
       grids: [],
       days: 7,
       quotas: [{ platform: 'youtube', scope: 'global', cap: 6, used: 0 }],
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('no channel has a [publish] schedule')
   })

@@ -30,7 +30,7 @@ function entry(overrides: Partial<LibraryEntry> = {}): LibraryEntry {
 }
 
 function pageData(entries: LibraryEntry[]): LibraryPageData {
-  return { entries, channels: ['chan-a'], filter: {}, dbChoice: 'prod' }
+  return { entries, channels: ['chan-a'], filter: {} }
 }
 
 describe('renderLibraryPage', () => {
@@ -39,19 +39,8 @@ describe('renderLibraryPage', () => {
       entries: [baseEntry],
       channels: ['space'],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('<video controls preload="metadata" src="/library/j1/video">')
-  })
-
-  it('keeps the dev selection on the video URL', () => {
-    const out = renderLibraryPage({
-      entries: [baseEntry],
-      channels: [],
-      filter: {},
-      dbChoice: 'dev',
-    }).value
-    expect(out).toContain('src="/library/j1/video?db=dev"')
   })
 
   it('lists qc issues', () => {
@@ -59,7 +48,6 @@ describe('renderLibraryPage', () => {
       entries: [{ ...baseEntry, qc: { kind: 'issues', issues: ['duration 71s > 60s'] } }],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('duration 71s &gt; 60s')
   })
@@ -69,7 +57,6 @@ describe('renderLibraryPage', () => {
       entries: [{ ...baseEntry, qc: { kind: 'unparseable' } }],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('unparseable metadata')
   })
@@ -79,7 +66,6 @@ describe('renderLibraryPage', () => {
       entries: [baseEntry],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('href="/jobs/j1"')
   })
@@ -89,7 +75,6 @@ describe('renderLibraryPage', () => {
       entries: [],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('no library entries match')
   })
@@ -99,7 +84,6 @@ describe('renderLibraryPage', () => {
       entries: [{ ...baseEntry, topic: '<img src=x onerror=alert(1)>' }],
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('<img src=x')
   })
@@ -110,7 +94,6 @@ describe('renderLibraryPage', () => {
       total: 1432,
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).toContain('showing 1 of 1,432')
   })
@@ -121,7 +104,6 @@ describe('renderLibraryPage', () => {
       total: 1,
       channels: [],
       filter: {},
-      dbChoice: 'prod',
     }).value
     expect(out).not.toContain('showing')
   })

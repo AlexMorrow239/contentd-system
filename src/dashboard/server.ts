@@ -12,8 +12,7 @@ import { uploadsUsedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import { PLATFORM_QUOTAS, ytUploadsPerDayCap } from '../publish/platforms/quota.js'
-import type { DashboardConfig, DbChoice } from './config.js'
-import { resolveDbChoice } from './config.js'
+import type { DashboardConfig } from './config.js'
 import { html } from './html.js'
 import {
   countLibraryEntries,
@@ -39,7 +38,6 @@ import { renderTopicsPage } from './views/topics.js'
 
 export interface DashboardVars {
   db: Database
-  dbChoice: DbChoice
 }
 
 export interface DashboardDeps {
@@ -68,26 +66,20 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   // and a per-request handle means no stale connection survives a cron tick's
   // checkpoint. Closed in a finally so a throwing route cannot leak it.
   app.use('*', async (c, next) => {
-    const dbChoice = resolveDbChoice(c.req.query('db'))
-    const dbPath = deps.config.dbPaths[dbChoice]
+    const dbPath = deps.config.paths.dbPath
     let db: Database
     try {
       db = openAndValidate(dbPath)
     } catch (err) {
-      // Never the DB contents or env values — just path/choice and the
-      // driver's own message, which is what an operator needs mid-incident.
-      console.error(`dashboard: failed to open ${dbChoice} database at ${dbPath}:`, err)
-      // existsSync, not matching on the SQLite error code: it's the more
-      // direct way to ask the actual question ("is the file there?") and
-      // doesn't depend on which error shape better-sqlite3 throws.
+      // Never the DB contents or env values — just the path and the driver's
+      // own message, which is what an operator needs mid-incident.
+      console.error(`dashboard: failed to open database at ${dbPath}:`, err)
       if (!existsSync(dbPath)) {
-        return c.html(missingDbPage(dbPath, dbChoice), 503)
+        return c.html(missingDbPage(dbPath, deps.config.paths.root), 503)
       }
-      const message = errorMessage(err)
-      return c.html(corruptDbPage(dbPath, dbChoice, message), 503)
+      return c.html(corruptDbPage(dbPath, deps.config.paths.root, errorMessage(err)), 503)
     }
     c.set('db', db)
-    c.set('dbChoice', dbChoice)
     try {
       await next()
     } finally {
@@ -97,28 +89,22 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/', (c) => {
     const db = c.get('db')
-    const dbChoice = c.get('dbChoice')
     const now = deps.now?.() ?? new Date()
-    const { channels, error } = tryLoadChannelsDir(deps.config.channelsDir)
+    const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
 
     return c.html(
       layout({
         title: 'overview',
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'overview',
         refreshSeconds: 30,
-        body: renderOverviewPage(
-          buildOverview(db, channels, now, ytUploadsPerDayCap()),
-          dbChoice,
-          error,
-        ),
+        body: renderOverviewPage(buildOverview(db, channels, now, ytUploadsPerDayCap()), error),
       }),
     )
   })
 
   app.get('/jobs', (c) => {
     const db = c.get('db')
-    const dbChoice = c.get('dbChoice')
     // Unrecognized filter values are dropped rather than rejected: a viewer
     // must not 400 on a hand-edited URL.
     const rawStatus = c.req.query('status')
@@ -131,14 +117,13 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     return c.html(
       layout({
         title: 'jobs',
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'jobs',
         body: renderJobsPage({
           jobs: listJobs(db, { channel, status }),
           total: countJobs(db, { channel, status }),
           channels: jobChannels(db),
           filter: { channel, status },
-          dbChoice,
         }),
       }),
     )
@@ -146,13 +131,12 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/jobs/:id', (c) => {
     const db = c.get('db')
-    const dbChoice = c.get('dbChoice')
     const detail = getJobDetail(db, c.req.param('id'))
     if (detail === null) {
       return c.html(
         layout({
           title: 'job not found',
-          dbChoice,
+          root: deps.config.paths.root,
           activeNav: 'jobs',
           body: html`<h1>no such job</h1>
             <p class="muted">${c.req.param('id')} is not in this database.</p>`,
@@ -163,16 +147,15 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     return c.html(
       layout({
         title: `job ${detail.job.id}`,
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'jobs',
-        body: renderJobDetailPage(detail, dbChoice),
+        body: renderJobDetailPage(detail),
       }),
     )
   })
 
   app.get('/library', (c) => {
     const db = c.get('db')
-    const dbChoice = c.get('dbChoice')
     const rawState = c.req.query('state')
     const state = LIBRARY_STATE_VALUES.includes(rawState as LibraryState)
       ? (rawState as LibraryState)
@@ -183,14 +166,13 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     return c.html(
       layout({
         title: 'library',
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'library',
         body: renderLibraryPage({
           entries: listLibraryEntries(db, { state, channel }),
           total: countLibraryEntries(db, { state, channel }),
           channels: libraryChannels(db),
           filter: { state, channel },
-          dbChoice,
         }),
       }),
     )
@@ -203,7 +185,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
     // The path comes from the database, never the URL — and is still
     // containment-checked, so a malformed row cannot read outside runs/.
-    const absolute = resolveVideoPath(deps.config.runsRoot, videoPath)
+    const absolute = resolveVideoPath(deps.config.paths.runsRoot, videoPath)
     if (absolute === null) return c.text('video path outside the runs root', 403)
 
     let size: number
@@ -242,7 +224,6 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/publishes', (c) => {
     const db = c.get('db')
-    const dbChoice = c.get('dbChoice')
     const now = deps.now?.() ?? new Date()
 
     const rawDays = Number(c.req.query('days') ?? '14')
@@ -250,18 +231,17 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
     // tryLoadChannelsDir, not loadChannelsDir: a broken TOML degrades one
     // panel into a warning instead of 500-ing the page.
-    const { channels, error } = tryLoadChannelsDir(deps.config.channelsDir)
+    const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
 
     return c.html(
       layout({
         title: 'publishes',
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'publishes',
         body: renderPublishesPage({
           grids: buildPublishGrids(db, channels, days, now),
           days,
           quotas: buildPlatformQuotas(db, channels, localDay(now)),
-          dbChoice,
           configError: error,
         }),
       }),
@@ -270,7 +250,6 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/topics', (c) => {
     const db = c.get('db')
-    const dbChoice = c.get('dbChoice')
     const rawStatus = c.req.query('status')
     const status = TOPIC_STATUS_VALUES.includes(rawStatus as TopicStatus)
       ? (rawStatus as TopicStatus)
@@ -281,7 +260,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     return c.html(
       layout({
         title: 'topics',
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'topics',
         body: renderTopicsPage({
           topics: listTopics(db, { channel, status, limit: 200 }),
@@ -290,18 +269,16 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           // full unfiltered channel set for the dropdown, not filtered rows.
           channels: topicChannels(db),
           filter: { channel, status },
-          dbChoice,
         }),
       }),
     )
   })
 
   app.notFound((c) => {
-    const dbChoice = resolveDbChoice(c.req.query('db'))
     return c.html(
       layout({
         title: 'not found',
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'overview',
         body: html`<h1>not found</h1>
           <p class="muted">no route for ${c.req.path}</p>`,
@@ -316,11 +293,10 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     // Also logged: rendering it to the browser was the only record before
     // this, and `docker compose logs dashboard` had nothing for an incident.
     console.error(`dashboard: unhandled error on ${c.req.method} ${c.req.path}:`, err)
-    const dbChoice = resolveDbChoice(c.req.query('db'))
     return c.html(
       layout({
         title: 'error',
-        dbChoice,
+        root: deps.config.paths.root,
         activeNav: 'overview',
         body: html`<h1>error</h1>
           <p class="error">${errorMessage(err)}</p>`,
@@ -390,28 +366,25 @@ function openAndValidate(dbPath: string): Database {
   return db
 }
 
-function missingDbPage(dbPath: string, dbChoice: DbChoice): string {
+function missingDbPage(dbPath: string, root: string): string {
   return layout({
     title: 'no database',
-    dbChoice,
+    root,
     activeNav: 'overview',
     body: html`<h1>no database at <code>${dbPath}</code></h1>
       <p class="muted">
-        The ${dbChoice} database does not exist. The dashboard never creates it — that is the
-        pipeline's job.
+        The database does not exist. The dashboard never creates it — that is the pipeline's job.
       </p>`,
   })
 }
 
-function corruptDbPage(dbPath: string, dbChoice: DbChoice, message: string): string {
+function corruptDbPage(dbPath: string, root: string, message: string): string {
   return layout({
     title: 'database could not be opened',
-    dbChoice,
+    root,
     activeNav: 'overview',
     body: html`<h1>database could not be opened</h1>
-      <p class="muted">
-        The ${dbChoice} database at <code>${dbPath}</code> is present but could not be opened:
-      </p>
+      <p class="muted">The database at <code>${dbPath}</code> is present but could not be opened:</p>
       <p class="error">${message}</p>`,
   })
 }
@@ -425,5 +398,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   serve({ fetch: createApp({ config }).fetch, port: config.port, hostname: '0.0.0.0' })
   // Loopback-bound on the HOST side via compose's "127.0.0.1:8787:8787".
   // Inside the container 0.0.0.0 is required for the port mapping to work.
-  console.log(`dashboard listening on :${config.port} (prod db: ${config.dbPaths.prod})`)
+  console.log(`dashboard listening on :${config.port} (root: ${config.paths.root})`)
 }

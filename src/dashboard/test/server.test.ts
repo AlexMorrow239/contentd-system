@@ -1,57 +1,48 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { openDb } from '../../db/index.js'
 import { localDay } from '../../publish/schedule.js'
+import { resolvePaths } from '../../config/paths.js'
 import type { DashboardConfig } from '../config.js'
 import { createApp } from '../server.js'
 import { tmpDir } from '../../testing/tmp.js'
 
-function seededConfig(): DashboardConfig {
-  const dir = tmpDir('brainrot-dash-')
-  const prod = join(dir, 'brainrot.db')
-  openDb(prod).close()
-  return {
-    dbPaths: { prod, dev: join(dir, 'absent.db') },
-    runsRoot: join(dir, 'runs'),
-    channelsDir: join(dir, 'channels'),
-    port: 8787,
-  }
+/** A config whose root exists and whose db is present, absent, or corrupt. */
+function seededConfig(db: 'present' | 'absent' | 'corrupt' = 'present'): DashboardConfig {
+  const paths = resolvePaths(tmpDir('brainrot-dash-'))
+  mkdirSync(join(paths.root, 'db'), { recursive: true })
+  if (db === 'present') openDb(paths.dbPath).close()
+  if (db === 'corrupt') writeFileSync(paths.dbPath, 'not a sqlite file')
+  return { paths, port: 8787 }
 }
 
 describe('createApp', () => {
   it('serves the stylesheet without needing a database', async () => {
     // Static assets are registered BEFORE the db middleware; a missing
     // database must not take the CSS down with it.
-    const config = seededConfig()
-    config.dbPaths.prod = join(tmpdir(), 'definitely-absent.db')
+    const config = seededConfig('absent')
     const res = await createApp({ config }).request('/static/dashboard.css')
     expect(res.status).toBe(200)
     expect(res.headers.get('content-type')).toContain('text/css')
   })
 
   it('renders a missing-database page instead of crashing', async () => {
-    const res = await createApp({ config: seededConfig() }).request('/jobs?db=dev')
+    const res = await createApp({ config: seededConfig('absent') }).request('/jobs')
     expect(res.status).toBe(503)
-    const body = await res.text()
-    expect(body).toContain('no database at')
-    expect(body).toContain('absent.db')
+    expect(await res.text()).toContain('no database at')
   })
 
   it('does not create the database file it failed to find', async () => {
-    const config = seededConfig()
-    await createApp({ config }).request('/jobs?db=dev')
-    const { existsSync } = await import('node:fs')
-    expect(existsSync(config.dbPaths.dev)).toBe(false)
+    const config = seededConfig('absent')
+    await createApp({ config }).request('/jobs')
+    expect(existsSync(config.paths.dbPath)).toBe(false)
   })
 
   it('distinguishes a corrupt-but-present database from a missing one', async () => {
-    const config = seededConfig()
     // A present-but-not-SQLite file: better-sqlite3 throws on open, but
     // existsSync is true, so the operator must not be told it "does not exist".
-    writeFileSync(config.dbPaths.dev, 'not a sqlite file')
-    const res = await createApp({ config }).request('/jobs?db=dev')
+    const res = await createApp({ config: seededConfig('corrupt') }).request('/jobs')
     expect(res.status).toBe(503)
     const body = await res.text()
     expect(body).not.toContain('does not exist')
@@ -59,22 +50,14 @@ describe('createApp', () => {
   })
 
   it('logs the underlying error when the database fails to open', async () => {
-    const config = seededConfig()
-    writeFileSync(config.dbPaths.dev, 'not a sqlite file')
     const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
-      const res = await createApp({ config }).request('/jobs?db=dev')
+      const res = await createApp({ config: seededConfig('corrupt') }).request('/jobs')
       expect(res.status).toBe(503)
       expect(spy).toHaveBeenCalled()
     } finally {
       spy.mockRestore()
     }
-  })
-
-  it('defaults to the production database', async () => {
-    const res = await createApp({ config: seededConfig() }).request('/jobs')
-    expect(res.status).toBe(200)
-    expect(await res.text()).toContain('viewing prod')
   })
 
   it('returns a readable 404 for an unknown path', async () => {
@@ -135,7 +118,7 @@ describe('/publishes', () => {
 
   it('says so when no channel has an instagram target configured', async () => {
     const config = seededConfig() // channelsDir has no files at all
-    mkdirSync(config.channelsDir, { recursive: true })
+    mkdirSync(config.paths.channelsDir, { recursive: true })
     const res = await createApp({ config }).request('/publishes')
     expect(res.status).toBe(200)
     const body = await res.text()
@@ -149,9 +132,9 @@ describe('/publishes', () => {
     // channel's usage must never be added into another's.
     vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '4')
     const config = seededConfig()
-    mkdirSync(config.channelsDir, { recursive: true })
+    mkdirSync(config.paths.channelsDir, { recursive: true })
     writeFileSync(
-      join(config.channelsDir, 'space.toml'),
+      join(config.paths.channelsDir, 'space.toml'),
       [
         'name = "space"',
         'niche = ["space facts"]',
@@ -183,7 +166,7 @@ describe('/publishes', () => {
     )
     const now = new Date()
     const today = localDay(now)
-    const db = openDb(config.dbPaths.prod)
+    const db = openDb(config.paths.dbPath)
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
     ).run()
@@ -202,15 +185,14 @@ describe('/publishes', () => {
 
 describe('video streaming', () => {
   function configWithVideo(bytes: Buffer, videoPathInDb?: string): DashboardConfig {
-    const dir = tmpDir('brainrot-vid-')
-    const runsRoot = join(dir, 'runs')
-    const videoDir = join(runsRoot, 'j1', 'assemble')
+    const paths = resolvePaths(tmpDir('brainrot-vid-'))
+    mkdirSync(join(paths.root, 'db'), { recursive: true })
+    const videoDir = join(paths.runsRoot, 'j1', 'assemble')
     mkdirSync(videoDir, { recursive: true })
     const videoFile = join(videoDir, 'final.mp4')
     writeFileSync(videoFile, bytes)
 
-    const prod = join(dir, 'brainrot.db')
-    const db = openDb(prod)
+    const db = openDb(paths.dbPath)
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
     ).run()
@@ -219,12 +201,7 @@ describe('video streaming', () => {
     ).run('j1', videoPathInDb ?? videoFile, '{}', 'ready')
     db.close()
 
-    return {
-      dbPaths: { prod, dev: join(dir, 'absent.db') },
-      runsRoot,
-      channelsDir: join(dir, 'channels'),
-      port: 8787,
-    }
+    return { paths, port: 8787 }
   }
 
   it('serves the whole file when no Range is sent', async () => {
@@ -255,7 +232,7 @@ describe('video streaming', () => {
 
   it('404s when the file was deleted from disk', async () => {
     const config = configWithVideo(Buffer.from('0123456789'))
-    rmSync(join(config.runsRoot, 'j1', 'assemble', 'final.mp4'))
+    rmSync(join(config.paths.runsRoot, 'j1', 'assemble', 'final.mp4'))
     const res = await createApp({ config }).request('/library/j1/video')
     expect(res.status).toBe(404)
   })
@@ -281,7 +258,7 @@ describe('/', () => {
 describe('unbounded list truncation', () => {
   function configWithManyJobs(count: number): DashboardConfig {
     const config = seededConfig()
-    const db = openDb(config.dbPaths.prod)
+    const db = openDb(config.paths.dbPath)
     const insert = db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'space', 'volume', 'x', 'done')",
     )
@@ -292,7 +269,7 @@ describe('unbounded list truncation', () => {
 
   function configWithManyTopics(count: number): DashboardConfig {
     const config = seededConfig()
-    const db = openDb(config.dbPaths.prod)
+    const db = openDb(config.paths.dbPath)
     const insert = db.prepare(
       'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status) ' +
         "VALUES ('space', ?, ?, 'reddit', 'https://x', ?, 50, 'ok', 'candidate')",
@@ -304,7 +281,7 @@ describe('unbounded list truncation', () => {
 
   function configWithManyLibraryEntries(count: number): DashboardConfig {
     const config = seededConfig()
-    const db = openDb(config.dbPaths.prod)
+    const db = openDb(config.paths.dbPath)
     const insertJob = db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'space', 'volume', 'x', 'done')",
     )

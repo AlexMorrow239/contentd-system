@@ -1,7 +1,6 @@
-import type { DbChoice } from '../config.js'
 import { html, SafeHtml } from '../html.js'
 import type { JobDetail, JobListRow, JobStatus, StageRow } from '../queries/jobs.js'
-import { dbHref } from './layout.js'
+import { href } from './layout.js'
 import { renderLinks } from './library.js'
 
 export function formatUsd(usdMicros: number): string {
@@ -39,7 +38,6 @@ export interface JobsPageData {
   total?: number
   channels: string[]
   filter: { channel?: string; status?: JobStatus }
-  dbChoice: DbChoice
 }
 
 /**
@@ -53,11 +51,7 @@ export function truncationNotice(shown: number, total: number | undefined): Safe
 }
 
 export function renderJobsPage(data: JobsPageData): SafeHtml {
-  const hiddenDb =
-    data.dbChoice === 'dev' ? html`<input type="hidden" name="db" value="dev">` : html``
-
   const filters = html`<form class="filters" method="get" action="/jobs">
-    ${hiddenDb}
     <select name="channel">
       <option value="">all channels</option>
       ${data.channels.map((channel) => option(channel, data.filter.channel))}
@@ -77,7 +71,7 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
 
   const rows = data.jobs.map(
     (job) => html`<tr>
-      <td><a href="${dbHref(`/jobs/${job.id}`, data.dbChoice)}">${job.id}</a></td>
+      <td><a href="${href(`/jobs/${job.id}`)}">${job.id}</a></td>
       <td>${job.channel}</td>
       <td>${job.tier}</td>
       <td>${job.topic}</td>
@@ -112,7 +106,7 @@ function stageRow(stage: StageRow): SafeHtml {
   </tr>`
 }
 
-export function renderJobDetailPage(detail: JobDetail, dbChoice: DbChoice): SafeHtml {
+export function renderJobDetailPage(detail: JobDetail): SafeHtml {
   const { job } = detail
 
   const video =
@@ -121,7 +115,7 @@ export function renderJobDetailPage(detail: JobDetail, dbChoice: DbChoice): Safe
       : html`<div class="panel">
           <h2>video</h2>
           ${detail.bytes === 'local'
-            ? html`<video controls preload="metadata" src="${dbHref(`/library/${job.id}/video`, dbChoice)}"></video>`
+            ? html`<video controls preload="metadata" src="${href(`/library/${job.id}/video`)}"></video>`
             : detail.bytes === 'archived'
               ? html`<p class="muted">archived to object storage — not available locally</p>`
               : detail.bytes === 'reclaimed'
@@ -180,5 +174,5 @@ export function renderJobDetailPage(detail: JobDetail, dbChoice: DbChoice): Safe
       <h2>spend</h2>
       ${costs}
     </div>
-    <p><a href="${dbHref('/jobs', dbChoice)}">← all jobs</a></p>`
+    <p><a href="${href('/jobs')}">← all jobs</a></p>`
 }

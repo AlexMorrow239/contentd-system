@@ -1,8 +1,7 @@
-import type { DbChoice } from '../config.js'
 import { html, SafeHtml } from '../html.js'
 import type { OverviewData, SpendAgainstCap, StatusCount } from '../queries/overview.js'
 import { formatTime, formatUsd } from './jobs.js'
-import { dbHref } from './layout.js'
+import { href } from './layout.js'
 
 function countList(counts: StatusCount[]): SafeHtml {
   if (counts.length === 0) return html`<p class="empty">none</p>`
@@ -39,11 +38,7 @@ function unattributedSpendLine(usdMicros: number): SafeHtml {
   </tr>`
 }
 
-export function renderOverviewPage(
-  data: OverviewData,
-  dbChoice: DbChoice,
-  configError?: string,
-): SafeHtml {
+export function renderOverviewPage(data: OverviewData, configError?: string): SafeHtml {
   const warning =
     configError === undefined
       ? html``
@@ -59,7 +54,7 @@ export function renderOverviewPage(
           <tbody>
             ${data.attention.map(
               (job) => html`<tr>
-                <td><a href="${dbHref(`/jobs/${job.id}`, dbChoice)}">${job.id}</a></td>
+                <td><a href="${href(`/jobs/${job.id}`)}">${job.id}</a></td>
                 <td>${job.channel}</td>
                 <td>${job.topic}</td>
                 <td class="status-${job.status}">
