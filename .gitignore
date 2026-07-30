@@ -1,8 +1,6 @@
 node_modules/
 dist/
 coverage/
-runs/
-data/
 .env
 .remotion/
 # python sidecar (local test venv + caches; real deps live in the Docker image)
@@ -20,9 +18,11 @@ sandbox/
 logs/
 superpowers/
 
-# Local development copies: dev channel TOMLs and their render artifacts. The
-# container never mounts these — production reads channels/ and runs/.
-channels-dev/*
-!channels-dev/.gitkeep
-runs-dev/
+# The dev mode-root: db, run artifacts and dev channel TOMLs. One directory,
+# never mounted into the container — production reads prod/ and its own volume.
+local/
+
+# The host side of the container's bind mounts. prod/channels/ IS tracked (it
+# is the live channel config); prod/runs/ is disposable render output.
+prod/runs/
 .env.production

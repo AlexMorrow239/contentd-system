@@ -100,9 +100,11 @@ services:
       # unmodified, which is intended for provider keys but was previously
       # unbounded for path/behavior toggles too. Anything host-only that
       # controls where data lands or how the pipeline behaves belongs here.
-      BRAINROT_DB: data/brainrot.db
-      BRAINROT_CHANNELS_DIR: channels
-      BRAINROT_RUNS_ROOT: runs
+      # ONE root, holding db/, runs/ and channels/. Pinned here rather than
+      # left to env_file: the host .env points at the dev root, and Compose
+      # applies `environment` after every env_file, so this is what guarantees
+      # the container reads production state no matter what the host .env says.
+      BRAINROT_ROOT: /app/state
       # Service DNS, not localhost — the sidecar is a different container.
       WHISPERX_URL: http://whisperx:8585
       # The Dockerfile's `ENV TZ=America/Chicago` is only a default — an
@@ -132,7 +134,7 @@ services:
       # also treats "" as unset, so this must be a real integer, not "".
       BRAINROT_YT_UPLOADS_PER_DAY: '6'
       # BRAINROT_S3_BUCKET and BRAINROT_S3_PUBLIC_ENDPOINT below are pinned
-      # for the same reason as BRAINROT_DEV_VOICE and BRAINROT_RUNS_ROOT:
+      # for the same reason as BRAINROT_DEV_VOICE and BRAINROT_ROOT:
       # env_file forwards the host's (dev-pointing) .env wholesale, so
       # without a pin, a .env aimed at the local MinIO container would
       # silently redirect every production video into a container that is
@@ -167,7 +169,6 @@ services:
       - '127.0.0.1:51835:51835' # youtube consent callback (http)
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
-      - ./channels:/app/channels:ro # production config, re-read every tick
       # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
       # mode (src/db/index.ts), and WAL coordinates readers/writers through a
       # shared-memory `-shm` file that every process touching the database
@@ -188,8 +189,13 @@ services:
       # <cmd>`. See README "Operating the database" for that and for the
       # backup one-liner. `runs/` below stays a bind mount — plain file I/O
       # over virtiofs is fine, and host-inspectable artifacts are worth it.
-      - brainrot-data:/app/data
-      - ./runs:/app/runs # per-job artifacts, inspectable from the host
+      #
+      # Mounted at <root>/db rather than the root itself so the root can be a
+      # plain image directory with the runs/ and channels/ binds beside this
+      # volume, instead of binds nested inside a volume.
+      - brainrot-data:/app/state/db
+      - ./prod/runs:/app/state/runs # per-job artifacts, inspectable from the host
+      - ./prod/channels:/app/state/channels:ro # production config, re-read every tick
     # Chrome's default 64 MB /dev/shm in Docker is the classic renderer crash.
     shm_size: 1gb
     logging:
@@ -219,10 +225,7 @@ services:
     # into it for no reason: every variable the dashboard actually reads is
     # already pinned below.
     environment:
-      BRAINROT_DB: data/brainrot.db
-      BRAINROT_DEV_DB: data/dev.db
-      BRAINROT_CHANNELS_DIR: channels
-      BRAINROT_RUNS_ROOT: runs
+      BRAINROT_ROOT: /app/state
       BRAINROT_DASHBOARD_PORT: '8787'
       # Read for the quota panel only; must match the brainrot service so the
       # dashboard reports the cap that is actually enforced.
@@ -235,18 +238,15 @@ services:
       # auth layer, and this binding is what makes that acceptable.
       - '127.0.0.1:8787:8787'
     volumes:
-      # READ-WRITE mount with a READ-ONLY connection. SQLite must create the
+      # READ-WRITE mount with a READ-ONLY connection — SQLite must create the
       # -shm file to read a WAL database, so a :ro mount breaks the dashboard
       # outright; the read-only guarantee lives in openDbReadonly's connection
-      # flag, where better-sqlite3 hard-errors on any write.
-      #
-      # Same named volume as the brainrot service, for the WAL/virtiofs reason
-      # documented there — and doubly so here, since the dashboard is a SECOND
-      # concurrent opener of the same database and so exactly the cross-kernel
-      # sharing that broke it.
-      - brainrot-data:/app/data
-      - ./runs:/app/runs:ro # video playback only
-      - ./channels:/app/channels:ro
+      # flag. Same named volume as the brainrot service, for the WAL/virtiofs
+      # reason documented there — and doubly so here, since this is a SECOND
+      # concurrent opener.
+      - brainrot-data:/app/state/db
+      - ./prod/runs:/app/state/runs:ro # video playback only
+      - ./prod/channels:/app/state/channels:ro
     logging:
       driver: json-file
       options:
