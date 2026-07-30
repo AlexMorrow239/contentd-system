@@ -125,10 +125,13 @@ be a worse failure than refusing. With the `BRAINROT_S3_*` keys unset,
 `produce` exits 1 and `produce-next` no-ops with `"reason":"bad-env"`, both
 _before_ rendering rather than after.
 
-1. In the Cloudflare dashboard, create an **R2 bucket** (e.g. `brainrot-videos`).
+1. In the Cloudflare dashboard, create an **R2 bucket** named exactly `brainrot-videos` —
+   the name is pinned as a literal in `docker-compose.yml`.
 2. Create an **R2 API token** scoped to that bucket with **Object Read & Write**.
-3. Fill the `BRAINROT_S3_*` keys in `.env`. The endpoint is
-   `https://<account-id>.r2.cloudflarestorage.com`.
+3. Fill the `BRAINROT_R2_*` keys in `.env` (endpoint, access key id, secret access key).
+   The endpoint is `https://<account-id>.r2.cloudflarestorage.com`. `docker-compose.yml`
+   maps these onto `BRAINROT_S3_*` inside the production container only — the host CLI's
+   own `BRAINROT_S3_*` keeps pointing at local MinIO, see "Local development" below.
 
 Verify before going live — this fetches the stored object back and checks it is
 a well-formed, correctly-typed, complete MP4:
@@ -154,7 +157,8 @@ docker compose --profile dev up -d minio
 ```
 
 Console at http://localhost:9101 (user/password `brainrotdev`), S3 API on
-port 9100. Point `.env` at it:
+port 9100. Point `.env`'s `BRAINROT_S3_*` at it — this is what the host CLI reads
+directly, separate from the container-only `BRAINROT_R2_*` above:
 
 ```
 BRAINROT_S3_ENDPOINT=http://localhost:9100
