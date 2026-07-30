@@ -1,9 +1,7 @@
 node_modules
 assets
-runs
-runs-dev
-channels-dev
-data
+local/
+prod/runs/
 logs
 .git
 .env
