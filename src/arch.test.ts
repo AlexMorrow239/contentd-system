@@ -165,3 +165,18 @@ describe('error handling conventions', () => {
     }
   })
 })
+
+describe('path resolution conventions', () => {
+  it('imports only node builtins and the errors module into config/paths.ts', async () => {
+    // Every entrypoint resolves its paths through this module, so a dependency
+    // here becomes a dependency everywhere — the same reason src/errors.ts has
+    // its own version of this lint. ../errors.js is admitted because a stale
+    // path variable is an operator-caused condition and belongs in the error
+    // taxonomy, and because errors.ts imports nothing from src/ itself.
+    const src = await readFile(new URL('./config/paths.ts', import.meta.url), 'utf8')
+    const imports = [...src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
+    expect(
+      imports.filter((s) => s !== undefined && !s.startsWith('node:') && s !== '../errors.js'),
+    ).toEqual([])
+  })
+})
