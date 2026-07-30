@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { Database } from 'better-sqlite3'
+import { resolvePaths, type BrainrotPaths } from '../config/paths.js'
 
 /**
  * Temp dirs and db handles created by a test file, drained by setup.ts's
@@ -22,6 +23,20 @@ export function tmpDir(prefix = 'brainrot-'): string {
   const dir = mkdtempSync(path.join(tmpdir(), prefix))
   dirs.push(dir)
   return dir
+}
+
+/**
+ * A temp mode-root with db/, runs/ and channels/ already created, laid out by
+ * the SAME resolvePaths the CLI uses — so a test can never assert against a
+ * layout production does not have. Removed after the current test FILE
+ * finishes, like every other tmpDir.
+ */
+export function testRoot(prefix = 'brainrot-root-'): BrainrotPaths {
+  const paths = resolvePaths(tmpDir(prefix))
+  for (const dir of [path.dirname(paths.dbPath), paths.runsRoot, paths.channelsDir]) {
+    mkdirSync(dir, { recursive: true })
+  }
+  return paths
 }
 
 /**

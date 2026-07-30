@@ -150,9 +150,15 @@ export function writeChannelToml(opts: ChannelTomlOptions = {}): string {
  * `loadChannelsDir` enforces that a file's basename equals the TOML's `name`
  * field, so passing explicit filenames is what lets a test exercise the
  * mismatch case deliberately.
+ *
+ * Pass `dir` to write into an existing directory — a `testRoot().channelsDir`,
+ * typically, since the CLI now derives that path from the root rather than
+ * taking it as a flag. Omitted, it mints its own temp dir as before.
  */
-export function writeChannelsDir(files: Record<string, string | string[]>): string {
-  const dir = tmpDir('brainrot-channels-')
+export function writeChannelsDir(
+  files: Record<string, string | string[]>,
+  dir = tmpDir('brainrot-channels-'),
+): string {
   mkdirSync(dir, { recursive: true })
   for (const [filename, body] of Object.entries(files)) {
     const contents = Array.isArray(body) ? body.join('\n') : body
