@@ -517,9 +517,10 @@ Conventions:
   every describe for their module, subprocess and in-process tests included).
   A split earns its keep only when it separates a genuinely different concern
   — `src/config/channels.smoke.test.ts` stays apart from `channel.test.ts`
-  because it hits real on-disk channel directories (including a gitignored
-  legacy one predating the mode-root split) and would otherwise cost
-  `channel.test.ts` its hermeticity, not because of size.
+  because it hits real on-disk channel directories (a git-tracked
+  `prod/channels/` and the dev mode root's own gitignored `local/channels/`)
+  and would otherwise cost `channel.test.ts` its hermeticity, not because of
+  size.
 - A `_<module>.fixtures.ts` holds what only that module needs, and **delegates
   row SQL to `src/testing/db.ts`** rather than re-issuing INSERTs. That is what
   lets a module keep an ergonomic local call shape (digest ages rows via

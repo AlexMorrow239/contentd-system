@@ -18,10 +18,11 @@ cp .env.example .env          # fill in provider keys (see below)
 docker compose up -d whisperx # caption alignment sidecar
 ```
 
-The working directory this creates is a **development copy**: `BRAINROT_ROOT`
-is unset by `.env.example`, and unset means `local` — the development root —
-so a bare `pnpm brainrot ...` on the host never touches production state. See
-Development vs. production below for how the container overrides this.
+The working directory this creates is a **development copy**: `.env.example`
+sets `BRAINROT_ROOT=local`, pointing at the development root (unset also
+resolves to `local`, the built-in default), so a bare `pnpm brainrot ...` on
+the host never touches production state. See Development vs. production
+below for how the container overrides this.
 
 Keys in `.env`:
 
@@ -96,8 +97,9 @@ See Development vs. production below.
 **`runs/<jobId>/` is a disposable local cache, not the durable copy.** Once a
 job's `store` stage completes, the finished video also lives in the object
 store (see Object storage below) and `library_objects` records its key —
-`rm -rf runs/<jobId>` is then safe. Nothing deletes `runs/` for you
-automatically; reclaiming disk is a manual operator call, and it's only safe
+`rm -rf prod/runs/<jobId>` on the host for production, or `rm -rf
+local/runs/<jobId>` for development, is then safe. Nothing deletes `runs/`
+for you automatically; reclaiming disk is a manual operator call, and it's only safe
 for jobs whose `store` stage actually finished (check `pnpm brainrot jobs` or
 the dashboard first).
 
