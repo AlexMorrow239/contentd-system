@@ -25,4 +25,3 @@ local/
 # The host side of the container's bind mounts. prod/channels/ IS tracked (it
 # is the live channel config); prod/runs/ is disposable render output.
 prod/runs/
-.env.production
