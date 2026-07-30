@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import path from 'node:path'
-import {
-  assertNoLegacyPathEnv,
-  DEFAULT_ROOT,
-  resolveBrainrotPaths,
-  resolvePaths,
-  resolveRoot,
-} from './paths.js'
+import { DEFAULT_ROOT, resolveBrainrotPaths, resolvePaths, resolveRoot } from './paths.js'
 
 describe('resolveRoot', () => {
   it('prefers the flag over the env var', () => {
@@ -27,44 +21,6 @@ describe('resolveRoot', () => {
     // compose pins some keys to "" deliberately; "" must not become a root of "".
     expect(resolveRoot('', { BRAINROT_ROOT: '/app/state' })).toBe('/app/state')
     expect(resolveRoot(undefined, { BRAINROT_ROOT: '  ' })).toBe(DEFAULT_ROOT)
-  })
-
-  it('rejects a removed path variable even when a root flag is passed', () => {
-    // A stale variable is a config error, not something a flag can paper over:
-    // the operator's intent is genuinely ambiguous at that point.
-    expect(() => resolveRoot('local', { BRAINROT_DB: 'data/dev.db' })).toThrow(/BRAINROT_DB/)
-  })
-})
-
-describe('assertNoLegacyPathEnv', () => {
-  it('names each removed variable and its replacement', () => {
-    for (const key of [
-      'BRAINROT_DB',
-      'BRAINROT_RUNS_ROOT',
-      'BRAINROT_CHANNELS_DIR',
-      'BRAINROT_DEV_DB',
-    ]) {
-      expect(() => assertNoLegacyPathEnv({ [key]: 'x' })).toThrow(
-        new RegExp(`${key}.*BRAINROT_ROOT`, 's'),
-      )
-    }
-  })
-
-  it('classifies as a config error so a surface can match on the domain', () => {
-    try {
-      assertNoLegacyPathEnv({ BRAINROT_DB: 'data/dev.db' })
-      expect.unreachable('should have thrown')
-    } catch (err) {
-      expect(err).toMatchObject({ domain: 'config', kind: 'invalid' })
-    }
-  })
-
-  it('treats an empty value as unset', () => {
-    expect(() => assertNoLegacyPathEnv({ BRAINROT_DB: '', BRAINROT_DEV_DB: '  ' })).not.toThrow()
-  })
-
-  it('passes on a clean environment', () => {
-    expect(() => assertNoLegacyPathEnv({ BRAINROT_ROOT: 'local' })).not.toThrow()
   })
 })
 

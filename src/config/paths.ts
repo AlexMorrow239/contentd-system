@@ -1,5 +1,4 @@
 import path from 'node:path'
-import { BrainrotError } from '../errors.js'
 
 /**
  * The one definition of where state lives.
@@ -14,9 +13,9 @@ import { BrainrotError } from '../errors.js'
  * `data/brainrot.db` that nothing read), and "dev db + prod runs" was a
  * reachable state.
  *
- * Imports are limited to `node:` builtins and ../errors.js, enforced by an
- * arch lint in src/arch.test.ts: every entrypoint reaches this module, so a
- * dependency added here becomes a dependency everywhere.
+ * Imports are limited to `node:` builtins, enforced by an arch lint in
+ * src/arch.test.ts: every entrypoint reaches this module, so a dependency
+ * added here becomes a dependency everywhere.
  */
 
 export const ROOT_ENV = 'BRAINROT_ROOT'
@@ -39,54 +38,14 @@ export interface BrainrotPaths {
   channelsDir: string
 }
 
-/**
- * Removed variable -> what replaced it. Kept as data so the error message and
- * the test that pins it read from the same source.
- */
-const REMOVED_PATH_ENV: Record<string, string> = {
-  BRAINROT_DB: 'the database is now <root>/db/brainrot.db',
-  BRAINROT_RUNS_ROOT: 'run artifacts are now <root>/runs',
-  BRAINROT_CHANNELS_DIR: 'channel TOMLs are now <root>/channels',
-  BRAINROT_DEV_DB:
-    'the dashboard serves one root; run a second dashboard with BRAINROT_ROOT=local to view development state',
-}
-
 /** "" is unset, matching dashboard/config.ts's envValue and costs.ts. */
 function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const raw = env[key]
   return raw === undefined || raw.trim() === '' ? undefined : raw
 }
 
-/**
- * Throws if any removed path variable is still set.
- *
- * Deliberately an error rather than a silent ignore, and deliberately checked
- * even when a --root flag was passed. A leftover `BRAINROT_DB=data/dev.db` that
- * were merely ignored would send a dev command into whatever root the default
- * picked — the exact class of bug this module exists to remove. Same treatment
- * a stale `slots`/`min_score` key gets in src/config/channel.ts.
- *
- * Consequence worth knowing: docker-compose's `env_file` forwards the whole
- * host .env into the container, so a .env still carrying one of these keys
- * fails the daemon at startup instead of being shadowed by the `environment:`
- * pin. That is intended — a variable that is fatal on the host and inert in the
- * container would be worse.
- */
-export function assertNoLegacyPathEnv(env: NodeJS.ProcessEnv = process.env): void {
-  for (const [key, replacement] of Object.entries(REMOVED_PATH_ENV)) {
-    if (envValue(env, key) === undefined) continue
-    throw new BrainrotError(
-      `${key} is no longer read (removed in favor of ${ROOT_ENV}): ${replacement}. ` +
-        `Set ${ROOT_ENV} to the mode root instead — "${DEFAULT_ROOT}" for development, ` +
-        `"/app/state" in the container — and remove ${key} from your .env.`,
-      { domain: 'config', kind: 'invalid' },
-    )
-  }
-}
-
 /** flag > $BRAINROT_ROOT > DEFAULT_ROOT. */
 export function resolveRoot(flag?: string, env: NodeJS.ProcessEnv = process.env): string {
-  assertNoLegacyPathEnv(env)
   if (flag !== undefined && flag.trim() !== '') return flag
   return envValue(env, ROOT_ENV) ?? DEFAULT_ROOT
 }

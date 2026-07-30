@@ -32,18 +32,6 @@ const CLI_ENTRY = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
  * maxConcurrency within this one file/worker.
  */
 
-describe('legacy path env vars', () => {
-  it('exits 1 naming the replacement when a removed var is still set', async () => {
-    // A spawned CLI cannot see vi.stubEnv, so this goes through runCli's env.
-    const result = await runCli(['jobs', '--root', tmpDir('brainrot-legacy-')], {
-      env: { BRAINROT_DB: 'data/dev.db' },
-    })
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain('BRAINROT_DB')
-    expect(result.stderr).toContain('BRAINROT_ROOT')
-  })
-})
-
 describe('pipelineStages', () => {
   it('returns the fixed stage list', () => {
     const stages = pipelineStages()

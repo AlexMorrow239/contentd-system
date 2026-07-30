@@ -17,12 +17,6 @@ describe('resolveDashboardConfig', () => {
     expect(cfg.port).toBe(8787)
   })
 
-  it('rejects a removed path variable', () => {
-    expect(() => resolveDashboardConfig({ BRAINROT_DEV_DB: 'data/dev.db' })).toThrow(
-      /BRAINROT_DEV_DB/,
-    )
-  })
-
   it('reads the port', () => {
     expect(resolveDashboardConfig({ BRAINROT_DASHBOARD_PORT: '9000' }).port).toBe(9000)
   })
