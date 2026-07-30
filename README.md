@@ -56,7 +56,7 @@ subfolders).
 ## Produce a video
 
 ```bash
-pnpm brainrot produce --channel channels/example.toml --topic "Why is Venus so hot?"
+pnpm brainrot produce --channel local/channels/example.toml --topic "Why is Venus so hot?"
 # host default: --root local
 ```
 

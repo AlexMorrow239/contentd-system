@@ -77,7 +77,7 @@ services:
         condition: service_healthy
     # Two files, evaluated in order — later wins for a duplicate key. This is
     # what lets the host .env stay pointed at local MinIO (matching the dev
-    # triple it already carries for db/runs/channels) while the container gets
+    # mode root it already carries via BRAINROT_ROOT) while the container gets
     # real R2, with no manual swapping between them. .env.production is
     # gitignored and holds only the credentials that cannot be pinned as
     # literals below.
