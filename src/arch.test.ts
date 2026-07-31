@@ -176,3 +176,37 @@ describe('path resolution conventions', () => {
     expect(imports.filter((s) => s !== undefined && !s.startsWith('node:'))).toEqual([])
   })
 })
+
+describe('src/stories purity', () => {
+  it('imports nothing from src/ except errors.ts', async () => {
+    const files = (await srcFiles(join(SRC_ROOT, 'stories'))).filter(
+      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
+    )
+    expect(files.length).toBeGreaterThan(0)
+    const offenders: string[] = []
+    for (const file of files) {
+      const source = await readFile(file, 'utf8')
+      for (const match of source.matchAll(/from\s+'(\.\.?\/[^']+)'/g)) {
+        const spec = match[1]
+        // Sibling imports inside stories/ are fine; anything reaching out of
+        // the directory must be errors.js.
+        if (spec.startsWith('./')) continue
+        if (spec === '../errors.js') continue
+        offenders.push(`${relative(SRC_ROOT, file)} -> ${spec}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('never touches the database, filesystem, or network', async () => {
+    const files = (await srcFiles(join(SRC_ROOT, 'stories'))).filter((f) => !f.endsWith('.test.ts'))
+    const offenders: string[] = []
+    for (const file of files) {
+      const source = await readFile(file, 'utf8')
+      for (const banned of ['better-sqlite3', 'node:fs', 'node:http', 'fetch(']) {
+        if (source.includes(banned)) offenders.push(`${relative(SRC_ROOT, file)}: ${banned}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+})

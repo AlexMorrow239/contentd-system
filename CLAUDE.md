@@ -302,6 +302,109 @@ what a post actually points at. Rows predating it are recovered by
 rehashing the feed's own `t3_` id against the row's `dedupe_hash` before
 touching anything.
 
+### Story mode: channels that narrate reddit posts verbatim
+
+A channel with a `[story]` table (`max_parts`, default 4) narrates reddit
+self-posts instead of scripting niche topics — but the headline property is
+narrower than that sentence implies: it is the story's **body** that cannot
+come from a model, not the whole narration. The first spoken line, the hook,
+is still model-authored — in story mode it is `ctx.topic`, the scout scorer's
+own retitling of the post ("AITA for blocking a car in?"), sanitized like
+everything else but not reddit's original text. The bodies themselves need no
+extra fetch: reddit's Atom `<content>` already carries the full selftext
+inside an `<!-- SC_OFF -->`/`<!-- SC_ON -->` span, so there is no second
+request and no API key. `src/stories/` (`body.ts`, `split.ts`, `sanitize.ts`)
+is pure — an arch lint in `src/arch.test.ts` holds it to importing nothing
+from `src/` except `errors.ts` and bans direct db/fs/network access, so a
+future change that reaches for the database from inside a "pure" module fails
+loudly instead of quietly compromising the guarantee below.
+
+What actually makes "verbatim" true is structural, not a prompt instruction:
+`runStoryScript` (`src/stages/script.ts`) assembles `segments` locally from
+the post text, and the schema its one model call is validated against
+(`storyMetaSchema`) accepts only `platformMeta` — there is no field in the
+response the model could put narration into even if it tried. That is why the
+guarantee survives a future prompt rewrite rather than depending on one being
+worded carefully.
+
+The load-bearing design choice is **one `topics` row per part**. A post too
+long for one Short is split on sentence boundaries into up to `max_parts`
+parts, each its own row with `body_text`, `series_key`, `part_index`,
+`part_count` and `truncated`, each its own dedupe hash (`externalId + '#p' +
+partIndex`, 1-based, on every part including the first). One job therefore
+still equals one video, which is why nothing in `jobs/`, `library`, `store` or
+`qc` needed to change. All parts share one score, so `eligibleTopic`'s
+existing `score DESC, created_at ASC, id ASC` produces them in order for free.
+Over-long stories are **truncated, not rejected** — the last part appends a
+spoken outro and the permalink goes in every platform description. Two
+deterministic drops guard the queue ahead of scoring: `droppedBodyless` (no
+selftext — this is r/AskReddit, whose stories live in comments the feed does
+not carry) and a moderator-account test now folded into `isAutomatedAuthor`
+(a suffix match — `AITAMod`, `ModTeam`, `AskHistorians-Mods` — since a
+per-subreddit mod team, not just `/u/AutoModerator`, posts the recurring
+announcement threads that would otherwise burn a scoring slot every week).
+
+Two load-time invariants join the existing three: `[story]` with `scout.rss`
+sources is an error (an RSS item has no body), and `max_parts <= videos_per_day
+* backlog_days` — a series drains at `videos_per_day` per day, so a longer one
+would have its tail age out mid-series and strand viewers on part 2.
+
+Sanitization (`stories/sanitize.ts`, an algospeak substitution map) runs on
+the way into `script.json`, and on more surfaces than "narration" suggests: it
+runs on the body, on the spoken hook, and on the model-written `platformMeta`
+title/description, because those are published text that platform moderation
+compares directly against the audio — a raw flagged word in a title while the
+narration speaks the euphemism is exactly the mismatch that draws review. It
+deliberately does **not** run on hashtags: substituting inside one produces a
+broken hyphenated tag (`#suicide` -> `#self-deletion`), so a whole-word tag
+like `#kill` ships unsubstituted while the audio says "unalive" — an accepted
+risk, not an oversight. The substitution map itself is small and hand-curated
+by necessity: it went 21 entries -> 17 (pre-flight) -> 15 (review), plus a
+particle guard on `died` (`"died down/out/off/away"` are senses distinct from
+the base verb — "died out" -> "passed out" means *fainted*, not deceased). Six
+candidates were rejected outright for changing a sentence's meaning rather
+than softening it (`abuse -> mistreatment` breaks as a verb; `death ->
+passing` turns "death threats" into "passing threats"), and four low-frequency
+collocation leaks are accepted and enumerated in the code comment rather than
+guarded against. The rule applied throughout, because a word map cannot see
+collocation: *drop or guard what changes meaning, tolerate what is merely
+clunky*.
+
+Story mode also breaks `queue_days` as a meaningful depth dial: measured
+against a cap of 2, a single scout tick inserted 9 candidate rows (still
+bounded — the next tick correctly reported `queue-full`). The bound is
+`per_source_limit x subreddits x max_parts`, so 50-100 rows against a
+`videos_per_day` of 6 is normal, not a bug — topic mode already overshoots its
+nominal cap for the same pre-fetch-gate reason, and story mode multiplies that
+overshoot by `max_parts`.
+
+Publishing is an **ordered series**: `channelVideoCandidates` blocks part N on
+a platform until part N-1 is `done` there, folded into the `blockedPlatforms`
+set it already computes, plus an `ORDER BY` term putting continuation parts
+ahead of unrelated videos. The **settled** predicate is deliberately untouched
+— a permanently-failed part 1 strands its successors, which the existing age
+clause absorbs exactly as it does passed-over videos.
+
+Two schema/migration invariants are worth stating because both were nearly
+violated during implementation. The story indexes (`ix_topics_job`,
+`ix_topics_series`) live in `migrate.ts` rather than `schema.sql`, even though
+the story columns themselves are declared in `schema.sql`: `openDb` execs
+`schema.sql` **before** calling `migrate`, so an index over a column that only
+`migrate.ts`'s `ALTER TABLE` adds to an *existing* database would throw on
+every such database and wedge the entire CLI. And `knownHashes` must consult
+`series_key` as well as `dedupe_hash`, because a queued story writes only
+per-part suffixed hashes — without the `series_key` check every part of an
+already-queued story would look unseen on the next tick and be re-scored and
+re-billed forever.
+
+One deploy-order note: the dashboard opens the database through
+`openDbReadonly`, which never runs `migrate` (it must stay write-free). A
+dashboard process reaching a database that no `openDb` call has touched since
+this change lands will 500 on `/topics` with `no such column: body_text`. The
+property is pre-existing — `target_url` has the identical failure mode — and
+this merely widens it; bring the daemon (or any CLI command) up at least once
+before relying on the dashboard's topics page.
+
 ### Budget enforcement is layered, not a single check
 
 `src/jobs/costs.ts`'s `assertBudget` is called before every paid provider call
