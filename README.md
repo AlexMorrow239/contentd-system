@@ -326,7 +326,12 @@ A channel that falls short of its `videos_per_day` count on a given day —
 the machine was asleep, a platform's quota was exhausted, credentials broke —
 has no makeup post; the digest reports any channel that published fewer
 videos than its `videos_per_day` yesterday, with a per-platform split, so the
-shortfall is visible without hunting through logs.
+shortfall is visible without hunting through logs. A channel that _met_ its
+count is a separate case the split alone can't show: the digest also flags
+any declared platform that published zero videos that day while the channel
+published at least one elsewhere ("N uploads while the channel published
+…"), so a platform stuck at zero successes doesn't hide behind another
+platform's healthy volume.
 
 `backlog_days` (default `2`) caps how many finished videos a channel may hold
 before `produce-next` stops producing more for it. "Held" means every video
@@ -397,10 +402,12 @@ dropped before scoring and counted as `droppedAutomated`. Each week's instance
 is a new post id, so dedupe alone would let them cost a scoring slot forever.
 A sticky posted by a human mod still reaches the scorer and simply scores low.
 
-A third source needs neither a feed nor a key: `[scout] generate_topics = N`
-has an LLM (haiku) invent up to `N` candidate topics per scout attempt
-instead of reading one. It is a paid Anthropic call, self-limited by the same
-queue-full depth gate as every other source — a channel already holding
+A third source trades a feed for a fee: `[scout] generate_topics = N` has an
+LLM (haiku) invent up to `N` candidate topics per scout attempt instead of
+reading one. There's no external feed to depend on, but unlike reddit/RSS
+each scout attempt that uses it spends a small Anthropic fee — self-limited
+by the same queue-full depth gate as every other source — a channel already
+holding
 enough queued candidates never generates. Two traps: keep `rss` (or
 `subreddits`) declared alongside it, since a budget breach on an
 llm-only channel makes generation the channel's _only_ source, and a single

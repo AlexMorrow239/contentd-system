@@ -653,6 +653,58 @@ describe('buildDigest — volume-shortfall action item', () => {
     db.close()
   })
 
+  // QUOTA_BACKOFF_MS is 6h, so a quota-jammed platform still writes 3-4
+  // claimed->failed/quota rows across a day's backoff-window openings — it is
+  // never truly "0 rows that day". The zero-test must count successes
+  // (status = 'done'), not attempts of any status, or this is exactly the
+  // scenario the line was written for (mvp's shape: Instagram healthy,
+  // YouTube quota-dead) and it never fires.
+  it('flags a dead platform whose only rows that day are quota-failed attempts, not zero rows', () => {
+    const db = memDb()
+    const yesterdayDate = new Date()
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+    const yesterday = localDay(yesterdayDate)
+    const chA = testChannel({
+      name: 'chan-a',
+      videosPerDay: 1,
+      publish: {
+        targets: [
+          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'j-yday', channel: 'chan-a' })
+    seedPublish(db, {
+      jobId: 'j-yday',
+      channel: 'chan-a',
+      platform: 'instagram',
+      day: yesterday,
+      seq: 1,
+      status: 'done',
+    })
+    // youtube was attempted (and rejected by its own quota error) but never
+    // succeeded that day — a COUNT(DISTINCT job_id) with no status filter
+    // reads this as "1", not "0".
+    seedPublish(db, {
+      jobId: 'j-yday',
+      channel: 'chan-a',
+      platform: 'youtube',
+      day: yesterday,
+      seq: 1,
+      status: 'failed',
+      errorKind: 'quota',
+    })
+    const digest = buildDigest(db, [chA])
+    expect(digest).toContain(
+      '  chan-a youtube: 0 uploads yesterday while the channel published 1 — platform may be dead (auth/quota), not merely oversubscribed',
+    )
+    db.close()
+  })
+
   it('says nothing when every declared platform published at least one video and the count is met', () => {
     const db = memDb()
     const yesterdayDate = new Date()

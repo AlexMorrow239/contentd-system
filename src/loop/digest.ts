@@ -491,6 +491,12 @@ export function buildDigest(
     // ignoring the whole line.
     const claimed = (claimedTopicCount.get(c.name) as { n: number }).n
     const inFlight = (inFlightJobCount.get(c.name) as { n: number }).n
+    // Safe to defer to a more specific alert here rather than hiding a real
+    // wedge: every job state that can hold a topic claimed already has its
+    // own digest line if it stalls — blocked, failed, zombie-running (past
+    // ZOMBIE_RUNNING_MS), stranded-queued (past STRANDED_QUEUED_MS) — and a
+    // job that finishes flips its topic to 'used' via the repair sweep, so it
+    // can't linger here as a false "still moving" signal.
     if (claimed > 0 || inFlight > 0) continue
     lines.push(
       `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)`,
@@ -641,6 +647,15 @@ export function buildDigest(
   const perPlatform = db.prepare(
     'SELECT COUNT(DISTINCT job_id) AS n FROM publishes WHERE channel = ? AND platform = ? AND day = ?',
   )
+  // A second, stricter count for the dead-platform test below: any-status
+  // COUNT(DISTINCT job_id) is never truly 0 for a quota-jammed platform.
+  // QUOTA_BACKOFF_MS is 6h, so a platform stuck on quota all day still opens
+  // 3-4 times and writes a claimed -> failed/quota row each time — exactly
+  // the mvp.toml shape this line exists to catch (Instagram healthy, YouTube
+  // quota-dead). "Uploaded" has to mean succeeded, not merely attempted.
+  const perPlatformDone = db.prepare(
+    "SELECT COUNT(DISTINCT job_id) AS n FROM publishes WHERE channel = ? AND platform = ? AND day = ? AND status = 'done'",
+  )
   for (const channel of channels) {
     if (channel.publish === null) continue
     const published = videosPublishedToday(db, channel.name, yesterday)
@@ -659,12 +674,15 @@ export function buildDigest(
     // platform that published zero while the channel published at least one
     // video elsewhere reads as dead (auth broke, quota jammed past the
     // backoff window), not as merely oversubscribed by the other platform's
-    // volume.
+    // volume. Uses perPlatformDone (status = 'done'), not the any-status
+    // perPlatformCounts above — an attempted-but-rejected platform is not the
+    // same claim as an untouched one.
     if (published > 0) {
-      for (const p of perPlatformCounts) {
-        if (p.n === 0) {
+      for (const t of channel.publish.targets) {
+        const { n } = perPlatformDone.get(channel.name, t.platform, yesterday) as { n: number }
+        if (n === 0) {
           lines.push(
-            `  ${channel.name} ${p.platform}: 0 uploads yesterday while the channel published ${published} — platform may be dead (auth/quota), not merely oversubscribed`,
+            `  ${channel.name} ${t.platform}: 0 uploads yesterday while the channel published ${published} — platform may be dead (auth/quota), not merely oversubscribed`,
           )
         }
       }
