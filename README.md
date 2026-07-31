@@ -351,26 +351,26 @@ fetching and scoring more for it.
 
 ### Quota
 
-The two platforms' quotas are scoped differently and enforced for you at
-config load — a channel set declaring more `videos_per_day` than a platform
-allows fails to load with a message naming the offending channels, before
-`produce` or any daemon worker unit can run at all. `publish-next` re-checks
-the same cap per unit as a backstop.
+Platform quotas are detected at **runtime**, not declared in config: the
+platform's own quota error (YouTube `quotaExceeded`/`uploadLimitExceeded`/
+`dailyLimitExceeded`; Instagram Graph codes 4/17) is stored on the failed
+`publishes` row, and that row backs the platform off for six hours
+(`QUOTA_BACKOFF_MS`) while other declared platforms keep publishing.
+`videos_per_day` is pure demand — declaring more than a platform can take is
+legal, and each platform simply clips itself at its real limit.
 
-- **YouTube** is per Google Cloud **project**, not per channel: 10,000
-  units/day at 1,600 units/upload works out to roughly **6 uploads a day,
-  project-wide, across every channel sharing that project**. If six a day
-  isn't enough headroom for your channel count, request a quota increase at
-  <https://support.google.com/youtube/contact/yt_api_form>, then raise
-  `videos_per_day` accordingly.
-- **Instagram** is per IG account, i.e. per channel: Meta's Content
-  Publishing API allows **50 posts per rolling 24h per account** — a limit no
-  realistic `videos_per_day` comes close to.
+- **YouTube**'s quota is per Google Cloud **project**, not per channel:
+  10,000 units/day at 1,600 units/upload works out to roughly **6 uploads a
+  day, project-wide, across every channel sharing that project** — so the
+  backoff applies globally. If six a day isn't enough, request a quota
+  increase at <https://support.google.com/youtube/contact/yt_api_form>.
+- **Instagram**'s is per IG account, i.e. per channel: Meta's Content
+  Publishing API allows **50 posts per rolling 24h per account**, and the
+  backoff is scoped to the one channel that hit it.
 
-There is nothing to tune by hand: lower `videos_per_day` if a channel set
-won't load. `BRAINROT_YT_UPLOADS_PER_DAY` / `BRAINROT_IG_UPLOADS_PER_DAY` env
-overrides still exist, but only as a test escape hatch — they are not an
-operator setting.
+There is nothing to tune by hand, and the old
+`BRAINROT_YT_UPLOADS_PER_DAY` / `BRAINROT_IG_UPLOADS_PER_DAY` env overrides
+are gone (a `.env` still setting them is silently ignored).
 
 ## Automation
 
@@ -467,9 +467,8 @@ ago — an anti-burst guard, not a schedule), `daily-count-met` (this channel
 already hit `videos_per_day` for the local calendar day), `no-publish-channel`
 (no channel in the dir declares `[publish]`), `platform-quota`,
 `no-ready-video`, `no-video-file` (the `ready` row's file was pruned from
-`runs/`), `no-auth`, `bad-env` (a malformed `BRAINROT_TOKEN_KEY` or
-`BRAINROT_YT_UPLOADS_PER_DAY`), or `config-error` (the channels dir would not
-load); `scout` with `lease-held`, `queue-full`, `no-scout-sources` (a channel
+`runs/`), `no-auth`, `bad-env` (a malformed `BRAINROT_TOKEN_KEY`), or `config-error`
+(the channels dir would not load); `scout` with `lease-held`, `queue-full`, `no-scout-sources` (a channel
 was due for a recheck but none of the due ones declares a `[scout]` source),
 or that same `config-error`. The `error` field of a `config-error` or
 `bad-env` line carries the cause — under the daemon that JSON line is the

@@ -120,11 +120,6 @@ services:
       # string as "unset" (falls back to its own $25 default), so this must
       # be a real number, not "".
       BRAINROT_GLOBAL_DAILY_USD: '12'
-      # Pins DEFAULT_YT_UPLOADS_PER_DAY from
-      # src/publish/platforms/quota.ts (unset in .env today, so this was
-      # already the effective value) rather than leaving it implicit. quota.ts
-      # also treats "" as unset, so this must be a real integer, not "".
-      BRAINROT_YT_UPLOADS_PER_DAY: '6'
       # BRAINROT_S3_* below is pinned to the production R2 credentials for
       # the same reason as BRAINROT_DEV_VOICE and BRAINROT_ROOT: env_file
       # forwards the host's (dev-pointing) .env wholesale, so without a pin
@@ -223,10 +218,8 @@ services:
     environment:
       BRAINROT_ROOT: /app/state
       BRAINROT_DASHBOARD_PORT: '8787'
-      # Read for the quota panel only; must match the brainrot service so the
+      # Read for the spend panel; must match the brainrot service so the
       # dashboard reports the cap that is actually enforced.
-      BRAINROT_YT_UPLOADS_PER_DAY: '6'
-      # Read for the spend panel; same reasoning.
       BRAINROT_GLOBAL_DAILY_USD: '12'
       TZ: America/Chicago
     ports:

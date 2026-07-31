@@ -42,8 +42,8 @@ export interface ScoutConfig {
   queueDays: number
   /**
    * How many LLM-generated topics to request per scout attempt (0 disables
-   * generation). Task 8 registers the generator source in scoutChannel gated
-   * on this being > 0; this field is only the config surface.
+   * generation). scoutChannel builds the llm source only when this is > 0,
+   * so a channel that never sets it pays nothing.
    */
   generateTopics: number
 }
