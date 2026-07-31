@@ -537,7 +537,7 @@ describe('addTopicStoryColumns', () => {
     db.pragma('foreign_keys = OFF')
     db.exec(CURRENT_SHAPE_NO_INDEX + TOPICS_PRE_STORY)
     db.prepare(
-      "INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) " +
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) ' +
         "VALUES ('space','t','t','reddit:r/space','u','h',90,'r')",
     ).run()
 
