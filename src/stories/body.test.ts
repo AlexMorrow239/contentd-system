@@ -15,7 +15,7 @@ describe('storyBody', () => {
       'One month ago I hosted a movie night for my five closest friends. ' +
         "It's a long story but I need to know if I was wrong here.\n\n" +
         'Before the movie a friend called me and asked if she could bring some fruit ' +
-        'to blend into a drink for everyone.',
+        'to blend into a drink for everyone today.',
     )
   })
 
@@ -24,6 +24,9 @@ describe('storyBody', () => {
     // Floor disabled: this fixture is deliberately short so the assertion is
     // readable, and the floor is covered by its own case below.
     expect(storyBody(LITERAL_ENTITY_CONTENT, 0)).toBe('She said <3 and I said & what.')
+    // Uppercase-hex numeric entity (&#X..;), the sibling of the lowercase
+    // &#x..; path — same decode branch, distinct case-sensitivity check.
+    expect(storyBody('<!-- SC_OFF --><p>&#X3C;3</p><!-- SC_ON -->', 0)).toBe('<3')
   })
 
   it('decodes only one layer, so a nested entity survives as text', () => {

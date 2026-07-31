@@ -10,8 +10,13 @@
  * Below this many words a "body" is a title restated, not a story worth
  * narrating. A code constant rather than channel config, same as
  * SCOUT_MIN_SCORE.
+ *
+ * 40 sat exactly on qc.ts's 15s duration floor (STORY_MIN_TAIL_WORDS, split.ts)
+ * — a single-part story at the old minimum rode the boundary rather than
+ * clearing it. Rejecting a thin body at scout time costs nothing; discovering
+ * it after a full paid render (script, voice, Remotion) costs a whole cycle.
  */
-export const STORY_MIN_BODY_WORDS = 40
+export const STORY_MIN_BODY_WORDS = 50
 
 const SC_SPAN = /<!--\s*SC_OFF\s*-->([\s\S]*?)<!--\s*SC_ON\s*-->/
 

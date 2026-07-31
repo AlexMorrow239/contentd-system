@@ -376,7 +376,7 @@ describe('redditSource body annotation', () => {
       "One month ago I hosted a movie night for my five closest friends. It's a long " +
         'story but I need to know if I was wrong here.\n\n' +
         'Before the movie a friend called me and asked if she could bring some fruit to ' +
-        'blend into a drink for everyone.',
+        'blend into a drink for everyone today.',
     )
   })
 

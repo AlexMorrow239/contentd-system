@@ -11,6 +11,8 @@ import {
 import type { ScriptOutput } from '../script.js'
 import { testChannel, PLATFORM_META } from '../../testing/channel.js'
 import { makeCtx } from '../../testing/job.js'
+import { splitStory, STORY_MIN_TAIL_WORDS, STORY_WORDS_PER_PART } from '../../stories/split.js'
+import { REALISTIC_STORY_BODY } from '../../stories/_stories.fixtures.js'
 
 const VALID_SCRIPT = {
   hook: 'The Moon is slowly leaving us',
@@ -175,6 +177,85 @@ describe('createScriptStage story mode', () => {
     expect(narration).toBe(
       'One month ago I hosted a movie night. She said she would unalive me. Then she called my mother.',
     )
+  })
+
+  it('produces one segment per paragraph end to end, through a real splitStory part', async () => {
+    // storySegments' `.split(/\n{2,}/)` was dead code before splitStory
+    // preserved paragraph breaks (it always joined chunks with a plain
+    // space) — this runs the REAL splitStory output through the script
+    // stage to prove the two are actually wired together now, not just that
+    // storySegments can split a hand-built string.
+    const body =
+      'Paragraph one has a few sentences here today.\n\n' +
+      'Paragraph two continues the story right along.\n\n' +
+      'Paragraph three wraps everything up nicely now.'
+    const { parts } = splitStory(body, 160, 1)
+    expect(parts).toHaveLength(1) // fits one part; the interior breaks must survive the join
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'AITA for X? (1/3)',
+      story: { ...story, bodyText: parts[0] },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    expect(artifact.segments.map((s) => s.text)).toEqual([
+      'Paragraph one has a few sentences here today.',
+      'Paragraph two continues the story right along.',
+      'Paragraph three wraps everything up nicely now.',
+    ])
+  })
+
+  it('runs a realistic ~300-word multi-paragraph body through split -> script end to end without a runt part', async () => {
+    // The regression test tying the blocker fix and Important 1 together: no
+    // checked-in fixture before REALISTIC_STORY_BODY was long enough to
+    // exercise splitStory's packing at production scale (every other fixture
+    // in this file is well under STORY_WORDS_PER_PART), which is exactly why
+    // both survived review. At the real STORY_WORDS_PER_PART budget this body
+    // packs into a 128-word part and a 15-word remainder that the tail-merge
+    // (split.ts) folds into the second part rather than shipping as its own
+    // sub-STORY_MIN_TAIL_WORDS runt.
+    const { parts, truncated } = splitStory(REALISTIC_STORY_BODY, STORY_WORDS_PER_PART, 10)
+    expect(truncated).toBe(false)
+    // This body does not fit in one Short — otherwise the tail-merge path
+    // below would never run.
+    expect(parts.length).toBeGreaterThan(1)
+    // No text dropped by the split or the merge (whitespace-normalized: a
+    // paragraph break that fell exactly on a part boundary becomes a single
+    // space when parts are rejoined, same as any other sentence boundary).
+    expect(parts.join(' ').replace(/\s+/g, ' ').trim()).toBe(
+      REALISTIC_STORY_BODY.replace(/\s+/g, ' ').trim(),
+    )
+
+    const { client } = fakeClient(META)
+    let sawMultiSegmentPart = false
+    for (const [i, bodyText] of parts.entries()) {
+      // The blocker, directly: every part -- including the last -- clears the
+      // floor qc.ts's duration gate needs, not just the non-final ones the
+      // paragraph-preference window already guarantees.
+      expect(bodyText.trim().split(/\s+/).length).toBeGreaterThanOrEqual(STORY_MIN_TAIL_WORDS)
+
+      const ctx = makeCtx({
+        topic: 'AITA for co-signing a lease? (1/1)',
+        story: {
+          bodyText,
+          partIndex: i + 1,
+          partCount: parts.length,
+          sourceUrl: 'https://reddit.com/r/AmItheAsshole/comments/xyz/',
+          truncated,
+        },
+      })
+      await createScriptStage(client).run(ctx)
+      const artifact = JSON.parse(
+        await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+      ) as ScriptOutput
+      if (artifact.segments.length > 1) sawMultiSegmentPart = true
+    }
+    // Important 1, directly: at least one part's interior paragraph break
+    // survived splitStory's join and produced more than one segment —
+    // storySegments' paragraph split is live code, not dead code.
+    expect(sawMultiSegmentPart).toBe(true)
   })
 
   it('includes a sanitized, bounded opening preview in the metadata prompt', async () => {

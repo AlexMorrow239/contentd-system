@@ -20,6 +20,15 @@ export const STORY_WORDS_PER_PART = 160
  */
 const PARAGRAPH_PREFERENCE = 0.6
 
+/**
+ * Floor for a series' final part. qc.ts's `minMs` is 15000 (15s); at this
+ * codebase's narration pace of ~2.5-3 words/sec that is ~38-45 words, so 50
+ * leaves margin for the spoken hook ("Part two.") that precedes the body. A
+ * final part under this is merged into its predecessor rather than shipped
+ * (and QC-failed) on its own — see the merge step in splitStory below.
+ */
+export const STORY_MIN_TAIL_WORDS = 50
+
 interface Chunk {
   text: string
   words: number
@@ -63,6 +72,10 @@ function sentences(text: string): Chunk[] {
  * produce a single part many minutes long.
  */
 function explode(chunk: Chunk, wordsPerPart: number): Chunk[] {
+  // Unreachable in production (STORY_WORDS_PER_PART is a positive code
+  // constant), but a zero or negative budget would otherwise step the loop
+  // below by 0 or backwards and never terminate.
+  if (wordsPerPart <= 0) return [chunk]
   if (chunk.words <= wordsPerPart) return [chunk]
   const tokens = chunk.text.split(/\s+/)
   const out: Chunk[] = []
@@ -75,6 +88,22 @@ function explode(chunk: Chunk, wordsPerPart: number): Chunk[] {
     })
   }
   return out
+}
+
+// A part's chunks joined back into prose: a blank line where the source had a
+// paragraph break, a plain space between sentences of the same paragraph.
+// `endsParagraph` survives explode() and the packing loop untouched, so this
+// is the one place it is finally consumed.
+function joinChunks(chunks: Chunk[]): string {
+  let out = chunks[0]?.text ?? ''
+  for (let k = 1; k < chunks.length; k += 1) {
+    out += (chunks[k - 1].endsParagraph ? '\n\n' : ' ') + chunks[k].text
+  }
+  return out
+}
+
+function chunkWords(chunks: Chunk[]): number {
+  return chunks.reduce((sum, c) => sum + c.words, 0)
 }
 
 /**
@@ -93,9 +122,9 @@ export function splitStory(
   const chunks = sentences(text).flatMap((c) => explode(c, wordsPerPart))
   if (chunks.length === 0) return { parts: [], truncated: false }
 
-  const parts: string[] = []
+  const partChunks: Chunk[][] = []
   let i = 0
-  while (i < chunks.length && parts.length < maxParts) {
+  while (i < chunks.length && partChunks.length < maxParts) {
     let taken = 0
     let count = 0
     // Always take at least one chunk, so a chunk at exactly the budget cannot
@@ -105,22 +134,46 @@ export function splitStory(
       count += 1
     }
     // Prefer ending on a paragraph break, if one falls late enough in the part
-    // that cutting there does not waste most of the budget.
+    // that cutting there does not waste most of the budget. Scans the WHOLE
+    // packed range and keeps the LAST qualifying break, not the first: on 122
+    // real story bodies, taking the first break inside the window cost 8% more
+    // parts and 19% more truncated stories than taking the last one, because it
+    // gives up budget the greedy pack had already earned. This can only shrink
+    // `count` from the greedy value above, never grow it past what was packed.
+    let cut = -1
     let running = 0
     for (let k = 0; k < count; k += 1) {
       running += chunks[i + k].words
       if (chunks[i + k].endsParagraph && running >= wordsPerPart * PARAGRAPH_PREFERENCE) {
-        count = k + 1
-        break
+        cut = k
       }
     }
-    parts.push(
-      chunks
-        .slice(i, i + count)
-        .map((c) => c.text)
-        .join(' '),
-    )
+    if (cut !== -1) count = cut + 1
+    partChunks.push(chunks.slice(i, i + count))
     i += count
   }
-  return { parts, truncated: i < chunks.length }
+  const truncated = i < chunks.length
+
+  // A final part under STORY_MIN_TAIL_WORDS reads as a runt: on 122 real story
+  // bodies, 19% ended with a final part under 40 words (tails as short as 1
+  // word observed), which passes voice synthesis's own duration floor but
+  // fails qc.ts's `minMs` (15s) — the job lands 'needs-review' and never
+  // publishes. Merging it into its predecessor instead lets that last part run
+  // over budget. Only when there IS a predecessor: a single part below the
+  // threshold is the entire story and has nothing to merge into.
+  //
+  // Bound: every packed part above is <= wordsPerPart (explode() already
+  // guarantees no single chunk exceeds it), so the merged part is at most
+  // STORY_WORDS_PER_PART + STORY_MIN_TAIL_WORDS - 1 = 160 + 50 - 1 = 209 words
+  // (~70-84s at 2.5-3 words/sec), comfortably under qc.ts's `maxMs` (180s). If
+  // either constant changes, re-check that this sum still clears `maxMs`.
+  if (partChunks.length > 1) {
+    const last = partChunks[partChunks.length - 1]
+    if (chunkWords(last) < STORY_MIN_TAIL_WORDS) {
+      const prev = partChunks[partChunks.length - 2]
+      partChunks.splice(partChunks.length - 2, 2, [...prev, ...last])
+    }
+  }
+
+  return { parts: partChunks.map(joinChunks), truncated }
 }

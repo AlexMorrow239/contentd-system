@@ -199,7 +199,9 @@ describe('src/stories purity', () => {
   })
 
   it('never touches the database, filesystem, or network', async () => {
-    const files = (await srcFiles(join(SRC_ROOT, 'stories'))).filter((f) => !f.endsWith('.test.ts'))
+    const files = (await srcFiles(join(SRC_ROOT, 'stories'))).filter(
+      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
+    )
     const offenders: string[] = []
     for (const file of files) {
       const source = await readFile(file, 'utf8')
