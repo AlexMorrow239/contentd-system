@@ -93,4 +93,17 @@ describe('sanitizeStory', () => {
       expect(term).toBe(term.toLowerCase())
     }
   })
+
+  it('leaves "died" alone before a particle that changes the verb', () => {
+    // "passed down" means inherited and "passed out" means fainted — both
+    // change the meaning rather than softening it, so the particle forms are
+    // excluded while the plain sense stays covered.
+    expect(sanitizeStory('The arguing died down.')).toBe('The arguing died down.')
+    expect(sanitizeStory('Their friendship died out.')).toBe('Their friendship died out.')
+    expect(sanitizeStory('The engine died off.')).toBe('The engine died off.')
+    expect(sanitizeStory('The sound died away.')).toBe('The sound died away.')
+    // The plain sense is unaffected by the guard.
+    expect(sanitizeStory('He died last year.')).toBe('He passed last year.')
+    expect(sanitizeStory('She died.')).toBe('She passed.')
+  })
 })
