@@ -34,7 +34,9 @@
 // KNOWN, ACCEPTED LEAKS. A word map cannot see collocation, and these were
 // judged too infrequent in this genre to be worth further guards. Real
 // published output will surface the rest faster than review does:
-//   "make a killing"        -> "make an unaliving"   (financial sense)
+//   "make a killing"        -> "make a unaliving"    (financial sense; note
+//                                                     the article is not
+//                                                     fixed up either)
 //   "the sex of the baby"   -> "the seggs of..."     (category sense)
 //   "went in for the kill"  -> "...for the unalive"  (noun sense)
 //   "he drugs her drink"    -> "he substances..."    (verb sense)
