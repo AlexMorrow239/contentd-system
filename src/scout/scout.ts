@@ -215,13 +215,22 @@ export async function scoutChannel(
   // behaves exactly as it did before this filter existed.
   const story = channel.story
   const narratable =
-    story === null ? usable : usable.filter((c) => c.body !== undefined && c.body !== '')
+    story === null
+      ? usable
+      : // defensive: c.body !== '' can never fire in practice — storyBody
+        // returns either undefined or a trimmed string of at least
+        // STORY_MIN_BODY_WORDS words, never ''. Kept explicit so a future
+        // reader does not infer an empty-but-present body is a real case.
+        usable.filter((c) => c.body !== undefined && c.body !== '')
 
   const result: ScoutChannelResult = {
     channel: channel.name,
     // fetched stays the raw count, so
     // fetched - droppedMedia - droppedAutomated - droppedBodyless - alreadyKnown
-    // reads as scored.
+    // reads as scored. A second relation an operator might assume from this
+    // same JSON line — queued + rejected = scored — held before story mode
+    // existed but no longer does: one scored story post fans out into
+    // multiple queued (or rejected) rows, so queued can exceed scored.
     fetched: candidates.length,
     droppedMedia: candidates.length - notMedia.length,
     droppedAutomated: notMedia.length - usable.length,
@@ -272,6 +281,12 @@ export async function scoutChannel(
     }
     const { parts, truncated } = splitStory(candidate.body, STORY_WORDS_PER_PART, story.maxParts)
     if (parts.length === 0) {
+      // Unreachable in practice (a body that cleared STORY_MIN_BODY_WORDS
+      // always yields at least one part) but silent otherwise — without this,
+      // a post that scored 80+ would be discarded with no trace. Matches the
+      // per-source failure path above: stderr, since stdout is reserved for
+      // the CLI's one JSON line.
+      console.error(`scout: channel "${channel.name}" split produced no parts for "${s.topic}"`)
       rows.push({ ...base, title: s.topic, dedupeHash: hash, status: 'rejected' })
       continue
     }

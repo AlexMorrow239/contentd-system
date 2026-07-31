@@ -139,15 +139,26 @@ export function insertTopics(db: Database, rows: NewTopic[]): number {
 // Pre-Haiku hash filter: any status counts as known (a rejected item must
 // never be re-scored). IN-list size is bounded by the scout's per-source
 // candidate caps, far under SQLite's bound-variable limit.
+//
+// Matches against dedupe_hash OR series_key. A topic-mode candidate's hash is
+// only ever written to dedupe_hash, so this is the same lookup it always was.
+// A story's PARTS are stored under derived per-part hashes
+// (`dedupeHash(sourceId, "${externalId}#pN")`) — the un-suffixed base hash the
+// caller asks about here is never a row's own dedupe_hash, only its
+// series_key. Matching dedupe_hash alone would therefore never recognize an
+// already-queued (or already-rejected) story post, re-paying Haiku for it on
+// every tick still inside the source's fetch window.
 export function knownHashes(db: Database, channel: string, hashes: string[]): Set<string> {
   if (hashes.length === 0) return new Set()
   const placeholders = hashes.map(() => '?').join(', ')
   const rows = db
     .prepare(
-      `SELECT dedupe_hash FROM topics WHERE channel = ? AND dedupe_hash IN (${placeholders})`,
+      `SELECT dedupe_hash AS h FROM topics WHERE channel = ? AND dedupe_hash IN (${placeholders}) ` +
+        `UNION ` +
+        `SELECT series_key AS h FROM topics WHERE channel = ? AND series_key IN (${placeholders})`,
     )
-    .all(channel, ...hashes) as { dedupe_hash: string }[]
-  return new Set(rows.map((r) => r.dedupe_hash))
+    .all(channel, ...hashes, channel, ...hashes) as { h: string }[]
+  return new Set(rows.map((r) => r.h))
 }
 
 // Scorer prompt context: how many recent titles feed the "recently covered —

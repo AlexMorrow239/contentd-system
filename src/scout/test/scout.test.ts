@@ -936,6 +936,11 @@ describe('scoutChannel story mode', () => {
     const result = await scoutChannel(db, channel, { client, fetchImpl })
 
     expect(result.queued).toBe(3)
+    // redditCandidates orders by id — insertion order within the fan-out
+    // transaction — which exists to serve the prune pass, not this test. The
+    // four ordering-sensitive assertions in this describe lean on it; a
+    // future change to prune's own ordering must not silently break these
+    // for an unrelated reason.
     const rows = redditCandidates(db, 'aita')
     expect(rows).toHaveLength(3)
     expect(rows.map((r) => r.partIndex)).toEqual([1, 2, 3])
@@ -1043,6 +1048,80 @@ describe('scoutChannel story mode', () => {
     expect(rows).toHaveLength(1)
     expect(rows[0].partIndex).toBeNull()
     expect(rows[0].seriesKey).toBeNull()
+    db.close()
+  })
+
+  it('re-scouting a queued story is free: the base hash is recognized via series_key', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'aita',
+      videosPerDay: 3,
+      backlogDays: 2,
+      story: { maxParts: 4 },
+      scout: { ...DEFAULT_SCOUT, subreddits: ['AmItheAsshole'] },
+    })
+    // 400 words at 160 words/part: three parts, each stored under its own
+    // suffixed dedupe hash with the un-suffixed base hash in series_key.
+    const long = Array.from(
+      { length: 40 },
+      (_, i) => `Sentence ${i} has exactly ten words in it now.`,
+    ).join(' ')
+    const { client, create } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 88, topic: 'She blended the fruit', reason: 'strong' }]),
+    )
+    const fetchImpl = fetchStub({
+      '/r/AmItheAsshole/.rss': redditFeed([
+        { name: 't3_abc', title: 'AITA for not apologizing?', author: '/u/real', body: long },
+      ]),
+    })
+
+    // force: true on both calls — this test is about hash recognition across
+    // repeat runs, not the recheck cadence (covered separately).
+    const first = await scoutChannel(db, channel, { client, fetchImpl, force: true })
+    expect(first.queued).toBe(3)
+    const second = await scoutChannel(db, channel, { client, fetchImpl, force: true })
+
+    expect(second).toEqual({
+      channel: 'aita',
+      fetched: 1,
+      droppedMedia: 0,
+      droppedAutomated: 0,
+      droppedBodyless: 0,
+      alreadyKnown: 1,
+      scored: 0,
+      queued: 0,
+      rejected: 0,
+      sourceErrors: [],
+      costUsdMicros: 0,
+    })
+    // the second run never reached Haiku — the base hash was recognized via
+    // series_key even though no row's own dedupe_hash matches it
+    expect(create).toHaveBeenCalledTimes(1)
+    // no new rows: still exactly the three parts from the first run
+    expect(redditCandidates(db, 'aita')).toHaveLength(3)
+    db.close()
+  })
+
+  it('re-scouting a topic-mode channel still recognizes the known hash (series_key union matches nothing)', async () => {
+    const db = memDb()
+    const channel = scoutedChannel({}, 'space-topic')
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+    })
+    const { client, create } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 90, topic: 'Moon topic', reason: 'ok' }]),
+    )
+
+    const first = await scoutChannel(db, channel, { client, fetchImpl, force: true })
+    expect(first.queued).toBe(1)
+    const second = await scoutChannel(db, channel, { client, fetchImpl, force: true })
+
+    expect(second.alreadyKnown).toBe(1)
+    expect(second.scored).toBe(0)
+    expect(second.queued).toBe(0)
+    expect(second.costUsdMicros).toBe(0)
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(listTopics(db, { channel: 'space-topic' })).toHaveLength(1)
     db.close()
   })
 })
