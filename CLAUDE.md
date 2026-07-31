@@ -140,8 +140,9 @@ but the tick functions' own shape is unchanged. Both:
   than thrown, because a unit that throws logs a `worker-error` line, not a
   structured noop.
 - validate the env they depend on before the lease too, as a `bad-env` noop:
-  `publish-next` checks `BRAINROT_TOKEN_KEY` and the quota vars
-  (`badEnvMessage`), `produce-next` checks that object storage is configured
+  `publish-next` checks `BRAINROT_TOKEN_KEY` (`badEnvMessage` — that is now
+  the only variable left to check, since quota is no longer config-derived),
+  `produce-next` checks that object storage is configured
   (`s3ConfigError`, `src/storage/config.ts`). The latter is a fail-fast, not a
   duplicate of the `store` stage's own construction: `store` runs **last**, so
   without the gate an unconfigured deployment pays for a full Remotion render
@@ -160,11 +161,53 @@ cooldown is an anti-burst guard, not a schedule (a platform seeing six
 uploads land in three minutes reads it as spam), and demand — `videos_per_day`
 still unmet today — is the only thing that makes a channel due, so nothing
 stops a whole day's quota firing back-to-back once each video clears its own
-cooldown. Each platform's real daily cap (YouTube's ~6/day per Google Cloud
-project, shared across channels; Instagram's 50/day per account) is enforced
-twice: once at config load, where a channel set declaring more
-`videos_per_day` than a platform allows is a hard error, and once per unit
-as a backstop.
+cooldown.
+
+**Platform quota is detected at runtime, never declared.** The platform's own
+error response is the only source of truth for its cap, so `videos_per_day` is
+pure demand: nothing in config load or in the tick counts uploads against a
+number of ours. When an adapter classifies an upload failure as `kind: 'quota'`
+(YouTube's `quotaExceeded`/`uploadLimitExceeded`/`dailyLimitExceeded`,
+Instagram's Graph codes 4 and 17), the resulting `publishes` row **is** the
+backoff marker — durable across daemon restarts, no extra table and no extra
+write. `quotaBackedOff` (`src/publish/publishes.ts`) asks whether a
+quota-kind `failed` row exists inside `QUOTA_BACKOFF_MS`, and the tick's
+`platformOpen` drops that platform from the fan-out for the window; the other
+platform publishes in the same unit, and a video half-published this way stays
+a candidate for the platform it missed. The video never burns an attempt —
+only `error_kind = 'rejected'` counts toward `MAX_PUBLISH_ATTEMPTS`. A unit
+where quota was the first thing to rule every platform out reports the
+`platform-quota` noop reason, unchanged from the counting design it replaced.
+
+Two details carry the weight. `QUOTA_BACKOFF_MS` is **6 hours sliding, not
+rest-of-local-day**: YouTube's quota resets at midnight Pacific while
+`localDay` is the operator's local day, so a day-scoped rule retrying at 00:10
+local hits the still-unreset quota, stamps a fresh failure onto the new day,
+and wedges the platform permanently. A sliding window is timezone-agnostic,
+costs at most ~3 probe attempts a day, recovers within 6h of the true reset,
+and absorbs Instagram's rolling-24h and burst limits with the same rule. And
+`PLATFORM_QUOTAS` (`publish/platforms/quota.ts`) survives as **scope only** —
+`{ scope: 'global' | 'channel' }`, no cap — because scope is platform
+semantics rather than a tunable number: it decides the backoff's blast radius.
+YouTube is `global` (one Google Cloud project's quota, shared by every
+channel) so its marker is looked up with no channel filter; Instagram is
+`channel` (one IG account per channel) so each channel backs off alone. The
+same descriptors feed the dashboard's quota panel, which now shows
+uploads-used-today plus a `backed off` badge and no cap at all.
+`BRAINROT_YT_UPLOADS_PER_DAY` / `BRAINROT_IG_UPLOADS_PER_DAY` are gone and now
+inert — a `.env` or compose file still setting one is silently ignored, the
+same treatment the four replaced path variables got.
+
+The digest reports quota accordingly: a count of quota failures in the last
+24h phrased as awareness, not an action item ("uploads back off 6h per failure
+and retry automatically"), because the operator has nothing to do unless the
+count is climbing — which would mean the window is shorter than the platform's
+real reset horizon. It also carries a **topic-starvation** action item: a
+channel that both scouts (any of `subreddits`, `rss`, `generate_topics`) and
+publishes, holding 0 candidate topics AND 0 unpublished videos, will stop
+publishing the moment its backlog drains, and every other line in the digest
+would stay quiet about it. Channels with no scout sources are excluded — they
+are fed by manual `brainrot produce`, where an empty queue is normal.
 
 Manual commands (`produce`, `resume`, `auth <platform>`,
 `library approve/reject`, `publish retry/mark-done`) deliberately run
@@ -245,6 +288,14 @@ channel's `videos_per_day`. A stale `slots` key at either level, or a stale
 channel declaring both `[publish.youtube]`
 and `[publish.instagram]` cross-posts the same rendered video to both.
 
+Config load does **no** platform math on `videos_per_day`. There used to be a
+third whole-directory invariant, `assertQuotaHeadroom`, rejecting a channel set
+that declared more videos/day than a platform's cap allowed; it is deleted,
+because that cap was a guess and the platform enforces its own at runtime (see
+the daemon section above). `videos_per_day` is now pure demand — a channel may
+declare 15 against a platform that will only take 6, and the surplus simply
+ages out through `backlog_days` as passed-over inventory.
+
 `backlog_days` (default 2) is the inventory depth cap AND the aged-out horizon
 — one number, because "hold more inventory" and "give each video longer to
 find a slot" are the same statement. `[scout] queue_days` (default 3) is its
@@ -302,6 +353,52 @@ what a post actually points at. Rows predating it are recovered by
 rehashing the feed's own `t3_` id against the row's `dedupe_hash` before
 touching anything.
 
+### The third source invents topics rather than fetching them
+
+`llmSource` (`src/scout/sources/llm.ts`) is a `TrendSource` like the other
+two: `scoutChannel` builds it from a descriptor, its output joins the same
+candidate list, and everything downstream — scorer, the `SCOUT_MIN_SCORE`
+gate, dedupe, `insertTopics` — is untouched. Fitting it behind the existing
+seam rather than beside it is what makes a channel with no reachable feeds
+still a normal channel. It is gated on `[scout] generate_topics` (int 0-50,
+default 0 = off), and asks Haiku (`SCOUT_MODEL`, the scorer's own model) for
+that many headlines given the channel's `niche` and `recentTopicTitles` — the
+same 30-title window the scorer uses, so the generator avoids what is already
+queued and the scorer independently zeroes anything near-duplicate that slips
+through. A generated topic has no source page, so its **normalized title is
+its `externalId`** (lowercased, whitespace collapsed) and `url` is `''`: exact
+regenerations dedupe through the ordinary `dedupeHash(sourceId, externalId)`
+with no special case.
+
+It is structurally a drought-filler, with no priority logic anywhere: the
+queue-full gate runs *before* any source fetches, so generation fires only
+while the candidate queue is under `ceil(videos_per_day × queue_days)`. Spend
+is ledgered as operation `scout-generate` under the same `scout:<channel>`
+sentinel job id scoring uses, reserved against the global day cap
+(`assertGlobalDayBudget`, `ESTIMATED_GENERATE_COST_MICROS`) before the call
+and trued up after; a paid-but-schema-invalid response is recovered through
+the thrown error's cost tag exactly as `scoreWithLedger` does, and recorded
+before the scoring transaction so a later scoring throw can never lose it.
+A `[story]` channel declaring `generate_topics` is a load error — a generated
+topic has no post body to narrate.
+
+Two traps are worth stating because neither announces itself:
+
+- **Keep an `rss` source declared alongside `generate_topics`.** The
+  generation budget gate throws *inside* the per-source try, so a breach
+  degrades to one `sourceErrors` entry — indistinguishable from a dead feed.
+  On a channel where the generator is the only source, that single entry makes
+  `failedSources === totalSources` and `scoutAll` raises
+  `AllSourcesFailedError`: a budget cap doing its job reads as a total outage
+  and exits 1. (`scoutAll` deliberately counts the llm descriptor in
+  `sourceCount`, which is also what makes an llm-only channel scoutable at all
+  instead of silently skipped as "no `[scout]` sources" — the counting is
+  correct, the degenerate single-source case is the trap.)
+- **Keep `generate_topics <= per_source_limit`.** `llmSource` clamps its
+  request to `min(count, fetchOpts.limit)`, and that limit *is*
+  `per_source_limit` (default 25), so a larger `generate_topics` is silently
+  truncated rather than rejected at load.
+
 ### Story mode: channels that narrate reddit posts verbatim
 
 A channel with a `[story]` table (`max_parts`, default 4) narrates reddit
@@ -357,10 +454,13 @@ not carry) and a moderator-account test now folded into `isAutomatedAuthor`
 per-subreddit mod team, not just `/u/AutoModerator`, posts the recurring
 announcement threads that would otherwise burn a scoring slot every week).
 
-Two load-time invariants join the existing three: `[story]` with `scout.rss`
-sources is an error (an RSS item has no body), and `max_parts <= videos_per_day
-* backlog_days` — a series drains at `videos_per_day` per day, so a longer one
-would have its tail age out mid-series and strand viewers on part 2.
+Three load-time invariants join the existing two (filename == `name`, and no
+duplicate declared name — the third, `assertQuotaHeadroom`, is gone): `[story]`
+with `scout.rss` sources is an error (an RSS item has no body), `[story]` with
+`[scout] generate_topics` is an error for the same reason (a generated topic
+has no post body either), and `max_parts <= videos_per_day * backlog_days` — a
+series drains at `videos_per_day` per day, so a longer one would have its tail
+age out mid-series and strand viewers on part 2.
 
 Sanitization (`stories/sanitize.ts`, an algospeak substitution map) runs on
 the way into `script.json`, and on more surfaces than "narration" suggests: it
@@ -452,8 +552,9 @@ Every error carries two axes: a `domain` (`publish`, `storage`, `provider`,
 `invalid`, `not-found`, `rejected`, `conflict`, `refused`, `transient`,
 `unknown-outcome`, `internal`), so a surface can match at either width. There
 is deliberately no `retryable` flag: `transient` retries next tick, `quota`
-tomorrow, `budget` after a cap change, and `unknown-outcome` never — retry
-meaning belongs to each surface.
+after `QUOTA_BACKOFF_MS` (6h, and on the publish path the failed row itself is
+what remembers), `budget` after a cap change, and `unknown-outcome` never —
+retry meaning belongs to each surface.
 
 The concrete classes stay co-located with the domain they describe
 (`PublishError` in `publish/types.ts`, `StorageError` in `storage/types.ts`,
@@ -493,9 +594,11 @@ for Instagram's ~60-day long-lived token), `platforms/youtube.ts` and
 `platforms/instagram.ts` each implement upload mechanics and credential
 resolution behind the shared `PublishAdapter` seam (`platforms/index.ts` is
 the one-line-per-platform registry `publish-next` drives generically),
-`schedule.ts` reads `videos_per_day` as the day's quota and pairs it with
+`schedule.ts` reads `videos_per_day` as the day's demand and pairs it with
 the fixed `PUBLISH_COOLDOWN_MS` cooldown (no window, no per-video gap
-derived from `videos_per_day` anymore), and `publishes.ts` is the DAO for
+derived from `videos_per_day` anymore, and no platform cap — `schedule.ts`
+decides only whether a CHANNEL is due; whether a PLATFORM is open is
+`quotaBackedOff`'s answer, in the DAO), and `publishes.ts` is the DAO for
 the `publishes` table's
 claim/done/failed/interrupted state machine, keyed per (channel, platform),
 with a `seq` ordinal per local day standing in for the old clock-time slot.
@@ -595,9 +698,11 @@ calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up).
 
 **Layout rule: a directory with more than 3 test files folds its tests into a
 nested `test/` subdirectory** — `src/loop/test/`, `src/stages/test/`,
-`src/scout/test/`, etc. — so the source directory listing stays scannable; a
-directory with 3 or fewer stays flat (`src/config/`, `src/scout/sources/`, the
-repo root). `src/` root is exempt
+`src/scout/test/`, `src/scout/sources/test/`, etc. — so the source directory
+listing stays scannable; a directory with 3 or fewer stays flat
+(`src/config/`, the repo root). `src/scout/sources/` is the worked example of
+the rule firing: `llm.test.ts` took it to four, and the fold followed
+immediately (`b6ba6dc`). `src/` root is exempt
 from the fold rule regardless of count: its test files are repo-wide concerns
 (`arch.test.ts`'s architecture lints, `cli.test.ts`, `smoke.test.ts`,
 `errors.test.ts`) rather than one module's tests, and folding them would drag
