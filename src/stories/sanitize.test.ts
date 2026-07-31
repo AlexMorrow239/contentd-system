@@ -46,14 +46,12 @@ describe('sanitizeStory', () => {
       ['That kills the mood.', 'That unalives the mood.'],
       ['She killed the plant.', 'She unalived the plant.'],
       ['He was killing time.', 'He was unaliving time.'],
-      ['He tried to murder him.', 'He tried to unalive him.'],
       ['He murdered the character.', 'He unalived the character.'],
       ['She mentioned suicide once.', 'She mentioned self-deletion once.'],
       ['He was accused of rape.', 'He was accused of SA.'],
       ['She said he raped her.', 'She said he SA-ed her.'],
       ['He is a known rapist.', 'He is a known SA-er.'],
       ['My grandfather died last year.', 'My grandfather passed last year.'],
-      ['We talked about her death.', 'We talked about her passing.'],
       ['We never talk about sex.', 'We never talk about seggs.'],
       ['It was a sexual comment.', 'It was a seggsual comment.'],
       ['He was watching porn.', 'He was watching adult content.'],
@@ -81,6 +79,13 @@ describe('sanitizeStory', () => {
     expect(sanitizeStory('I got a flu shot.')).toBe('I got a flu shot.')
     expect(sanitizeStory('He owns a gun.')).toBe('He owns a gun.')
     expect(sanitizeStory('He would abuse me.')).toBe('He would abuse me.')
+    // 'unalive' has no noun form, so the bare noun is left alone; the verb
+    // form is still covered by the 'murdered' entry.
+    expect(sanitizeStory('The police investigated the murder.')).toBe(
+      'The police investigated the murder.',
+    )
+    // 'passing threats' would mean something different from 'death threats'.
+    expect(sanitizeStory('He sent me death threats.')).toBe('He sent me death threats.')
   })
 
   it('keys the map in lowercase so the boundary regex stays predictable', () => {

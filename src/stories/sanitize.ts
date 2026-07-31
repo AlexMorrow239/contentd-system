@@ -13,27 +13,34 @@
 // appear in — same part of speech, same inflection. Narration is verbatim, so
 // a mismatch does not degrade a summary, it ships broken English in the video.
 //
-// Four candidates were deliberately REJECTED for failing that rule; do not
+// Six candidates were deliberately REJECTED for failing that rule; do not
 // reinstate them without solving the underlying problem:
-//   abuse -> mistreatment  noun for a verb: "he would abuse me"
-//   dead  -> no longer with us  "dead end", "the battery was dead"
-//   shot  -> hit           "flu shot", "shot a video", "shot glass"
-//   gun   -> pew pew       tonally absurd in a serious story
+//   abuse  -> mistreatment  noun for a verb: "he would abuse me"
+//   dead   -> no longer with us  "dead end", "the battery was dead"
+//   shot   -> hit           "flu shot", "shot a video", "shot glass"
+//   gun    -> pew pew       tonally absurd in a serious story
+//   murder -> unalive       'unalive' has no noun form:
+//                           "investigated the murder" -> "the unalive"
+//   death  -> passing       changes MEANING, not just tone:
+//                           "death threats" -> "passing threats"
 // 'shot' in particular cannot be fixed by a word map at all — it needs to know
 // whether the sentence means a firearm, and this module is a word map.
+//
+// 'died -> passed' is KEPT despite a known wrinkle: "died of cancer" becomes
+// "passed of cancer", which is non-idiomatic but not wrong. That is a
+// preposition, not a meaning change, and 'died' is how these stories usually
+// refer to a death.
 export const ALGOSPEAK: Record<string, string> = {
   kill: 'unalive',
   kills: 'unalives',
   killed: 'unalived',
   killing: 'unaliving',
-  murder: 'unalive',
   murdered: 'unalived',
   suicide: 'self-deletion',
   rape: 'SA',
   raped: 'SA-ed',
   rapist: 'SA-er',
   died: 'passed',
-  death: 'passing',
   sex: 'seggs',
   sexual: 'seggsual',
   porn: 'adult content',
