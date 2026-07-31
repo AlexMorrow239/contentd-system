@@ -97,6 +97,24 @@ function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<
   return { client: { messages: { create } } as unknown as Anthropic, create }
 }
 
+// A schema-valid emit tool_use response for llmSource, mirroring emitScores'
+// shape. Default usage matches emitScores' default (1000×1 + 200×5 = 2000
+// usd-micros at haiku list price) so a generation+scoring sum is easy to
+// eyeball in cost assertions.
+function emitTopics(titles: string[], usage = { input_tokens: 1000, output_tokens: 200 }) {
+  return {
+    content: [
+      {
+        type: 'tool_use',
+        name: 'emit',
+        id: 't1',
+        input: { topics: titles.map((title) => ({ title })) },
+      },
+    ],
+    usage,
+  }
+}
+
 // A schema-valid emit tool_use carrying the given scores. Default usage costs
 // 1000×1 + 200×5 = 2000 usd-micros at the claude-haiku-4-5 list price.
 function emitScores(
@@ -606,6 +624,158 @@ describe('scoutChannel', () => {
 
     expect(result.skipped).toBeUndefined()
     expect(fetchImpl).toHaveBeenCalled()
+  })
+})
+
+describe('scoutChannel llm generation', () => {
+  it('feeds generated candidates through scoring and inserts survivors', async () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter', 'Boring topic']))
+      .mockResolvedValueOnce(
+        emitScores([
+          { candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong hook' },
+          { candidateIndex: 1, score: 10, topic: 'Boring', reason: 'weak' },
+        ]),
+      )
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const result = await scoutChannel(db, channel, { client })
+
+    expect(result.fetched).toBe(2)
+    expect(result.scored).toBe(2)
+    expect(result.queued).toBe(1)
+    expect(result.rejected).toBe(1)
+    const topics = listTopics(db, { channel: 'chan-a' })
+    expect(topics).toHaveLength(2)
+    const queued = topics.find((t) => t.status === 'candidate')
+    expect(queued?.title).toBe('Comet discovery')
+    expect(queued?.rawTitle).toBe('Comet found near Jupiter')
+    expect(queued?.source).toBe('llm:chan-a')
+    expect(create).toHaveBeenCalledTimes(2)
+    db.close()
+  })
+
+  it('never generates when the queue is at depth (queue-full precedes fetching)', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      videosPerDay: 2,
+      scout: { ...DEFAULT_SCOUT, generateTopics: 3, queueDays: 3 },
+    })
+    for (let i = 0; i < 6; i++) {
+      seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
+    }
+    const create = vi.fn()
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const result = await scoutChannel(db, channel, { client })
+
+    expect(result.skipped).toBe('queue-full')
+    expect(create).not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it('ledgers scout-generate spend on success', async () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 1 } })
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(
+        emitTopics(['Comet found near Jupiter'], { input_tokens: 500, output_tokens: 100 }),
+      )
+      .mockResolvedValueOnce(
+        emitScores([{ candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong' }]),
+      )
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const result = await scoutChannel(db, channel, { client })
+
+    // generation: 500×1 + 100×5 = 1000; scoring: 1000×1 + 200×5 = 2000
+    // (emitScores' default usage) — result.costUsdMicros sums both.
+    expect(result.costUsdMicros).toBe(3_000)
+    const costs = db.prepare('SELECT job_id, operation, usd_micros FROM costs ORDER BY id').all()
+    expect(costs).toEqual([
+      { job_id: 'scout:chan-a', operation: 'scout-generate', usd_micros: 1_000 },
+      { job_id: 'scout:chan-a', operation: 'scout-score', usd_micros: 2_000 },
+    ])
+    db.close()
+  })
+
+  it('a generation failure is one sourceErrors entry; rss candidates still process', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'chan-a',
+      scout: { ...DEFAULT_SCOUT, subreddits: ['space'], generateTopics: 2 },
+    })
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting measured' }]),
+    })
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('generation down'))
+      .mockResolvedValueOnce(
+        emitScores([{ candidateIndex: 0, score: 85, topic: 'Moon escape', reason: 'ok' }]),
+      )
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.fetched).toBe(1)
+    expect(result.queued).toBe(1)
+    expect(result.sourceErrors).toHaveLength(1)
+    expect(result.sourceErrors[0]).toMatch(/^llm:chan-a: /)
+    // the failed (unpaid) generation call left no scout-generate row; only
+    // the successful reddit-fed scoring call ledgered.
+    const costs = db.prepare('SELECT operation FROM costs').all()
+    expect(costs).toEqual([{ operation: 'scout-score' }])
+    db.close()
+  })
+
+  it('re-running dedupes identical generated titles via knownHashes (no re-score)', async () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter', 'Boring topic']))
+      .mockResolvedValueOnce(
+        emitScores([
+          { candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong' },
+          { candidateIndex: 1, score: 10, topic: 'Boring', reason: 'weak' },
+        ]),
+      )
+      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter', 'Boring topic']))
+    const client = { messages: { create } } as unknown as Anthropic
+
+    // force: true on both — this test is about dedupe across repeat runs, not
+    // the recheck cadence (covered separately elsewhere in this file).
+    const first = await scoutChannel(db, channel, { client, force: true })
+    expect(first.queued).toBe(1)
+    expect(first.costUsdMicros).toBe(4_000) // generate 2000 + score 2000
+
+    const second = await scoutChannel(db, channel, { client, force: true })
+
+    expect(second.alreadyKnown).toBe(2)
+    expect(second.scored).toBe(0)
+    expect(second.queued).toBe(0)
+    // The second generation call still spent money even though every title it
+    // returned deduped away before scoring — the fresh.length === 0 early
+    // return must still carry the recorded generation cost.
+    expect(second.costUsdMicros).toBe(2_000)
+    // gen1, score1, gen2 — no second scoring call
+    expect(create).toHaveBeenCalledTimes(3)
+    const costs = db
+      .prepare("SELECT operation FROM costs WHERE job_id = 'scout:chan-a' ORDER BY id")
+      .all()
+    expect(costs).toEqual([
+      { operation: 'scout-generate' },
+      { operation: 'scout-score' },
+      { operation: 'scout-generate' },
+    ])
+    expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(2)
+    db.close()
   })
 })
 

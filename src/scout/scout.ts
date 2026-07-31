@@ -9,6 +9,7 @@ import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
 import { isMediaPostKind } from './sources/post-kind.js'
 import { redditSource } from './sources/reddit.js'
 import { rssSource } from './sources/rss.js'
+import { ESTIMATED_GENERATE_COST_MICROS, llmSource } from './sources/llm.js'
 import { ESTIMATED_SCOUT_COST_MICROS, estimatedChunkCount, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
 import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
@@ -77,7 +78,10 @@ function emptySkippedResult(
 
 // A source before construction: the raw config entry the loop builds a source
 // from inside the per-source try, so a throwing constructor is isolated.
-type SourceDescriptor = { kind: 'reddit'; subreddit: string } | { kind: 'rss'; url: string }
+type SourceDescriptor =
+  | { kind: 'reddit'; subreddit: string }
+  | { kind: 'rss'; url: string }
+  | { kind: 'llm'; count: number }
 
 // Scoring with the ledger-complete error path: gate first; if the call spent
 // before failing (paid-but-invalid response), record that spend before the
@@ -106,7 +110,11 @@ async function scoreWithLedger(
     const spent = errorCostUsdMicros(err)
     if (spent !== undefined) {
       recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', spent)
-      result.costUsdMicros = spent
+      // += , not =: any already-recorded generation cost on `result` must
+      // survive a scoring failure — the ledger row for it is separate and
+      // already safe, but the in-memory result would otherwise be zeroed
+      // back to just this scoring spend.
+      result.costUsdMicros += spent
     }
     // Carry the partial ScoutChannelResult across the rethrow so scoutAll can
     // report real fetch/dedupe counts for a channel whose scoring failed.
@@ -155,19 +163,44 @@ export async function scoutChannel(
   const descriptors: SourceDescriptor[] = [
     ...channel.scout.subreddits.map((subreddit) => ({ kind: 'reddit' as const, subreddit })),
     ...channel.scout.rss.map((url) => ({ kind: 'rss' as const, url })),
+    ...(channel.scout.generateTopics > 0
+      ? [{ kind: 'llm' as const, count: channel.scout.generateTopics }]
+      : []),
   ]
 
   const sourceErrors: string[] = []
   const candidates: TrendCandidate[] = []
+  // Generation spend accumulates across the loop and is recorded once, right
+  // after `result` is constructed below — NOT inside the final scoring
+  // transaction, so a later scoring throw can never lose this ledger row.
+  let generateCostMicros = 0
   // Per-source isolation: a failed constructor, fetch, or timeout contributes
   // zero candidates and one sourceErrors entry; the run continues (spec §4).
   for (const descriptor of descriptors) {
     let source: TrendSource | undefined
     try {
-      source =
-        descriptor.kind === 'reddit'
-          ? redditSource(descriptor.subreddit, opts.fetchImpl)
-          : rssSource(descriptor.url, opts.fetchImpl)
+      if (descriptor.kind === 'llm') {
+        // Same shape as scoring's gate: reserve the estimate against the
+        // global day cap BEFORE the paid call. A breach throws here inside
+        // the per-source try and lands in sourceErrors — rss/reddit sources
+        // still run, and the scoring gate below remains the hard stop.
+        assertGlobalDayBudget(db, ESTIMATED_GENERATE_COST_MICROS)
+        source = llmSource({
+          channelName: channel.name,
+          niche: channel.niche,
+          recentTitles: recentTopicTitles(db, channel.name),
+          count: descriptor.count,
+          client: opts.client,
+          onCost: (usdMicros) => {
+            generateCostMicros += usdMicros
+          },
+        })
+      } else {
+        source =
+          descriptor.kind === 'reddit'
+            ? redditSource(descriptor.subreddit, opts.fetchImpl)
+            : rssSource(descriptor.url, opts.fetchImpl)
+      }
       candidates.push(
         ...(await source.fetch({
           limit: channel.scout.perSourceLimit,
@@ -182,12 +215,18 @@ export async function scoutChannel(
         source?.id ??
         (descriptor.kind === 'reddit'
           ? `reddit:r/${descriptor.subreddit}`
-          : `rss:${descriptor.url}`)
+          : descriptor.kind === 'rss'
+            ? `rss:${descriptor.url}`
+            : `llm:${channel.name}`)
       const entry = `${id}: ${errorMessage(err)}`
       // Spec §4: a failing source "logs a warning" — stderr, since stdout is
       // reserved for the CLI's single JSON line.
       console.error(`scout: source ${entry}`)
       sourceErrors.push(entry)
+      // Paid-but-failed generation (schema-invalid response) still spent
+      // money; recover it the same way scoreWithLedger does.
+      const spent = errorCostUsdMicros(err)
+      if (spent !== undefined) generateCostMicros += spent
     }
   }
 
@@ -243,6 +282,15 @@ export async function scoutChannel(
     costUsdMicros: 0,
   }
 
+  // Recorded here — right after `result` exists but well before the final
+  // scoring transaction below — so a later scoring throw (including the
+  // fresh.length === 0 early return just below) can never lose this ledger
+  // row or the spend it already represents on `result`.
+  if (generateCostMicros > 0) {
+    recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-generate', generateCostMicros)
+    result.costUsdMicros += generateCostMicros
+  }
+
   // Hash-filter BEFORE scoring: known items never reach Haiku again, so scout
   // re-runs are free and rejected topics stay rejected without re-spend.
   const hashes = narratable.map((c) => dedupeHash(c.sourceId, c.externalId))
@@ -255,7 +303,9 @@ export async function scoutChannel(
 
   result.scored = fresh.length
   const scored = await scoreWithLedger(db, channel, fresh, result, opts.client)
-  result.costUsdMicros = scored.costUsdMicros
+  // += , not =: generation cost (if any) was already recorded onto `result`
+  // above, and scoring cost must sum with it, not overwrite it.
+  result.costUsdMicros += scored.costUsdMicros
 
   // Topic mode: one row per candidate, exactly as before. Story mode: a
   // queued candidate becomes one row PER PART, which is what makes each part
