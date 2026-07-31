@@ -1,0 +1,67 @@
+// Algospeak substitution for story narration.
+//
+// The scorer's hard-zero rule rejects genuinely unpublishable posts. This
+// handles everything below that bar: ordinary conflict that happens to contain
+// a word platform moderation penalizes. Substitution rather than an audio
+// bleep — it needs no word-timing alignment, so nothing can leak through a
+// missed span, and it survives the platform's own transcription of the audio.
+//
+// Keys are lowercase, single words; the replacer restores the source's
+// capitalisation. Expect to curate this over time as platforms shift.
+
+// EVERY entry must be substitutable for its key in ANY sentence the key can
+// appear in — same part of speech, same inflection. Narration is verbatim, so
+// a mismatch does not degrade a summary, it ships broken English in the video.
+//
+// Four candidates were deliberately REJECTED for failing that rule; do not
+// reinstate them without solving the underlying problem:
+//   abuse -> mistreatment  noun for a verb: "he would abuse me"
+//   dead  -> no longer with us  "dead end", "the battery was dead"
+//   shot  -> hit           "flu shot", "shot a video", "shot glass"
+//   gun   -> pew pew       tonally absurd in a serious story
+// 'shot' in particular cannot be fixed by a word map at all — it needs to know
+// whether the sentence means a firearm, and this module is a word map.
+export const ALGOSPEAK: Record<string, string> = {
+  kill: 'unalive',
+  kills: 'unalives',
+  killed: 'unalived',
+  killing: 'unaliving',
+  murder: 'unalive',
+  murdered: 'unalived',
+  suicide: 'self-deletion',
+  rape: 'SA',
+  raped: 'SA-ed',
+  rapist: 'SA-er',
+  died: 'passed',
+  death: 'passing',
+  sex: 'seggs',
+  sexual: 'seggsual',
+  porn: 'adult content',
+  drugs: 'substances',
+  abused: 'mistreated',
+}
+
+// One alternation over every key, longest first so 'killed' cannot be matched
+// as 'kill' + 'ed'. \b on both sides is what keeps 'skilled' intact.
+const PATTERN = new RegExp(
+  `\\b(${Object.keys(ALGOSPEAK)
+    .sort((a, b) => b.length - a.length)
+    .join('|')})\\b`,
+  'gi',
+)
+
+/**
+ * Match the source's capitalisation: an initial capital is carried onto the
+ * replacement, anything else (including ALL CAPS) renders as written in the
+ * map with only the first letter matched — shouting the euphemism reads worse
+ * than the original did.
+ */
+function matchCase(source: string, replacement: string): string {
+  const capitalized = source[0] === source[0].toUpperCase()
+  if (!capitalized) return replacement
+  return replacement[0].toUpperCase() + replacement.slice(1)
+}
+
+export function sanitizeStory(text: string): string {
+  return text.replace(PATTERN, (match) => matchCase(match, ALGOSPEAK[match.toLowerCase()]))
+}
