@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './channel.js'
 import {
+  channelToml,
   channelTomlLines,
   testChannel,
   writeChannelsDir as writeChannels,
@@ -530,5 +531,92 @@ describe('config error classification', () => {
       }
     })()
     expect(classify(err)).toMatchObject({ domain: 'config', kind: 'invalid' })
+  })
+})
+
+describe('loadChannelConfig story mode', () => {
+  it('parses a [story] table and defaults max_parts to 4', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'aita.toml')
+    writeFileSync(
+      file,
+      channelToml({ name: 'aita', extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', '[story]'] }),
+    )
+    const cfg = loadChannelConfig(file)
+    expect(cfg.story).toEqual({ maxParts: 4 })
+  })
+
+  it('reads an explicit max_parts', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'aita.toml')
+    writeFileSync(
+      file,
+      channelToml({
+        name: 'aita',
+        videosPerDay: 3,
+        extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', '[story]', 'max_parts = 6'],
+      }),
+    )
+    expect(loadChannelConfig(file).story).toEqual({ maxParts: 6 })
+  })
+
+  it('leaves story null when the table is absent', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'plain.toml')
+    writeFileSync(file, channelToml({ name: 'plain' }))
+    expect(loadChannelConfig(file).story).toBeNull()
+  })
+
+  it('rejects [story] alongside rss sources', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'aita.toml')
+    writeFileSync(
+      file,
+      channelToml({
+        name: 'aita',
+        extra: ['[scout]', 'rss = ["https://example.com/feed.xml"]', '[story]'],
+      }),
+    )
+    expect(() => loadChannelConfig(file)).toThrow(/rss/i)
+  })
+
+  it('rejects max_parts exceeding videos_per_day x backlog_days', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'aita.toml')
+    writeFileSync(
+      file,
+      channelToml({
+        name: 'aita',
+        videosPerDay: 1,
+        extra: [
+          'backlog_days = 2',
+          '[scout]',
+          'subreddits = ["AmItheAsshole"]',
+          '[story]',
+          'max_parts = 4',
+        ],
+      }),
+    )
+    expect(() => loadChannelConfig(file)).toThrow(/max_parts/)
+  })
+
+  it('accepts max_parts exactly at the bound', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'aita.toml')
+    writeFileSync(
+      file,
+      channelToml({
+        name: 'aita',
+        videosPerDay: 2,
+        extra: [
+          'backlog_days = 2',
+          '[scout]',
+          'subreddits = ["AmItheAsshole"]',
+          '[story]',
+          'max_parts = 4',
+        ],
+      }),
+    )
+    expect(loadChannelConfig(file).story).toEqual({ maxParts: 4 })
   })
 })

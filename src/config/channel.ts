@@ -62,6 +62,12 @@ export interface ChannelConfig {
   budget: { perVideoUsdMicros: number; perDayUsdMicros: number }
   scriptModel: string
   scout: ScoutConfig
+  /**
+   * Non-null iff the channel declares a [story] table: it narrates reddit
+   * self-posts verbatim rather than scripting niche topics. Presence gates the
+   * behavior, matching [publish] and [scout].
+   */
+  story: StoryConfig | null
   publish: PublishChannelConfig | null
 }
 
@@ -81,6 +87,18 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
   perSourceLimit: 25,
   queueDays: 3,
 }) as ScoutConfig
+
+/**
+ * Story mode's only channel dial. Everything else about splitting is a code
+ * constant (STORY_WORDS_PER_PART, src/stories/split.ts) — max_parts is
+ * per-channel because it is the one number that trades story completeness
+ * against how long a single post occupies the channel.
+ */
+export const DEFAULT_STORY_MAX_PARTS = 4
+
+export interface StoryConfig {
+  maxParts: number
+}
 
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
 
@@ -189,6 +207,16 @@ const rawSchema = z.object({
       }
     })
     .optional(),
+  story: z
+    .object({
+      max_parts: z
+        .number()
+        .int('max_parts must be a whole number of parts')
+        .positive('max_parts must be greater than 0')
+        .default(DEFAULT_STORY_MAX_PARTS),
+    })
+    .strict()
+    .optional(),
   publish: publishSchema,
   caption_style: z.object({
     font: z.string(),
@@ -210,6 +238,36 @@ const rawSchema = z.object({
     z.array(z.string()).min(1),
   ),
   bgm_dir: z.string(),
+})
+
+// Two invariants the flat shape cannot express, both cross-field.
+//
+// 1. An RSS item has no post body, so a story channel scouting RSS would fetch
+//    and score items it can never narrate — and look healthy doing it.
+// 2. A series drains at videos_per_day/day, so it needs max_parts /
+//    videos_per_day days to publish. If that exceeds backlog_days the tail
+//    ages out mid-series (publish/settled.ts) and viewers are stranded on part
+//    2 forever. Caught here rather than at 3am.
+const channelSchema = rawSchema.superRefine((cfg, ctx) => {
+  if (cfg.story === undefined) return
+  if ((cfg.scout?.rss.length ?? 0) > 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['story'],
+      message:
+        'a [story] channel cannot declare [scout] rss sources — an RSS item has no post body to narrate',
+    })
+  }
+  const capacity = cfg.videos_per_day * cfg.backlog_days
+  if (cfg.story.max_parts > capacity) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['story', 'max_parts'],
+      message:
+        `max_parts ${cfg.story.max_parts} exceeds videos_per_day x backlog_days (${cfg.videos_per_day} x ${cfg.backlog_days} = ${capacity}) — ` +
+        'the tail of a series would age out before it could publish; raise videos_per_day or backlog_days, or lower max_parts',
+    })
+  }
 })
 
 function usdToMicros(usd: number): number {
@@ -244,7 +302,7 @@ function buildTargets(raw: NonNullable<RawPublish>): PublishTargetConfig[] {
 
 export function loadChannelConfig(path: string): ChannelConfig {
   const text = readFileSync(path, 'utf8')
-  const raw = rawSchema.parse(parseToml(text))
+  const raw = channelSchema.parse(parseToml(text))
   return {
     name: raw.name,
     niche: raw.niche,
@@ -283,6 +341,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
           queueDays: raw.scout.queue_days,
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
+    story: raw.story ? { maxParts: raw.story.max_parts } : null,
     publish: raw.publish
       ? (Object.freeze({
           targets: Object.freeze(buildTargets(raw.publish)),
