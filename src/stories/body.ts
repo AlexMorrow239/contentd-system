@@ -34,7 +34,7 @@ const NAMED_ENTITIES: Record<string, string> = {
  * live markup.
  */
 function decodeEntities(text: string): string {
-  return text.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, body: string) => {
+  return text.replace(/&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, body: string) => {
     if (body.startsWith('#x') || body.startsWith('#X')) {
       const code = Number.parseInt(body.slice(2), 16)
       return Number.isNaN(code) ? whole : String.fromCodePoint(code)

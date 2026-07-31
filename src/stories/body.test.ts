@@ -3,6 +3,7 @@ import { countWords, storyBody, STORY_MIN_BODY_WORDS } from './body.js'
 import {
   LINK_POST_CONTENT,
   LITERAL_ENTITY_CONTENT,
+  NESTED_ENTITY_CONTENT,
   SELF_POST_CONTENT,
   TINY_BODY_CONTENT,
 } from './_stories.fixtures.js'
@@ -23,6 +24,12 @@ describe('storyBody', () => {
     // Floor disabled: this fixture is deliberately short so the assertion is
     // readable, and the floor is covered by its own case below.
     expect(storyBody(LITERAL_ENTITY_CONTENT, 0)).toBe('She said <3 and I said & what.')
+  })
+
+  it('decodes only one layer, so a nested entity survives as text', () => {
+    // Two decodes would yield '<br>' — live markup in the narration. One
+    // decode leaves the author's literal '&lt;br&gt;' visible, as written.
+    expect(storyBody(NESTED_ENTITY_CONTENT, 0)).toBe('Type &lt;br&gt; to break a line.')
   })
 
   it('returns undefined for a link post with no selftext', () => {

@@ -32,3 +32,14 @@ export const LITERAL_ENTITY_CONTENT =
 /** Under STORY_MIN_BODY_WORDS: a real self post that is only a few words. */
 export const TINY_BODY_CONTENT =
   '<!-- SC_OFF --><div class="md"><p>Am I wrong here?</p></div><!-- SC_ON -->'
+
+/**
+ * An author who wrote the literal text "&lt;" — i.e. the wire carried
+ * "&amp;amp;lt;" and fast-xml-parser already unwrapped one layer. Decoding
+ * once yields the visible text "&lt;"; decoding twice yields "<", which is
+ * live markup. This is the ONLY fixture where correct and buggy behavior
+ * differ, so it is what pins decodeEntities to a single pass.
+ */
+export const NESTED_ENTITY_CONTENT =
+  '<!-- SC_OFF --><div class="md"><p>Type &amp;lt;br&amp;gt; to break a line.</p>' +
+  '</div><!-- SC_ON -->'
