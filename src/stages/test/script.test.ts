@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
 import type Anthropic from '@anthropic-ai/sdk'
 import { BudgetExceededError } from '../../jobs/costs.js'
-import { createScriptStage, ESTIMATED_SCRIPT_COST_MICROS } from '../script.js'
+import { createScriptStage, ESTIMATED_SCRIPT_COST_MICROS, STORY_META_PREVIEW_WORDS } from '../script.js'
 import type { ScriptOutput } from '../script.js'
 import { testChannel, PLATFORM_META } from '../../testing/channel.js'
 import { makeCtx } from '../../testing/job.js'
@@ -152,8 +152,8 @@ describe('createScriptStage story mode', () => {
     truncated: false,
   }
 
-  it('narrates the body verbatim, sanitized, without sending it to a model', async () => {
-    const { client, create } = fakeClient(META)
+  it('narrates the body verbatim, sanitized, from local assembly alone', async () => {
+    const { client } = fakeClient(META)
     const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
     await createScriptStage(client).run(ctx)
 
@@ -161,13 +161,71 @@ describe('createScriptStage story mode', () => {
       await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
     ) as ScriptOutput
     const narration = artifact.segments.map((s) => s.text).join(' ')
+    // This is the real verbatim guarantee: META's stub response carries ONLY
+    // platformMeta (storyMetaSchema has no narration field), yet segments
+    // equal the sanitized body exactly. Narration is assembled locally from
+    // ctx.story.bodyText, never from the model's response — so the model
+    // structurally cannot alter what is spoken, regardless of what the
+    // prompt shows it (see the preview tests below).
     expect(narration).toBe(
       'One month ago I hosted a movie night. She said she would unalive me. Then she called my mother.',
     )
-    // The narration must never appear in what was sent to the model.
-    const sentArgs = create.mock.calls[0][0]
-    const sentPrompt = JSON.stringify(sentArgs)
-    expect(sentPrompt).not.toContain('hosted a movie night')
+  })
+
+  it('includes a sanitized, bounded opening preview in the metadata prompt', async () => {
+    const longBody = Array.from({ length: STORY_META_PREVIEW_WORDS + 20 }, (_, i) => `word${i}`).join(
+      ' ',
+    )
+    const { client, create } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'AITA for X? (1/3)',
+      story: { ...story, bodyText: `He said he would kill me. ${longBody}` },
+    })
+    await createScriptStage(client).run(ctx)
+
+    const sentPrompt = JSON.stringify(create.mock.calls[0][0])
+    // Sanitized: the raw flagged word is gone, the euphemism is present.
+    expect(sentPrompt).not.toContain('kill me')
+    expect(sentPrompt).toContain('unalive me')
+    // Bounded: only the first STORY_META_PREVIEW_WORDS words of the long tail
+    // are present, truncated with an ellipsis rather than the full body.
+    expect(sentPrompt).toContain('word0')
+    expect(sentPrompt).not.toContain(`word${STORY_META_PREVIEW_WORDS}`)
+    expect(sentPrompt).toContain('…')
+  })
+
+  it('sanitizes returned platformMeta title and description, but not hashtags', async () => {
+    const flagged = {
+      title: 'He said he would kill me',
+      description: 'He said he would kill me and I believed it.',
+      hashtags: ['#kill', '#drama'],
+    }
+    const { client } = fakeClient({
+      content: [
+        {
+          type: 'tool_use',
+          id: 't1',
+          name: 'emit',
+          input: {
+            platformMeta: { youtube: flagged, tiktok: flagged, instagram: flagged },
+          },
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 100 },
+    })
+    const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
+    await createScriptStage(client).run(ctx)
+
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    for (const platform of ['youtube', 'tiktok', 'instagram'] as const) {
+      const entry = artifact.platformMeta[platform]
+      expect(entry.title).toBe('He said he would unalive me')
+      expect(entry.description).toBe('He said he would unalive me and I believed it.')
+      // hashtags are lowercase tokens, not prose — left untouched.
+      expect(entry.hashtags).toEqual(['#kill', '#drama'])
+    }
   })
 
   it('uses the post title as the hook on part 1', async () => {
@@ -227,6 +285,44 @@ describe('createScriptStage story mode', () => {
     ) as ScriptOutput
     for (const platform of ['youtube', 'tiktok', 'instagram'] as const) {
       expect(artifact.platformMeta[platform].description).toContain(story.sourceUrl)
+    }
+  })
+
+  it('sanitizes before appending the permalink, so the URL itself is never rewritten', async () => {
+    const flagged = {
+      title: 'She said she would kill me',
+      description: 'She said she would kill me before it ended.',
+      hashtags: ['#drama'],
+    }
+    const { client } = fakeClient({
+      content: [
+        {
+          type: 'tool_use',
+          id: 't1',
+          name: 'emit',
+          input: {
+            platformMeta: { youtube: flagged, tiktok: flagged, instagram: flagged },
+          },
+        },
+      ],
+      usage: { input_tokens: 100, output_tokens: 100 },
+    })
+    const ctx = makeCtx({
+      topic: 'AITA for X? (3/3)',
+      story: { ...story, partIndex: 3, partCount: 3, truncated: true },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    for (const platform of ['youtube', 'tiktok', 'instagram'] as const) {
+      const description = artifact.platformMeta[platform].description
+      // The URL is appended intact after sanitization, so it must survive as
+      // the exact trailing substring rather than being run back through the
+      // substitution map itself.
+      expect(description.endsWith(`Full story: ${story.sourceUrl}`)).toBe(true)
+      expect(description).toContain('unalive me')
+      expect(description).not.toContain('kill me')
     }
   })
 })

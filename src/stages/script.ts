@@ -44,6 +44,13 @@ export type ScriptArtifact = ScriptOutput
 export const STORY_META_MODEL = 'claude-haiku-4-5'
 export const ESTIMATED_STORY_META_COST_MICROS = 2_000
 
+// How much of the story's opening the metadata call sees. Enough for a
+// specific title and hashtags, bounded so an r/nosleep post cannot balloon the
+// prompt. Narration does not come from this call — storyMetaSchema accepts
+// only platformMeta — so the model seeing the opening cannot affect what is
+// spoken.
+export const STORY_META_PREVIEW_WORDS = 60
+
 const STORY_OUTRO = 'The full story is linked in the description.'
 const PART_WORDS = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight']
 
@@ -88,13 +95,27 @@ function storySegments(part: StoryPart): { text: string; visualDirection: string
 
 const storyMetaSchema = z.object({ platformMeta: platformMetaSchema })
 
+/**
+ * The first STORY_META_PREVIEW_WORDS words of the sanitized body, ellipsized
+ * if cut short. Sanitized so the preview never hands the model a raw flagged
+ * word it might then echo back into published metadata (see sanitizeStory
+ * call below, which is the actual guarantee — this just avoids modeling on
+ * words we'd have to substitute anyway).
+ */
+function storyOpeningPreview(part: StoryPart): string {
+  const words = sanitizeStory(part.bodyText).split(/\s+/).filter((w) => w !== '')
+  const preview = words.slice(0, STORY_META_PREVIEW_WORDS).join(' ')
+  return words.length > STORY_META_PREVIEW_WORDS ? `${preview}…` : preview
+}
+
 function buildStoryMetaPrompt(topic: string, part: StoryPart): string {
   return `Write publishing metadata for one part of a narrated reddit story video.
 
 Video title context: ${topic}
 This is part ${part.partIndex} of ${part.partCount}.
 
-Do NOT write or summarize the story itself — the narration is fixed and is not your job.
+Story opening (for context only — do NOT write or summarize the story itself, the narration is fixed and is not your job):
+${storyOpeningPreview(part)}
 
 platformMeta: provide entries for youtube, tiktok, and instagram. For each entry:
 - title: at most 90 characters. No emojis.${
@@ -176,8 +197,11 @@ async function runTopicScript(ctx: JobContext, client?: Anthropic): Promise<Scri
 
 /**
  * Story mode: narration is built from the post, and the model is asked only
- * for platformMeta. The post body is never placed in a prompt, which is what
- * makes "verbatim" a structural property rather than an instruction.
+ * for platformMeta. The prompt does show a bounded, sanitized preview of the
+ * opening (STORY_META_PREVIEW_WORDS) so titles and hashtags can be specific
+ * rather than generic — but storyMetaSchema accepts only platformMeta, so the
+ * model structurally cannot return narration. That, not prompt avoidance, is
+ * what makes "verbatim" a guarantee rather than an instruction.
  */
 async function runStoryScript(
   ctx: JobContext,
@@ -203,6 +227,18 @@ async function runStoryScript(
     const paid = errorCostUsdMicros(err)
     if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
     throw err
+  }
+
+  // Published metadata and spoken audio must agree: title/description ship on
+  // YouTube/Instagram as text a viewer reads, so a raw flagged word here while
+  // the narration speaks the euphemism is exactly the mismatch platform
+  // moderation compares against. hashtags are left alone — they are lowercase
+  // tokens, not prose, and substituting inside one produces nonsense. This
+  // runs before the permalink is appended below so the URL is never rewritten
+  // by the substitution map.
+  for (const entry of Object.values(platformMeta)) {
+    entry.title = sanitizeStory(entry.title)
+    entry.description = sanitizeStory(entry.description)
   }
 
   // A truncated series has an ending the video does not reach, so every
