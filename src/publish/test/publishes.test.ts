@@ -12,6 +12,8 @@ import {
   markPublishDone,
   markPublishFailed,
   MAX_PUBLISH_ATTEMPTS,
+  quotaBackedOff,
+  QUOTA_BACKOFF_MS,
   retryInterrupted,
   sweepInterrupted,
   uploadsUsedToday,
@@ -961,6 +963,93 @@ describe('uploadsUsedToday', () => {
 
     expect(uploadsUsedToday(db, 'instagram', '2026-07-25', 'chan-a')).toBe(1)
     expect(uploadsUsedToday(db, 'instagram', '2026-07-25')).toBe(2)
+    db.close()
+  })
+})
+
+describe('quotaBackedOff', () => {
+  // Fixed clock (this file has no shared NOW — sweepInterrupted's tests use
+  // the same locally-scoped-`now` pattern), so the window math below is exact
+  // rather than racing Date.now().
+  const NOW = new Date('2026-07-20T12:00:00.000Z')
+  const at = (msAgo: number) => new Date(NOW.getTime() - msAgo).toISOString()
+
+  it('is true for a quota failure inside the window', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedPublish(db, 'job-1', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'failed',
+      errorKind: 'quota',
+      createdAt: at(60 * 60 * 1000),
+    })
+
+    expect(quotaBackedOff(db, 'instagram', NOW)).toBe(true)
+    db.close()
+  })
+
+  it('is false once the failure ages past QUOTA_BACKOFF_MS', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedPublish(db, 'job-1', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'failed',
+      errorKind: 'quota',
+      createdAt: at(QUOTA_BACKOFF_MS + 1000),
+    })
+
+    expect(quotaBackedOff(db, 'instagram', NOW)).toBe(false)
+    db.close()
+  })
+
+  it('ignores non-quota failure kinds', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    seedPublish(db, 'job-1', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'failed',
+      errorKind: 'transient',
+      createdAt: at(60 * 60 * 1000),
+    })
+
+    expect(quotaBackedOff(db, 'instagram', NOW)).toBe(false)
+    db.close()
+  })
+
+  it('ignores done rows', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'chan-a' })
+    // errorKind 'quota' on a done row is unreachable via production writers —
+    // seeded here so this test discriminates against dropping the
+    // status = 'failed' clause, not just the error_kind filter.
+    seedPublish(db, 'job-1', {
+      platform: 'instagram',
+      channel: 'chan-a',
+      status: 'done',
+      errorKind: 'quota',
+      createdAt: at(60 * 60 * 1000),
+    })
+
+    expect(quotaBackedOff(db, 'instagram', NOW)).toBe(false)
+    db.close()
+  })
+
+  it('scopes to the channel when one is given', () => {
+    const db = memDb()
+    seedJob(db, 'job-1', { channel: 'other' })
+    seedPublish(db, 'job-1', {
+      platform: 'instagram',
+      channel: 'other',
+      status: 'failed',
+      errorKind: 'quota',
+      createdAt: at(60 * 60 * 1000),
+    })
+
+    expect(quotaBackedOff(db, 'instagram', NOW, 'mine')).toBe(false)
+    expect(quotaBackedOff(db, 'instagram', NOW)).toBe(true)
     db.close()
   })
 })

@@ -223,6 +223,40 @@ export function uploadsUsedToday(
   return row.n
 }
 
+// How long a platform sits out after its API reports quota exhaustion. A
+// sliding window, deliberately NOT rest-of-local-day: YouTube's quota resets
+// at midnight Pacific while `day` is local — a day-scoped rule that retries
+// at 00:10 local hits the still-unreset quota, stamps a fresh failure on the
+// new day, and wedges the platform permanently. Six hours is timezone-
+// agnostic, costs at most ~3 probe attempts a day, and recovers within 6h of
+// the platform's true reset.
+export const QUOTA_BACKOFF_MS = 6 * 60 * 60 * 1000
+
+// The quota-kind failed row IS the backoff marker — durable across daemon
+// restarts, no extra table. `channel` mirrors uploadsUsedToday's scoping: a
+// 'global' platform (YouTube: per Google Cloud project) passes none, a
+// 'channel' platform (Instagram: per IG account) passes its channel.
+// created_at is UTC ISO-8601 with 'Z', so lexicographic compare is
+// chronological.
+export function quotaBackedOff(
+  db: Database,
+  platform: Platform,
+  now: Date,
+  channel?: string,
+): boolean {
+  const cutoff = new Date(now.getTime() - QUOTA_BACKOFF_MS).toISOString()
+  const channelClause = channel !== undefined ? 'AND channel = ?' : ''
+  const params = channel !== undefined ? [platform, cutoff, channel] : [platform, cutoff]
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM publishes
+       WHERE platform = ? AND status = 'failed' AND error_kind = 'quota'
+         AND created_at > ? ${channelClause}`,
+    )
+    .get(...params) as { n: number }
+  return row.n > 0
+}
+
 /**
  * Videos — not rows — this channel attempted today. A fan-out writes one row
  * per platform for the SAME video, and `videos_per_day` counts videos, so
