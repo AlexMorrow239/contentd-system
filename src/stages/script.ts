@@ -7,6 +7,7 @@ import { structuredCompletion } from '../providers/anthropic.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { platformEntrySchema } from '../publish/platform-meta.js'
 import { sanitizeStory } from '../stories/sanitize.js'
+import { wordTruncate } from '../stories/body.js'
 import type { StoryPart } from '../stories/types.js'
 
 // Pre-flight budget reservation for the script LLM call (~$0.02). assertBudget
@@ -88,8 +89,11 @@ function storyHook(topic: string, part: StoryPart): string {
  * captions render script.json's segments, so substituting anywhere later would
  * desynchronize them.
  */
-function storySegments(part: StoryPart): { text: string; visualDirection: string }[] {
-  const segments = sanitizeStory(part.bodyText)
+function storySegments(
+  part: StoryPart,
+  sanitizedBody: string,
+): { text: string; visualDirection: string }[] {
+  const segments = sanitizedBody
     .split(/\n{2,}/)
     .map((p) => p.trim())
     .filter((p) => p !== '')
@@ -110,20 +114,18 @@ const storyMetaSchema = z.object({ platformMeta: platformMetaSchema })
  * call below, which is the actual guarantee — this just avoids modeling on
  * words we'd have to substitute anyway).
  */
-function storyOpeningPreview(part: StoryPart): string {
-  const words = sanitizeStory(part.bodyText).split(/\s+/).filter((w) => w !== '')
-  const preview = words.slice(0, STORY_META_PREVIEW_WORDS).join(' ')
-  return words.length > STORY_META_PREVIEW_WORDS ? `${preview}…` : preview
+function storyOpeningPreview(sanitizedBody: string): string {
+  return wordTruncate(sanitizedBody, STORY_META_PREVIEW_WORDS, '…')
 }
 
-function buildStoryMetaPrompt(topic: string, part: StoryPart): string {
+function buildStoryMetaPrompt(topic: string, part: StoryPart, sanitizedBody: string): string {
   return `Write publishing metadata for one part of a narrated reddit story video.
 
 Video title context: ${topic}
 This is part ${part.partIndex} of ${part.partCount}.
 
 Story opening (for context only — do NOT write or summarize the story itself, the narration is fixed and is not your job):
-${storyOpeningPreview(part)}
+${storyOpeningPreview(sanitizedBody)}
 
 platformMeta: provide entries for youtube, tiktok, and instagram. For each entry:
 - title: at most 90 characters. No emojis.${
@@ -217,6 +219,7 @@ async function runStoryScript(
   client?: Anthropic,
 ): Promise<ScriptArtifact> {
   assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_STORY_META_COST_MICROS)
+  const sanitizedBody = sanitizeStory(part.bodyText)
   let platformMeta: ScriptOutput['platformMeta']
   try {
     const { data, cost } = await structuredCompletion({
@@ -224,7 +227,7 @@ async function runStoryScript(
       system:
         'You write publishing metadata for short vertical videos that narrate reddit stories. ' +
         'Return your answer ONLY by calling the `emit` tool. Never write prose or markdown.',
-      prompt: buildStoryMetaPrompt(ctx.topic, part),
+      prompt: buildStoryMetaPrompt(ctx.topic, part, sanitizedBody),
       schema: storyMetaSchema,
       maxTokens: 1024,
       client,
@@ -249,23 +252,19 @@ async function runStoryScript(
   // Accepted consequence: a whole-word tag like #kill still publishes
   // unsubstituted while the audio says the euphemism. This runs before the
   // permalink is appended below so the URL is never rewritten by the
-  // substitution map.
+  // substitution map. A truncated series has an ending the video does not
+  // reach, so every platform's description carries the permalink the outro
+  // points at.
+  const appendPermalink = part.truncated && part.partIndex === part.partCount
   for (const entry of Object.values(platformMeta)) {
     entry.title = sanitizeStory(entry.title)
     entry.description = sanitizeStory(entry.description)
-  }
-
-  // A truncated series has an ending the video does not reach, so every
-  // platform's description carries the permalink the outro points at.
-  if (part.truncated && part.partIndex === part.partCount) {
-    for (const entry of Object.values(platformMeta)) {
-      entry.description = `${entry.description} Full story: ${part.sourceUrl}`
-    }
+    if (appendPermalink) entry.description = `${entry.description} Full story: ${part.sourceUrl}`
   }
 
   return {
     hook: storyHook(ctx.topic, part),
-    segments: storySegments(part),
+    segments: storySegments(part, sanitizedBody),
     platformMeta,
   }
 }

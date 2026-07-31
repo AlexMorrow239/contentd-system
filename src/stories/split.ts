@@ -4,6 +4,8 @@
 // taking the budget as an argument is what lets the boundary arithmetic be
 // tested at sizes small enough to read.
 
+import { countWords } from './body.js'
+
 /**
  * Words per part. ~160 words is ~60 seconds at a typical narration pace, which
  * is one Short. A code constant, not channel config — the only story dial an
@@ -36,11 +38,6 @@ interface Chunk {
   endsParagraph: boolean
 }
 
-function words(text: string): number {
-  const trimmed = text.trim()
-  return trimmed === '' ? 0 : trimmed.split(/\s+/).length
-}
-
 /**
  * Sentences, tagged with whether a paragraph break followed. Paragraphs are
  * split first so the break survives; sentences within a paragraph are split on
@@ -57,7 +54,7 @@ function sentences(text: string): Chunk[] {
     parts.forEach((sentence, sIndex) => {
       out.push({
         text: sentence,
-        words: words(sentence),
+        words: countWords(sentence),
         endsParagraph: sIndex === parts.length - 1 && pIndex < paragraphs.length - 1,
       })
     })

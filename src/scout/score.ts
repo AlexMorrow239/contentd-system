@@ -4,6 +4,7 @@ import { structuredCompletion } from '../providers/anthropic.js'
 import { retagWithContext } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import type { TrendCandidate } from './sources/types.js'
+import { wordTruncate } from '../stories/body.js'
 
 // The alias, NOT the dated model id: it is the PRICE_TABLE key in
 // src/providers/anthropic.ts, so cost computation resolves before the call.
@@ -78,9 +79,7 @@ function targetHost(targetUrl: string | undefined): string | undefined {
 // of the source's line breaks or spacing.
 function bodyPreview(body: string | undefined): string | undefined {
   if (body === undefined) return undefined
-  const tokens = body.split(/\s+/)
-  const head = tokens.slice(0, STORY_SCORE_PREVIEW_WORDS).join(' ')
-  return tokens.length > STORY_SCORE_PREVIEW_WORDS ? `${head} …` : head
+  return wordTruncate(body, STORY_SCORE_PREVIEW_WORDS)
 }
 
 /**

@@ -57,6 +57,13 @@ export function countWords(text: string): number {
   return trimmed === '' ? 0 : trimmed.split(/\s+/).length
 }
 
+/** Truncate `text` to at most `maxWords` words, appending an ellipsis if cut. */
+export function wordTruncate(text: string, maxWords: number, ellipsis = ' …'): string {
+  const tokens = text.split(/\s+/).filter((w) => w !== '')
+  const head = tokens.slice(0, maxWords).join(' ')
+  return tokens.length > maxWords ? `${head}${ellipsis}` : head
+}
+
 /**
  * The narratable text of a reddit self post, or undefined when the post has
  * no selftext or too little of it to be a story.
