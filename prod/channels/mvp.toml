@@ -1,0 +1,149 @@
+# The MVP channel: one channel, topic mode, cross-posted to YouTube and
+# Instagram, fed by RSS + LLM topic generation. Reddit is unreachable
+# (anti-scraping + blocked OAuth approval), so this file declares NO
+# `subreddits` and NO `[story]` table — both pipelines stay in the code,
+# dormant purely because nothing here mentions them. Scaling back up is
+# adding TOMLs, not restoring code.
+#
+# This copy lives in `local/channels/` (gitignored) as the editable draft.
+# The DEPLOYED channels dir is `./prod/channels`, bind-mounted read-only at
+# /app/state/channels (docker-compose.yml:194) and re-read every tick — see
+# the ops runbook in superpowers/specs/2026-07-31-mvp-pivot-design.md for how
+# this file gets there and what has to leave first.
+#
+# The filename basename MUST equal `name` below: resumeJob resolves a job's
+# channel config as <channelsDir>/<job.channel>.toml, so a mismatch wedges
+# resume. loadChannelsDir rejects it at load time rather than at 3am.
+name = "mvp"
+niche = ["space facts", "astronomy"]
+script_model = "claude-sonnet-5"
+
+# bg_dir/bgm_dir MUST stay above every [section] header — TOML nests any
+# top-level key written after a table header under that table, and these two
+# would silently vanish. Paths are relative to the process cwd (/app in the
+# container), which is why they are the same strings prod/channels/test.toml
+# uses.
+bg_dir = "assets/bg"
+bgm_dir = "assets/bgm"
+
+# Pure demand. Nothing here is clipped against a platform cap at config load
+# anymore (the old assertQuotaHeadroom is gone): each platform clips itself at
+# runtime when its own API returns a quota error, which backs that platform
+# off for 6h and leaves the other one publishing. Expected steady state:
+# 15 videos/day produced, ~15 Instagram legs, ~6 YouTube legs (YouTube's real
+# ~6/day per-Google-Cloud-project ceiling), ~21 published legs/day.
+videos_per_day = 15
+# Inventory depth cap AND the aged-out horizon — one number. At 15/day this
+# lets 30 unconsumed videos accumulate before production stops, and gives each
+# video 2 days to find a publish slot before it counts as passed over.
+# `pendingInventory` counts EVERY unconsumed video, not just the ~9/day
+# YouTube never reaches: all 15/day count as inventory until their YouTube leg
+# either lands or ages out. With YouTube at zero (pre-auth, or a hard outage
+# past this window) that inventory climbs straight to the 30 cap, planTick
+# reports `backlog-full`, and the digest shows a standing "holding 30 of 30
+# ... production paused" item. That is self-balancing and expected on day
+# one (or during any YouTube outage), not a fault — it is what stops
+# never-ageing-out YouTube legs from being produced forever on top of an
+# already-full backlog.
+backlog_days = 2
+
+# No [voice.premium]: the free kokoro -> edge-tts chain. That makes the
+# WhisperX sidecar mandatory for every job (it does the caption word
+# alignment ElevenLabs would otherwise return itself).
+[voice]
+volume = "af_heart"
+
+[scout]
+# NO `subreddits` key. Adding one re-arms redditSource, which will fetch every
+# SCOUT_RECHECK_MS (20 min) and fail — a sourceErrors entry every cycle.
+#
+# RSS entries are full URLs (unlike subreddits, which are bare names). Each
+# feed's source id is `rss:<hostname>`, so keep hostnames distinct — two feeds
+# on one host share a source id. All five verified 200 + valid RSS 2.0 on
+# 2026-07-31.
+rss = [
+  "https://phys.org/rss-feed/space-news/",
+  "https://earthsky.org/feed/",
+  "https://www.sciencedaily.com/rss/space_time.xml",
+  "https://www.universetoday.com/feed/",
+  "https://www.nasa.gov/feed/",
+]
+
+# LLM topic generation (src/scout/sources/llm.ts), registered as one more
+# TrendSource beside the feeds above. 0 disables it; max 50.
+#
+# TRAP 1 — keep `rss` declared alongside this. A generation call that trips
+# the global-day budget gate degrades to a single sourceErrors entry, exactly
+# like a dead feed. On a channel where the generator is the ONLY source, that
+# one entry means failedSources === totalSources, and scoutAll raises
+# AllSourcesFailedError — a budget cap doing its job reads as a total outage
+# and exits 1. The feeds above are what keep that from happening.
+#
+# TRAP 2 — keep generate_topics <= per_source_limit. llmSource clamps its
+# request to min(count, fetch limit), and the fetch limit IS per_source_limit
+# (default 25), so anything above it is silently truncated rather than
+# rejected.
+#
+# Sizing: this is a drought-filler, not the primary supply. The queue-full
+# gate runs BEFORE any source fetches, so generation only fires while the
+# candidate queue is under depth — 8/attempt tops up whatever the feeds did
+# not deliver. It costs one Haiku call per scout attempt, ledgered as
+# operation 'scout-generate' under the sentinel job id 'scout:mvp'.
+generate_topics = 8
+per_source_limit = 25
+# Scout-side depth analogue of backlog_days: the scout skips this channel once
+# it holds ceil(videos_per_day x queue_days) = ceil(15 x 3) = 45 candidate
+# topics. Deeper than backlog_days on purpose — the scorer rejects a share of
+# what it sees (only >= SCOUT_MIN_SCORE = 80 is stored) and topics go stale.
+queue_days = 3
+
+[caption_style]
+font = "Inter"
+font_size_px = 72
+active_color = "#FFD700"
+inactive_color = "#FFFFFF"
+stroke_px = 8
+
+# 15 renders/day is the dominant cost driver, and it is production — not
+# publishing — that spends: one Sonnet script call per video, plus the scout's
+# Haiku scoring and generation calls. per_video_usd is a generous per-job
+# ceiling (a breach marks the job `blocked`, not `failed`, and it resumes
+# after a cap change); per_day_usd is 15 x that ceiling with headroom for
+# scout spend.
+#
+# CAVEAT — the channel-day cap is NOT the effective ceiling. Two other limits
+# bind first, and both are outside this file:
+#   1. BRAINROT_GLOBAL_DAILY_USD spans ALL channels and ALL scout spend, and
+#      docker-compose.yml pins it to '12' for the brainrot service. Raise that
+#      pin in step with per_day_usd or the global cap is what actually stops
+#      the day — and it is the gate the llm source trips (see TRAP 1 above).
+#   2. channelDaySpentMicros JOINs costs -> jobs, so the sentinel
+#      'scout:mvp' rows are invisible to THIS cap and count only against the
+#      global one.
+[budget]
+per_video_usd = 0.5
+per_day_usd = 25.0
+
+# Cadence comes from videos_per_day above: the publish worker fires whenever a
+# video is ready, gated only by that per-local-day count and a fixed 10-minute
+# cooldown between attempts (PUBLISH_COOLDOWN_MS, an anti-burst guard, not a
+# schedule). There is no posting window. Declaring both platforms cross-posts
+# the same rendered video to each.
+[publish]
+
+[publish.youtube]
+# Start `private` for the first live day so a misfire is not public, then flip
+# to "public" once a real upload has been eyeballed. category_id 24 =
+# Entertainment.
+privacy = "private"
+category_id = 24
+made_for_kids = false
+
+[publish.instagram]
+# The IG User ID from the Meta Graph API (not the @handle, not the Facebook
+# Page id). This is the same Instagram Business account the `test` channel
+# published as — its consent grant was migrated to channel `mvp` in
+# oauth_tokens, so this id and those tokens belong together. Changing the
+# account means a fresh `brainrot auth instagram --channel mvp --headless`.
+ig_user_id = "17841447490773376"
+share_to_feed = false
