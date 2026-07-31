@@ -331,12 +331,25 @@ The load-bearing design choice is **one `topics` row per part**. A post too
 long for one Short is split on sentence boundaries into up to `max_parts`
 parts, each its own row with `body_text`, `series_key`, `part_index`,
 `part_count` and `truncated`, each its own dedupe hash (`externalId + '#p' +
-partIndex`, 1-based, on every part including the first). One job therefore
+partIndex`, 1-based, on every part including the first). The split also keeps
+the source's paragraph breaks (`\n\n`) rather than flattening a part into one
+run-on span — before this, every story part rendered as a single unbroken
+~160-word segment; the preserved breaks are what makes `storySegments`' split
+real and give TTS a pause cue. One job therefore
 still equals one video, which is why nothing in `jobs/`, `library`, `store` or
 `qc` needed to change. All parts share one score, so `eligibleTopic`'s
 existing `score DESC, created_at ASC, id ASC` produces them in order for free.
 Over-long stories are **truncated, not rejected** — the last part appends a
-spoken outro and the permalink goes in every platform description. Two
+spoken outro and the permalink goes in every platform description. A final
+part landing under `STORY_MIN_TAIL_WORDS` (50) is a different problem and gets
+a different fix: `splitStory` merges it into its predecessor instead of
+shipping it alone, because `qc.ts`'s `minMs` (15s) is otherwise unconnected to
+the split — measured on real feeds, 19% of story bodies ended with a final
+part short enough to fail that floor, land the job `needs-review`, and never
+publish, after already paying for synth and render. The merge bounds the
+combined part at `STORY_WORDS_PER_PART + STORY_MIN_TAIL_WORDS - 1` words (160
++ 50 - 1 = 209), comfortably inside qc's `maxMs` — a future change to either
+constant needs to keep clearing that bound. Two
 deterministic drops guard the queue ahead of scoring: `droppedBodyless` (no
 selftext — this is r/AskReddit, whose stories live in comments the feed does
 not carry) and a moderator-account test now folded into `isAutomatedAuthor`
@@ -377,6 +390,15 @@ bounded — the next tick correctly reported `queue-full`). The bound is
 `videos_per_day` of 6 is normal, not a bug — topic mode already overshoots its
 nominal cap for the same pre-fetch-gate reason, and story mode multiplies that
 overshoot by `max_parts`.
+
+`recentTopicTitles` collapses a series to one representative row (its lowest
+surviving `part_index`, suffix stripped) rather than counting every part, for
+the same reason: left uncollapsed, the scorer's near-duplicate window counted
+parts, not stories, so a 30-row window covered only ~9 distinct stories while
+near-identical `X (i/N)` titles crowded the prompt. It is the same unit-shift
+trap as the `queue_days` overshoot just above — a depth or window sized in one
+unit (stories, queue slots) silently measured in another (rows, parts) —
+worth naming twice since a third instance of it is likely.
 
 Publishing is an **ordered series**: `channelVideoCandidates` blocks part N on
 a platform until part N-1 is `done` there, folded into the `blockedPlatforms`

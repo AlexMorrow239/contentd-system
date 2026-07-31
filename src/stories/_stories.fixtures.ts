@@ -56,10 +56,12 @@ export const NESTED_ENTITY_CONTENT =
  * (superpowers/fixtures-source/*.rss) is gitignored, so this is deliberately
  * the one committed body long enough to reach that code path in CI.
  *
- * At STORY_WORDS_PER_PART splitStory packs this into two parts (128 and 157
- * words) with a 15-word remainder; without the tail-merge fix that remainder
- * would ship as its own sub-STORY_MIN_TAIL_WORDS runt part 3 — exactly the
- * failure mode measured on 19% of the real corpus.
+ * At STORY_WORDS_PER_PART, splitStory's greedy pack alone (no tail-merge)
+ * produces three parts of 128, 157 and 15 words — that trailing 15-word part
+ * 3 is the sub-STORY_MIN_TAIL_WORDS runt, exactly the failure mode measured
+ * on 19% of the real corpus. With the tail-merge fix in place, that runt is
+ * folded into its predecessor instead, so splitStory returns two parts of
+ * 128 and 172 words.
  */
 export const REALISTIC_STORY_BODY =
   'My sister asked me to co-sign her apartment lease last spring, and I said yes because ' +
