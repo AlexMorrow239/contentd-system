@@ -7,6 +7,8 @@ import {
   claimPublish,
   listPublishes,
   markPublishDone,
+  MAX_PUBLISH_ATTEMPTS,
+  QUOTA_BACKOFF_MS,
   videosPublishedToday,
 } from '../../publish/publishes.js'
 import { PLATFORM_QUOTAS } from '../../publish/platforms/quota.js'
@@ -25,7 +27,7 @@ import {
   fanOutFixture,
   seedAttempt,
   seedObjectKey,
-  seedQuotaRows,
+  seedQuotaFailure,
   seedReadyVideo,
   seedToken,
   stubPublishEnv,
@@ -89,35 +91,16 @@ describe('publishNextTick — gates', () => {
     db.close()
   })
 
-  it('no-ops with reason platform-quota once the default cap of 6 is met', async () => {
+  it('no-ops with reason platform-quota when the platform is backed off after a recent quota failure', async () => {
     const db = memDb()
     const channelsDir = tmpDir('brainrot-publish-quota-')
     writeChannel(channelsDir, { name: 'chan-a', publish: true })
-    // A publishable, authorized video, so the cap is the ONLY thing stopping
-    // this tick — an empty library would report 'no-ready-video' instead.
+    // A publishable, authorized video, so the backoff is the ONLY thing
+    // stopping this tick — an empty library would report 'no-ready-video'
+    // instead.
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    seedQuotaRows(db, { count: 6 })
-    const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result).toEqual({
-      action: 'noop',
-      reason: 'platform-quota',
-      reclaimed: { count: 0, bytes: 0 },
-    })
-    db.close()
-  })
-
-  it('honors the BRAINROT_YT_UPLOADS_PER_DAY override for the cap', async () => {
-    const db = memDb()
-    const channelsDir = tmpDir('brainrot-publish-quota-override-')
-    // videosPerDay lowered to match the cap this test stubs to 1 below —
-    // loadChannelsDir now rejects a channel declaring more youtube
-    // videos/day than the (possibly env-overridden) cap allows.
-    writeChannel(channelsDir, { name: 'chan-a', publish: true, videosPerDay: 1 })
-    seedReadyVideo(db, { channel: 'chan-a' })
-    seedToken(db, 'chan-a')
-    seedQuotaRows(db, { count: 1 })
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+    seedQuotaFailure(db, { channel: 'chan-a', platform: 'youtube', now: NOW(), msAgo: 60 * 60 * 1000 })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({
       action: 'noop',
@@ -246,20 +229,6 @@ describe('publishNextTick — gates', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 0 })
     db.close()
   })
-
-  it('no-ops with reason bad-env on an unparseable BRAINROT_YT_UPLOADS_PER_DAY', async () => {
-    const db = memDb()
-    const channelsDir = tmpDir('brainrot-publish-badcap-')
-    writeChannel(channelsDir, { name: 'chan-a', publish: true })
-    seedReadyVideo(db, { channel: 'chan-a' })
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', 'six')
-    const result = await publishNextTick(db, { channelsDir, now: NOW })
-    expect(result.action).toBe('noop')
-    expect(result.reason).toBe('bad-env')
-    expect(result.error).toContain('BRAINROT_YT_UPLOADS_PER_DAY')
-    expect(result.error).not.toContain('six')
-    db.close()
-  })
 })
 
 describe('cross-platform candidates', () => {
@@ -280,43 +249,166 @@ describe('cross-platform candidates', () => {
   })
 })
 
-describe('quota pre-filter', () => {
-  it('lets instagram publish when youtube alone is at its global cap', async () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+// Cap counting is gone: a platform's own quota-kind failure sidelines it for
+// QUOTA_BACKOFF_MS (quotaBackedOff, src/publish/publishes.ts), regardless of
+// how many uploads it has actually done today.
+describe('runtime quota backoff', () => {
+  it('a recent YouTube quota failure skips only the YouTube leg, and stays skipped for a second video (global scope)', async () => {
     const db = memDb()
-    const channelsDir = tmpDir('brainrot-publish-quota-prefilter-')
-    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
-    seedReadyVideo(db, { channel: 'chan' })
-    // A prior youtube upload today on ANOTHER channel: it counts toward the
-    // global youtube quota (cap 1) without touching chan's own day count or
-    // pacing clock.
-    seedQuotaRows(db, { count: 1 })
-    const igAdapter = fakeIgAdapter(async () => ({ postId: 'p1', url: 'https://ig/p1' }))
-    const now = () => new Date(2026, 6, 22, 10, 0)
-    const result = await publishNextTick(db, {
+    const channelsDir = tmpDir('brainrot-publish-quota-yt-recent-')
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 2 })
+    // Seeded against an unrelated channel: youtube's quota scope is 'global',
+    // so the backoff applies everywhere regardless of which channel the
+    // failure was recorded against.
+    seedQuotaFailure(db, {
+      channel: 'other-chan',
+      platform: 'youtube',
+      now: FANOUT_NOW(),
+      msAgo: 60 * 60 * 1000,
+    })
+    seedReadyVideo(db, { channel: 'chan', topic: 'Video one' })
+    seedToken(db, 'chan')
+    const igAdapter = fakeIgAdapter(async () => ({ postId: 'ig-1', url: 'https://ig/ig-1' }))
+    const first = await publishNextTick(db, {
       channelsDir,
-      now,
+      now: FANOUT_NOW,
       adapters: { instagram: igAdapter },
     })
-    expect(result.action).toBe('published')
-    expect(result.results?.map((r) => r.platform)).toEqual(['instagram'])
+    expect(first.action).toBe('published')
+    expect(first.results?.map((r) => r.platform)).toEqual(['instagram'])
+
+    // A second video on the same channel. --force skips the cooldown/day-count
+    // gate (the real claim row above stamped its own wall-clock created_at,
+    // which the fictional `now` cannot control — see seedAttempt's doc
+    // comment) so this tick isolates the backoff as the only variable: the
+    // backoff is a platform fact read fresh each tick, not a per-video or
+    // one-shot exclusion.
+    seedReadyVideo(db, { channel: 'chan', topic: 'Video two' })
+    const second = await publishNextTick(db, {
+      channelsDir,
+      now: FANOUT_NOW,
+      adapters: { instagram: igAdapter },
+      force: true,
+    })
+    expect(second.action).toBe('published')
+    expect(second.results?.map((r) => r.platform)).toEqual(['instagram'])
     db.close()
   })
 
-  it('noops with platform-quota when every due candidate is capped', async () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+  it('a recent Instagram quota failure is scoped to its channel; a different channel is unaffected', async () => {
     const db = memDb()
-    const channelsDir = tmpDir('brainrot-publish-quota-allcapped-')
-    writeChannel(channelsDir, { name: 'chan', publish: true, videosPerDay: 1 })
+    const channelsDir = tmpDir('brainrot-publish-quota-ig-scoped-')
+    writeChannel(channelsDir, { name: 'chan-a', publish: true, instagram: true, videosPerDay: 1 })
+    writeChannel(channelsDir, { name: 'chan-b', publish: true, instagram: true, videosPerDay: 1 })
+    seedQuotaFailure(db, {
+      channel: 'chan-a',
+      platform: 'instagram',
+      now: FANOUT_NOW(),
+      msAgo: 60 * 60 * 1000,
+    })
+    seedReadyVideo(db, { channel: 'chan-a', topic: 'A video' })
+    seedToken(db, 'chan-a')
+    seedReadyVideo(db, { channel: 'chan-b', topic: 'B video' })
+    seedToken(db, 'chan-b')
+    const adapters = {
+      youtube: fakeAdapter(async () => ({ postId: 'yt-x', url: 'https://youtu.be/yt-x' })),
+      instagram: fakeIgAdapter(async () => ({ postId: 'ig-x', url: 'https://ig/ig-x' })),
+    }
+
+    // chan-a sorts first (tied fairness, channel ASC — see orderChannels):
+    // its Instagram leg is backed off, so only YouTube goes out for it.
+    const first = await publishNextTick(db, { channelsDir, now: FANOUT_NOW, adapters })
+    expect(first.channel).toBe('chan-a')
+    expect(first.results?.map((r) => r.platform)).toEqual(['youtube'])
+
+    // chan-a's day count is now met, so this tick reaches chan-b — whose
+    // Instagram leg was never touched by chan-a's failure.
+    const second = await publishNextTick(db, { channelsDir, now: FANOUT_NOW, adapters })
+    expect(second.channel).toBe('chan-b')
+    expect(second.results?.map((r) => r.platform).sort()).toEqual(['instagram', 'youtube'])
+    db.close()
+  })
+
+  it('a quota failure older than QUOTA_BACKOFF_MS no longer backs off the platform', async () => {
+    const db = memDb()
+    const channelsDir = tmpDir('brainrot-publish-quota-expired-')
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    seedQuotaFailure(db, {
+      channel: 'chan-a',
+      platform: 'youtube',
+      now: NOW(),
+      msAgo: QUOTA_BACKOFF_MS + 1,
+    })
+    const target = fakeAdapter(async () => ({
+      postId: 'yt-recovered',
+      url: 'https://youtube.com/shorts/yt-recovered',
+    }))
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      adapters: { youtube: target },
+    })
+    expect(result.action).toBe('published')
+    expect(result.results?.map((r) => r.platform)).toEqual(['youtube'])
+    db.close()
+  })
+
+  it('noops with platform-quota and writes no rows when every declared platform is backed off', async () => {
+    const db = memDb()
+    const channelsDir = tmpDir('brainrot-publish-quota-allbackedoff-')
+    writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
     seedReadyVideo(db, { channel: 'chan' })
-    seedQuotaRows(db, { count: 1 })
-    const now = () => new Date(2026, 6, 22, 10, 0)
-    const result = await publishNextTick(db, { channelsDir, now })
+    seedToken(db, 'chan')
+    const now = FANOUT_NOW()
+    // Global-scope youtube backed off via an unrelated channel; channel-scope
+    // instagram backed off directly on 'chan' — every declared platform closed.
+    seedQuotaFailure(db, { channel: 'other-chan', platform: 'youtube', now, msAgo: 60 * 60 * 1000 })
+    seedQuotaFailure(db, { channel: 'chan', platform: 'instagram', now, msAgo: 60 * 60 * 1000 })
+    const result = await publishNextTick(db, { channelsDir, now: FANOUT_NOW })
     expect(result).toEqual({
       action: 'noop',
       reason: 'platform-quota',
       reclaimed: { count: 0, bytes: 0 },
     })
+    // Only the two pre-seeded quota-failure rows exist — the tick claimed nothing.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 2 })
+    db.close()
+  })
+
+  it('repeated quota failures on the same video never retire it — only rejected counts toward the poison-video cap', async () => {
+    const db = memDb()
+    const channelsDir = tmpDir('brainrot-publish-quota-noaccum-')
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    const jobId = seedReadyVideo(db, { channel: 'chan-a' })
+    seedToken(db, 'chan-a')
+    // More quota-kind failures on this exact video than MAX_PUBLISH_ATTEMPTS —
+    // if quota accumulated like 'rejected' does, channelVideoCandidates would
+    // retire it for good. All old enough that the backoff window has long
+    // since passed.
+    const longAgo = new Date(NOW().getTime() - (QUOTA_BACKOFF_MS + 60_000)).toISOString()
+    for (let i = 0; i < MAX_PUBLISH_ATTEMPTS + 1; i++) {
+      seedPublish(db, jobId, {
+        platform: 'youtube',
+        channel: 'chan-a',
+        status: 'failed',
+        errorKind: 'quota',
+        seq: i + 1,
+        createdAt: longAgo,
+      })
+    }
+    const target = fakeAdapter(async () => ({
+      postId: 'yt-recovered',
+      url: 'https://youtube.com/shorts/yt-recovered',
+    }))
+    const result = await publishNextTick(db, {
+      channelsDir,
+      now: NOW,
+      adapters: { youtube: target },
+    })
+    expect(result.action).toBe('published')
+    expect(result.jobId).toBe(jobId)
     db.close()
   })
 })
@@ -509,9 +601,10 @@ describe('publishNextTick — the due gate', () => {
     return { db, dir }
   }
 
-  // fakeAdapter hardcodes cap: () => 6; the real descriptor is substituted here
-  // so BRAINROT_YT_UPLOADS_PER_DAY still governs, which the --force quota case
-  // below depends on.
+  // Vestigial substitution: fakeAdapter's own descriptor already carries
+  // scope 'global', so swapping in the real PLATFORM_QUOTAS.youtube changes
+  // nothing platformOpen reads. Kept only so this fixture keeps tracking the
+  // production descriptor if its shape ever gains another field.
   function publishingAdapters(): Partial<Record<Platform, PublishAdapter>> {
     const base = fakeAdapter(async () => ({
       postId: 'yt-due',
@@ -619,13 +712,12 @@ describe('publishNextTick — the due gate', () => {
   })
 
   it('--force still respects the platform quota', async () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const { db, dir } = dueFixture('brainrot-publish-force-quota-', 1)
-    seedAttempt(db, {
-      jobId: 'job-old',
+    seedQuotaFailure(db, {
       channel: 'test',
       platform: 'youtube',
-      day: '2026-07-22',
+      now: new Date(2026, 6, 22, 12, 0),
+      msAgo: 60 * 60 * 1000,
     })
     const result = await publishNextTick(db, {
       channelsDir: dir,
@@ -918,14 +1010,12 @@ describe('publishNextTick — media resolved from object storage', () => {
   // still qualify and publish — the pre-flight guard is "local file OR
   // stored object", not "local file alone".
   it('qualifies and publishes a candidate whose local file is gone but has a stored object', async () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = memDb()
     const channelsDir = tmpDir('brainrot-publish-store-qualify-')
     writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
-    // Push youtube over its (capped-to-1) quota — on another channel, so
-    // chan's own day count and pacing clock stay clear — leaving instagram as
-    // the only target that can be picked.
-    seedQuotaRows(db, { count: 1 })
+    // No youtube token is seeded for 'chan', so youtube fails hasCredential
+    // and is never attempted — leaving instagram as the only target that can
+    // be picked, without needing to touch either platform's quota.
     const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
     seedObjectKey(db, jobId, 'videos/chan/job.mp4')
     const storeDir = tmpDir('brainrot-publish-fakestore-')
@@ -946,11 +1036,9 @@ describe('publishNextTick — media resolved from object storage', () => {
   })
 
   it('excludes a candidate with neither a local file nor a stored object, reporting no-video-file', async () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = memDb()
     const channelsDir = tmpDir('brainrot-publish-store-noqualify-')
     writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
-    seedQuotaRows(db, { count: 1 })
     seedReadyVideo(db, { channel: 'chan', videoExists: false })
     const now = () => new Date(2026, 6, 22, 10, 0)
     const result = await publishNextTick(db, {
@@ -975,11 +1063,9 @@ describe('publishNextTick — media resolved from object storage', () => {
   // 'rejected' counts toward rejectedCount's un-undoable 3-attempt retirement
   // cap (src/publish/publishes.ts channelVideoCandidates).
   it('degrades to a legible transient failure, not a crash, when no store is configured or injected', async () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = memDb()
     const channelsDir = tmpDir('brainrot-publish-store-unconfigured-')
     writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
-    seedQuotaRows(db, { count: 1 })
     const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
     seedObjectKey(db, jobId, 'videos/chan/job.mp4')
     const now = () => new Date(2026, 6, 22, 10, 0)
@@ -1007,11 +1093,9 @@ describe('publishNextTick — media resolved from object storage', () => {
   // — the tick must never write it anywhere, only the object key. Only the
   // preflight CLI command (a later task) is allowed to print one.
   it('never logs the presigned URL', async () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
     const db = memDb()
     const channelsDir = tmpDir('brainrot-publish-nolog-url-')
     writeChannel(channelsDir, { name: 'chan', publish: true, instagram: true, videosPerDay: 1 })
-    seedQuotaRows(db, { count: 1 })
     const jobId = seedReadyVideo(db, { channel: 'chan', videoExists: false })
     seedObjectKey(db, jobId, 'videos/chan/job.mp4')
     const storeDir = tmpDir('brainrot-publish-fakestore-nolog-')
@@ -1165,22 +1249,17 @@ describe('publishNextTick — fan-out across every declared platform', () => {
     db.close()
   })
 
-  it('publishes to the open platform only when the other is at quota', async () => {
-    // The cap parser rejects 0, so set it to 1 and consume that one upload.
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1')
+  it('publishes to the open platform only when the other is quota-backed-off', async () => {
     const { db, dir, adapters } = fanOutFixture('brainrot-publish-fanout-quota-')
-    seedAttempt(db, {
-      jobId: 'job-other',
+    seedQuotaFailure(db, {
       channel: 'test',
       platform: 'youtube',
-      day: '2026-07-22',
+      now: FANOUT_NOW(),
+      msAgo: 60 * 60 * 1000,
     })
-    // That seeded attempt also meets the channel's day count and resets its
-    // pacing clock, so --force is what keeps this a quota test.
     const result = await publishNextTick(db, {
       channelsDir: dir,
       adapters,
-      force: true,
       now: FANOUT_NOW,
     })
     expect(result.results?.map((r) => r.platform)).toEqual(['instagram'])

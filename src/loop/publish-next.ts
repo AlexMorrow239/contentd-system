@@ -6,15 +6,14 @@ import { classify, errorMessage } from '../errors.js'
 import { parseTokenKey } from '../publish/crypto.js'
 import { publishMedia } from '../publish/media.js'
 import { ADAPTERS } from '../publish/platforms/index.js'
-import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import {
   channelVideoCandidates,
   claimPublish,
   lastAttemptAt,
   markPublishDone,
   markPublishFailed,
+  quotaBackedOff,
   sweepInterrupted,
-  uploadsUsedToday,
   videosPublishedToday,
 } from '../publish/publishes.js'
 import type { ChannelVideoCandidate } from '../publish/publishes.js'
@@ -86,11 +85,10 @@ export interface PublishTickResult {
   reclaimed?: { count: number; bytes: number }
 }
 
-// Checks BRAINROT_TOKEN_KEY and every registered platform's quota env var —
-// whose malformed values would otherwise throw from deep inside the tick
-// (exit 1, no JSON line, every firing, no DB trace). Never names a platform
-// literal: it iterates the quota descriptors generically, so a third
-// platform's own env var is covered for free.
+// Checks BRAINROT_TOKEN_KEY, whose malformed value would otherwise throw from
+// deep inside the tick (exit 1, no JSON line, every firing, no DB trace).
+// Quota is no longer a config-derived cap (see platformOpen below), so there
+// is no per-platform env var left to validate here.
 function badEnvMessage(): string | undefined {
   const tokenKeyHex = process.env.BRAINROT_TOKEN_KEY
   if (tokenKeyHex) {
@@ -98,13 +96,6 @@ function badEnvMessage(): string | undefined {
       parseTokenKey(tokenKeyHex)
     } catch {
       return 'BRAINROT_TOKEN_KEY is malformed (expected 64 hex characters)'
-    }
-  }
-  for (const quota of Object.values(PLATFORM_QUOTAS)) {
-    try {
-      quota.cap()
-    } catch {
-      return `${quota.envVar} is malformed (expected a positive integer number of uploads)`
     }
   }
   return undefined
@@ -323,23 +314,24 @@ export async function publishNextTick(
     const tokenKeyHex = process.env.BRAINROT_TOKEN_KEY
     const tokenKey = tokenKeyHex ? parseTokenKey(tokenKeyHex) : undefined
 
-    // Quota gate (design spec §7, decision 7): usage is computed once per
-    // distinct (scope-appropriate) key rather than per candidate.
-    const usageCache = new Map<string, number>()
-    function underQuota(platform: Platform, channel: string): boolean {
+    // Runtime quota gate: the platform's own quota error (a failed row with
+    // error_kind='quota', see quotaBackedOff) sidelines it for
+    // QUOTA_BACKOFF_MS. Checked once per scope-appropriate key per tick.
+    const backoffCache = new Map<string, boolean>()
+    function platformOpen(platform: Platform, channel: string): boolean {
       const adapter = adapters[platform]
       const key = adapter.quota.scope === 'global' ? platform : `${platform}:${channel}`
-      let used = usageCache.get(key)
-      if (used === undefined) {
-        used = uploadsUsedToday(
+      let open = backoffCache.get(key)
+      if (open === undefined) {
+        open = !quotaBackedOff(
           db,
           platform,
-          day,
+          now,
           adapter.quota.scope === 'channel' ? channel : undefined,
         )
-        usageCache.set(key, used)
+        backoffCache.set(key, open)
       }
-      return used < adapter.quota.cap()
+      return open
     }
 
     let firstReason:
@@ -407,7 +399,7 @@ export async function publishNextTick(
             continue
           }
           allBlocked = false
-          if (!underQuota(platform, channel.name)) {
+          if (!platformOpen(platform, channel.name)) {
             if (firstReason === undefined) firstReason = 'platform-quota'
             continue
           }

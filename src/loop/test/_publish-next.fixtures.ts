@@ -7,7 +7,7 @@ import { YT_UPLOAD_SCOPE } from '../../publish/platforms/youtube.js'
 import { upsertToken } from '../../publish/tokens.js'
 import type { Platform, PublishAdapter } from '../../publish/types.js'
 import { channelToml as kitChannelToml } from '../../testing/channel.js'
-import { memDb, seedJob, seedLibrary, seedLibraryObject } from '../../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPublish } from '../../testing/db.js'
 import { tmpDir } from '../../testing/tmp.js'
 
 /**
@@ -157,23 +157,37 @@ export function seedAttempt(
   )
 }
 
+// Own counter (not jobSeq/seedReadyVideo's) so a quota-failure row's disposable
+// job id can never collide with a real seeded video's job id in the same test.
+let quotaFailureSeq = 0
+
 /**
- * Rows on a channel the channels dir does not declare: they burn the
- * platform's GLOBAL quota without touching any candidate channel's own day
- * count or pacing clock. That separation is what lets a quota test stay a
- * quota test.
+ * A quota-kind publish failure `msAgo` before `now` — the runtime backoff
+ * marker publish-next's platformOpen reads (quotaBackedOff, src/publish/
+ * publishes.ts). The job id is a disposable placeholder: quotaBackedOff never
+ * joins against jobs/library, it only asks "does a recent quota-kind failed
+ * row exist for this platform (and, for a channel-scoped platform, this
+ * channel)". `seq` rides the same counter so repeated calls for the same
+ * (channel, platform) never collide on UNIQUE(channel, platform, day, seq).
+ *
+ * Only `created_at` is derived from the caller's clock — `day` keeps
+ * seedPublish's default ('2026-07-20'), deliberately off any tick's real day,
+ * so the row never counts toward videosPublishedToday or the pacing clock.
+ * The backoff marker gates the platform without consuming the channel's day.
  */
-export function seedQuotaRows(db: Database, opts: { count: number; status?: string }): void {
-  for (let i = 0; i < opts.count; i++) {
-    seedAttempt(db, {
-      jobId: `quota-job-${i}`,
-      channel: 'quota-chan',
-      platform: 'youtube',
-      day: '2026-07-22',
-      seq: i + 1,
-      status: opts.status ?? 'done',
-    })
-  }
+export function seedQuotaFailure(
+  db: Database,
+  opts: { channel: string; platform: Platform; now: Date; msAgo: number },
+): void {
+  quotaFailureSeq += 1
+  seedPublish(db, `quota-failure-${quotaFailureSeq}`, {
+    platform: opts.platform,
+    channel: opts.channel,
+    status: 'failed',
+    errorKind: 'quota',
+    seq: quotaFailureSeq,
+    createdAt: new Date(opts.now.getTime() - opts.msAgo).toISOString(),
+  })
 }
 
 export function fakeAdapter(upload: PublishAdapter['upload']): PublishAdapter {
@@ -217,10 +231,7 @@ export function urlResolvingAdapter(): PublishAdapter {
 
 /**
  * One channel declaring BOTH [publish.youtube] and [publish.instagram], one
- * ready video with a real local file, and a stub adapter per platform. The
- * adapters carry the REAL quota descriptors so BRAINROT_*_UPLOADS_PER_DAY still
- * governs (fakeAdapter hardcodes cap 6), and `videos_per_day = 1` keeps the
- * channel loadable when a test lowers the YouTube cap to 1.
+ * ready video with a real local file, and a stub adapter per platform.
  */
 export function fanOutFixture(prefix: string): {
   db: Database
