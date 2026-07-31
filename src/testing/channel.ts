@@ -64,6 +64,8 @@ export interface ChannelTomlOptions {
   scriptModel?: string
   bgDir?: string | string[]
   bgmDir?: string
+  /** Top-level `backlog_days` override. Omitted, the schema default (2) applies. */
+  backlogDays?: number
   /** Platforms to emit a `[publish.<platform>]` sub-table for. */
   platforms?: Platform[]
   /** Lines appended inside the last `[publish.<platform>]` sub-table. */
@@ -79,7 +81,13 @@ export interface ChannelTomlOptions {
  * Two ordering rules are load-bearing, not cosmetic:
  *   - `bg_dir`/`bgm_dir` are top-level keys, so they must precede every
  *     `[section]` header, else TOML nests them under the last-opened table and
- *     the values silently vanish.
+ *     the values silently vanish. `extra` lines are appended *after* the final
+ *     `[budget]` header, so any other top-level key routed through `extra`
+ *     (e.g. a bare `backlog_days = N`) silently nests under `[budget]` instead
+ *     of landing at top level — the `budget` schema isn't `.strict()`, so the
+ *     stray key is dropped with no error and the field quietly falls back to
+ *     its default. That is why `backlog_days` gets its own `backlogDays`
+ *     option below rather than being left to `extra`.
  *   - `[publish]` carries no keys of its own any more; `slots` was removed in
  *     favor of `videos_per_day` and `loadChannelConfig` now *rejects* it by
  *     name (see rejectStaleSlots in src/config/channel.ts), so this builder
@@ -105,6 +113,7 @@ export function channelTomlLines(opts: ChannelTomlOptions = {}): string[] {
     // Required by the schema, so defaulted rather than conditional.
     `bg_dir = ${JSON.stringify(opts.bgDir ?? 'assets/bg')}`,
     `bgm_dir = ${JSON.stringify(opts.bgmDir ?? 'assets/bgm')}`,
+    ...(opts.backlogDays === undefined ? [] : [`backlog_days = ${opts.backlogDays}`]),
     '',
     '[voice]',
     'volume = "af_heart"',

@@ -588,13 +588,8 @@ describe('loadChannelConfig story mode', () => {
       channelToml({
         name: 'aita',
         videosPerDay: 1,
-        extra: [
-          'backlog_days = 2',
-          '[scout]',
-          'subreddits = ["AmItheAsshole"]',
-          '[story]',
-          'max_parts = 4',
-        ],
+        backlogDays: 3,
+        extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', '[story]', 'max_parts = 4'],
       }),
     )
     expect(() => loadChannelConfig(file)).toThrow(/max_parts/)
@@ -607,16 +602,22 @@ describe('loadChannelConfig story mode', () => {
       file,
       channelToml({
         name: 'aita',
-        videosPerDay: 2,
-        extra: [
-          'backlog_days = 2',
-          '[scout]',
-          'subreddits = ["AmItheAsshole"]',
-          '[story]',
-          'max_parts = 4',
-        ],
+        videosPerDay: 1,
+        backlogDays: 3,
+        extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', '[story]', 'max_parts = 3'],
       }),
     )
-    expect(loadChannelConfig(file).story).toEqual({ maxParts: 4 })
+    const cfg = loadChannelConfig(file)
+    expect(cfg.backlogDays).toBe(3)
+    expect(cfg.story).toEqual({ maxParts: 3 })
+  })
+
+  it('emits backlog_days at top level, not nested under [budget]', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'plain.toml')
+    // A top-level key passed via `extra` would land inside the still-open
+    // [budget] table and be silently dropped; the dedicated option must not.
+    writeFileSync(file, channelToml({ name: 'plain', videosPerDay: 1, backlogDays: 5 }))
+    expect(loadChannelConfig(file).backlogDays).toBe(5)
   })
 })
