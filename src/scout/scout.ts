@@ -12,7 +12,13 @@ import { rssSource } from './sources/rss.js'
 import { ESTIMATED_GENERATE_COST_MICROS, llmSource } from './sources/llm.js'
 import { ESTIMATED_SCOUT_COST_MICROS, estimatedChunkCount, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
-import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
+import {
+  candidateTopicCount,
+  insertTopics,
+  knownHashes,
+  RECENT_TITLES_LIMIT,
+  recentTopicTitles,
+} from './topics.js'
 import type { NewTopic } from './topics.js'
 import { lastScoutAttemptAt, recordScoutAttempt } from './scout-state.js'
 import { splitStory, STORY_WORDS_PER_PART } from '../stories/split.js'
@@ -188,7 +194,14 @@ export async function scoutChannel(
         source = llmSource({
           channelName: channel.name,
           niche: channel.niche,
-          recentTitles: recentTopicTitles(db, channel.name),
+          // includeRejected: true — backwards from the scorer's own call just
+          // above. A rejected title is exactly what the generator should stop
+          // re-proposing (a near-duplicate re-bills every attempt); the
+          // scorer's window deliberately excludes rejected rows instead (see
+          // recentTopicTitles' own comment).
+          recentTitles: recentTopicTitles(db, channel.name, RECENT_TITLES_LIMIT, {
+            includeRejected: true,
+          }),
           count: descriptor.count,
           client: opts.client,
           onCost: (usdMicros) => {

@@ -261,6 +261,50 @@ describe('recentTopicTitles', () => {
     expect(recentTopicTitles(db, 'chan-a')).toEqual(['Story'])
     db.close()
   })
+
+  // includeRejected exists for the llm generator's own avoid-list
+  // (src/scout/scout.ts) — the opposite need from the scorer's window above.
+  it('includes rejected titles only when includeRejected is set', () => {
+    const db = memDb()
+    seedTopic(db, { title: 'kept', createdAt: '2026-07-19T00:00:00.000Z' })
+    seedTopic(db, {
+      title: 'sub-80 rejected topic',
+      status: 'rejected',
+      createdAt: '2026-07-19T01:00:00.000Z',
+    })
+    expect(recentTopicTitles(db, 'chan-a')).not.toContain('sub-80 rejected topic')
+    expect(recentTopicTitles(db, 'chan-a', RECENT_TITLES_LIMIT, { includeRejected: true })).toEqual(
+      expect.arrayContaining(['sub-80 rejected topic', 'kept']),
+    )
+    db.close()
+  })
+
+  it('keeps series-collapse behavior intact when includeRejected is set', () => {
+    const db = memDb()
+    seedTopic(db, {
+      title: 'Story (1/2)',
+      seriesKey: 'S',
+      partIndex: 1,
+      partCount: 2,
+      status: 'rejected',
+      createdAt: '2026-07-19T00:00:00.000Z',
+    })
+    seedTopic(db, {
+      title: 'Story (2/2)',
+      seriesKey: 'S',
+      partIndex: 2,
+      partCount: 2,
+      createdAt: '2026-07-19T01:00:00.000Z',
+    })
+    // Non-rejected view: the rejected part 1 is skipped, part 2 represents.
+    expect(recentTopicTitles(db, 'chan-a')).toEqual(['Story'])
+    // includeRejected view: part 1 is eligible again and becomes the (lower
+    // part_index) representative — still one collapsed entry, not two.
+    expect(recentTopicTitles(db, 'chan-a', RECENT_TITLES_LIMIT, { includeRejected: true })).toEqual(
+      ['Story'],
+    )
+    db.close()
+  })
 })
 
 describe('candidateTopicCount', () => {

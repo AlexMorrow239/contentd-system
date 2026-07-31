@@ -276,7 +276,7 @@ export async function publishNextTick(
       // --force is the local-testing bypass: it skips the cooldown gap and
       // the day count so ticks can be fired back to back. It never
       // skips quota, credentials, or eligibility — a forced test must not be
-      // able to overrun a platform's real daily cap.
+      // able to bypass a platform's runtime backoff.
       const reason = force
         ? undefined
         : channelNotDueReason({

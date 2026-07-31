@@ -465,6 +465,12 @@ export function buildDigest(
   // last scheduled video goes out — and every other line in this digest would
   // stay quiet about it. Channels with no scout sources are excluded: they
   // are fed by manual `brainrot produce`, where an empty queue is normal.
+  const claimedTopicCount = db.prepare(
+    "SELECT COUNT(*) AS n FROM topics WHERE channel = ? AND status = 'claimed'",
+  )
+  const inFlightJobCount = db.prepare(
+    "SELECT COUNT(*) AS n FROM jobs WHERE channel = ? AND status IN ('running', 'queued')",
+  )
   for (const c of channels) {
     const scoutsAnything =
       c.scout.subreddits.length + c.scout.rss.length + c.scout.generateTopics > 0
@@ -476,11 +482,19 @@ export function buildDigest(
       declared,
       createdAfter: agedCutoff(now, c.backlogDays),
     })
-    if (candidates === 0 && inventory === 0) {
-      lines.push(
-        `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)`,
-      )
-    }
+    if (candidates !== 0 || inventory !== 0) continue
+    // 0 candidates and 0 inventory can still mean supply is moving, not
+    // stopped: a claimed topic means a job is producing from it right now,
+    // and a running/queued job means one is mid-pipeline even if its topic
+    // claim isn't visible yet. Flagging either as starvation would be a false
+    // alarm the first time it fires, which is what makes an operator start
+    // ignoring the whole line.
+    const claimed = (claimedTopicCount.get(c.name) as { n: number }).n
+    const inFlight = (inFlightJobCount.get(c.name) as { n: number }).n
+    if (claimed > 0 || inFlight > 0) continue
+    lines.push(
+      `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)`,
+    )
   }
   // Token health per publish-enabled channel. A missing grant, a rotated
   // BRAINROT_TOKEN_KEY, or unset client credentials all make every publish
@@ -608,7 +622,15 @@ export function buildDigest(
   // derived from videos_per_day there are no named slots to lapse, so the
   // signal is the count. The per-platform split is what makes a
   // quota-skipped platform visible — a channel can hit its video count while
-  // one platform got none of them.
+  // one platform got none of them. But `videosPublishedToday` counts DISTINCT
+  // jobs across ALL platforms, so meeting the channel-level count is not the
+  // same claim as every declared platform having published anything: a
+  // 15/day channel that gets ~15 Instagram legs and 0 YouTube legs clears the
+  // gate below on Instagram's back alone, and a shortfall line would never
+  // fire — the per-platform split above only prints when there IS a
+  // shortfall. That's a second, distinct signal (a dead platform, not merely
+  // an oversubscribed one) and needs its own line even when the channel count
+  // is fully met.
   //
   // "yesterday" is the local calendar day before now (decision 13) — local
   // date-field math, NOT now-minus-24h, which lands on the wrong local date
@@ -622,16 +644,31 @@ export function buildDigest(
   for (const channel of channels) {
     if (channel.publish === null) continue
     const published = videosPublishedToday(db, channel.name, yesterday)
-    if (published >= channel.videosPerDay) continue
-    const split = channel.publish.targets
-      .map((t) => {
-        const { n } = perPlatform.get(channel.name, t.platform, yesterday) as { n: number }
-        return `${t.platform} ${n}`
-      })
-      .join(', ')
-    lines.push(
-      `  ${channel.name}: published ${published} of ${channel.videosPerDay} videos yesterday (${yesterday}) — ${split}`,
-    )
+    const perPlatformCounts = channel.publish.targets.map((t) => {
+      const { n } = perPlatform.get(channel.name, t.platform, yesterday) as { n: number }
+      return { platform: t.platform, n }
+    })
+    if (published < channel.videosPerDay) {
+      const split = perPlatformCounts.map((p) => `${p.platform} ${p.n}`).join(', ')
+      lines.push(
+        `  ${channel.name}: published ${published} of ${channel.videosPerDay} videos yesterday (${yesterday}) — ${split}`,
+      )
+      continue
+    }
+    // Count met channel-wide, but not necessarily per platform: a declared
+    // platform that published zero while the channel published at least one
+    // video elsewhere reads as dead (auth broke, quota jammed past the
+    // backoff window), not as merely oversubscribed by the other platform's
+    // volume.
+    if (published > 0) {
+      for (const p of perPlatformCounts) {
+        if (p.n === 0) {
+          lines.push(
+            `  ${channel.name} ${p.platform}: 0 uploads yesterday while the channel published ${published} — platform may be dead (auth/quota), not merely oversubscribed`,
+          )
+        }
+      }
+    }
   }
   // Channels whose production is halted by their own inventory cap (planTick's
   // 'backlog-full' noop). Nothing else in the digest shows this: the Backlog

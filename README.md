@@ -318,11 +318,9 @@ few hours. The count is still a same-day ceiling, not a guarantee: a channel
 with nothing ready, or already at its daily count, simply stays idle until
 there's more to do.
 
-Platform limits are enforced for you at config load. YouTube's Data API
-allows about 6 uploads/day per Google Cloud project shared across every
-channel, and Instagram allows 50/day per account — so a channel set declaring
-more than that fails to load with a message naming the offending channels.
-Lower `videos_per_day`; there is nothing to set by hand.
+Platform limits are not declared or checked here. `videos_per_day` is pure
+demand, and each platform clips itself at its own real limit at runtime — see
+Quota below.
 
 A channel that falls short of its `videos_per_day` count on a given day —
 the machine was asleep, a platform's quota was exhausted, credentials broke —
@@ -398,6 +396,18 @@ scheduled threads ("Basic cosmology questions weekly thread" and friends) are
 dropped before scoring and counted as `droppedAutomated`. Each week's instance
 is a new post id, so dedupe alone would let them cost a scoring slot forever.
 A sticky posted by a human mod still reaches the scorer and simply scores low.
+
+A third source needs neither a feed nor a key: `[scout] generate_topics = N`
+has an LLM (haiku) invent up to `N` candidate topics per scout attempt
+instead of reading one. It is a paid Anthropic call, self-limited by the same
+queue-full depth gate as every other source — a channel already holding
+enough queued candidates never generates. Two traps: keep `rss` (or
+`subreddits`) declared alongside it, since a budget breach on an
+llm-only channel makes generation the channel's _only_ source, and a single
+degraded call then reads as a total scouting outage rather than one skipped
+source; and keep `generate_topics` at or below `per_source_limit` — the
+generator's request is clamped to `min(generate_topics, per_source_limit)`
+silently, not rejected.
 
 Reddit rate-limits the public feed to roughly one request per window, so a
 tick that fetched several subreddits back-to-back used to lose every source
@@ -550,9 +560,9 @@ republish it on `0.0.0.0`.
 
 ### Development vs. production
 
-| | root | db | runs | channels |
-| --- | --- | --- | --- | --- |
-| development (host) | `local/` | `local/db/brainrot.db` | `local/runs/` | `local/channels/` |
+|                        | root         | db                     | runs                     | channels                     |
+| ---------------------- | ------------ | ---------------------- | ------------------------ | ---------------------------- |
+| development (host)     | `local/`     | `local/db/brainrot.db` | `local/runs/`            | `local/channels/`            |
 | production (container) | `/app/state` | `brainrot-data` volume | `prod/runs/` on the host | `prod/channels/` on the host |
 
 `BRAINROT_ROOT` is the only knob, and **unset means `local`** — a bare

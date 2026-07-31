@@ -611,6 +611,88 @@ describe('buildDigest — volume-shortfall action item', () => {
     expect(digest).not.toContain('videos yesterday')
     db.close()
   })
+
+  // The channel-level gate (`published >= videosPerDay`) only sees DISTINCT
+  // jobs across ALL platforms, so a channel that clears its count entirely on
+  // one platform's back stays silent even when another declared platform
+  // uploaded nothing all day — exactly the "YouTube publishes zero for a
+  // week" case that must not be invisible on a multi-platform channel.
+  it('flags a channel that met its count but got zero uploads on one declared platform', () => {
+    const db = memDb()
+    const yesterdayDate = new Date()
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+    const yesterday = localDay(yesterdayDate)
+    const chA = testChannel({
+      name: 'chan-a',
+      videosPerDay: 1,
+      publish: {
+        targets: [
+          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'j-yday', channel: 'chan-a' })
+    // Only instagram published; the channel count (1 of 1) is met purely on
+    // instagram's back — the old gate would stay silent about youtube.
+    seedPublish(db, {
+      jobId: 'j-yday',
+      channel: 'chan-a',
+      platform: 'instagram',
+      day: yesterday,
+      seq: 1,
+      status: 'done',
+    })
+    const digest = buildDigest(db, [chA])
+    expect(digest).toContain(
+      '  chan-a youtube: 0 uploads yesterday while the channel published 1 — platform may be dead (auth/quota), not merely oversubscribed',
+    )
+    db.close()
+  })
+
+  it('says nothing when every declared platform published at least one video and the count is met', () => {
+    const db = memDb()
+    const yesterdayDate = new Date()
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1)
+    const yesterday = localDay(yesterdayDate)
+    const chA = testChannel({
+      name: 'chan-a',
+      videosPerDay: 1,
+      publish: {
+        targets: [
+          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
+          {
+            platform: 'youtube',
+            options: { privacy: 'public', categoryId: 24, madeForKids: false },
+          },
+        ],
+      },
+    })
+    seedJob(db, { id: 'j-yday', channel: 'chan-a' })
+    seedPublish(db, {
+      jobId: 'j-yday',
+      channel: 'chan-a',
+      platform: 'instagram',
+      day: yesterday,
+      seq: 1,
+      status: 'done',
+    })
+    seedPublish(db, {
+      jobId: 'j-yday',
+      channel: 'chan-a',
+      platform: 'youtube',
+      day: yesterday,
+      seq: 1,
+      status: 'done',
+    })
+    const digest = buildDigest(db, [chA])
+    expect(digest).not.toContain('videos yesterday')
+    expect(digest).not.toContain('may be dead')
+    db.close()
+  })
 })
 
 describe('buildDigest — publish token health', () => {
@@ -1107,6 +1189,46 @@ describe('buildDigest — topic starvation action item', () => {
     // empty topic queue is normal, not a starvation signal.
     const digest = buildDigest(db, [publishChannel('chan-a')], ENV_OK)
     expect(digest).not.toContain('topic starvation')
+    db.close()
+  })
+
+  // A channel with 0 candidates and 0 inventory still has supply moving if a
+  // topic is claimed (a job is producing from it right now) or a job is
+  // running/queued — the alert must stay trustworthy and not cry wolf mid-flight.
+  it('does not flag a channel with a claimed topic, even at 0 candidates and 0 inventory', () => {
+    const db = memDb()
+    seedJob(db, { id: 'job-inflight', channel: 'chan-a', status: 'running' })
+    seedTopic(db, {
+      channel: 'chan-a',
+      dedupeHash: 'h-claimed',
+      status: 'claimed',
+      jobId: 'job-inflight',
+    })
+    const digest = buildDigest(db, [scoutingPublishChannel('chan-a')], ENV_OK)
+    expect(digest).not.toContain('topic starvation')
+    db.close()
+  })
+
+  it('does not flag a channel with a running job, even at 0 candidates and 0 inventory', () => {
+    const db = memDb()
+    seedJob(db, { id: 'job-running', channel: 'chan-a', status: 'running' })
+    const digest = buildDigest(db, [scoutingPublishChannel('chan-a')], ENV_OK)
+    expect(digest).not.toContain('topic starvation')
+    db.close()
+  })
+
+  it('does not flag a channel with a queued job, even at 0 candidates and 0 inventory', () => {
+    const db = memDb()
+    seedJob(db, { id: 'job-queued', channel: 'chan-a', status: 'queued' })
+    const digest = buildDigest(db, [scoutingPublishChannel('chan-a')], ENV_OK)
+    expect(digest).not.toContain('topic starvation')
+    db.close()
+  })
+
+  it('still flags at 0 candidates and 0 inventory with no in-flight topic or job', () => {
+    const db = memDb()
+    const digest = buildDigest(db, [scoutingPublishChannel('chan-a')], ENV_OK)
+    expect(digest).toContain('topic starvation')
     db.close()
   })
 })

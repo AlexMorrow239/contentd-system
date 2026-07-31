@@ -63,6 +63,39 @@ describe('llmSource', () => {
     expect(prompt).toContain('Generate 2 candidate')
   })
 
+  it('caps results at opts.count when it is tighter than the fetch limit', async () => {
+    const { client, create } = fakeClient(
+      emit([{ title: 'Topic A' }, { title: 'Topic B' }, { title: 'Topic C' }]),
+    )
+    const source = llmSource({
+      channelName: 'test',
+      niche: ['space facts'],
+      recentTitles: [],
+      count: 2,
+      client,
+    })
+    // opts.count (2) is stricter than the fetch limit (10)
+    const result = await source.fetch({ limit: 10, timeoutMs: 5000 })
+    expect(result).toHaveLength(2)
+    const sent = create.mock.calls[0][0]
+    const prompt = sent.messages[0].content as string
+    expect(prompt).toContain('Generate 2 candidate')
+  })
+
+  it('drops a whitespace-only title (normalizes to empty)', async () => {
+    const { client } = fakeClient(emit([{ title: '   ' }, { title: 'A real topic' }]))
+    const source = llmSource({
+      channelName: 'test',
+      niche: ['space facts'],
+      recentTitles: [],
+      count: 10,
+      client,
+    })
+    const result = await source.fetch({ limit: 10, timeoutMs: 5000 })
+    expect(result).toHaveLength(1)
+    expect(result[0].title).toBe('A real topic')
+  })
+
   it('drops duplicate titles within one batch (normalized compare)', async () => {
     const { client } = fakeClient(
       emit([

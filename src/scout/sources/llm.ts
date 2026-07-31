@@ -8,6 +8,12 @@ import type { TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.
 // global day cap by scoutChannel before the call, trued up from usage after.
 export const ESTIMATED_GENERATE_COST_MICROS = 20_000
 
+// Same bound scoreCandidates uses (SCOUT_MAX_TOKENS, src/scout/score.ts),
+// sized for the same reason: `generate_topics` ranges 0-50, and a response
+// truncated mid-JSON is a paid ZodError, not a clean short answer — cheaper
+// to bound generously than to retry.
+export const GENERATE_MAX_TOKENS = 4096
+
 // A generated topic has no external identity, so its normalized title IS its
 // externalId: exact regenerations dedupe through the ordinary
 // (sourceId, externalId) hash, and near-duplicates are the scorer's job (its
@@ -36,6 +42,13 @@ export function llmSource(opts: LlmSourceOpts): TrendSource {
   const id = `llm:${opts.channelName}`
   return {
     id,
+    // fetchOpts.timeoutMs (SOURCE_FETCH_TIMEOUT_MS, a feed-fetch contract) is
+    // deliberately NOT threaded through to this call: a real generation
+    // completion can legitimately take longer than a feed GET is given, and
+    // aborting at that bound would cut off legitimate generation, not a hung
+    // request. The Anthropic SDK's own request timeout already bounds a
+    // genuinely hung call, exactly as it does for the scorer's call
+    // (score.ts), so nothing here is unbounded.
     async fetch(fetchOpts: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
       const count = Math.min(opts.count, fetchOpts.limit)
       const recent =
@@ -56,6 +69,7 @@ ${recent}
 
 Return each as { title }.`,
         schema: TopicsSchema,
+        maxTokens: GENERATE_MAX_TOKENS,
         client: opts.client,
       })
       opts.onCost?.(cost.usdMicros)

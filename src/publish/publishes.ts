@@ -493,14 +493,17 @@ export function channelVideoCandidates(
   // verify and leaves the settled predicate untouched.
   //
   // The series gate runs AFTER the SQL LIMIT, so fully-blocked continuation
-  // parts still occupy candidate slots. Starvation is not reachable today: the
-  // gate is based on `MAX_VIDEO_CANDIDATES` (50, in src/loop/publish-next.ts)
-  // and real starvation requires >= ~51 concurrently-blocked parts ahead of a
-  // publishable video. Production is capped by `pendingInventory` at
-  // `ceil(videos_per_day * backlog_days)`, and src/config/channel.ts requires
-  // `max_parts <= videos_per_day * backlog_days`, so starvation would need
-  // `videos_per_day * backlog_days >= ~51` — unreachable on YouTube (~6/day
-  // cap) but legal on Instagram-only channels.
+  // parts still occupy candidate slots. Starvation needs >= ~51
+  // concurrently-blocked parts ahead of a publishable video — the gate is
+  // based on `MAX_VIDEO_CANDIDATES` (50, in src/loop/publish-next.ts).
+  // Production is capped by `pendingInventory` at `ceil(videos_per_day *
+  // backlog_days)`, and src/config/channel.ts requires `max_parts <=
+  // videos_per_day * backlog_days`, so the bound is reachable purely by
+  // config: a [story] channel declaring `videos_per_day * backlog_days >=
+  // ~51` can starve this scan on any platform. There is no per-platform
+  // upload cap checked or enforced anywhere in this codebase anymore
+  // (platforms clip themselves at runtime instead), so nothing keeps that
+  // product bound out of reach the way YouTube's ~6/day cap once did.
   //
   // Fails OPEN when the predecessor topic row is missing entirely (it should
   // never be — parts insert in one transaction): an unexpected gap publishes a

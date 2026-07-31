@@ -802,6 +802,39 @@ describe('scoutChannel llm generation', () => {
     expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(2)
     db.close()
   })
+
+  // recentTopicTitles (the scorer's own feed) deliberately excludes rejected
+  // rows — right for the scorer, backwards for the generator: a sub-80 title
+  // is exactly what generation should stop re-proposing, or it re-bills the
+  // same near-duplicate every attempt. The generator must get its own
+  // avoid-list that includes rejected titles; the scorer's list must not.
+  it('feeds the generator an avoid-list that includes rejected titles, but keeps them out of the scoring prompt', async () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 1 } })
+    seedTopic(db, {
+      channel: 'chan-a',
+      status: 'rejected',
+      dedupeHash: 'rejected-1',
+      title: 'A previously rejected topic',
+    })
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter']))
+      .mockResolvedValueOnce(
+        emitScores([{ candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'ok' }]),
+      )
+    const client = { messages: { create } } as unknown as Anthropic
+
+    await scoutChannel(db, channel, { client })
+
+    // call 0 is llmSource's generation call, call 1 is scoreCandidates' call
+    // — pinned by the other tests in this describe block.
+    const generationPrompt = create.mock.calls[0][0].messages[0].content as string
+    const scoringPrompt = create.mock.calls[1][0].messages[0].content as string
+    expect(generationPrompt).toContain('A previously rejected topic')
+    expect(scoringPrompt).not.toContain('A previously rejected topic')
+    db.close()
+  })
 })
 
 describe('scoutAll', () => {

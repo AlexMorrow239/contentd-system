@@ -181,18 +181,30 @@ export const RECENT_TITLES_LIMIT = 30
 // not part of the story's actual title.
 const PART_SUFFIX = /\s*\(\d+\/\d+\)\s*$/
 
+// `includeRejected` exists for one caller: the llm generator's own avoid-list
+// (src/scout/scout.ts's `llm` branch). The scorer's window deliberately
+// excludes rejected rows — a topic scored below SCOUT_MIN_SCORE is stale/
+// off-niche noise, not something worth telling the scorer "recently
+// covered". The generator's problem is the opposite: a rejected title is
+// exactly the near-duplicate it should stop re-proposing, or it re-bills the
+// same generation every attempt. Series-collapse stays identical either way
+// — only which rows are eligible to seed the MIN(part_index) representative
+// changes.
 export function recentTopicTitles(
   db: Database,
   channel: string,
   limit = RECENT_TITLES_LIMIT,
+  opts: { includeRejected?: boolean } = {},
 ): string[] {
+  const t1Filter = opts.includeRejected ? '' : "AND t1.status != 'rejected'"
+  const t2Filter = opts.includeRejected ? '' : "AND t2.status != 'rejected'"
   const rows = db
     .prepare(
       `SELECT t1.title AS title, t1.series_key AS seriesKey FROM topics t1
-       WHERE t1.channel = ? AND t1.status != 'rejected'
+       WHERE t1.channel = ? ${t1Filter}
          AND (t1.series_key IS NULL OR t1.part_index = (
            SELECT MIN(t2.part_index) FROM topics t2
-           WHERE t2.channel = t1.channel AND t2.series_key = t1.series_key AND t2.status != 'rejected'
+           WHERE t2.channel = t1.channel AND t2.series_key = t1.series_key ${t2Filter}
          ))
        ORDER BY t1.created_at DESC, t1.id DESC LIMIT ?`,
     )
