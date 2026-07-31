@@ -570,6 +570,52 @@ describe('addTopicStoryColumns', () => {
     db.close()
   })
 
+  it('converges a database with a partial set of story columns', () => {
+    // Regression: a database that got some columns from schema.sql and some
+    // from a partial earlier run must converge to have all five. This catches
+    // a regression to a single-sentinel probe like
+    // `if (!hasColumn(db,'topics','body_text')) { add all five }`, which would
+    // pass the none-present and fresh-database tests while failing on partial.
+    const dir = tmpDir('brainrot-migrate-')
+    cleanupDirs.push(dir)
+    const dbPath = join(dir, 'test.db')
+    const raw = new BetterSqlite3(dbPath)
+    raw.pragma('foreign_keys = OFF')
+    // Start with TOPICS_PRE_STORY and manually add TWO of the five columns.
+    raw.exec(CURRENT_SHAPE_NO_INDEX + TOPICS_PRE_STORY)
+    raw.exec('ALTER TABLE topics ADD COLUMN body_text TEXT')
+    raw.exec('ALTER TABLE topics ADD COLUMN part_count INTEGER')
+    raw.prepare(
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, body_text) ' +
+        "VALUES ('space','t','t','reddit:r/space','u','h',90,'r','part 1')",
+    ).run()
+    raw.close()
+
+    const db = openDb(dbPath)
+
+    const cols = (db.prepare('PRAGMA table_info(topics)').all() as { name: string }[]).map(
+      (c) => c.name,
+    )
+    // All five story columns must exist.
+    expect(cols).toContain('body_text')
+    expect(cols).toContain('series_key')
+    expect(cols).toContain('part_index')
+    expect(cols).toContain('part_count')
+    expect(cols).toContain('truncated')
+    // Both indexes must exist.
+    const indexes = (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'topics'")
+        .all() as { name: string }[]
+    ).map((i) => i.name)
+    expect(indexes).toContain('ix_topics_job')
+    expect(indexes).toContain('ix_topics_series')
+    // Pre-existing data in body_text survives.
+    const row = db.prepare('SELECT body_text FROM topics').get() as { body_text: string | null }
+    expect(row.body_text).toBe('part 1')
+    db.close()
+  })
+
   it('does not wedge openDb on a database predating the story columns', () => {
     // The regression this guards: putting the story indexes in schema.sql
     // throws here, because openDb execs schema.sql BEFORE migrate adds the

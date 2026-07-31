@@ -337,7 +337,10 @@ export function eligibleTopic(db: Database, channel: string): TopicRow | null {
 export function storyPartForJob(db: Database, jobId: string): StoryPart | null {
   const row = db
     .prepare(
-      'SELECT body_text, part_index, part_count, url, truncated FROM topics WHERE job_id = ?',
+      // job_id carries no unique constraint; claimTopic maintains the invariant
+      // of one row per job. Ordering by id makes the choice deterministic rather
+      // than index-dependent if that invariant is ever broken.
+      'SELECT body_text, part_index, part_count, url, truncated FROM topics WHERE job_id = ? ORDER BY id LIMIT 1',
     )
     .get(jobId) as
     | {

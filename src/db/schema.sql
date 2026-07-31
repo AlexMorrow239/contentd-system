@@ -62,14 +62,17 @@ CREATE TABLE IF NOT EXISTS topics (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE (channel, dedupe_hash)
 );
--- The two story indexes are created by db/migrate.ts, NOT here, for the same
--- reason as ux_publishes_live: openDb execs this file BEFORE calling migrate,
--- so an index over series_key/part_index would throw on every EXISTING
--- database — the columns above only reach one via migrate's ALTER TABLE. A
--- failure here wedges the whole CLI, not one command. They are named here so
--- this file still reads as the complete shape:
---   CREATE INDEX ix_topics_job    ON topics (job_id);
---   CREATE INDEX ix_topics_series ON topics (series_key, part_index);
+-- The two story indexes are created by db/migrate.ts, NOT here: openDb execs
+-- this file BEFORE calling migrate, so an index over the series_key/part_index
+-- columns would throw on every existing database—those columns arrive via
+-- migrate's ALTER TABLE. A failure during schema.sql wedges the whole CLI, so
+-- this follows the same rule as ux_publishes_live below. Both are kept in
+-- migrate.ts for cohesion even though ix_topics_job could safely live here
+-- (job_id exists in all databases). They are named here so the shape reads
+-- complete and migrate.ts can stay the single source of truth for column
+-- creation:
+--   CREATE INDEX IF NOT EXISTS ix_topics_job    ON topics (job_id);
+--   CREATE INDEX IF NOT EXISTS ix_topics_series ON topics (series_key, part_index);
 CREATE TABLE IF NOT EXISTS leases (
   name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at TEXT NOT NULL
 );
