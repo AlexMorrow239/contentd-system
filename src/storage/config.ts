@@ -22,9 +22,8 @@ export interface S3Config {
  * Reads at CALL time, not module load — the convention costs.ts's
  * globalDailyCapMicros already sets, so tests and long-lived cron processes
  * observe env changes without a re-import. Reports EVERY missing key rather
- * than the first: an
- * operator configuring this for the first time should need one round trip,
- * not four.
+ * than the first: an operator configuring this for the first time should need
+ * one round trip, not four.
  */
 function readConfig(): { config: S3Config; missing: string[] } {
   const missing: string[] = []

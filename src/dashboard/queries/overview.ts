@@ -59,7 +59,7 @@ export interface OverviewData {
   unattributedUsdMicros: number
   leases: LeaseState[]
   quotaUsed: number
-  /** True when a recent youtube quota-kind failure has this scope backed off (quotaBackedOff). */
+  /** True when a recent youtube quota-kind failure has youtube backed off (quotaBackedOff). */
   quotaBackedOff: boolean
 }
 

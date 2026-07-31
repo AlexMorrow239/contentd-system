@@ -195,6 +195,67 @@ describe('/publishes', () => {
     const body = await res.text()
     expect(body).toContain('space: 1 uploads used today')
   })
+
+  it('backs off only the channel with a recent instagram quota failure, not its sibling', async () => {
+    // buildPlatformQuotas passes channel.name into quotaBackedOff for
+    // channel-scoped platforms — a call site nothing else here exercises,
+    // since the test above only proves independent USAGE counts. Two
+    // instagram channels, a quota failure seeded for one of them only: the
+    // backed-off badge must appear on that channel's line and nowhere else.
+    const config = seededConfig()
+    mkdirSync(config.paths.channelsDir, { recursive: true })
+    const channelToml = (name: string): string =>
+      [
+        `name = "${name}"`,
+        'niche = ["space facts"]',
+        'script_model = "claude-sonnet-5"',
+        'bg_dir = "assets/bg"',
+        'bgm_dir = "assets/bgm"',
+        'videos_per_day = 1',
+        '',
+        '[voice]',
+        'volume = "af_heart"',
+        '',
+        '[caption_style]',
+        'font = "Inter"',
+        'font_size_px = 72',
+        'active_color = "#FFD700"',
+        'inactive_color = "#FFFFFF"',
+        'stroke_px = 8',
+        '',
+        '[budget]',
+        'per_video_usd = 8.0',
+        'per_day_usd = 20.0',
+        '',
+        '[publish]',
+        '',
+        '[publish.instagram]',
+        'ig_user_id = "1"',
+        '',
+      ].join('\n')
+    writeFileSync(join(config.paths.channelsDir, 'space.toml'), channelToml('space'))
+    writeFileSync(join(config.paths.channelsDir, 'history.toml'), channelToml('history'))
+
+    const now = new Date()
+    const db = openDb(config.paths.dbPath)
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','failed')",
+    ).run()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, error_kind, created_at) ' +
+        "VALUES ('j1','instagram','space','2026-07-25',1,'failed',1,'quota',?)",
+    ).run(now.toISOString())
+    db.close()
+
+    const res = await createApp({ config, now: () => now }).request('/publishes')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    const spaceLine = /<li>space:[^<]*(?:<[^/][^>]*>[^<]*<\/[^>]*>)?<\/li>/.exec(body)?.[0] ?? ''
+    const historyLine =
+      /<li>history:[^<]*(?:<[^/][^>]*>[^<]*<\/[^>]*>)?<\/li>/.exec(body)?.[0] ?? ''
+    expect(spaceLine).toContain('backed off')
+    expect(historyLine).not.toContain('backed off')
+  })
 })
 
 describe('video streaming', () => {

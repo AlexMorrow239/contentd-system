@@ -8,7 +8,11 @@ import {
   unstoredLibraryJobs,
 } from '../jobs/library.js'
 import { parseTokenKey } from '../publish/crypto.js'
-import { MAX_PUBLISH_ATTEMPTS, QUOTA_BACKOFF_MS, videosPublishedToday } from '../publish/publishes.js'
+import {
+  MAX_PUBLISH_ATTEMPTS,
+  QUOTA_BACKOFF_MS,
+  videosPublishedToday,
+} from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
 import { backlogCap } from './plan-tick.js'
 import {

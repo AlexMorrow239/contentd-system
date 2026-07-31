@@ -120,9 +120,7 @@ export function renderOverviewPage(data: OverviewData, configError?: string): Sa
         <h2>youtube quota</h2>
         <p>
           ${String(data.quotaUsed)} uploads used today${
-            data.quotaBackedOff
-              ? html` <span class="error">backed off</span>`
-              : html``
+            data.quotaBackedOff ? html` <span class="error">backed off</span>` : html``
           }
         </p>
       </div>
