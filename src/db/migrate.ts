@@ -147,6 +147,36 @@ function ensureLivePublishIndex(db: Database, onWarn: (message: string) => void)
   )
 }
 
+// Story-mode columns on `topics`. Five plain ADD COLUMNs, each probed
+// independently so a database that got some of them from schema.sql and some
+// from a partial earlier run converges either way.
+//
+// The two indexes are created HERE rather than in schema.sql, and the order
+// within this function is the reason: openDb execs schema.sql BEFORE calling
+// migrate, so an index over series_key/part_index placed there would throw on
+// every existing database — those columns arrive via the ALTER TABLEs below.
+// A throw during openDb wedges every CLI command, so this follows the same
+// rule ux_publishes_live already does.
+const TOPIC_STORY_COLUMNS: [string, string][] = [
+  ['body_text', 'TEXT'],
+  ['series_key', 'TEXT'],
+  ['part_index', 'INTEGER'],
+  ['part_count', 'INTEGER'],
+  ['truncated', 'INTEGER NOT NULL DEFAULT 0'],
+]
+
+function addTopicStoryColumns(db: Database): void {
+  if (!tableExists(db, 'topics')) return
+  for (const [column, type] of TOPIC_STORY_COLUMNS) {
+    if (hasColumn(db, 'topics', column)) continue
+    db.exec(`ALTER TABLE topics ADD COLUMN ${column} ${type}`)
+  }
+  // Only after every column above exists. IF NOT EXISTS makes both idempotent,
+  // and neither can fail on data the way a UNIQUE index could.
+  db.exec('CREATE INDEX IF NOT EXISTS ix_topics_job ON topics (job_id)')
+  db.exec('CREATE INDEX IF NOT EXISTS ix_topics_series ON topics (series_key, part_index)')
+}
+
 /**
  * Idempotent post-schema migration for changes CREATE TABLE IF NOT EXISTS
  * cannot express against an existing database: SQLite cannot ALTER a CHECK
@@ -191,4 +221,5 @@ export function migrate(
   }
   // After the rebuild: a rebuilt table is a new table with no indexes on it.
   ensureLivePublishIndex(db, onWarn)
+  addTopicStoryColumns(db)
 }

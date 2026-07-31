@@ -10,8 +10,10 @@ import {
   markTopicUsedByJob,
   RECENT_TITLES_LIMIT,
   recentTopicTitles,
+  redditCandidates,
   rejectTopics,
   requeueTopic,
+  storyPartForJob,
 } from '../topics.js'
 import { memDb } from '../../testing/db.js'
 
@@ -409,6 +411,11 @@ describe('listTopics', () => {
       source: 'rss:example.com',
       url: 'https://example.com/new',
       targetUrl: null,
+      bodyText: null,
+      seriesKey: null,
+      partIndex: null,
+      partCount: null,
+      truncated: false,
       dedupeHash: 'h-new',
       score: 91,
       reason: 'hooky',
@@ -471,5 +478,111 @@ describe('eligibleTopic', () => {
     expect(eligibleTopic(db, 'chan-a')?.title).toBe('earlier')
     expect(eligibleTopic(db, 'chan-b')).toBeNull()
     db.close()
+  })
+})
+
+describe('insertTopics story columns', () => {
+  it('round-trips the story fields', () => {
+    const db = memDb()
+    insertTopics(db, [
+      {
+        channel: 'aita',
+        title: 'She blended the fruit (1/2)',
+        rawTitle: 'AITA for not apologizing?',
+        source: 'reddit:r/AmItheAsshole',
+        url: 'https://reddit.com/r/AmItheAsshole/comments/abc/',
+        dedupeHash: 'hash-p1',
+        score: 88,
+        reason: 'strong conflict',
+        status: 'candidate',
+        bodyText: 'One month ago I hosted a movie night.',
+        seriesKey: 'series-abc',
+        partIndex: 1,
+        partCount: 2,
+      },
+    ])
+    const [row] = redditCandidates(db, 'aita')
+    expect(row.bodyText).toBe('One month ago I hosted a movie night.')
+    expect(row.seriesKey).toBe('series-abc')
+    expect(row.partIndex).toBe(1)
+    expect(row.partCount).toBe(2)
+  })
+
+  it('leaves the story fields null for a topic-mode row', () => {
+    const db = memDb()
+    insertTopics(db, [
+      {
+        channel: 'space',
+        title: 'Voyager 1 phones home',
+        rawTitle: 'Voyager 1 phones home',
+        source: 'reddit:r/space',
+        url: 'https://reddit.com/r/space/comments/def/',
+        dedupeHash: 'hash-plain',
+        score: 90,
+        reason: 'on niche',
+        status: 'candidate',
+      },
+    ])
+    const [row] = redditCandidates(db, 'space')
+    expect(row.bodyText).toBeNull()
+    expect(row.seriesKey).toBeNull()
+    expect(row.partIndex).toBeNull()
+    expect(row.partCount).toBeNull()
+  })
+})
+
+describe('storyPartForJob', () => {
+  it('returns the story payload for a job bound to a story topic', () => {
+    const db = memDb()
+    insertTopics(db, [
+      {
+        channel: 'aita',
+        title: 'She blended the fruit (2/3)',
+        rawTitle: 'AITA for not apologizing?',
+        source: 'reddit:r/AmItheAsshole',
+        url: 'https://reddit.com/r/AmItheAsshole/comments/abc/',
+        dedupeHash: 'hash-p2',
+        score: 88,
+        reason: 'strong conflict',
+        status: 'candidate',
+        bodyText: 'Then she called my mother.',
+        seriesKey: 'series-abc',
+        partIndex: 2,
+        partCount: 3,
+      },
+    ])
+    const [topic] = redditCandidates(db, 'aita')
+    expect(claimTopic(db, topic.id, 'job-xyz')).toBe(true)
+    expect(storyPartForJob(db, 'job-xyz')).toEqual({
+      bodyText: 'Then she called my mother.',
+      partIndex: 2,
+      partCount: 3,
+      sourceUrl: 'https://reddit.com/r/AmItheAsshole/comments/abc/',
+      truncated: false,
+    })
+  })
+
+  it('returns null for a job with no topic row', () => {
+    expect(storyPartForJob(memDb(), 'job-none')).toBeNull()
+  })
+
+  it('returns null for a job bound to a topic-mode topic', () => {
+    const db = memDb()
+    insertTopics(db, [
+      {
+        channel: 'space',
+        title: 'Voyager 1 phones home',
+        rawTitle: 'Voyager 1 phones home',
+        source: 'reddit:r/space',
+        url: 'https://reddit.com/r/space/comments/def/',
+        dedupeHash: 'hash-plain',
+        score: 90,
+        reason: 'on niche',
+        status: 'candidate',
+      },
+    ])
+    const [topic] = redditCandidates(db, 'space')
+    claimTopic(db, topic.id, 'job-plain')
+    expect(storyPartForJob(db, 'job-plain')).toBeNull()
   })
 })

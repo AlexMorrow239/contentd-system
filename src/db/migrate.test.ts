@@ -503,3 +503,107 @@ describe('migrate — one live publish row per (job, platform)', () => {
     second.close()
   })
 })
+
+// The topics shape after target_url exists but before the story columns did
+// — the actual predecessor state this step migrates from. A bare topics-only
+// table (as opposed to topicsDb's CURRENT_SHAPE_NO_INDEX + ddl) would make
+// migrate's OTHER steps (oauth_tokens.expires_at, publishes) throw on missing
+// tables before this step ever runs.
+const TOPICS_PRE_STORY = `
+CREATE TABLE topics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel TEXT NOT NULL, title TEXT NOT NULL,
+  raw_title TEXT NOT NULL, source TEXT NOT NULL,
+  url TEXT NOT NULL, target_url TEXT, dedupe_hash TEXT NOT NULL,
+  score INTEGER NOT NULL, reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'candidate'
+    CHECK (status IN ('candidate','claimed','used','rejected')),
+  job_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  UNIQUE (channel, dedupe_hash)
+);
+`
+
+describe('addTopicStoryColumns', () => {
+  it('adds the story columns to a topics table that predates them', () => {
+    // CURRENT_SHAPE_NO_INDEX carries the publishes and oauth_tokens tables
+    // migrate's other steps read, so this test exercises only the story-columns
+    // step against a database that is otherwise already current — the same
+    // shape the 'migrate — topics.target_url' describe block above uses via
+    // its own topicsDb() helper.
+    const dir = tmpDir('brainrot-migrate-')
+    cleanupDirs.push(dir)
+    const db = new BetterSqlite3(join(dir, 'test.db'))
+    db.pragma('foreign_keys = OFF')
+    db.exec(CURRENT_SHAPE_NO_INDEX + TOPICS_PRE_STORY)
+    db.prepare(
+      "INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) " +
+        "VALUES ('space','t','t','reddit:r/space','u','h',90,'r')",
+    ).run()
+
+    migrate(db, SCHEMA_SQL)
+
+    const cols = (db.prepare('PRAGMA table_info(topics)').all() as { name: string }[]).map(
+      (c) => c.name,
+    )
+    expect(cols).toContain('body_text')
+    expect(cols).toContain('series_key')
+    expect(cols).toContain('part_index')
+    expect(cols).toContain('part_count')
+    expect(cols).toContain('truncated')
+    // The pre-existing row survives with nulls and a zero default.
+    const row = db.prepare('SELECT body_text, truncated FROM topics').get() as {
+      body_text: string | null
+      truncated: number
+    }
+    expect(row.body_text).toBeNull()
+    expect(row.truncated).toBe(0)
+    // Both indexes exist, which is only possible if they were created AFTER
+    // the columns — schema.sql cannot carry them for exactly that reason.
+    const indexes = (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'topics'")
+        .all() as { name: string }[]
+    ).map((i) => i.name)
+    expect(indexes).toContain('ix_topics_job')
+    expect(indexes).toContain('ix_topics_series')
+    db.close()
+  })
+
+  it('does not wedge openDb on a database predating the story columns', () => {
+    // The regression this guards: putting the story indexes in schema.sql
+    // throws here, because openDb execs schema.sql BEFORE migrate adds the
+    // columns they reference — and that failure takes out every CLI command,
+    // not just one.
+    const dir = tmpDir('migrate-openDb')
+    cleanupDirs.push(dir)
+    const dbPath = join(dir, 'brainrot.db')
+    const old = new BetterSqlite3(dbPath)
+    old.exec(`CREATE TABLE topics (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      channel TEXT NOT NULL, title TEXT NOT NULL,
+      raw_title TEXT NOT NULL, source TEXT NOT NULL,
+      url TEXT NOT NULL, target_url TEXT, dedupe_hash TEXT NOT NULL,
+      score INTEGER NOT NULL, reason TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'candidate',
+      job_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      UNIQUE (channel, dedupe_hash)
+    )`)
+    old.close()
+
+    const db = openDb(dbPath)
+    expect(
+      (db.prepare('PRAGMA table_info(topics)').all() as { name: string }[]).map((c) => c.name),
+    ).toContain('series_key')
+    db.close()
+  })
+
+  it('is a no-op on a database that already has them', () => {
+    const db = new BetterSqlite3(':memory:')
+    db.exec(SCHEMA_SQL)
+    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+    db.close()
+  })
+})

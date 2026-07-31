@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import type { StoryPart } from '../stories/types.js'
 
 export type TopicStatus = 'candidate' | 'claimed' | 'used' | 'rejected'
 
@@ -13,6 +14,17 @@ export interface TopicRow {
   // which is its comments permalink. Null for RSS items (no submission) and
   // for rows written before the column existed.
   targetUrl: string | null
+  /**
+   * Story mode only — null on topic-mode rows. `bodyText` is the narratable
+   * text of THIS part; `seriesKey` groups one post's parts; `partIndex` is
+   * 1-based.
+   */
+  bodyText: string | null
+  seriesKey: string | null
+  partIndex: number | null
+  partCount: number | null
+  /** Whether the series this part belongs to was cut short by max_parts. */
+  truncated: boolean
   dedupeHash: string
   score: number
   reason: string
@@ -30,6 +42,11 @@ export interface NewTopic {
   source: string
   url: string
   targetUrl?: string
+  bodyText?: string
+  seriesKey?: string
+  partIndex?: number
+  partCount?: number
+  truncated?: boolean
   dedupeHash: string
   score: number
   reason: string
@@ -37,7 +54,8 @@ export interface NewTopic {
 }
 
 const TOPIC_COLUMNS =
-  'id, channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status, job_id, created_at'
+  'id, channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status, ' +
+  'job_id, body_text, series_key, part_index, part_count, truncated, created_at'
 
 interface DbTopicRow {
   id: number
@@ -52,6 +70,11 @@ interface DbTopicRow {
   reason: string
   status: TopicStatus
   job_id: string | null
+  body_text: string | null
+  series_key: string | null
+  part_index: number | null
+  part_count: number | null
+  truncated: number
   created_at: string
 }
 
@@ -64,6 +87,11 @@ function toTopicRow(row: DbTopicRow): TopicRow {
     source: row.source,
     url: row.url,
     targetUrl: row.target_url,
+    bodyText: row.body_text,
+    seriesKey: row.series_key,
+    partIndex: row.part_index,
+    partCount: row.part_count,
+    truncated: row.truncated === 1,
     dedupeHash: row.dedupe_hash,
     score: row.score,
     reason: row.reason,
@@ -78,8 +106,9 @@ function toTopicRow(row: DbTopicRow): TopicRow {
 // a mid-run crash loses the whole batch, never half of it.
 export function insertTopics(db: Database, rows: NewTopic[]): number {
   const stmt = db.prepare(
-    'INSERT OR IGNORE INTO topics (channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT OR IGNORE INTO topics (channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status, ' +
+      'body_text, series_key, part_index, part_count, truncated) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   )
   const insertAll = db.transaction((batch: NewTopic[]) => {
     let inserted = 0
@@ -95,6 +124,11 @@ export function insertTopics(db: Database, rows: NewTopic[]): number {
         t.score,
         t.reason,
         t.status,
+        t.bodyText ?? null,
+        t.seriesKey ?? null,
+        t.partIndex ?? null,
+        t.partCount ?? null,
+        t.truncated === true ? 1 : 0,
       ).changes
     }
     return inserted
@@ -289,4 +323,38 @@ export function eligibleTopic(db: Database, channel: string): TopicRow | null {
     )
     .get(channel) as DbTopicRow | undefined
   return row === undefined ? null : toTopicRow(row)
+}
+
+/**
+ * The story payload for a job, resolved through the topic row `claimTopic`
+ * bound to it. Null for a topic-mode job, for a manual `brainrot produce` job
+ * (no topic row at all), and for a story row missing its body — all three are
+ * the same thing to the caller: run the ordinary script path.
+ *
+ * This is how the payload survives a resume without any new `jobs` column:
+ * the topic row outlives the run, and runJob reads it fresh every time.
+ */
+export function storyPartForJob(db: Database, jobId: string): StoryPart | null {
+  const row = db
+    .prepare(
+      'SELECT body_text, part_index, part_count, url, truncated FROM topics WHERE job_id = ?',
+    )
+    .get(jobId) as
+    | {
+        body_text: string | null
+        part_index: number | null
+        part_count: number | null
+        url: string
+        truncated: number
+      }
+    | undefined
+  if (row === undefined) return null
+  if (row.body_text === null || row.part_index === null || row.part_count === null) return null
+  return {
+    bodyText: row.body_text,
+    partIndex: row.part_index,
+    partCount: row.part_count,
+    sourceUrl: row.url,
+    truncated: row.truncated === 1,
+  }
 }

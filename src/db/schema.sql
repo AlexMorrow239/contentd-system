@@ -51,9 +51,25 @@ CREATE TABLE IF NOT EXISTS topics (
   status TEXT NOT NULL DEFAULT 'candidate'
     CHECK (status IN ('candidate','claimed','used','rejected')),
   job_id TEXT,
+  -- Story mode (channels with a [story] table): one row per PART of one
+  -- reddit self post. body_text is the narratable text of this part alone;
+  -- series_key groups the parts of one post; part_index is 1-based; truncated
+  -- marks a series cut short by max_parts, so the final part appends a pointer
+  -- to the source. All null for topic-mode rows and for every row written
+  -- before story mode existed.
+  body_text TEXT, series_key TEXT, part_index INTEGER, part_count INTEGER,
+  truncated INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   UNIQUE (channel, dedupe_hash)
 );
+-- The two story indexes are created by db/migrate.ts, NOT here, for the same
+-- reason as ux_publishes_live: openDb execs this file BEFORE calling migrate,
+-- so an index over series_key/part_index would throw on every EXISTING
+-- database — the columns above only reach one via migrate's ALTER TABLE. A
+-- failure here wedges the whole CLI, not one command. They are named here so
+-- this file still reads as the complete shape:
+--   CREATE INDEX ix_topics_job    ON topics (job_id);
+--   CREATE INDEX ix_topics_series ON topics (series_key, part_index);
 CREATE TABLE IF NOT EXISTS leases (
   name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at TEXT NOT NULL
 );
