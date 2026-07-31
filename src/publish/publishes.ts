@@ -356,6 +356,19 @@ export function channelVideoCandidates(
   // `platform IN ()` is a syntax error, and the answer is [] regardless.
   if (platforms.length === 0) return []
   const platformParams = platforms.map(() => '?').join(', ')
+  // The series tiebreak (second ORDER BY term below) sits between the
+  // poison-video term and recency: a continuation part (part_index > 1)
+  // outranks unrelated videos so an in-flight series drains contiguously,
+  // while part 1 of a new story is an ordinary video. It reads part_index via
+  // a correlated scalar subquery rather than a LEFT JOIN topics in the main
+  // FROM clause: topics.job_id carries no unique constraint, so a join there
+  // would duplicate a library row for any job with more than one topics row,
+  // double-counting it as a candidate. ORDER BY t.id LIMIT 1 picks the first
+  // such row deterministically, the same "first row wins" resolution used
+  // elsewhere in this codebase for this same non-unique join (Task 5).
+  // COALESCE is load-bearing too: a bare "part_index > 1" comparison is NULL
+  // for every topic-mode row, and SQLite sorts NULL FIRST under DESC, which
+  // would hand non-story videos the priority instead of denying it to them.
   const rows = db
     .prepare(
       `SELECT l.job_id AS jobId, l.video_path AS videoPath,
@@ -383,7 +396,9 @@ export function channelVideoCandidates(
                                        AND p.created_at > l.created_at
                                        AND p.created_at <= ?))
              AND COALESCE(blk.blockedCount, 0) < ?
-       ORDER BY COALESCE(agg.failedCount, 0) ASC, l.created_at DESC, l.job_id ASC
+       ORDER BY COALESCE(agg.failedCount, 0) ASC,
+                (COALESCE((SELECT t.part_index FROM topics t WHERE t.job_id = l.job_id ORDER BY t.id LIMIT 1), 1) > 1) DESC,
+                l.created_at DESC, l.job_id ASC
        LIMIT ?`,
     )
     .all(
@@ -424,6 +439,51 @@ export function channelVideoCandidates(
     const list = blockedByJob.get(b.jobId) ?? []
     list.push(b.platform)
     blockedByJob.set(b.jobId, list)
+  }
+
+  // Ordered series: a part may not publish to a platform until its predecessor
+  // has. Computed here rather than inside the aggregate above, which is dense
+  // and load-bearing; two small reads plus a set difference is easier to
+  // verify and leaves the settled predicate untouched.
+  //
+  // Fails OPEN when the predecessor topic row is missing entirely (it should
+  // never be — parts insert in one transaction): an unexpected gap publishes a
+  // part early, which is recoverable, rather than wedging the series forever.
+  const predecessors = db
+    .prepare(
+      `SELECT t.job_id AS jobId, prev.job_id AS prevJobId
+       FROM topics t
+       JOIN topics prev ON prev.channel = t.channel
+                       AND prev.series_key = t.series_key
+                       AND prev.part_index = t.part_index - 1
+       WHERE t.part_index > 1 AND t.job_id IN (${jobParams})`,
+    )
+    .all(...rows.map((r) => r.jobId)) as { jobId: string; prevJobId: string | null }[]
+
+  if (predecessors.length > 0) {
+    const prevIds = predecessors.map((p) => p.prevJobId).filter((id): id is string => id !== null)
+    const donePairs = new Set<string>()
+    if (prevIds.length > 0) {
+      const donePlaceholders = prevIds.map(() => '?').join(', ')
+      const done = db
+        .prepare(
+          `SELECT job_id AS jobId, platform FROM publishes
+           WHERE status = 'done' AND job_id IN (${donePlaceholders})`,
+        )
+        .all(...prevIds) as { jobId: string; platform: Platform }[]
+      for (const d of done) donePairs.add(`${d.jobId}\n${d.platform}`)
+    }
+    for (const { jobId, prevJobId } of predecessors) {
+      // A predecessor that has no job yet (still queued as a topic) has
+      // published nowhere, so every platform is blocked.
+      const blocked = platforms.filter(
+        (p) => prevJobId === null || !donePairs.has(`${prevJobId}\n${p}`),
+      )
+      if (blocked.length === 0) continue
+      const list = blockedByJob.get(jobId) ?? []
+      for (const p of blocked) if (!list.includes(p)) list.push(p)
+      blockedByJob.set(jobId, list)
+    }
   }
 
   return rows.map((row) => ({

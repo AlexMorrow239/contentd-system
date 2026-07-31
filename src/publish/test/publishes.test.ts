@@ -1,4 +1,6 @@
+import type { Database } from 'better-sqlite3'
 import { describe, expect, it, vi } from 'vitest'
+import { claimTopic, insertTopics, redditCandidates } from '../../scout/topics.js'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPublish } from '../../testing/db.js'
 import { DAY_MS, isoAgo, recordTransactionModes } from './_publishes.fixtures.js'
 import {
@@ -1274,5 +1276,121 @@ describe('markInterruptedDone', () => {
       ).state,
     ).toBe('ready')
     db.close()
+  })
+})
+
+describe('channelVideoCandidates series ordering', () => {
+  // Builds a two-part series: job p1 and job p2, both with ready library rows.
+  function seedSeries(db: Database): { p1: string; p2: string } {
+    const p1 = 'job-p1'
+    const p2 = 'job-p2'
+    seedJob(db, p1, { channel: 'aita', topic: 'Story (1/2)' })
+    seedJob(db, p2, { channel: 'aita', topic: 'Story (2/2)' })
+    seedLibrary(db, p1, { state: 'ready' })
+    seedLibrary(db, p2, { state: 'ready' })
+    insertTopics(db, [
+      {
+        channel: 'aita',
+        title: 'Story (1/2)',
+        rawTitle: 'S',
+        source: 'reddit:r/a',
+        url: 'u',
+        dedupeHash: 'h1',
+        score: 88,
+        reason: 'r',
+        status: 'candidate',
+        bodyText: 'a',
+        seriesKey: 'S',
+        partIndex: 1,
+        partCount: 2,
+      },
+      {
+        channel: 'aita',
+        title: 'Story (2/2)',
+        rawTitle: 'S',
+        source: 'reddit:r/a',
+        url: 'u',
+        dedupeHash: 'h2',
+        score: 88,
+        reason: 'r',
+        status: 'candidate',
+        bodyText: 'b',
+        seriesKey: 'S',
+        partIndex: 2,
+        partCount: 2,
+      },
+    ])
+    const rows = redditCandidates(db, 'aita')
+    claimTopic(db, rows[0].id, p1)
+    claimTopic(db, rows[1].id, p2)
+    return { p1, p2 }
+  }
+
+  it('blocks part 2 on a platform until part 1 is done there', () => {
+    const db = memDb()
+    const { p1, p2 } = seedSeries(db)
+    const found = channelVideoCandidates(db, 'aita', ['youtube'], 50, '1970-01-01T00:00:00.000Z')
+    const part2 = found.find((v) => v.jobId === p2)
+    const part1 = found.find((v) => v.jobId === p1)
+    expect(part1?.blockedPlatforms).toEqual([])
+    expect(part2?.blockedPlatforms).toEqual(['youtube'])
+  })
+
+  it('unblocks part 2 once part 1 has a done row', () => {
+    const db = memDb()
+    const { p1, p2 } = seedSeries(db)
+    seedPublish(db, p1, { platform: 'youtube', channel: 'aita', status: 'done' })
+    const found = channelVideoCandidates(db, 'aita', ['youtube'], 50, '1970-01-01T00:00:00.000Z')
+    expect(found.find((v) => v.jobId === p2)?.blockedPlatforms).toEqual([])
+  })
+
+  it('gates each platform independently', () => {
+    const db = memDb()
+    const { p1, p2 } = seedSeries(db)
+    // Part 1 published to youtube only: the series continues there and stalls
+    // on instagram.
+    seedPublish(db, p1, { platform: 'youtube', channel: 'aita', status: 'done' })
+    const found = channelVideoCandidates(
+      db,
+      'aita',
+      ['youtube', 'instagram'],
+      50,
+      '1970-01-01T00:00:00.000Z',
+    )
+    expect(found.find((v) => v.jobId === p2)?.blockedPlatforms).toEqual(['instagram'])
+  })
+
+  it('keeps part 2 blocked when part 1 only failed', () => {
+    const db = memDb()
+    const { p1, p2 } = seedSeries(db)
+    seedPublish(db, p1, {
+      platform: 'youtube',
+      channel: 'aita',
+      status: 'failed',
+      errorKind: 'rejected',
+    })
+    const found = channelVideoCandidates(db, 'aita', ['youtube'], 50, '1970-01-01T00:00:00.000Z')
+    expect(found.find((v) => v.jobId === p2)?.blockedPlatforms).toEqual(['youtube'])
+  })
+
+  it('sorts a continuation part ahead of an unrelated newer video', () => {
+    const db = memDb()
+    const { p1, p2 } = seedSeries(db)
+    seedPublish(db, p1, { platform: 'youtube', channel: 'aita', status: 'done' })
+    // An unrelated, NEWER standalone video. created_at DESC alone would put it
+    // first; the series tiebreak must not let it interrupt the story.
+    seedJob(db, 'job-solo', { channel: 'aita', topic: 'Unrelated' })
+    seedLibrary(db, 'job-solo', { state: 'ready', createdAt: '2099-01-01T00:00:00.000Z' })
+    const found = channelVideoCandidates(db, 'aita', ['youtube'], 50, '1970-01-01T00:00:00.000Z')
+    expect(found[0].jobId).toBe(p2)
+  })
+
+  it('leaves topic-mode videos unaffected', () => {
+    const db = memDb()
+    seedJob(db, 'job-plain', { channel: 'space', topic: 'Voyager' })
+    seedLibrary(db, 'job-plain', { state: 'ready' })
+    const found = channelVideoCandidates(db, 'space', ['youtube'], 50, '1970-01-01T00:00:00.000Z')
+    expect(found).toHaveLength(1)
+    expect(found[0].blockedPlatforms).toEqual([])
   })
 })
