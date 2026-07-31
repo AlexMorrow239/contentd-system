@@ -2,7 +2,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { promises as fs } from 'node:fs'
 import type Anthropic from '@anthropic-ai/sdk'
 import { BudgetExceededError } from '../../jobs/costs.js'
-import { createScriptStage, ESTIMATED_SCRIPT_COST_MICROS, STORY_META_PREVIEW_WORDS } from '../script.js'
+import {
+  createScriptStage,
+  ESTIMATED_SCRIPT_COST_MICROS,
+  ESTIMATED_STORY_META_COST_MICROS,
+  STORY_META_PREVIEW_WORDS,
+} from '../script.js'
 import type { ScriptOutput } from '../script.js'
 import { testChannel, PLATFORM_META } from '../../testing/channel.js'
 import { makeCtx } from '../../testing/job.js'
@@ -173,13 +178,18 @@ describe('createScriptStage story mode', () => {
   })
 
   it('includes a sanitized, bounded opening preview in the metadata prompt', async () => {
+    const prefix = 'He said he would kill me. '
+    // Counted, not assumed: the preview is a word count over the WHOLE
+    // sanitized body, so the cut point for the `wordN` tail below has to
+    // account for the prefix's own word count rather than starting at 0.
+    const prefixWordCount = prefix.trim().split(/\s+/).length
     const longBody = Array.from({ length: STORY_META_PREVIEW_WORDS + 20 }, (_, i) => `word${i}`).join(
       ' ',
     )
     const { client, create } = fakeClient(META)
     const ctx = makeCtx({
       topic: 'AITA for X? (1/3)',
-      story: { ...story, bodyText: `He said he would kill me. ${longBody}` },
+      story: { ...story, bodyText: `${prefix}${longBody}` },
     })
     await createScriptStage(client).run(ctx)
 
@@ -187,11 +197,27 @@ describe('createScriptStage story mode', () => {
     // Sanitized: the raw flagged word is gone, the euphemism is present.
     expect(sentPrompt).not.toContain('kill me')
     expect(sentPrompt).toContain('unalive me')
-    // Bounded: only the first STORY_META_PREVIEW_WORDS words of the long tail
-    // are present, truncated with an ellipsis rather than the full body.
+    // Bounded: only the first STORY_META_PREVIEW_WORDS words of the whole
+    // sanitized body are present, truncated with an ellipsis rather than the
+    // full body. Pinned at the real cut point (not just "some bound <= 60"):
+    // the LAST included word and the FIRST excluded one are both asserted, so
+    // an off-by-one slice would fail this even though a "word0 present" check
+    // alone would not.
+    const lastIncludedIndex = STORY_META_PREVIEW_WORDS - prefixWordCount - 1
+    const firstExcludedIndex = STORY_META_PREVIEW_WORDS - prefixWordCount
     expect(sentPrompt).toContain('word0')
-    expect(sentPrompt).not.toContain(`word${STORY_META_PREVIEW_WORDS}`)
+    expect(sentPrompt).toContain(`word${lastIncludedIndex}`)
+    expect(sentPrompt).not.toContain(`word${firstExcludedIndex}`)
     expect(sentPrompt).toContain('…')
+  })
+
+  it('does not ellipsize a preview shorter than the word cap', async () => {
+    const { client, create } = fakeClient(META)
+    // story.bodyText is well under STORY_META_PREVIEW_WORDS words.
+    const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
+    await createScriptStage(client).run(ctx)
+    const sentPrompt = JSON.stringify(create.mock.calls[0][0])
+    expect(sentPrompt).not.toContain('…')
   })
 
   it('sanitizes returned platformMeta title and description, but not hashtags', async () => {
@@ -248,6 +274,86 @@ describe('createScriptStage story mode', () => {
     expect(artifact.hook).toBe('Part two.')
   })
 
+  it('spells the continuation hook out as a bare number past the spelled-out word list', async () => {
+    // PART_WORDS only spells one..eight; max_parts is bounded by
+    // videos_per_day x backlog_days, so a channel config can legitimately
+    // reach a part index past that list.
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'AITA for X? (9/10)',
+      story: { ...story, partIndex: 9, partCount: 10 },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    expect(artifact.hook).toBe('Part 9.')
+  })
+
+  it('does not strip a trailing ratio that is not this part\'s own suffix', async () => {
+    // A title can legitimately end in something that looks like a queue
+    // ratio ("My rent split was (1/3)") without it being the scout's own
+    // `(partIndex/partCount)` suffix. Here the part is a standalone single
+    // part (1/1), so its own suffix would be "(1/1)" -- the "(1/3)" in the
+    // topic does not match it and must be left alone rather than stripped.
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'My rent split was (1/3)',
+      story: { ...story, partIndex: 1, partCount: 1 },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    expect(artifact.hook).toBe('My rent split was (1/3)')
+  })
+
+  it('throws BudgetExceededError before calling the API when over budget', async () => {
+    const ctx = makeCtx({
+      channel: testChannel({ budget: { perVideoUsdMicros: 1, perDayUsdMicros: 1 } }),
+      topic: 'AITA for X? (1/3)',
+      story,
+    })
+    const { client, create } = fakeClient({})
+    await expect(createScriptStage(client).run(ctx)).rejects.toBeInstanceOf(BudgetExceededError)
+    expect(create).not.toHaveBeenCalled()
+    expect(ESTIMATED_STORY_META_COST_MICROS).toBeGreaterThan(1)
+  })
+
+  it('records one costs row for a successful run, at the haiku rate', async () => {
+    // STORY_META_MODEL is claude-haiku-4-5: $1/MTok in, $5/MTok out (see
+    // PRICE_TABLE in providers/anthropic.ts) -- distinct from topic mode's
+    // sonnet rate, so this pins the story path's own ledger entry rather
+    // than reusing the topic-mode pricing by coincidence.
+    const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
+    const { client } = fakeClient({
+      content: META.content,
+      usage: { input_tokens: 100, output_tokens: 200 },
+    })
+    await createScriptStage(client).run(ctx)
+    const rows = ctx.db
+      .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
+      .all(ctx.jobId)
+    expect(rows).toEqual([
+      { provider: 'anthropic', operation: 'script', usd_micros: 100 * 1 + 200 * 5 },
+    ])
+  })
+
+  it('ledgers the paid cost on a schema-invalid metadata response, then rejects', async () => {
+    const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
+    const { client } = fakeClient({
+      content: [{ type: 'tool_use', id: 't1', name: 'emit', input: { platformMeta: {} } }], // invalid: missing platforms
+      usage: { input_tokens: 50, output_tokens: 60 },
+    })
+    await expect(createScriptStage(client).run(ctx)).rejects.toThrow()
+    const rows = ctx.db
+      .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
+      .all(ctx.jobId)
+    expect(rows).toEqual([
+      { provider: 'anthropic', operation: 'script', usd_micros: 50 * 1 + 60 * 5 },
+    ])
+  })
+
   it('appends the outro only on the final part of a truncated series', async () => {
     const { client } = fakeClient(META)
     const ctx = makeCtx({
@@ -273,6 +379,39 @@ describe('createScriptStage story mode', () => {
     expect(last).not.toContain('linked in the description')
   })
 
+  it('omits the outro on a truncated but non-final part', async () => {
+    // Only the LAST part of a series says the story continues elsewhere — an
+    // earlier truncated part still has more of the video coming right after it.
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'AITA for X? (1/3)',
+      story: { ...story, partIndex: 1, partCount: 3, truncated: true },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    const last = artifact.segments[artifact.segments.length - 1].text
+    expect(last).not.toContain('linked in the description')
+  })
+
+  it('appends the outro on a truncated single-part story', async () => {
+    // partCount === 1 is still "the last part of the series" — a whole story
+    // cut short in one video needs the outro exactly like a truncated final
+    // part of a multi-part series does.
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'AITA for X?',
+      story: { ...story, partIndex: 1, partCount: 1, truncated: true },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    const last = artifact.segments[artifact.segments.length - 1].text
+    expect(last).toBe('The full story is linked in the description.')
+  })
+
   it('puts the permalink in every platform description on a truncated series', async () => {
     const { client } = fakeClient(META)
     const ctx = makeCtx({
@@ -294,6 +433,15 @@ describe('createScriptStage story mode', () => {
       description: 'She said she would kill me before it ended.',
       hashtags: ['#drama'],
     }
+    // The slug itself must contain a flagged token in a form the \b-anchored
+    // PATTERN actually matches (a hyphenated word boundary), so this test can
+    // discriminate ordering. Real reddit slugs use underscores between words,
+    // and \b does not fire between word characters (underscore counts as one)
+    // — so in practice this ordering is belt-and-braces rather than a live
+    // hazard against real permalinks. The hyphenated form here is a
+    // deliberate stand-in that pins the ordering anyway.
+    const sourceUrl =
+      'https://reddit.com/r/AmItheAsshole/comments/abc/aita-for-saying-i-would-kill-her-cat/'
     const { client } = fakeClient({
       content: [
         {
@@ -309,7 +457,7 @@ describe('createScriptStage story mode', () => {
     })
     const ctx = makeCtx({
       topic: 'AITA for X? (3/3)',
-      story: { ...story, partIndex: 3, partCount: 3, truncated: true },
+      story: { ...story, partIndex: 3, partCount: 3, truncated: true, sourceUrl },
     })
     await createScriptStage(client).run(ctx)
     const artifact = JSON.parse(
@@ -317,10 +465,11 @@ describe('createScriptStage story mode', () => {
     ) as ScriptOutput
     for (const platform of ['youtube', 'tiktok', 'instagram'] as const) {
       const description = artifact.platformMeta[platform].description
-      // The URL is appended intact after sanitization, so it must survive as
-      // the exact trailing substring rather than being run back through the
-      // substitution map itself.
-      expect(description.endsWith(`Full story: ${story.sourceUrl}`)).toBe(true)
+      // The URL must be appended intact and unsanitized: if the sanitize loop
+      // ran AFTER the append instead of before, this exact trailing substring
+      // would instead end "...i-would-unalive-her-cat/", failing this
+      // character-for-character check.
+      expect(description.endsWith(`Full story: ${sourceUrl}`)).toBe(true)
       expect(description).toContain('unalive me')
       expect(description).not.toContain('kill me')
     }

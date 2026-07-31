@@ -61,17 +61,25 @@ const STORY_VISUAL = 'story background'
 
 /**
  * The spoken opener. Part 1 uses the post's own title, which in this genre is
- * already the hook ("AITA for blocking a car in?"); the `(1/3)` suffix the
- * scout appended for the queue is stripped, since it is not speech. Later
- * parts get a short continuation line so voice.ts's HOOK_PAUSE_MS lands
+ * already the hook ("AITA for blocking a car in?"); the queue's own
+ * `(1/3)` suffix is stripped, since it is not speech — but only when it
+ * matches THIS part's own partIndex/partCount, so a title that legitimately
+ * ends in a non-matching ratio ("My rent split was (1/3)") is left intact.
+ * Later parts get a short continuation line so voice.ts's HOOK_PAUSE_MS lands
  * naturally before the narration resumes.
+ *
+ * Sanitized like the body: the hook is TTS-synthesized and caption-aligned
+ * exactly like every segment (narrationText() is hook + segments), so it must
+ * carry the same substitutions the body does or the video's first spoken line
+ * and first on-screen caption ship a raw flagged word.
  */
 function storyHook(topic: string, part: StoryPart): string {
   if (part.partIndex > 1) {
     const word = PART_WORDS[part.partIndex] ?? String(part.partIndex)
     return `Part ${word}.`
   }
-  return topic.replace(/\s*\(\d+\/\d+\)\s*$/, '').trim()
+  const ownSuffix = new RegExp(`\\s*\\(${part.partIndex}/${part.partCount}\\)\\s*$`)
+  return sanitizeStory(topic.replace(ownSuffix, '').trim())
 }
 
 /**
@@ -232,10 +240,16 @@ async function runStoryScript(
   // Published metadata and spoken audio must agree: title/description ship on
   // YouTube/Instagram as text a viewer reads, so a raw flagged word here while
   // the narration speaks the euphemism is exactly the mismatch platform
-  // moderation compares against. hashtags are left alone — they are lowercase
-  // tokens, not prose, and substituting inside one produces nonsense. This
-  // runs before the permalink is appended below so the URL is never rewritten
-  // by the substitution map.
+  // moderation compares against. hashtags are left alone: sanitizeStory's
+  // PATTERN is \b-anchored, so a compound tag like #killstory or #truecrime is
+  // already safe from an accidental mid-word hit — only a whole-word tag like
+  // #kill would ever match. The real reason to exclude hashtags is that
+  // substituting inside one produces a broken hyphenated tag ("#suicide" ->
+  // "#self-deletion"), not that matching risks nonsense inside a compound.
+  // Accepted consequence: a whole-word tag like #kill still publishes
+  // unsubstituted while the audio says the euphemism. This runs before the
+  // permalink is appended below so the URL is never rewritten by the
+  // substitution map.
   for (const entry of Object.values(platformMeta)) {
     entry.title = sanitizeStory(entry.title)
     entry.description = sanitizeStory(entry.description)
