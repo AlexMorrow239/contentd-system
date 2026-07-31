@@ -14,6 +14,7 @@ import type { ScoredCandidate } from './score.js'
 import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
 import type { NewTopic } from './topics.js'
 import { lastScoutAttemptAt, recordScoutAttempt } from './scout-state.js'
+import { splitStory, STORY_WORDS_PER_PART } from '../stories/split.js'
 
 // The one score gate. A constant, not config (design 2026-07-28): topics
 // below this are never stored, so the queue only ever holds topics worth
@@ -31,6 +32,12 @@ export interface ScoutChannelResult {
   fetched: number
   droppedMedia: number
   droppedAutomated: number
+  /**
+   * Story channels only: candidates with no narratable body (a link post, or
+   * an r/AskReddit-style title-only post whose story lives in comments the
+   * feed does not carry). Always 0 on a topic-mode channel.
+   */
+  droppedBodyless: number
   alreadyKnown: number
   scored: number
   queued: number
@@ -57,6 +64,7 @@ function emptySkippedResult(
     fetched: 0,
     droppedMedia: 0,
     droppedAutomated: 0,
+    droppedBodyless: 0,
     alreadyKnown: 0,
     scored: 0,
     queued: 0,
@@ -91,6 +99,7 @@ async function scoreWithLedger(
       candidates: fresh.map((f) => f.candidate),
       niche: channel.niche,
       recentTitles: recentTopicTitles(db, channel.name),
+      story: channel.story !== null,
       client,
     })
   } catch (err) {
@@ -199,13 +208,24 @@ export async function scoutChannel(
   // week, forever, across every subreddit that runs one.
   const usable = notMedia.filter((c) => c.automated !== true)
 
+  // Story channels narrate the post itself, so a candidate with no body is
+  // unusable no matter how good its title is — r/AskReddit's posts are all of
+  // this shape. Dropped pre-scoring, like the media filter above, so Haiku is
+  // never paid to rate one. Gated on channel.story so a topic-mode channel
+  // behaves exactly as it did before this filter existed.
+  const story = channel.story
+  const narratable =
+    story === null ? usable : usable.filter((c) => c.body !== undefined && c.body !== '')
+
   const result: ScoutChannelResult = {
     channel: channel.name,
     // fetched stays the raw count, so
-    // fetched - droppedMedia - droppedAutomated - alreadyKnown reads as scored.
+    // fetched - droppedMedia - droppedAutomated - droppedBodyless - alreadyKnown
+    // reads as scored.
     fetched: candidates.length,
     droppedMedia: candidates.length - notMedia.length,
     droppedAutomated: notMedia.length - usable.length,
+    droppedBodyless: usable.length - narratable.length,
     alreadyKnown: 0,
     scored: 0,
     queued: 0,
@@ -216,35 +236,64 @@ export async function scoutChannel(
 
   // Hash-filter BEFORE scoring: known items never reach Haiku again, so scout
   // re-runs are free and rejected topics stay rejected without re-spend.
-  const hashes = usable.map((c) => dedupeHash(c.sourceId, c.externalId))
+  const hashes = narratable.map((c) => dedupeHash(c.sourceId, c.externalId))
   const known = knownHashes(db, channel.name, hashes)
-  const fresh = usable
+  const fresh = narratable
     .map((candidate, i) => ({ candidate, hash: hashes[i] }))
     .filter((f) => !known.has(f.hash))
-  result.alreadyKnown = usable.length - fresh.length
+  result.alreadyKnown = narratable.length - fresh.length
   if (fresh.length === 0) return result
 
   result.scored = fresh.length
   const scored = await scoreWithLedger(db, channel, fresh, result, opts.client)
   result.costUsdMicros = scored.costUsdMicros
 
-  const rows: NewTopic[] = scored.scored.map((s) => {
+  // Topic mode: one row per candidate, exactly as before. Story mode: a
+  // queued candidate becomes one row PER PART, which is what makes each part
+  // an ordinary one-job-one-video unit downstream. A rejected story stays a
+  // single row — splitting it would multiply the queue's noise for no
+  // benefit, and the part hashes would never be looked up again.
+  const rows: NewTopic[] = []
+  for (const s of scored.scored) {
     const { candidate, hash } = fresh[s.candidateIndex]
-    return {
+    const status = s.score >= SCOUT_MIN_SCORE ? 'candidate' : 'rejected'
+    const base = {
       channel: channel.name,
-      title: s.topic,
       rawTitle: candidate.title,
       source: candidate.sourceId,
       url: candidate.url,
       targetUrl: candidate.targetUrl,
-      dedupeHash: hash,
       score: s.score,
       reason: s.reason,
-      // At/above SCOUT_MIN_SCORE → production queue; below → remembered
-      // rejection (the hash filter keeps it away from Haiku forever).
-      status: s.score >= SCOUT_MIN_SCORE ? 'candidate' : 'rejected',
     }
-  })
+    if (story === null || status === 'rejected' || candidate.body === undefined) {
+      rows.push({ ...base, title: s.topic, dedupeHash: hash, status })
+      continue
+    }
+    const { parts, truncated } = splitStory(candidate.body, STORY_WORDS_PER_PART, story.maxParts)
+    if (parts.length === 0) {
+      rows.push({ ...base, title: s.topic, dedupeHash: hash, status: 'rejected' })
+      continue
+    }
+    parts.forEach((bodyText, i) => {
+      const partIndex = i + 1
+      rows.push({
+        ...base,
+        // No (1/1) on a single-part story; the suffix is only meaningful when
+        // there is a part 2 to look for.
+        title: parts.length > 1 ? `${s.topic} (${partIndex}/${parts.length})` : s.topic,
+        // Suffixed on EVERY part including the first, so parts dedupe
+        // independently and the scheme is uniform.
+        dedupeHash: dedupeHash(candidate.sourceId, `${candidate.externalId}#p${partIndex}`),
+        status,
+        bodyText,
+        seriesKey: hash,
+        partIndex,
+        partCount: parts.length,
+        truncated,
+      })
+    })
+  }
   result.queued = rows.filter((r) => r.status === 'candidate').length
   result.rejected = rows.length - result.queued
   // Ledger row and dedupe hashes commit together: a kill between them would
@@ -341,6 +390,7 @@ export async function scoutAll(
         fetched: 0,
         droppedMedia: 0,
         droppedAutomated: 0,
+        droppedBodyless: 0,
         alreadyKnown: 0,
         scored: 0,
         queued: 0,

@@ -6,7 +6,8 @@ import { DEFAULT_SCOUT } from '../../config/channel.js'
 import type { ChannelConfig, ScoutConfig } from '../../config/channel.js'
 import { testChannel } from '../../testing/channel.js'
 import type { FetchLike } from '../sources/types.js'
-import { listTopics } from '../topics.js'
+import { listTopics, redditCandidates } from '../topics.js'
+import { LINK_POST_CONTENT } from '../../stories/_stories.fixtures.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
@@ -29,23 +30,44 @@ function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): 
 // <entry><id> is the t3_ fullname, exactly as reddit serves it. `target` adds
 // the entity-encoded `[link]` anchor reddit uses to name the submission
 // target — omit it and the candidate classifies 'link' (the fail-open path).
+// `body` adds a self-post SC_OFF/SC_ON span (see below); `content` embeds a
+// caller-supplied wire-shaped string verbatim (e.g. a `_stories.fixtures.ts`
+// constant, CDATA-wrapped) when neither derived shape fits.
 function redditFeed(
-  posts: { name: string; title: string; target?: string; author?: string }[],
+  posts: {
+    name: string
+    title: string
+    target?: string
+    author?: string
+    body?: string
+    content?: string
+  }[],
 ): string {
   const entries = posts
-    .map(
-      (p) => `<entry>
+    .map((p) => {
+      const contentInner = ((): string | undefined => {
+        if (p.content !== undefined) return p.content
+        if (p.body !== undefined) {
+          // The real wire shape: reddit entity-escapes the SC_OFF/SC_ON span's
+          // HTML inside <content>, so this exercises fast-xml-parser's decode
+          // step exactly like a live self post does, rather than bypassing it
+          // with CDATA.
+          const raw = `<!-- SC_OFF --><div class="md"><p>${p.body}</p></div><!-- SC_ON -->`
+          return raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        }
+        if (p.target !== undefined) {
+          return `&lt;a href=&quot;${p.target}&quot;&gt;[link]&lt;/a&gt;`
+        }
+        return undefined
+      })()
+      return `<entry>
         <author><name>${p.author ?? '/u/someone'}</name></author>
         <id>${p.name}</id>
         <link href="https://www.reddit.com/r/space/comments/${p.name}/" />
         <title>${p.title}</title>
-        ${
-          p.target === undefined
-            ? ''
-            : `<content type="html">&lt;a href=&quot;${p.target}&quot;&gt;[link]&lt;/a&gt;</content>`
-        }
-      </entry>`,
-    )
+        ${contentInner === undefined ? '' : `<content type="html">${contentInner}</content>`}
+      </entry>`
+    })
     .join('\n')
   return `<?xml version="1.0" encoding="UTF-8"?>
     <feed xmlns="http://www.w3.org/2005/Atom">
@@ -115,6 +137,7 @@ describe('scoutChannel', () => {
       fetched: 2,
       droppedMedia: 0,
       droppedAutomated: 0,
+      droppedBodyless: 0,
       alreadyKnown: 0,
       scored: 2,
       queued: 1,
@@ -315,6 +338,7 @@ describe('scoutChannel', () => {
       fetched: 1,
       droppedMedia: 0,
       droppedAutomated: 0,
+      droppedBodyless: 0,
       alreadyKnown: 1,
       scored: 0,
       queued: 0,
@@ -754,6 +778,7 @@ describe('scoutAll', () => {
         fetched: 1,
         droppedMedia: 0,
         droppedAutomated: 0,
+        droppedBodyless: 0,
         alreadyKnown: 1,
         scored: 0,
         queued: 0,
@@ -817,6 +842,207 @@ describe('scoutAll', () => {
     // Both channels' results still ride out for the CLI's JSON line.
     expect(failed.results.map((r) => r.channel)).toEqual(['chan-full', 'b'])
     stderrSpy.mockRestore()
+    db.close()
+  })
+})
+
+describe('scoutChannel story mode', () => {
+  it('drops bodyless candidates before scoring and counts them', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'aita',
+      story: { maxParts: 4 },
+      scout: { ...DEFAULT_SCOUT, subreddits: ['AskReddit'] },
+    })
+    const { client, create } = fakeClient(emitScores([]))
+    const fetchImpl = fetchStub({
+      '/r/AskReddit/.rss': redditFeed([
+        {
+          name: 't3_a',
+          title: 'What is your worst job story?',
+          author: '/u/x',
+          content: `<![CDATA[${LINK_POST_CONTENT}]]>`,
+        },
+        {
+          name: 't3_b',
+          title: 'What is your best job story?',
+          author: '/u/y',
+          content: `<![CDATA[${LINK_POST_CONTENT}]]>`,
+        },
+      ]),
+    })
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.fetched).toBe(2)
+    expect(result.droppedBodyless).toBe(2)
+    expect(result.scored).toBe(0)
+    expect(create).not.toHaveBeenCalled()
+    db.close()
+  })
+
+  it('does not drop bodyless candidates on a topic-mode channel', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'space',
+      story: null,
+      scout: { ...DEFAULT_SCOUT, subreddits: ['space'] },
+    })
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 90, topic: 'T', reason: 'R' }]),
+    )
+    const fetchImpl = fetchStub({
+      '/r/space/.rss': redditFeed([
+        {
+          name: 't3_a',
+          title: 'Voyager 1 phones home',
+          content: `<![CDATA[${LINK_POST_CONTENT}]]>`,
+        },
+      ]),
+    })
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.droppedBodyless).toBe(0)
+    expect(result.scored).toBe(1)
+    db.close()
+  })
+
+  it('inserts one row per part, sharing a score and series key', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'aita',
+      videosPerDay: 3,
+      backlogDays: 2,
+      story: { maxParts: 4 },
+      scout: { ...DEFAULT_SCOUT, subreddits: ['AmItheAsshole'] },
+    })
+    // 400 words of sentences: at 160 words/part that is three parts.
+    const long = Array.from(
+      { length: 40 },
+      (_, i) => `Sentence ${i} has exactly ten words in it now.`,
+    ).join(' ')
+    const { client } = fakeClient(
+      emitScores([
+        { candidateIndex: 0, score: 88, topic: 'She blended the fruit', reason: 'strong conflict' },
+      ]),
+    )
+    const fetchImpl = fetchStub({
+      '/r/AmItheAsshole/.rss': redditFeed([
+        { name: 't3_abc', title: 'AITA for not apologizing?', author: '/u/real', body: long },
+      ]),
+    })
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.queued).toBe(3)
+    const rows = redditCandidates(db, 'aita')
+    expect(rows).toHaveLength(3)
+    expect(rows.map((r) => r.partIndex)).toEqual([1, 2, 3])
+    expect(rows.map((r) => r.title)).toEqual([
+      'She blended the fruit (1/3)',
+      'She blended the fruit (2/3)',
+      'She blended the fruit (3/3)',
+    ])
+    expect(new Set(rows.map((r) => r.seriesKey)).size).toBe(1)
+    expect(new Set(rows.map((r) => r.score))).toEqual(new Set([88]))
+    expect(new Set(rows.map((r) => r.dedupeHash)).size).toBe(3)
+    expect(rows.every((r) => r.rawTitle === 'AITA for not apologizing?')).toBe(true)
+    expect(rows.every((r) => r.truncated === false)).toBe(true)
+    expect(rows.map((r) => r.bodyText).join(' ')).toBe(long)
+    db.close()
+  })
+
+  it('marks every part truncated when the story exceeds max_parts', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'aita',
+      videosPerDay: 3,
+      backlogDays: 2,
+      story: { maxParts: 2 },
+      scout: { ...DEFAULT_SCOUT, subreddits: ['AmItheAsshole'] },
+    })
+    const long = Array.from(
+      { length: 60 },
+      (_, i) => `Sentence ${i} has exactly ten words in it now.`,
+    ).join(' ')
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 88, topic: 'A long one', reason: 'strong' }]),
+    )
+    const fetchImpl = fetchStub({
+      '/r/AmItheAsshole/.rss': redditFeed([
+        { name: 't3_abc', title: 'AITA?', author: '/u/real', body: long },
+      ]),
+    })
+
+    await scoutChannel(db, channel, { client, fetchImpl })
+
+    const rows = redditCandidates(db, 'aita')
+    expect(rows).toHaveLength(2)
+    expect(rows.every((r) => r.truncated === true)).toBe(true)
+    db.close()
+  })
+
+  it('omits the part suffix from a single-part story but still fills the columns', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'aita',
+      videosPerDay: 3,
+      backlogDays: 2,
+      story: { maxParts: 4 },
+      scout: { ...DEFAULT_SCOUT, subreddits: ['AmItheAsshole'] },
+    })
+    const short = Array.from(
+      { length: 6 },
+      (_, i) => `Sentence ${i} has exactly ten words in it now.`,
+    ).join(' ')
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 88, topic: 'Short one', reason: 'strong' }]),
+    )
+    const fetchImpl = fetchStub({
+      '/r/AmItheAsshole/.rss': redditFeed([
+        { name: 't3_s', title: 'AITA?', author: '/u/real', body: short },
+      ]),
+    })
+
+    await scoutChannel(db, channel, { client, fetchImpl })
+
+    const [row] = redditCandidates(db, 'aita')
+    expect(row.title).toBe('Short one')
+    expect(row.partIndex).toBe(1)
+    expect(row.partCount).toBe(1)
+    expect(row.seriesKey).not.toBeNull()
+    db.close()
+  })
+
+  it('stores a rejected story as a single row with no parts', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'aita',
+      story: { maxParts: 4 },
+      scout: { ...DEFAULT_SCOUT, subreddits: ['AmItheAsshole'] },
+    })
+    const long = Array.from(
+      { length: 40 },
+      (_, i) => `Sentence ${i} has exactly ten words in it now.`,
+    ).join(' ')
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 10, topic: 'Weak', reason: 'no conflict' }]),
+    )
+    const fetchImpl = fetchStub({
+      '/r/AmItheAsshole/.rss': redditFeed([
+        { name: 't3_w', title: 'AITA?', author: '/u/real', body: long },
+      ]),
+    })
+
+    const result = await scoutChannel(db, channel, { client, fetchImpl })
+
+    expect(result.queued).toBe(0)
+    expect(result.rejected).toBe(1)
+    const rows = listTopics(db, { channel: 'aita' })
+    expect(rows).toHaveLength(1)
+    expect(rows[0].partIndex).toBeNull()
+    expect(rows[0].seriesKey).toBeNull()
     db.close()
   })
 })

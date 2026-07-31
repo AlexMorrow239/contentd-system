@@ -59,6 +59,7 @@ function scoutResult(channel: string, over: Partial<ScoutChannelResult> = {}): S
     fetched: 0,
     droppedMedia: 0,
     droppedAutomated: 0,
+    droppedBodyless: 0,
     alreadyKnown: 0,
     scored: 0,
     queued: 0,
