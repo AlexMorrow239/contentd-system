@@ -8,6 +8,7 @@ import {
   unstoredLibraryJobs,
 } from '../jobs/library.js'
 import { parseTokenKey } from '../publish/crypto.js'
+import { candidateTopicCount } from '../scout/topics.js'
 import {
   MAX_PUBLISH_ATTEMPTS,
   QUOTA_BACKOFF_MS,
@@ -458,6 +459,28 @@ export function buildDigest(
     lines.push(
       `  ${r.channel} ${r.platform}: ${r.n} quota failures in the last 24h — platform reported quota exhaustion; uploads back off ${QUOTA_BACKOFF_MS / 3_600_000}h per failure and retry automatically`,
     )
+  }
+  // Topic starvation: with autonomous supply (rss/generate), an empty topic
+  // queue AND an empty backlog means the channel stops publishing when the
+  // last scheduled video goes out — and every other line in this digest would
+  // stay quiet about it. Channels with no scout sources are excluded: they
+  // are fed by manual `brainrot produce`, where an empty queue is normal.
+  for (const c of channels) {
+    const scoutsAnything =
+      c.scout.subreddits.length + c.scout.rss.length + c.scout.generateTopics > 0
+    if (!scoutsAnything || c.publish === null) continue
+    const declared = c.publish.targets.map((t) => t.platform)
+    const candidates = candidateTopicCount(db, c.name)
+    const inventory = pendingInventory(db, {
+      channel: c.name,
+      declared,
+      createdAfter: agedCutoff(now, c.backlogDays),
+    })
+    if (candidates === 0 && inventory === 0) {
+      lines.push(
+        `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)`,
+      )
+    }
   }
   // Token health per publish-enabled channel. A missing grant, a rotated
   // BRAINROT_TOKEN_KEY, or unset client credentials all make every publish

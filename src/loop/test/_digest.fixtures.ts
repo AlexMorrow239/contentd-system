@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { testChannel } from '../../testing/channel.js'
 import * as kit from '../../testing/db.js'
+import { DEFAULT_SCOUT } from '../../config/channel.js'
 import type { ChannelConfig } from '../../config/channel.js'
 
 /**
@@ -169,4 +170,20 @@ export function publishChannel(
       ],
     },
   })
+}
+
+/**
+ * A channel that both scouts and publishes — the target of the
+ * topic-starvation action item. `scout` overrides the source lists so a
+ * caller can exercise either the rss/subreddits path or the llm-only
+ * (generate_topics, no feeds) path; the default declares one subreddit.
+ */
+export function scoutingPublishChannel(
+  name: string,
+  scout: Partial<ChannelConfig['scout']> = {},
+): ChannelConfig {
+  return {
+    ...publishChannel(name),
+    scout: { ...DEFAULT_SCOUT, subreddits: ['test'], ...scout },
+  }
 }

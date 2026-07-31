@@ -11,6 +11,7 @@ import {
   isoAgo,
   OTHER_KEY_HEX,
   publishChannel,
+  scoutingPublishChannel,
   seedCost,
   seedJob,
   seedLibrary,
@@ -1067,6 +1068,45 @@ describe('buildDigest — channels at their backlog cap', () => {
     expect(buildDigest(db, [publishChannel('chan-a')], ENV_OK)).not.toContain(
       'finished videos (backlog_days',
     )
+    db.close()
+  })
+})
+
+describe('buildDigest — topic starvation action item', () => {
+  it('flags a scouting+publishing channel with zero candidates and zero inventory', () => {
+    const db = memDb()
+    // generate_topics only, no rss/subreddits — the llm-only shape must still
+    // trip the scoutsAnything gate.
+    const chA = scoutingPublishChannel('chan-a', { subreddits: [], generateTopics: 3 })
+    expect(buildDigest(db, [chA], ENV_OK)).toContain(
+      '  chan-a: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)',
+    )
+    db.close()
+  })
+
+  it('does not flag a channel that still has candidate topics or unpublished videos', () => {
+    const db = memDb()
+    // chan-a: a candidate topic queued, no inventory.
+    seedTopic(db, { channel: 'chan-a', dedupeHash: 'h1', status: 'candidate' })
+    // chan-b: a ready video backlogged, no candidate topics.
+    seedJob(db, { id: 'job-b', channel: 'chan-b' })
+    seedLibrary(db, 'job-b', 'ready', isoAgo(HOUR_MS))
+    const digest = buildDigest(
+      db,
+      [scoutingPublishChannel('chan-a'), scoutingPublishChannel('chan-b')],
+      ENV_OK,
+    )
+    expect(digest).not.toContain('topic starvation')
+    db.close()
+  })
+
+  it('does not flag a channel with no scout sources configured (manual-produce channels)', () => {
+    const db = memDb()
+    // publishChannel carries the default empty scout config (no rss,
+    // subreddits, or generate_topics) — a manual-produce channel, where an
+    // empty topic queue is normal, not a starvation signal.
+    const digest = buildDigest(db, [publishChannel('chan-a')], ENV_OK)
+    expect(digest).not.toContain('topic starvation')
     db.close()
   })
 })
