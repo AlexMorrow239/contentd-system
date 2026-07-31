@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyTarget } from './post-kind.js'
+import { classifyTarget } from '../post-kind.js'
 
 describe('classifyTarget', () => {
   const cases: [string, string | undefined, string][] = [

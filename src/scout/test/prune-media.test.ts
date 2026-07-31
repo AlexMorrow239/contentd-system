@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { memDb, seedTopic } from '../../testing/db.js'
-import { permalinkFeedXml } from '../sources/_post-kind.fixtures.js'
+import { permalinkFeedXml } from '../sources/test/_post-kind.fixtures.js'
 import { dedupeHash } from '../sources/types.js'
 import type { FetchLike } from '../sources/types.js'
 import { listTopics } from '../topics.js'

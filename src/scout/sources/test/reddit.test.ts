@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { classify } from '../../errors.js'
-import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
-import { REDDIT_USER_AGENT, fetchRedditFeed, isAutomatedAuthor, redditSource } from './reddit.js'
+import { classify } from '../../../errors.js'
+import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from '../types.js'
+import { REDDIT_USER_AGENT, fetchRedditFeed, isAutomatedAuthor, redditSource } from '../reddit.js'
 import {
   ARTICLE_TARGET,
   IMAGE_TARGET,
@@ -9,7 +9,7 @@ import {
   SELF_TARGET,
   autoModeratorFeedXml,
 } from './_post-kind.fixtures.js'
-import { LINK_POST_CONTENT, SELF_POST_CONTENT } from '../../stories/_stories.fixtures.js'
+import { LINK_POST_CONTENT, SELF_POST_CONTENT } from '../../../stories/_stories.fixtures.js'
 
 afterEach(() => {
   vi.restoreAllMocks()

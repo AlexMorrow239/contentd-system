@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
-import { llmSource, normalizeGeneratedTitle } from './llm.js'
+import { llmSource, normalizeGeneratedTitle } from '../llm.js'
 
 // Client injection seam (score.test.ts pattern): a plain object with a
 // vi.fn() create — vitest constructor mocks are never needed here.

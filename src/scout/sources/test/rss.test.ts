@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { classify } from '../../errors.js'
-import { rssSource } from './rss.js'
-import type { FetchLike } from './types.js'
+import { classify } from '../../../errors.js'
+import { rssSource } from '../rss.js'
+import type { FetchLike } from '../types.js'
 
 // Injectable fetch: captures every call, answers with one canned XML response.
 function fakeFetch(status: number, body: string) {
