@@ -7,6 +7,7 @@ import {
   SCOUT_MAX_TOKENS,
   SCOUT_MODEL,
   SCOUT_SCORE_CHUNK_SIZE,
+  STORY_SCORE_PREVIEW_WORDS,
   candidateLine,
   estimatedChunkCount,
   scoreCandidates,
@@ -298,5 +299,81 @@ describe('scoreCandidates chunking', () => {
     // 350 (chunk 1, billed+kept) + 100 (chunk 2, billed but invalid) = 450
     const { errorCostUsdMicros } = await import('../../providers/errors.js')
     expect(errorCostUsdMicros(caught)).toBe(450)
+  })
+})
+
+describe('candidateLine story mode', () => {
+  it('appends the opening of the body, truncated to the preview budget', () => {
+    const body = Array.from({ length: 200 }, (_, i) => `w${i + 1}`).join(' ')
+    const line = candidateLine(
+      { title: 'AITA for X?', url: 'u', sourceId: 'reddit:r/aita', externalId: 't3_a', body },
+      0,
+      true,
+    )
+    expect(line).toContain('AITA for X?')
+    expect(line).toContain('w1 ')
+    expect(line).toContain(`w${STORY_SCORE_PREVIEW_WORDS}`)
+    expect(line).not.toContain(`w${STORY_SCORE_PREVIEW_WORDS + 1} `)
+    expect(line).toContain('…')
+  })
+
+  it('does not append a body when not in story mode', () => {
+    const line = candidateLine(
+      { title: 'AITA for X?', url: 'u', sourceId: 'reddit:r/aita', externalId: 't3_a', body: 'hi' },
+      0,
+      false,
+    )
+    expect(line).not.toContain('hi')
+  })
+
+  it('renders a story candidate with no body as title-only', () => {
+    const line = candidateLine(
+      { title: 'AITA for X?', url: 'u', sourceId: 'reddit:r/aita', externalId: 't3_a' },
+      3,
+      true,
+    )
+    expect(line).toBe('3. [reddit:r/aita] AITA for X?')
+  })
+})
+
+describe('scoreCandidates story prompt', () => {
+  it('sends the story rubric and the narrow hard-zero clause', async () => {
+    const { client, create } = fakeClient(
+      emit([{ candidateIndex: 0, score: 85, topic: 'T', reason: 'R' }]),
+    )
+    await scoreCandidates({
+      candidates: [candidate(0, { body: 'A real story about a real conflict.' })],
+      niche: ['reddit stories'],
+      recentTitles: [],
+      story: true,
+      client,
+    })
+    const sent = create.mock.calls[0][0]
+    const prompt = sent.messages[0].content as string
+    expect(sent.system).toContain('story scout')
+    expect(prompt).toContain('verbatim')
+    expect(prompt).toMatch(/score 0/i)
+    // The bar is high on purpose: ordinary conflict must be explicitly exempt,
+    // or the scorer rejects the entire genre.
+    expect(prompt).toMatch(/infidelity/i)
+    // Proves the TOPIC rubric was not the one sent — that prompt's distinctive
+    // clause is about a link target being a photograph, which has no meaning
+    // for a self post.
+    expect(prompt).not.toContain('photograph')
+  })
+
+  it('still sends the topic rubric when story is not set', async () => {
+    const { client, create } = fakeClient(
+      emit([{ candidateIndex: 0, score: 85, topic: 'T', reason: 'R' }]),
+    )
+    await scoreCandidates({
+      candidates: [candidate(0)],
+      niche: ['space facts'],
+      recentTitles: [],
+      client,
+    })
+    const prompt = create.mock.calls[0][0].messages[0].content as string
+    expect(prompt).toContain('photograph')
+    expect(prompt).not.toContain('verbatim')
   })
 })

@@ -20,6 +20,10 @@ export const SCOUT_SCORE_CHUNK_SIZE = 20
 // estimatedChunkCount() and gates it against the global day cap before
 // calling, then trues up from response.usage after.
 export const ESTIMATED_SCOUT_COST_MICROS = 20_000
+// How much of a story's opening the scorer sees. The first ~150 words are the
+// span that decides whether a viewer keeps watching, and capping there keeps
+// input bounded regardless of a 7,000-word r/nosleep post.
+export const STORY_SCORE_PREVIEW_WORDS = 150
 
 export function estimatedChunkCount(candidateCount: number): number {
   return Math.max(1, Math.ceil(candidateCount / SCOUT_SCORE_CHUNK_SIZE))
@@ -69,15 +73,33 @@ function targetHost(targetUrl: string | undefined): string | undefined {
   }
 }
 
+// Truncates a story candidate's body to the preview budget. Splitting on
+// whitespace (not slicing chars) keeps the cut on a word boundary regardless
+// of the source's line breaks or spacing.
+function bodyPreview(body: string | undefined): string | undefined {
+  if (body === undefined) return undefined
+  const tokens = body.split(/\s+/)
+  const head = tokens.slice(0, STORY_SCORE_PREVIEW_WORDS).join(' ')
+  return tokens.length > STORY_SCORE_PREVIEW_WORDS ? `${head} …` : head
+}
+
 /**
  * One prompt line per candidate. Reddit candidates carry what the title alone
  * cannot say — whether the post is a story or a link, and where the link
  * points — which is what lets the scorer penalize an image host it has never
  * been told about. 'image' needs no branch: scoutChannel drops those before
  * scoring, and one arriving here would render as a link, the safe direction.
+ *
+ * In story mode the branch is different: a self post is judged on its
+ * opening, not on its link target, so the postKind/host annotations below
+ * carry no signal and are replaced with a truncated body preview instead.
  */
-export function candidateLine(c: TrendCandidate, index: number): string {
+export function candidateLine(c: TrendCandidate, index: number, story = false): string {
   const prefix = `${index}. [${c.sourceId}]`
+  if (story) {
+    const preview = bodyPreview(c.body)
+    return preview === undefined ? `${prefix} ${c.title}` : `${prefix} ${c.title}\n   ${preview}`
+  }
   if (c.postKind === undefined) return `${prefix} ${c.title}`
   if (c.postKind === 'self') return `${prefix} (self post) ${c.title}`
   const host = targetHost(c.targetUrl)
@@ -111,6 +133,45 @@ Scoring rules:
 - A self post is the poster's own question or story. Judge it on whether the question has a factual, explainable answer.`
 }
 
+function buildStorySystem(niche: string[]): string {
+  return [
+    `You are a story scout for a short-form video channel in the "${niche.join(', ')}" niche.`,
+    'The channel narrates reddit posts VERBATIM, so you are rating the post itself, not a topic to research.',
+    'You rate each post 0-100 on how well it works as a narrated vertical video, write a hooky title for it, and give a one-line reason.',
+    'Return your answer ONLY by calling the `emit` tool. Never write prose or markdown.',
+  ].join(' ')
+}
+
+function buildStoryPrompt(candidates: TrendCandidate[], recent: string, offset: number): string {
+  const list = candidates.map((c, i) => candidateLine(c, offset + i, true)).join('\n')
+  return `Score each reddit post below as a verbatim-narrated short video.
+
+Posts (score every one by its index; the indented line is the post's opening):
+${list}
+
+Recently covered — score near-duplicates 0:
+${recent}
+
+For each candidate return:
+- candidateIndex: the number from the list above
+- score: 0 to 100
+- topic: the post retitled as a hooky video title, concrete and specific. Do not include a part number.
+- reason: one line explaining the score
+
+Scoring rules:
+- Judge the OPENING: does it establish a concrete conflict with real stakes within the first few sentences, and is there a clear question the viewer wants answered?
+- Reward specific, unusual, personal detail. Penalize vague setups, advice requests with no incident, and posts that are mostly background context.
+- A post with no story in it — an announcement, a poll, a meta discussion about the subreddit — scores 0.
+
+Content rule — apply a HIGH bar, and score 0 ONLY for material that could not be published at all:
+- sexual content involving minors
+- graphic sexual detail
+- explicit depiction of self-harm or suicide method
+- graphic violence or gore described in detail
+State which one in the reason when you use it.
+This rule is deliberately narrow. Ordinary conflict, infidelity, divorce, family estrangement, workplace disputes, and non-graphic references to violence, death, or abuse are the genre — they are NOT disqualifying and must be scored on story quality alone.`
+}
+
 // Pure scoring: no db access here — budget gating and cost ledgering live in
 // scoutChannel, which owns the 'scout:<channel>' sentinel rows.
 //
@@ -121,11 +182,13 @@ export async function scoreCandidates(opts: {
   candidates: TrendCandidate[]
   niche: string[]
   recentTitles: string[]
+  story?: boolean
   client?: Anthropic
 }): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
   const byIndex = new Map<number, ScoredCandidate>()
   let totalCostUsdMicros = 0
-  const system = buildSystem(opts.niche)
+  const story = opts.story === true
+  const system = story ? buildStorySystem(opts.niche) : buildSystem(opts.niche)
   const recent =
     opts.recentTitles.length > 0 ? opts.recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
 
@@ -135,7 +198,9 @@ export async function scoreCandidates(opts: {
       const { data, cost } = await structuredCompletion({
         model: SCOUT_MODEL,
         system,
-        prompt: buildPrompt(chunk, opts.niche, recent, offset),
+        prompt: story
+          ? buildStoryPrompt(chunk, recent, offset)
+          : buildPrompt(chunk, opts.niche, recent, offset),
         schema: ScoresSchema,
         maxTokens: SCOUT_MAX_TOKENS,
         client: opts.client,
