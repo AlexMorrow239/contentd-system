@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classify } from '../../errors.js'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from './types.js'
-import { REDDIT_USER_AGENT, fetchRedditFeed, redditSource } from './reddit.js'
+import { REDDIT_USER_AGENT, fetchRedditFeed, isAutomatedAuthor, redditSource } from './reddit.js'
 import {
   ARTICLE_TARGET,
   IMAGE_TARGET,
@@ -9,6 +9,7 @@ import {
   SELF_TARGET,
   autoModeratorFeedXml,
 } from './_post-kind.fixtures.js'
+import { LINK_POST_CONTENT, SELF_POST_CONTENT } from '../../stories/_stories.fixtures.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -312,5 +313,79 @@ describe('redditSource', () => {
       Promise.reject(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
     const source = redditSource('space', impl)
     await expect(source.fetch({ limit: 25, timeoutMs: 10 })).rejects.toThrow(/timeout/i)
+  })
+})
+
+describe('isAutomatedAuthor moderator accounts', () => {
+  it('matches subreddit moderator accounts', () => {
+    expect(isAutomatedAuthor('AITAMod')).toBe(true)
+    expect(isAutomatedAuthor('AskHistorians-Mods')).toBe(true)
+    expect(isAutomatedAuthor('ModTeam')).toBe(true)
+  })
+
+  it('still matches AutoModerator', () => {
+    expect(isAutomatedAuthor('AutoModerator')).toBe(true)
+    expect(isAutomatedAuthor('automoderator')).toBe(true)
+  })
+
+  it('does not match ordinary accounts', () => {
+    expect(isAutomatedAuthor('Innumerablegibbon')).toBe(false)
+    expect(isAutomatedAuthor('modest_proposal')).toBe(false)
+    expect(isAutomatedAuthor('BrazilLost_1-2')).toBe(false)
+    expect(isAutomatedAuthor(undefined)).toBe(false)
+  })
+})
+
+// By the time redditSource sees <content>, fast-xml-parser has already done
+// its one entity-decode pass — real HTML tags, inline entities like &#39;
+// still encoded once — which is exactly the shape SELF_POST_CONTENT and
+// LINK_POST_CONTENT already model (see src/stories/_stories.fixtures.ts).
+// Wrapping them in CDATA carries them into the feed verbatim, so the test
+// exercises the real parseFeedCandidates -> redditSource path without a
+// second, unwanted encode/decode round-trip.
+const SELF_POST_FEED_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <author><name>/u/BrazilLost_1-2</name></author>
+    <id>t3_abc123</id>
+    <link href="https://www.reddit.com/r/AmItheAsshole/comments/abc123/" />
+    <title>AITA for not apologizing?</title>
+    <content type="html"><![CDATA[${SELF_POST_CONTENT}]]></content>
+  </entry>
+</feed>`
+
+const LINK_POST_FEED_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <author><name>/u/someone</name></author>
+    <id>t3_xyz789</id>
+    <link href="https://www.reddit.com/r/AskReddit/comments/xyz789/" />
+    <title>What is your worst job story?</title>
+    <content type="html"><![CDATA[${LINK_POST_CONTENT}]]></content>
+  </entry>
+</feed>`
+
+describe('redditSource body annotation', () => {
+  it('carries the self-post body as plain text', async () => {
+    const { impl } = fakeTextFetch(200, SELF_POST_FEED_XML)
+    const [candidate] = await redditSource('AmItheAsshole', impl).fetch({
+      limit: 25,
+      timeoutMs: 1000,
+    })
+    expect(candidate.body).toBe(
+      "One month ago I hosted a movie night for my five closest friends. It's a long " +
+        'story but I need to know if I was wrong here.\n\n' +
+        'Before the movie a friend called me and asked if she could bring some fruit to ' +
+        'blend into a drink for everyone.',
+    )
+  })
+
+  it('leaves body undefined for a post with no selftext', async () => {
+    const { impl } = fakeTextFetch(200, LINK_POST_FEED_XML)
+    const [candidate] = await redditSource('AskReddit', impl).fetch({
+      limit: 25,
+      timeoutMs: 1000,
+    })
+    expect(candidate.body).toBeUndefined()
   })
 })

@@ -1,4 +1,5 @@
 import { BrainrotError } from '../../errors.js'
+import { storyBody } from '../../stories/body.js'
 import { parseFeedCandidates } from './feed.js'
 import { classifyTarget } from './post-kind.js'
 import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
@@ -25,15 +26,25 @@ export function redditAuthorName(author: string | undefined): string | undefined
   return name === '' ? undefined : name
 }
 
-// Reddit's bot account. It posts the recurring scheduled threads — "All Space
-// Questions thread for week of ...", "Basic cosmology questions weekly thread"
-// — which are never viable video topics and, because each week's instance is a
-// distinct t3_ id, are never caught by dedupe. Matched case-insensitively:
-// the name is fixed but its casing in the feed is not guaranteed.
+// Reddit's own bot account, plus every subreddit's moderator account. Both
+// post recurring scheduled or announcement threads — "All Space Questions
+// thread for week of ...", r/AmItheAsshole's "Quarterly Open Forum" — which
+// are never viable topics and, because each instance is a distinct t3_ id, are
+// never caught by dedupe. Matched case-insensitively: names are fixed but
+// their casing in the feed is not guaranteed.
 export const AUTOMATED_AUTHORS = new Set(['automoderator'])
 
+// Moderator accounts are named by convention, not enumerable: AITAMod,
+// ModTeam, AskHistorians-Mods. Note "ModTeam" ends in "team", not "mod", so
+// a single `mods?$` alternative would miss it. Matching the suffix costs at
+// most one dropped post from a human whose name happens to end in "mod" —
+// cheap against an announcement thread that otherwise consumes a scoring
+// slot every week forever.
+const MODERATOR_SUFFIX = /mods?$|modteam$/i
+
 export function isAutomatedAuthor(author: string | undefined): boolean {
-  return author !== undefined && AUTOMATED_AUTHORS.has(author.toLowerCase())
+  if (author === undefined) return false
+  return AUTOMATED_AUTHORS.has(author.toLowerCase()) || MODERATOR_SUFFIX.test(author)
 }
 
 // Reddit blocks default library user agents; a descriptive UA is the
@@ -128,6 +139,9 @@ export function redditSource(
           postKind: classifyTarget(targetUrl),
           author: name,
           automated: isAutomatedAuthor(name),
+          // Annotate only — dropping a bodyless candidate is scoutChannel's
+          // call, so it can count what it dropped.
+          body: storyBody(contentHtml),
         }
       })
     },

@@ -19,6 +19,10 @@ export interface TrendCandidate {
   // (e.g. reddit's AutoModerator). Set by the source, same as postKind, so
   // scoutChannel can decide without importing source-specific author logic.
   automated?: boolean
+  // Reddit self posts only: the narratable text of the post, extracted from
+  // <content>. Absent for link posts and for r/AskReddit-style title-only
+  // posts, which is what scoutChannel counts as droppedBodyless.
+  body?: string
   // Raw Atom <content> body, carried so the reddit source can interpret it.
   // Not consumed downstream of redditSource.
   contentHtml?: string
