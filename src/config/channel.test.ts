@@ -130,12 +130,14 @@ describe('[scout] config', () => {
       rss: [],
       perSourceLimit: 25,
       queueDays: 3,
+      generateTopics: 0,
     })
     expect(DEFAULT_SCOUT).toEqual({
       subreddits: [],
       rss: [],
       perSourceLimit: 25,
       queueDays: 3,
+      generateTopics: 0,
     })
   })
 
@@ -154,6 +156,7 @@ describe('[scout] config', () => {
       rss: ['https://www.sciencedaily.com/rss/space_time.xml'],
       perSourceLimit: 10,
       queueDays: 3,
+      generateTopics: 0,
     })
   })
 
@@ -164,6 +167,7 @@ describe('[scout] config', () => {
       rss: [],
       perSourceLimit: 25,
       queueDays: 3,
+      generateTopics: 0,
     })
   })
 
@@ -182,6 +186,22 @@ describe('[scout] config', () => {
     expect(config1.scout.subreddits).not.toBe(config2.scout.subreddits)
     expect(config1.scout.rss).not.toBe(config2.scout.rss)
     expect(Object.isFrozen(DEFAULT_SCOUT)).toBe(true)
+  })
+
+  it('parses [scout] generate_topics and defaults it to 0', () => {
+    const withoutKey = loadChannelConfig(writeToml(PLAN1_LINES))
+    expect(withoutKey.scout.generateTopics).toBe(0)
+    const withKey = loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'generate_topics = 5']))
+    expect(withKey.scout.generateTopics).toBe(5)
+  })
+
+  it('rejects a negative or fractional generate_topics', () => {
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'generate_topics = -1'])),
+    ).toThrow(/generate_topics must be 0 or more/)
+    expect(() =>
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'generate_topics = 1.5'])),
+    ).toThrow(/generate_topics must be a whole number/)
   })
 })
 
@@ -205,9 +225,7 @@ describe('backlog_days / scout.queue_days', () => {
     const lines = PLAN1_LINES.flatMap((l) =>
       l === 'videos_per_day = 2' ? [l, 'backlog_days = 0'] : [l],
     )
-    expect(() => loadChannelConfig(writeToml(lines))).toThrow(
-      /backlog_days must be greater than 0/,
-    )
+    expect(() => loadChannelConfig(writeToml(lines))).toThrow(/backlog_days must be greater than 0/)
   })
 
   it('rejects a zero or negative queue_days', () => {
@@ -472,7 +490,10 @@ describe('loadChannelConfig story mode', () => {
     const file = join(dir, 'aita.toml')
     writeFileSync(
       file,
-      channelToml({ name: 'aita', extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', '[story]'] }),
+      channelToml({
+        name: 'aita',
+        extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', '[story]'],
+      }),
     )
     const cfg = loadChannelConfig(file)
     expect(cfg.story).toEqual({ maxParts: 4 })
@@ -510,6 +531,21 @@ describe('loadChannelConfig story mode', () => {
       }),
     )
     expect(() => loadChannelConfig(file)).toThrow(/rss/i)
+  })
+
+  it('rejects [story] with generate_topics > 0, naming the reason', () => {
+    const dir = tmpDir('story-config')
+    const file = join(dir, 'aita.toml')
+    writeFileSync(
+      file,
+      channelToml({
+        name: 'aita',
+        extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', 'generate_topics = 3', '[story]'],
+      }),
+    )
+    expect(() => loadChannelConfig(file)).toThrow(
+      'a [story] channel cannot declare [scout] generate_topics — a generated topic has no post body to narrate',
+    )
   })
 
   it('rejects max_parts exceeding videos_per_day x backlog_days', () => {

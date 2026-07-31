@@ -462,7 +462,13 @@ describe('scoutChannel', () => {
     const channel = testChannel({
       name: 'chan-a',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
+      scout: {
+        subreddits: ['space'],
+        rss: [],
+        perSourceLimit: 25,
+        queueDays: 3,
+        generateTopics: 0,
+      },
     })
     for (let i = 0; i < 6; i++) {
       seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
@@ -480,7 +486,13 @@ describe('scoutChannel', () => {
     const channel = testChannel({
       name: 'chan-a',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
+      scout: {
+        subreddits: ['space'],
+        rss: [],
+        perSourceLimit: 25,
+        queueDays: 3,
+        generateTopics: 0,
+      },
     })
     for (let i = 0; i < 5; i++) {
       seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
@@ -498,7 +510,13 @@ describe('scoutChannel', () => {
     const channel = testChannel({
       name: 'chan-a',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
+      scout: {
+        subreddits: ['space'],
+        rss: [],
+        perSourceLimit: 25,
+        queueDays: 3,
+        generateTopics: 0,
+      },
     })
     for (let i = 0; i < 10; i++) {
       seedTopic(db, { channel: 'chan-a', status: 'rejected', dedupeHash: `r-${String(i)}` })
@@ -542,7 +560,13 @@ describe('scoutChannel', () => {
     const channel = testChannel({
       name: 'chan-a',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
+      scout: {
+        subreddits: ['space'],
+        rss: [],
+        perSourceLimit: 25,
+        queueDays: 3,
+        generateTopics: 0,
+      },
     })
     for (let i = 0; i < 6; i++) {
       seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
@@ -796,7 +820,13 @@ describe('scoutAll', () => {
     const full = testChannel({
       name: 'chan-full',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
+      scout: {
+        subreddits: ['space'],
+        rss: [],
+        perSourceLimit: 25,
+        queueDays: 3,
+        generateTopics: 0,
+      },
     })
     for (let i = 0; i < 6; i++) {
       seedTopic(db, { channel: 'chan-full', status: 'candidate', dedupeHash: `h-${String(i)}` })
@@ -818,7 +848,13 @@ describe('scoutAll', () => {
     const full = testChannel({
       name: 'chan-full',
       videosPerDay: 2,
-      scout: { subreddits: ['space'], rss: [], perSourceLimit: 25, queueDays: 3 },
+      scout: {
+        subreddits: ['space'],
+        rss: [],
+        perSourceLimit: 25,
+        queueDays: 3,
+        generateTopics: 0,
+      },
     })
     for (let i = 0; i < 6; i++) {
       seedTopic(db, { channel: 'chan-full', status: 'candidate', dedupeHash: `h-${String(i)}` })
@@ -1067,7 +1103,9 @@ describe('scoutChannel story mode', () => {
       (_, i) => `Sentence ${i} has exactly ten words in it now.`,
     ).join(' ')
     const { client, create } = fakeClient(
-      emitScores([{ candidateIndex: 0, score: 88, topic: 'She blended the fruit', reason: 'strong' }]),
+      emitScores([
+        { candidateIndex: 0, score: 88, topic: 'She blended the fruit', reason: 'strong' },
+      ]),
     )
     const fetchImpl = fetchStub({
       '/r/AmItheAsshole/.rss': redditFeed([

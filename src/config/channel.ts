@@ -40,6 +40,12 @@ export interface ScoutConfig {
    * a share of what it sees, and topics go stale.
    */
   queueDays: number
+  /**
+   * How many LLM-generated topics to request per scout attempt (0 disables
+   * generation). Task 8 registers the generator source in scoutChannel gated
+   * on this being > 0; this field is only the config surface.
+   */
+  generateTopics: number
 }
 
 export interface ChannelConfig {
@@ -85,6 +91,7 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
   rss: Object.freeze([] as string[]),
   perSourceLimit: 25,
   queueDays: 3,
+  generateTopics: 0,
 }) as ScoutConfig
 
 /**
@@ -199,6 +206,12 @@ const rawSchema = z.object({
         .int('queue_days must be a whole number of days')
         .positive('queue_days must be greater than 0')
         .default(DEFAULT_SCOUT.queueDays),
+      generate_topics: z
+        .number()
+        .int('generate_topics must be a whole number of topics')
+        .min(0, 'generate_topics must be 0 or more (0 disables generation)')
+        .max(50, 'generate_topics must be at most 50 per scout attempt')
+        .default(0),
     })
     .superRefine((scout, ctx) => {
       if (scout?.min_score !== undefined) {
@@ -255,6 +268,14 @@ const channelSchema = rawSchema.superRefine((cfg, ctx) => {
       path: ['story'],
       message:
         'a [story] channel cannot declare [scout] rss sources — an RSS item has no post body to narrate',
+    })
+  }
+  if ((cfg.scout?.generate_topics ?? 0) > 0) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['story'],
+      message:
+        'a [story] channel cannot declare [scout] generate_topics — a generated topic has no post body to narrate',
     })
   }
   const capacity = cfg.videos_per_day * cfg.backlog_days
@@ -338,6 +359,7 @@ export function loadChannelConfig(path: string): ChannelConfig {
           rss: raw.scout.rss,
           perSourceLimit: raw.scout.per_source_limit,
           queueDays: raw.scout.queue_days,
+          generateTopics: raw.scout.generate_topics,
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
     story: raw.story ? { maxParts: raw.story.max_parts } : null,
