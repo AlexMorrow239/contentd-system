@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../../config/channel.js'
 import { testChannel } from '../../../testing/channel.js'
-import { memDb } from '../../../testing/db.js'
+import { memDb, seedPublish } from '../../../testing/db.js'
 import { buildOverview } from '../overview.js'
 
 function channel(name: string, perDayUsdMicros: number): ChannelConfig {
@@ -34,7 +34,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j3','space','volume','c','failed')",
     ).run()
-    const data = buildOverview(db, [], NOW, 6)
+    const data = buildOverview(db, [], NOW)
     expect(data.jobsByStatus).toEqual(
       expect.arrayContaining([
         { status: 'failed', count: 2 },
@@ -50,7 +50,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO job_stages (job_id, stage, status, error) VALUES ('j1','voice','failed','elevenlabs 401')",
     ).run()
-    const data = buildOverview(db, [], NOW, 6)
+    const data = buildOverview(db, [], NOW)
     expect(data.attention).toEqual([
       {
         id: 'j1',
@@ -68,7 +68,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','blocked')",
     ).run()
-    const data = buildOverview(db, [], NOW, 6)
+    const data = buildOverview(db, [], NOW)
     expect(data.attention).toHaveLength(1)
     expect(data.attention[0]?.status).toBe('blocked')
     expect(data.attention[0]?.stage).toBeNull()
@@ -81,7 +81,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j2','space','volume','b','running')",
     ).run()
-    expect(buildOverview(db, [], NOW, 6).attention).toEqual([])
+    expect(buildOverview(db, [], NOW).attention).toEqual([])
   })
 
   it('counts library rows by state', () => {
@@ -91,7 +91,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j1','p','{}','needs-review')",
     ).run()
-    expect(buildOverview(db, [], NOW, 6).libraryByState).toEqual([
+    expect(buildOverview(db, [], NOW).libraryByState).toEqual([
       { status: 'needs-review', count: 1 },
     ])
   })
@@ -103,7 +103,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
     ).run()
-    const data = buildOverview(db, [], NOW, 6)
+    const data = buildOverview(db, [], NOW)
     expect(data.globalSpend.spentUsdMicros).toBe(250000)
     expect(data.globalSpend.capUsdMicros).toBe(12_000_000)
   })
@@ -115,7 +115,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
     ).run()
-    const data = buildOverview(db, [channel('space', 2_000_000)], NOW, 6)
+    const data = buildOverview(db, [channel('space', 2_000_000)], NOW)
     expect(data.channelSpend).toEqual([
       { channel: 'space', spentUsdMicros: 250000, capUsdMicros: 2_000_000 },
     ])
@@ -134,7 +134,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('scout:space','anthropic','scout-score',15000)",
     ).run()
-    const data = buildOverview(db, [channel('space', 2_000_000)], NOW, 6)
+    const data = buildOverview(db, [channel('space', 2_000_000)], NOW)
     expect(data.globalSpend.spentUsdMicros).toBe(265000)
     expect(data.channelSpend).toEqual([
       { channel: 'space', spentUsdMicros: 250000, capUsdMicros: 2_000_000 },
@@ -149,7 +149,7 @@ describe('buildOverview', () => {
     db.prepare(
       "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
     ).run()
-    const data = buildOverview(db, [channel('space', 2_000_000)], NOW, 6)
+    const data = buildOverview(db, [channel('space', 2_000_000)], NOW)
     expect(data.unattributedUsdMicros).toBe(0)
   })
 
@@ -160,12 +160,12 @@ describe('buildOverview', () => {
     db.prepare("INSERT INTO leases (name, holder, expires_at) VALUES ('publish','host-2',?)").run(
       new Date(NOW.getTime() + 60_000).toISOString(),
     )
-    const data = buildOverview(db, [], NOW, 6)
+    const data = buildOverview(db, [], NOW)
     expect(data.leases.find((l) => l.name === 'produce')?.expired).toBe(true)
     expect(data.leases.find((l) => l.name === 'publish')?.expired).toBe(false)
   })
 
-  it('passes the quota cap through and counts today uploads', () => {
+  it('counts today uploads and reports not backed off with no recent quota failure', () => {
     db.prepare(
       "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
     ).run()
@@ -173,8 +173,21 @@ describe('buildOverview', () => {
       'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
         "VALUES ('j1','youtube','space','2026-07-25',1,'done',1)",
     ).run()
-    const data = buildOverview(db, [], new Date('2026-07-25T12:00:00'), 6)
+    const data = buildOverview(db, [], new Date('2026-07-25T12:00:00'))
     expect(data.quotaUsed).toBe(1)
-    expect(data.quotaCap).toBe(6)
+    expect(data.quotaBackedOff).toBe(false)
+  })
+
+  it('reports quotaBackedOff true after a recent youtube quota failure', () => {
+    const now = new Date('2026-07-25T12:00:00Z')
+    seedPublish(db, 'j1', {
+      platform: 'youtube',
+      channel: 'space',
+      status: 'failed',
+      errorKind: 'quota',
+      createdAt: new Date(now.getTime() - 60_000).toISOString(),
+    })
+    const data = buildOverview(db, [], now)
+    expect(data.quotaBackedOff).toBe(true)
   })
 })

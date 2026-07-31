@@ -3,7 +3,6 @@ import { classify } from '../../../errors.js'
 import { loadToken, upsertToken } from '../../tokens.js'
 import type { PublishMedia } from '../../types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../../types.js'
-import { DEFAULT_IG_UPLOADS_PER_DAY, igUploadsPerDayCap } from '../quota.js'
 import {
   IG_GRAPH_VERSION,
   IG_POLL_INTERVAL_MS,
@@ -20,26 +19,6 @@ const TEST_KEY = Buffer.alloc(32, 0x42)
 afterEach(() => {
   vi.unstubAllEnvs()
   vi.useRealTimers()
-})
-
-describe('igUploadsPerDayCap', () => {
-  it('defaults to 50', () => {
-    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', undefined)
-    expect(igUploadsPerDayCap()).toBe(50)
-    expect(DEFAULT_IG_UPLOADS_PER_DAY).toBe(50)
-  })
-
-  it('reads the env override at call time', () => {
-    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '10')
-    expect(igUploadsPerDayCap()).toBe(10)
-  })
-
-  it('throws on a non-positive, non-numeric, or fractional value', () => {
-    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '0')
-    expect(() => igUploadsPerDayCap()).toThrow(/invalid BRAINROT_IG_UPLOADS_PER_DAY/)
-    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '1.5')
-    expect(() => igUploadsPerDayCap()).toThrow(/positive integer/)
-  })
 })
 
 // Instagram never reads bytes() or localPath — only a presigned url(). This
@@ -371,10 +350,9 @@ describe('refreshLongLivedToken', () => {
 })
 
 describe('instagramAdapter', () => {
-  it('quota is channel-scoped, keyed to BRAINROT_IG_UPLOADS_PER_DAY', () => {
+  it('quota is channel-scoped', () => {
     const adapter = instagramAdapter()
     expect(adapter.quota.scope).toBe('channel')
-    expect(adapter.quota.envVar).toBe('BRAINROT_IG_UPLOADS_PER_DAY')
   })
 
   it('hasCredential is true only with a stored token', () => {

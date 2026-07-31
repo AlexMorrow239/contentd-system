@@ -193,7 +193,7 @@ export function seedQuotaFailure(
 export function fakeAdapter(upload: PublishAdapter['upload']): PublishAdapter {
   return {
     platformId: 'youtube',
-    quota: { scope: 'global', envVar: 'BRAINROT_YT_UPLOADS_PER_DAY', cap: () => 6 },
+    quota: { scope: 'global' },
     postUrl: (postId) => `https://youtube.com/shorts/${postId}`,
     hasCredential: () => true,
     resolveCredential: async () => 'fake-access-token',
@@ -208,7 +208,7 @@ export function fakeAdapter(upload: PublishAdapter['upload']): PublishAdapter {
 export function fakeIgAdapter(upload: PublishAdapter['upload']): PublishAdapter {
   return {
     platformId: 'instagram',
-    quota: { scope: 'channel', envVar: 'BRAINROT_IG_UPLOADS_PER_DAY', cap: () => 25 },
+    quota: { scope: 'channel' },
     postUrl: () => null,
     hasCredential: () => true,
     resolveCredential: async () => 'ig-token',
@@ -268,7 +268,6 @@ export function stubPublishEnv(vi: { stubEnv: (k: string, v: string) => void }):
   vi.stubEnv('YT_CLIENT_ID', 'test-client-id')
   vi.stubEnv('YT_CLIENT_SECRET', 'test-client-secret')
   vi.stubEnv('BRAINROT_TOKEN_KEY', TEST_TOKEN_KEY_HEX)
-  vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '')
   vi.stubEnv('BRAINROT_S3_ENDPOINT', '')
   vi.stubEnv('BRAINROT_S3_BUCKET', '')
   vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', '')

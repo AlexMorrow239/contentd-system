@@ -13,7 +13,7 @@ function data(overrides: Partial<OverviewData> = {}): OverviewData {
     unattributedUsdMicros: 0,
     leases: [],
     quotaUsed: 1,
-    quotaCap: 6,
+    quotaBackedOff: false,
     ...overrides,
   }
 }
@@ -108,6 +108,16 @@ describe('renderOverviewPage', () => {
   it('does not render the unattributed spend row when it is zero', () => {
     const out = renderOverviewPage(data({ unattributedUsdMicros: 0 })).value
     expect(out).not.toContain('unattributed')
+  })
+
+  it('shows a backed-off badge when the youtube quota is backed off', () => {
+    const out = renderOverviewPage(data({ quotaBackedOff: true })).value
+    expect(out).toContain('backed off')
+  })
+
+  it('does not show a backed-off badge when the youtube quota is not backed off', () => {
+    const out = renderOverviewPage(data({ quotaBackedOff: false })).value
+    expect(out).not.toContain('backed off')
   })
 
   it('escapes a hostile topic in the attention list', () => {

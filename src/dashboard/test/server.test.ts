@@ -104,16 +104,32 @@ describe('/publishes', () => {
     expect(await res.text()).toContain('channel config error')
   })
 
-  it('reports the enforced quota cap, not a hardcoded default', async () => {
-    // Proves the dashboard reads the same resolver the publish loop enforces
-    // against (ytUploadsPerDayCap), rather than a mirrored copy that could
-    // silently drift from it.
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '3')
+  it('reports uploads used today with no cap figure', async () => {
     const config = seededConfig()
     const res = await createApp({ config }).request('/publishes')
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('youtube: 0 / 3 uploads used today')
+    expect(body).toContain('youtube: 0 uploads used today')
+  })
+
+  it('shows a backed-off badge after a recent youtube quota failure', async () => {
+    // Proves the dashboard reads the same runtime signal the publish loop
+    // gates on (quotaBackedOff), rather than a mirrored env-derived cap.
+    const config = seededConfig()
+    const now = new Date()
+    const db = openDb(config.paths.dbPath)
+    db.prepare(
+      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','failed')",
+    ).run()
+    db.prepare(
+      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, error_kind, created_at) ' +
+        "VALUES ('j1','youtube','space','2026-07-25',1,'failed',1,'quota',?)",
+    ).run(now.toISOString())
+    db.close()
+    const res = await createApp({ config, now: () => now }).request('/publishes')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('backed off')
   })
 
   it('says so when no channel has an instagram target configured', async () => {
@@ -125,12 +141,10 @@ describe('/publishes', () => {
     expect(body).toContain('instagram: no channel has a [publish.instagram] target configured')
   })
 
-  it('reports instagram quota per channel — same cap, independent usage — instead of one summed figure', async () => {
-    // Instagram's quota is channel-scoped (one IG account per channel, all
-    // capped at the same BRAINROT_IG_UPLOADS_PER_DAY): a channel with its
-    // own [publish.instagram] table must get its own line, and one
-    // channel's usage must never be added into another's.
-    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '4')
+  it('reports instagram quota per channel — independent usage, not one summed figure', async () => {
+    // Instagram's quota is channel-scoped (one IG account per channel): a
+    // channel with its own [publish.instagram] table must get its own line,
+    // and one channel's usage must never be added into another's.
     const config = seededConfig()
     mkdirSync(config.paths.channelsDir, { recursive: true })
     writeFileSync(
@@ -179,7 +193,7 @@ describe('/publishes', () => {
     const res = await createApp({ config, now: () => now }).request('/publishes')
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('space: 1 / 4')
+    expect(body).toContain('space: 1 uploads used today')
   })
 })
 

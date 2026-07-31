@@ -10,22 +10,24 @@ import { href } from './layout.js'
 // (YouTube) is a single all-channels figure, matching adapter.quota.scope —
 // see that type's comment for why: one Google Cloud project's upload quota
 // is shared across every channel. A 'channel' quota (Instagram) has no
-// single "used" figure to report — each channel's IG account is capped
-// independently against the same per-channel `cap` — so it carries a
-// per-channel breakdown instead. An empty perChannel array (rather than
-// omitting the platform) is what lets the panel say so explicitly instead of
-// silently having nothing to show.
+// single "used" figure to report — each channel's IG account is rate-limited
+// independently — so it carries a per-channel breakdown instead. An empty
+// perChannel array (rather than omitting the platform) is what lets the
+// panel say so explicitly instead of silently having nothing to show.
+// There is no local cap anymore: `used` is today's count and `backedOff`
+// reports quotaBackedOff (src/publish/publishes.ts) — the platform's own
+// runtime signal, read here via a SELECT only, keeping the dashboard
+// structurally read-only.
 // A union rather than one shape with two optional fields: which figure exists
 // is fully determined by the quota's scope, so the type says so and the
 // renderer needs no defensive fallback for a combination that cannot occur.
 export type PlatformQuotaView =
-  | { platform: Platform; scope: 'global'; cap: number; used: number }
+  | { platform: Platform; scope: 'global'; used: number; backedOff: boolean }
   | {
       platform: Platform
       scope: 'channel'
-      cap: number
       /** One entry per channel with this platform configured. */
-      perChannel: { channel: string; used: number }[]
+      perChannel: { channel: string; used: number; backedOff: boolean }[]
     }
 
 export interface PublishesPageData {
@@ -72,20 +74,25 @@ function renderGrid(grid: ChannelGrid): SafeHtml {
   </div>`
 }
 
+function backedOffBadge(backedOff: boolean): SafeHtml {
+  return backedOff ? html` <span class="error">backed off</span>` : html``
+}
+
 function renderQuota(q: PlatformQuotaView): SafeHtml {
   if (q.scope === 'global') {
     return html`<p>
-      ${q.platform}: ${String(q.used)} / ${String(q.cap)} uploads used today (all channels)
+      ${q.platform}: ${String(q.used)} uploads used today (all channels)${backedOffBadge(q.backedOff)}
     </p>`
   }
   if (q.perChannel.length === 0) {
     return html`<p>${q.platform}: no channel has a [publish.${q.platform}] target configured</p>`
   }
   const rows = q.perChannel.map(
-    (c) => html`<li>${c.channel}: ${String(c.used)} / ${String(q.cap)}</li>`,
+    (c) =>
+      html`<li>${c.channel}: ${String(c.used)} uploads used today${backedOffBadge(c.backedOff)}</li>`,
   )
   return html`<div>
-    <p>${q.platform} (per channel, ${String(q.cap)}/day each):</p>
+    <p>${q.platform} (per channel):</p>
     <ul>
       ${rows}
     </ul>

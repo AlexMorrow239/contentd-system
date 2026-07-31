@@ -5,7 +5,7 @@ import {
   globalDailyCapMicros,
   globalDaySpentMicros,
 } from '../../jobs/costs.js'
-import { uploadsUsedToday } from '../../publish/publishes.js'
+import { quotaBackedOff, uploadsUsedToday } from '../../publish/publishes.js'
 import { localDay } from '../../publish/schedule.js'
 
 export interface StatusCount {
@@ -59,15 +59,11 @@ export interface OverviewData {
   unattributedUsdMicros: number
   leases: LeaseState[]
   quotaUsed: number
-  quotaCap: number
+  /** True when a recent youtube quota-kind failure has this scope backed off (quotaBackedOff). */
+  quotaBackedOff: boolean
 }
 
-export function buildOverview(
-  db: Database,
-  channels: ChannelConfig[],
-  now: Date,
-  quotaCap: number,
-): OverviewData {
+export function buildOverview(db: Database, channels: ChannelConfig[], now: Date): OverviewData {
   const jobsByStatus = db
     .prepare('SELECT status, COUNT(*) AS count FROM jobs GROUP BY status ORDER BY count DESC')
     .all() as StatusCount[]
@@ -140,6 +136,6 @@ export function buildOverview(
     unattributedUsdMicros: Math.max(0, globalSpentUsdMicros - attributedUsdMicros),
     leases,
     quotaUsed: uploadsUsedToday(db, 'youtube', localDay(now)),
-    quotaCap,
+    quotaBackedOff: quotaBackedOff(db, 'youtube', now),
   }
 }

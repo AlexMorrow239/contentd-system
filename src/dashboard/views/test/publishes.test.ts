@@ -4,7 +4,12 @@ import { cellKey } from '../../queries/publishes.js'
 import type { PlatformQuotaView } from '../publishes.js'
 import { renderPublishesPage } from '../publishes.js'
 
-const YOUTUBE_QUOTA: PlatformQuotaView = { platform: 'youtube', scope: 'global', cap: 6, used: 2 }
+const YOUTUBE_QUOTA: PlatformQuotaView = {
+  platform: 'youtube',
+  scope: 'global',
+  used: 2,
+  backedOff: false,
+}
 
 function row(overrides: Partial<PublishRow> = {}): PublishRow {
   return {
@@ -110,7 +115,9 @@ describe('renderPublishesPage', () => {
         },
       ],
       days: 1,
-      quotas: [{ platform: 'youtube', scope: 'global', cap: 6, used: 0 }] as PlatformQuotaView[],
+      quotas: [
+        { platform: 'youtube', scope: 'global', used: 0, backedOff: false },
+      ] as PlatformQuotaView[],
     }
     const out = renderPublishesPage(data).value
     expect(out).toContain('#2 instagram')
@@ -119,9 +126,24 @@ describe('renderPublishesPage', () => {
     expect(out).toContain('transient')
   })
 
-  it('reports quota consumption against the cap', () => {
+  it('reports today upload usage with no cap figure', () => {
     const out = renderPublishesPage(pageData(new Map())).value
-    expect(out).toContain('2 / 6')
+    expect(out).toContain('2 uploads used today')
+  })
+
+  it('shows a backed-off badge for a global-scope quota when backed off', () => {
+    const out = renderPublishesPage({
+      ...pageData(new Map()),
+      quotas: [
+        { platform: 'youtube', scope: 'global', used: 2, backedOff: true },
+      ] as PlatformQuotaView[],
+    }).value
+    expect(out).toContain('backed off')
+  })
+
+  it('does not show a backed-off badge for a global-scope quota when not backed off', () => {
+    const out = renderPublishesPage(pageData(new Map())).value
+    expect(out).not.toContain('backed off')
   })
 
   it('surfaces a channel config error without hiding the rest of the page', () => {
@@ -136,7 +158,7 @@ describe('renderPublishesPage', () => {
     const out = renderPublishesPage({
       grids: [],
       days: 7,
-      quotas: [{ platform: 'youtube', scope: 'global', cap: 6, used: 0 }],
+      quotas: [{ platform: 'youtube', scope: 'global', used: 0, backedOff: false }],
     }).value
     expect(out).toContain('no channel has a [publish] schedule')
   })
@@ -149,19 +171,21 @@ describe('renderPublishesPage', () => {
         {
           platform: 'instagram',
           scope: 'channel',
-          cap: 25,
           perChannel: [
-            { channel: 'space', used: 5 },
-            { channel: 'history', used: 25 },
+            { channel: 'space', used: 5, backedOff: false },
+            { channel: 'history', used: 25, backedOff: true },
           ],
         },
       ] as PlatformQuotaView[],
     }
     const out = renderPublishesPage(data).value
-    expect(out).toContain('space: 5 / 25')
-    expect(out).toContain('history: 25 / 25')
-    // Not summed: 5 + 25 = 30 must never appear as a combined "used" figure.
-    expect(out).not.toContain('30 / 25')
+    expect(out).toContain('space: 5 uploads used today')
+    expect(out).toContain('history: 25 uploads used today')
+    // The backed-off channel is flagged; the other must not be.
+    const historyIdx = out.indexOf('history: 25 uploads used today')
+    expect(out.slice(historyIdx, historyIdx + 80)).toContain('backed off')
+    const spaceIdx = out.indexOf('space: 5 uploads used today')
+    expect(out.slice(spaceIdx, spaceIdx + 80)).not.toContain('backed off')
   })
 
   it('says so when no channel has a channel-scoped platform configured', () => {
@@ -169,7 +193,7 @@ describe('renderPublishesPage', () => {
       ...pageData(new Map()),
       quotas: [
         YOUTUBE_QUOTA,
-        { platform: 'instagram', scope: 'channel', cap: 25, perChannel: [] },
+        { platform: 'instagram', scope: 'channel', perChannel: [] },
       ] as PlatformQuotaView[],
     }
     const out = renderPublishesPage(data).value

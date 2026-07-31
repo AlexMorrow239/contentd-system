@@ -403,7 +403,7 @@ describe('buildDigest — publishing action items', () => {
     db.close()
   })
 
-  it('flags quota failures distinctly — the cap estimate and reality disagree', () => {
+  it('flags quota failures distinctly — awareness, since the tick backs off and retries by itself', () => {
     const db = memDb()
     seedPublish(db, {
       jobId: 'j1',
@@ -421,7 +421,7 @@ describe('buildDigest — publishing action items', () => {
     })
     const digest = buildDigest(db, [])
     expect(digest).toContain(
-      '  chan-a youtube: 2 quota failures in the last 24h — the platform refused the upload; check BRAINROT_YT_UPLOADS_PER_DAY against the real quota',
+      '  chan-a youtube: 2 quota failures in the last 24h — platform reported quota exhaustion; uploads back off 6h per failure and retry automatically',
     )
     db.close()
   })

@@ -8,8 +8,7 @@ import {
   unstoredLibraryJobs,
 } from '../jobs/library.js'
 import { parseTokenKey } from '../publish/crypto.js'
-import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
-import { MAX_PUBLISH_ATTEMPTS, videosPublishedToday } from '../publish/publishes.js'
+import { MAX_PUBLISH_ATTEMPTS, QUOTA_BACKOFF_MS, videosPublishedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
 import { backlogCap } from './plan-tick.js'
 import {
@@ -438,9 +437,11 @@ export function buildDigest(
       `  ${r.channel} ${r.platform}: ${r.n} auth failures in the last 24h — run brainrot auth ${r.platform} --channel ${r.channel}`,
     )
   }
-  // Quota failures mean the per-platform daily-cap env estimate and the
-  // platform's real quota disagree (spec §5: "cap vs reality drift") — a
-  // distinct line per channel+platform, mirroring the auth hint.
+  // Quota failures are the platform's own runtime signal: the tick backs the
+  // platform off for QUOTA_BACKOFF_MS after each one and retries by itself —
+  // this line is awareness, not an action item, unless counts are climbing
+  // (which means the backoff window is shorter than the platform's real
+  // reset horizon).
   const quotaFailures = db
     .prepare(
       `SELECT channel, platform, COUNT(*) AS n FROM publishes
@@ -451,7 +452,7 @@ export function buildDigest(
     .all() as { channel: string; platform: Platform; n: number }[]
   for (const r of quotaFailures) {
     lines.push(
-      `  ${r.channel} ${r.platform}: ${r.n} quota failures in the last 24h — the platform refused the upload; check ${PLATFORM_QUOTAS[r.platform].envVar} against the real quota`,
+      `  ${r.channel} ${r.platform}: ${r.n} quota failures in the last 24h — platform reported quota exhaustion; uploads back off ${QUOTA_BACKOFF_MS / 3_600_000}h per failure and retry automatically`,
     )
   }
   // Token health per publish-enabled channel. A missing grant, a rotated

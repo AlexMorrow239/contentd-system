@@ -6,7 +6,6 @@ import { upsertToken } from '../../tokens.js'
 import type { PlatformMeta, PublishMedia } from '../../types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../../types.js'
 import type { YoutubeOptions } from '../options.js'
-import { DEFAULT_YT_UPLOADS_PER_DAY, ytUploadsPerDayCap } from '../quota.js'
 import {
   UPLOAD_TIMEOUT_MS,
   YT_UPLOAD_SCOPE,
@@ -24,35 +23,9 @@ afterEach(() => {
 })
 
 describe('constants', () => {
-  it('pins the upload scope, per-call timeout, and default daily cap', () => {
+  it('pins the upload scope and per-call timeout', () => {
     expect(YT_UPLOAD_SCOPE).toBe('https://www.googleapis.com/auth/youtube.upload')
     expect(UPLOAD_TIMEOUT_MS).toBe(300_000)
-    expect(DEFAULT_YT_UPLOADS_PER_DAY).toBe(6)
-  })
-})
-
-describe('ytUploadsPerDayCap', () => {
-  it('defaults to 6 when BRAINROT_YT_UPLOADS_PER_DAY is unset', () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', undefined) // deterministic even if the shell exports it
-    expect(ytUploadsPerDayCap()).toBe(6)
-  })
-
-  it('reads the env override at call time, not at import time', () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '10')
-    expect(ytUploadsPerDayCap()).toBe(10)
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '2')
-    expect(ytUploadsPerDayCap()).toBe(2)
-  })
-
-  it('throws on a non-positive, non-numeric, or fractional value', () => {
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '0')
-    expect(() => ytUploadsPerDayCap()).toThrow(/invalid BRAINROT_YT_UPLOADS_PER_DAY/)
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', 'abc')
-    expect(() => ytUploadsPerDayCap()).toThrow(/invalid BRAINROT_YT_UPLOADS_PER_DAY/)
-    // A fraction would otherwise round the cap UP: the tick's `>=` gate lets
-    // 2 uploads through at 1.5.
-    vi.stubEnv('BRAINROT_YT_UPLOADS_PER_DAY', '1.5')
-    expect(() => ytUploadsPerDayCap()).toThrow(/positive integer/)
   })
 })
 
@@ -374,12 +347,10 @@ describe('youtubeTarget upload — error mapping', () => {
 })
 
 describe('youtubeAdapter', () => {
-  it('exposes a global-scope quota keyed to BRAINROT_YT_UPLOADS_PER_DAY', () => {
+  it('exposes a global-scope quota', () => {
     const adapter = youtubeAdapter()
     expect(adapter.platformId).toBe('youtube')
     expect(adapter.quota.scope).toBe('global')
-    expect(adapter.quota.envVar).toBe('BRAINROT_YT_UPLOADS_PER_DAY')
-    expect(adapter.quota.cap()).toBe(DEFAULT_YT_UPLOADS_PER_DAY)
   })
 
   it('hasCredential is false when YT_CLIENT_ID is unset, even with a stored token', () => {

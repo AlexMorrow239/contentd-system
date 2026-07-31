@@ -70,15 +70,15 @@ export class PublishOutcomeUnknownError extends BrainrotError {
   }
 }
 
-// One platform's quota descriptor (design spec decision 7): 'global' counts
-// usage across every channel (YouTube: per Google Cloud project); 'channel'
-// counts one channel alone (Instagram: per IG account). cap() reads env at
-// call time and may throw on a malformed value — callers surface that as a
-// bad-env tick outcome, never a crash.
+// One platform's quota SCOPE (design spec decision 7, superseded by the
+// runtime-backoff design): 'global' counts usage across every channel
+// (YouTube: per Google Cloud project); 'channel' counts one channel alone
+// (Instagram: per IG account). There is no local cap anymore — an upload the
+// platform's API refuses with a quota error backs that scope off for
+// QUOTA_BACKOFF_MS (src/publish/publishes.ts's quotaBackedOff) instead of
+// being pre-counted against a guessed daily number.
 export interface PlatformQuota {
   scope: 'global' | 'channel'
-  envVar: string
-  cap(): number
 }
 
 // A lazy handle over one finished video, resolved differently per platform:

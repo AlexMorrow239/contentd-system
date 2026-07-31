@@ -8,10 +8,10 @@ import { errorMessage } from '../errors.js'
 import type { LibraryState } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import type { ChannelConfig } from '../config/channel.js'
-import { uploadsUsedToday } from '../publish/publishes.js'
+import { quotaBackedOff, uploadsUsedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
-import { PLATFORM_QUOTAS, ytUploadsPerDayCap } from '../publish/platforms/quota.js'
+import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import type { DashboardConfig } from './config.js'
 import { html } from './html.js'
 import {
@@ -98,7 +98,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         root: deps.config.paths.root,
         activeNav: 'overview',
         refreshSeconds: 30,
-        body: renderOverviewPage(buildOverview(db, channels, now, ytUploadsPerDayCap()), error),
+        body: renderOverviewPage(buildOverview(db, channels, now), error),
       }),
     )
   })
@@ -241,7 +241,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         body: renderPublishesPage({
           grids: buildPublishGrids(db, channels, days, now),
           days,
-          quotas: buildPlatformQuotas(db, channels, localDay(now)),
+          quotas: buildPlatformQuotas(db, channels, localDay(now), now),
           configError: error,
         }),
       }),
@@ -309,24 +309,26 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 }
 
 /**
- * Reuses the same quota descriptors the publish loop enforces against
+ * Reuses the same quota SCOPE descriptors the publish loop enforces against
  * (PLATFORM_QUOTAS — which is exactly what each adapter exposes as
  * `adapter.quota`, and what publish-next.ts's own quota gate reads) rather
  * than a mirrored copy that could silently drift. Imported from the leaf
  * quota module, not through ADAPTERS: a read-only viewer has no business
- * pulling upload mechanics and credential code into its process to read
- * three static fields. 'global' (YouTube: one shared
- * Google Cloud project quota) reports one all-channels figure; 'channel'
- * (Instagram: one IG account per channel) has no single meaningful "used"
- * total to sum against the single per-channel `cap`, so it reports a
- * per-channel breakdown instead — summing usage across channels against a
- * cap that applies separately to EACH channel would misreport how much
- * headroom any one channel actually has left.
+ * pulling upload mechanics and credential code into its process to read one
+ * static field. 'global' (YouTube: one shared Google Cloud project quota)
+ * reports one all-channels figure; 'channel' (Instagram: one IG account per
+ * channel) has no single meaningful "used" total to report, so it reports a
+ * per-channel breakdown instead — summing usage across channels that are
+ * each rate-limited independently would misreport how much headroom any one
+ * channel actually has left. `backedOff` reads quotaBackedOff — a SELECT
+ * against `publishes`, so this stays read-only like every other dashboard
+ * query.
  */
 function buildPlatformQuotas(
   db: Database,
   channels: ChannelConfig[],
   day: string,
+  now: Date,
 ): PlatformQuotaView[] {
   return PUBLISH_PLATFORMS.map((platform) => {
     const quota = PLATFORM_QUOTAS[platform]
@@ -334,8 +336,8 @@ function buildPlatformQuotas(
       return {
         platform,
         scope: 'global',
-        cap: quota.cap(),
         used: uploadsUsedToday(db, platform, day),
+        backedOff: quotaBackedOff(db, platform, now),
       }
     }
     const perChannel = channels
@@ -343,8 +345,9 @@ function buildPlatformQuotas(
       .map((channel) => ({
         channel: channel.name,
         used: uploadsUsedToday(db, platform, day, channel.name),
+        backedOff: quotaBackedOff(db, platform, now, channel.name),
       }))
-    return { platform, scope: 'channel', cap: quota.cap(), perChannel }
+    return { platform, scope: 'channel', perChannel }
   })
 }
 
