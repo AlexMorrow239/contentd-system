@@ -254,6 +254,9 @@ describe('/publishes', () => {
     const historyLine =
       /<li>history:[^<]*(?:<[^/][^>]*>[^<]*<\/[^>]*>)?<\/li>/.exec(body)?.[0] ?? ''
     expect(spaceLine).toContain('backed off')
+    // Pin the regex actually matched — the '' fallback would satisfy the
+    // not.toContain below vacuously.
+    expect(historyLine).toContain('history:')
     expect(historyLine).not.toContain('backed off')
   })
 })

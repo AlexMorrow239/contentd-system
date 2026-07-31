@@ -100,7 +100,12 @@ describe('publishNextTick — gates', () => {
     // instead.
     seedReadyVideo(db, { channel: 'chan-a' })
     seedToken(db, 'chan-a')
-    seedQuotaFailure(db, { channel: 'chan-a', platform: 'youtube', now: NOW(), msAgo: 60 * 60 * 1000 })
+    seedQuotaFailure(db, {
+      channel: 'chan-a',
+      platform: 'youtube',
+      now: NOW(),
+      msAgo: 60 * 60 * 1000,
+    })
     const result = await publishNextTick(db, { channelsDir, now: NOW })
     expect(result).toEqual({
       action: 'noop',

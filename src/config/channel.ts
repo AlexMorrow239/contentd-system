@@ -396,9 +396,7 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
       )
     }
   }
-  return parsed
-    .map((p) => p.cfg)
-    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+  return parsed.map((p) => p.cfg).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 }
 
 /**
