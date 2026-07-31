@@ -59,6 +59,7 @@ export interface PublishTickResult {
     | 'daily-count-met'
     | 'platform-quota'
     | 'no-ready-video'
+    | 'series-blocked'
     | 'no-video-file'
     | 'no-auth'
     | 'bad-env'
@@ -341,7 +342,13 @@ export async function publishNextTick(
       return used < adapter.quota.cap()
     }
 
-    let firstReason: 'no-ready-video' | 'no-video-file' | 'no-auth' | 'platform-quota' | undefined
+    let firstReason:
+      | 'no-ready-video'
+      | 'no-video-file'
+      | 'no-auth'
+      | 'platform-quota'
+      | 'series-blocked'
+      | undefined
     // One video, plus the platforms it can actually reach this tick — the whole
     // fan-out is planned before anything is claimed. `tokenKey` rides along as a
     // plain Buffer (the credential gate below is what proves it is set) so the
@@ -364,6 +371,16 @@ export async function publishNextTick(
       // so a single-platform channel's finished videos stop consuming the
       // MAX_VIDEO_CANDIDATES budget the moment they are published.
       const declaredPlatforms = declared.map((t) => t.platform)
+      // Whether every candidate seen for THIS channel was fully blocked on its
+      // declared platforms (as opposed to missing a file), and whether any of
+      // that blocking came from the series-predecessor gate rather than the
+      // video's own publish state — the two facts 'series-blocked' reports. A
+      // channel with no candidates at all keeps `hadCandidates` false, which
+      // falls through to the ordinary 'no-ready-video' below, same as before
+      // this reason existed.
+      let hadCandidates = false
+      let allCandidatesFullyBlocked = true
+      let anySeriesBlock = false
       for (const video of channelVideoCandidates(
         db,
         channel.name,
@@ -371,18 +388,25 @@ export async function publishNextTick(
         MAX_VIDEO_CANDIDATES,
         agedCutoff(now, channel.backlogDays),
       )) {
+        hadCandidates = true
         // Bytes-reachable pre-flight: a local file OR a stored object. A pruned
         // runs/ tree is normal (the bucket is the durable copy); a row with
         // NEITHER would burn a quota unit on a failure the adapter can only
         // report as 'rejected'.
         if (video.objectKey === null && !existsSync(video.videoPath)) {
           if (firstReason === undefined) firstReason = 'no-video-file'
+          allCandidatesFullyBlocked = false
           continue
         }
         const open: PublishTargetConfig[] = []
+        let allBlocked = true
         for (const target of declared) {
           const platform = target.platform
-          if (video.blockedPlatforms.includes(platform)) continue
+          if (video.blockedPlatforms.includes(platform)) {
+            if (video.seriesBlockedPlatforms.includes(platform)) anySeriesBlock = true
+            continue
+          }
+          allBlocked = false
           if (!underQuota(platform, channel.name)) {
             if (firstReason === undefined) firstReason = 'platform-quota'
             continue
@@ -398,6 +422,7 @@ export async function publishNextTick(
           }
           open.push(target)
         }
+        if (!allBlocked) allCandidatesFullyBlocked = false
         if (open.length === 0) continue
         // `open` is non-empty only if the credential gate above ran
         // hasCredential, which it can only do with a key in hand — so the cast
@@ -406,7 +431,12 @@ export async function publishNextTick(
         break
       }
       if (picked !== undefined) break
-      if (firstReason === undefined) firstReason = 'no-ready-video'
+      if (firstReason === undefined) {
+        firstReason =
+          hadCandidates && allCandidatesFullyBlocked && anySeriesBlock
+            ? 'series-blocked'
+            : 'no-ready-video'
+      }
     }
 
     if (picked === undefined) {

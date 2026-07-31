@@ -273,6 +273,14 @@ interface PublishableVideo {
 export interface ChannelVideoCandidate extends PublishableVideo {
   /** Platforms this video can never go to again, per database state alone. */
   blockedPlatforms: Platform[]
+  /**
+   * The subset of `blockedPlatforms` (over the declared `platforms` only)
+   * blocked specifically by the series-predecessor gate rather than by this
+   * video's own publish state. Lets a caller distinguish "this video's own
+   * history rules it out" from "an ordered series is waiting on an earlier
+   * part" — see publish-next.ts's 'series-blocked' tick reason.
+   */
+  seriesBlockedPlatforms: Platform[]
 }
 
 // The per-(job, platform) blocking aggregate, as a SQL fragment shared by the
@@ -474,6 +482,13 @@ export function channelVideoCandidates(
     )
     .all(...rows.map((r) => r.jobId)) as { jobId: string; prevJobId: string | null }[]
 
+  // Platforms blocked by THIS gate specifically, keyed by job id — a subset
+  // of blockedByJob's union (a platform can also be independently blocked by
+  // the video's own publish state), kept separately so a caller can tell
+  // "this video's own history rules it out" from "an ordered series is
+  // waiting on an earlier part" (publish-next.ts's 'series-blocked' reason).
+  const seriesBlockedByJob = new Map<string, Platform[]>()
+
   if (predecessors.length > 0) {
     const prevIds = predecessors.map((p) => p.prevJobId).filter((id): id is string => id !== null)
     const donePairs = new Set<string>()
@@ -494,6 +509,7 @@ export function channelVideoCandidates(
         (p) => prevJobId === null || !donePairs.has(`${prevJobId}\n${p}`),
       )
       if (blocked.length === 0) continue
+      seriesBlockedByJob.set(jobId, blocked)
       const list = blockedByJob.get(jobId) ?? []
       for (const p of blocked) if (!list.includes(p)) list.push(p)
       blockedByJob.set(jobId, list)
@@ -507,6 +523,7 @@ export function channelVideoCandidates(
     metadataJson: row.metadataJson,
     topic: row.topic,
     blockedPlatforms: [...(blockedByJob.get(row.jobId) ?? [])].sort(),
+    seriesBlockedPlatforms: [...(seriesBlockedByJob.get(row.jobId) ?? [])].sort(),
   }))
 }
 

@@ -12,6 +12,7 @@ import {
 import { PLATFORM_QUOTAS } from '../../publish/platforms/quota.js'
 import type { Platform, PublishAdapter } from '../../publish/types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../../publish/types.js'
+import { claimTopic, insertTopics, redditCandidates } from '../../scout/topics.js'
 import { fakeStore } from '../../storage/fake.js'
 import { acquireLease, extendLease, PUBLISH_LEASE_TTL_MS } from '../lease.js'
 import { publishExitCode, publishNextTick } from '../publish-next.js'
@@ -135,6 +136,61 @@ describe('publishNextTick — gates', () => {
     expect(result).toEqual({
       action: 'noop',
       reason: 'no-ready-video',
+      reclaimed: { count: 0, bytes: 0 },
+    })
+    db.close()
+  })
+
+  it('no-ops with reason series-blocked when the only ready video is a continuation waiting on its predecessor', async () => {
+    // Part 1's topic row exists but has never been claimed by a job (still a
+    // 'candidate' — the queue simply hasn't produced it yet), so the
+    // series-predecessor gate blocks every declared platform for part 2. A
+    // stalled series must not read as an idle channel in the log stream —
+    // that ambiguity is exactly why 'series-blocked' exists as its own
+    // reason distinct from the generic 'no-ready-video'.
+    const db = memDb()
+    const channelsDir = tmpDir('brainrot-publish-seriesblocked-')
+    writeChannel(channelsDir, { name: 'chan-a', publish: true })
+    seedToken(db, 'chan-a')
+    const jobId = seedReadyVideo(db, { channel: 'chan-a', topic: 'Story (2/2)' })
+    insertTopics(db, [
+      {
+        channel: 'chan-a',
+        title: 'Story (1/2)',
+        rawTitle: 'Story',
+        source: 'reddit:r/a',
+        url: 'https://example.com/1',
+        dedupeHash: 'series-h1',
+        score: 88,
+        reason: 'seeded',
+        status: 'candidate',
+        bodyText: 'part one body',
+        seriesKey: 'series-S',
+        partIndex: 1,
+        partCount: 2,
+      },
+      {
+        channel: 'chan-a',
+        title: 'Story (2/2)',
+        rawTitle: 'Story',
+        source: 'reddit:r/a',
+        url: 'https://example.com/2',
+        dedupeHash: 'series-h2',
+        score: 88,
+        reason: 'seeded',
+        status: 'candidate',
+        bodyText: 'part two body',
+        seriesKey: 'series-S',
+        partIndex: 2,
+        partCount: 2,
+      },
+    ])
+    const part2 = redditCandidates(db, 'chan-a').find((t) => t.partIndex === 2)
+    claimTopic(db, part2!.id, jobId)
+    const result = await publishNextTick(db, { channelsDir, now: NOW })
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'series-blocked',
       reclaimed: { count: 0, bytes: 0 },
     })
     db.close()

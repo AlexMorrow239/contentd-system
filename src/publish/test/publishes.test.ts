@@ -430,6 +430,7 @@ describe('channelVideoCandidates', () => {
         metadataJson: '{}',
         topic: 'ready topic',
         blockedPlatforms: [],
+        seriesBlockedPlatforms: [],
       },
     ])
     db.close()
@@ -503,7 +504,7 @@ describe('channelVideoCandidates', () => {
     db.close()
   })
 
-  it('reports a platform at the rejection cap as blocked', () => {
+  it('reports a platform at the rejection cap as blocked, but not as series-blocked', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedLibrary(db, 'job-1', { state: 'ready' })
@@ -516,10 +517,11 @@ describe('channelVideoCandidates', () => {
       })
       markPublishFailed(db, claim!.id, 'bad video', 'rejected', new Date())
     }
-    expect(
-      channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z')[0]
-        .blockedPlatforms,
-    ).toEqual(['youtube'])
+    const found = channelVideoCandidates(db, 'chan-a', PUBLISH_PLATFORMS, 10, '2000-01-01T00:00:00.000Z')[0]
+    expect(found.blockedPlatforms).toEqual(['youtube'])
+    // This video's own attempt history caused the block, not a predecessor
+    // part — a standalone (non-series) video is never in seriesBlockedByJob.
+    expect(found.seriesBlockedPlatforms).toEqual([])
     db.close()
   })
 
@@ -1334,6 +1336,9 @@ describe('channelVideoCandidates series ordering', () => {
     const part1 = found.find((v) => v.jobId === p1)
     expect(part1?.blockedPlatforms).toEqual([])
     expect(part2?.blockedPlatforms).toEqual(['youtube'])
+    // Reported separately: this block came from the predecessor gate, not
+    // from part 2's own publish history (it has none yet).
+    expect(part2?.seriesBlockedPlatforms).toEqual(['youtube'])
   })
 
   it('unblocks part 2 once part 1 has a done row', () => {
@@ -1342,6 +1347,7 @@ describe('channelVideoCandidates series ordering', () => {
     seedPublish(db, p1, { platform: 'youtube', channel: 'aita', status: 'done' })
     const found = channelVideoCandidates(db, 'aita', ['youtube'], 50, '1970-01-01T00:00:00.000Z')
     expect(found.find((v) => v.jobId === p2)?.blockedPlatforms).toEqual([])
+    expect(found.find((v) => v.jobId === p2)?.seriesBlockedPlatforms).toEqual([])
   })
 
   it('gates each platform independently', () => {
