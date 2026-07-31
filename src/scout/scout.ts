@@ -224,9 +224,14 @@ export async function scoutChannel(
       console.error(`scout: source ${entry}`)
       sourceErrors.push(entry)
       // Paid-but-failed generation (schema-invalid response) still spent
-      // money; recover it the same way scoreWithLedger does.
-      const spent = errorCostUsdMicros(err)
-      if (spent !== undefined) generateCostMicros += spent
+      // money; recover it the same way scoreWithLedger does. Gated on the
+      // llm descriptor: a reddit/rss error never carries a cost tag, but
+      // gating explicitly means one hypothetically doing so is never
+      // mis-ledgered as scout-generate spend.
+      if (descriptor.kind === 'llm') {
+        const spent = errorCostUsdMicros(err)
+        if (spent !== undefined) generateCostMicros += spent
+      }
     }
   }
 
@@ -429,7 +434,18 @@ export async function scoutAll(
   let totalSources = 0
   let failedSources = 0
   for (const channel of channels) {
-    const sourceCount = channel.scout.subreddits.length + channel.scout.rss.length
+    // The llm descriptor counts as one source (it contributes at most one
+    // sourceErrors entry, same as a reddit/rss descriptor) whenever
+    // generateTopics is on — otherwise total-outage detection below drifts in
+    // both directions: a healthy run with every rss feed down but llm still
+    // working would over-count failedSources against the un-adjusted total,
+    // and a genuine total outage that also takes down llm would under-count
+    // it. This also makes an llm-only channel (no subreddits/rss) scoutable
+    // instead of silently skipped as "no [scout] sources".
+    const sourceCount =
+      channel.scout.subreddits.length +
+      channel.scout.rss.length +
+      (channel.scout.generateTopics > 0 ? 1 : 0)
     // No [scout] sources → not a scouted channel; manual produce only.
     if (sourceCount === 0) continue
     try {

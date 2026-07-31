@@ -673,6 +673,11 @@ describe('scoutChannel llm generation', () => {
 
     const result = await scoutChannel(db, channel, { client })
 
+    // Regression guard: the queue-full gate returns before the descriptor
+    // array is even built, so `create` was never going to be called either
+    // way — this test doesn't discriminate the llm wiring itself, it pins
+    // the ordering invariant (depth gate precedes generation) once that
+    // wiring exists.
     expect(result.skipped).toBe('queue-full')
     expect(create).not.toHaveBeenCalled()
     db.close()
@@ -704,7 +709,7 @@ describe('scoutChannel llm generation', () => {
     db.close()
   })
 
-  it('a generation failure is one sourceErrors entry; rss candidates still process', async () => {
+  it('a generation failure is one sourceErrors entry; reddit candidates still process', async () => {
     const db = memDb()
     const channel = testChannel({
       name: 'chan-a',
@@ -731,6 +736,26 @@ describe('scoutChannel llm generation', () => {
     // the successful reddit-fed scoring call ledgered.
     const costs = db.prepare('SELECT operation FROM costs').all()
     expect(costs).toEqual([{ operation: 'scout-score' }])
+    db.close()
+  })
+
+  it('degrades to a sourceErrors entry when the generation budget gate fires, unlike a scoring throw', async () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    const db = memDb()
+    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
+    const create = vi.fn()
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const result = await scoutChannel(db, channel, { client })
+
+    // The budget gate fires INSIDE the per-source try (assertGlobalDayBudget
+    // before llmSource's paid call), so it lands as an ordinary sourceErrors
+    // entry rather than the hard throw scoring's own gate produces.
+    expect(result.sourceErrors).toHaveLength(1)
+    expect(result.sourceErrors[0]).toMatch(/^llm:chan-a: /)
+    expect(result.sourceErrors[0]).toContain('global-day')
+    expect(create).not.toHaveBeenCalled()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM costs').get()).toEqual({ n: 0 })
     db.close()
   })
 
@@ -843,6 +868,89 @@ describe('scoutAll', () => {
     expect(results).toHaveLength(2)
     expect(results[0].sourceErrors).toHaveLength(1)
     expect(results[1].queued).toBe(1)
+    db.close()
+  })
+
+  it('scouts an llm-only channel (no subreddits/rss) instead of skipping it as sourceless', async () => {
+    const db = memDb()
+    const channel = testChannel({ name: 'a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
+    const create = vi
+      .fn()
+      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter']))
+      .mockResolvedValueOnce(
+        emitScores([{ candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong' }]),
+      )
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const results = await scoutAll(db, [channel], { client })
+
+    // Without the corrected sourceCount, this channel's sourceCount would be
+    // 0 (no subreddits/rss) and scoutAll would `continue` past it entirely —
+    // an empty results array, never touching the llm descriptor at all.
+    expect(results).toHaveLength(1)
+    expect(results[0].channel).toBe('a')
+    expect(results[0].skipped).toBeUndefined()
+    expect(results[0].queued).toBe(1)
+    expect(create).toHaveBeenCalledTimes(2)
+    db.close()
+  })
+
+  it('raises AllSourcesFailedError on a total outage that includes a failed llm source', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'a',
+      scout: { ...DEFAULT_SCOUT, subreddits: ['one'], generateTopics: 2 },
+    })
+    // reddit fetch fails (fetchStub({}) rejects every URL) and generation
+    // fails too — every one of this channel's two sources is down.
+    const create = vi.fn().mockRejectedValueOnce(new Error('llm down'))
+    const client = { messages: { create } } as unknown as Anthropic
+
+    const err = await scoutAll(db, [channel], {
+      client,
+      fetchImpl: fetchStub({}),
+      force: true,
+    }).then(
+      () => null,
+      (e: unknown) => e,
+    )
+
+    // With the old sourceCount (ignoring the llm descriptor), totalSources
+    // would be 1 against failedSources 2 — a genuine total outage that never
+    // throws. The corrected count (2) makes failedSources === totalSources.
+    expect(err).toBeInstanceOf(AllSourcesFailedError)
+    const failed = err as AllSourcesFailedError
+    expect(failed.results.map((r) => r.channel)).toEqual(['a'])
+    expect(failed.results[0].sourceErrors).toHaveLength(2)
+    db.close()
+  })
+
+  it('does not raise AllSourcesFailedError when a failed llm source sits alongside a succeeding reddit source', async () => {
+    const db = memDb()
+    const channel = testChannel({
+      name: 'a',
+      scout: { ...DEFAULT_SCOUT, subreddits: ['one'], generateTopics: 2 },
+    })
+    const fetchImpl = fetchStub({ '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]) })
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('llm down'))
+      .mockResolvedValueOnce(
+        emitScores([{ candidateIndex: 0, score: 85, topic: 'A topic', reason: 'ok' }]),
+      )
+    const client = { messages: { create } } as unknown as Anthropic
+
+    // With the old sourceCount (ignoring the llm descriptor), this channel's
+    // sourceCount would be 1 (reddit only) against failedSources 1 (the llm
+    // failure) — a FALSE total-outage that would incorrectly throw even
+    // though the reddit source succeeded and queued a topic. The corrected
+    // count (2) keeps this a healthy partial run.
+    const results = await scoutAll(db, [channel], { client, fetchImpl })
+
+    expect(results).toHaveLength(1)
+    expect(results[0].sourceErrors).toHaveLength(1)
+    expect(results[0].sourceErrors[0]).toMatch(/^llm:a: /)
+    expect(results[0].queued).toBe(1)
     db.close()
   })
 
