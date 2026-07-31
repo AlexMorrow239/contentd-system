@@ -6,6 +6,7 @@ import type { ChannelConfig } from '../config/channel.js'
 import { createJob } from '../jobs/runner.js'
 import type { JobContext } from '../jobs/types.js'
 import type { ScriptOutput } from '../stages/script.js'
+import type { StoryPart } from '../stories/types.js'
 import { testChannel, PLATFORM_META } from './channel.js'
 import { memDb } from './db.js'
 import { tmpDir } from './tmp.js'
@@ -43,6 +44,8 @@ export interface MakeCtxOptions {
   /** Existing run dir to write artifacts into. Default: a fresh temp dir. */
   runDir?: string
   db?: Database
+  /** Story-mode payload, for stage tests that need `ctx.story` set. Default: undefined. */
+  story?: StoryPart
 }
 
 export function makeCtx(opts: MakeCtxOptions = {}): JobContext {
@@ -58,6 +61,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): JobContext {
     db,
     channel,
     topic,
+    story: opts.story,
     runDir,
     artifactPath(stage, file) {
       const dir = path.join(runDir, stage)

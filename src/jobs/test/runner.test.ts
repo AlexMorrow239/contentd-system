@@ -10,6 +10,8 @@ import type { StoreArtifact } from '../../stages/store.js'
 import { testChannel } from '../../testing/channel.js'
 import { fileDb } from '../../testing/db.js'
 import { tagError } from '../../errors.js'
+import { claimTopic, insertTopics, redditCandidates } from '../../scout/topics.js'
+import type { StoryPart } from '../../stories/types.js'
 
 /** A real on-disk db plus a runs root beside it; both cleaned up per file. */
 function setup() {
@@ -589,5 +591,71 @@ describe('final gate: library_objects', () => {
     expect(
       row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library_objects WHERE job_id = ?', jobId),
     ).toEqual({ n: 1 })
+  })
+})
+
+describe('runJob story context', () => {
+  it('resolves the story payload from the claimed topic row', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel({ name: 'aita', story: { maxParts: 4 } })
+    insertTopics(db, [
+      {
+        channel: 'aita',
+        title: 'She blended the fruit (2/3)',
+        rawTitle: 'AITA?',
+        source: 'reddit:r/AmItheAsshole',
+        url: 'https://reddit.com/c/abc/',
+        dedupeHash: 'h2',
+        score: 88,
+        reason: 'r',
+        status: 'candidate',
+        bodyText: 'Then she called my mother.',
+        seriesKey: 's',
+        partIndex: 2,
+        partCount: 3,
+        truncated: true,
+      },
+    ])
+    const jobId = createJob(db, channel, { topic: 'She blended the fruit (2/3)' })
+    const [topic] = redditCandidates(db, 'aita')
+    claimTopic(db, topic.id, jobId)
+
+    let seen: StoryPart | undefined
+    const stage: StageDef = {
+      name: 'script',
+      run: async (ctx) => {
+        seen = ctx.story
+      },
+    }
+    await runJob(db, channel, jobId, [stage], { runsRoot })
+
+    expect(seen).toEqual({
+      bodyText: 'Then she called my mother.',
+      partIndex: 2,
+      partCount: 3,
+      sourceUrl: 'https://reddit.com/c/abc/',
+      truncated: true,
+    })
+  })
+
+  it('leaves story undefined for a job with no topic row', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'manual topic' })
+    let seen: StoryPart | undefined = {
+      bodyText: 'x',
+      partIndex: 1,
+      partCount: 1,
+      sourceUrl: 'u',
+      truncated: false,
+    }
+    const stage: StageDef = {
+      name: 'script',
+      run: async (ctx) => {
+        seen = ctx.story
+      },
+    }
+    await runJob(db, channel, jobId, [stage], { runsRoot })
+    expect(seen).toBeUndefined()
   })
 })

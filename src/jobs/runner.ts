@@ -5,6 +5,7 @@ import { nanoid } from 'nanoid'
 import pino from 'pino'
 import type { ChannelConfig } from '../config/channel.js'
 import { classify } from '../errors.js'
+import { storyPartForJob } from '../scout/topics.js'
 import type { StoreArtifact } from '../stages/store.js'
 import { upsertLibraryObject } from './library.js'
 import { STAGE_ORDER } from './types.js'
@@ -65,6 +66,7 @@ export async function runJob(
     db,
     channel,
     topic: jobRow.topic,
+    story: storyPartForJob(db, jobId) ?? undefined,
     runDir,
     artifactPath(stage: StageName, file: string): string {
       const dir = join(runDir, stage)
