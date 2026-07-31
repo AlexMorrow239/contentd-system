@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './channel.js'
+import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir } from './channel.js'
 import {
   channelToml,
   channelTomlLines,
@@ -439,83 +439,15 @@ describe('videos_per_day validation', () => {
 })
 
 describe('loadChannelsDir platform quota validation', () => {
-  it('rejects a global-scope quota over-subscribed across channels', () => {
-    // youtube is scope 'global', cap 6 by default: 4 + 3 = 7.
-    const dir = writeChannels({
-      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 4, platforms: ['youtube'] }),
-      'chan-b.toml': channelTomlLines({ name: 'chan-b', videosPerDay: 3, platforms: ['youtube'] }),
-    })
-    expect(() => loadChannelsDir(dir)).toThrow(
-      /chan-a\(4\) \+ chan-b\(3\) declare 7 youtube videos\/day, exceeding youtube's 6\/day cap/,
-    )
-  })
-
-  it('accepts a global-scope total exactly at the cap', () => {
-    const dir = writeChannels({
-      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 3, platforms: ['youtube'] }),
-      'chan-b.toml': channelTomlLines({ name: 'chan-b', videosPerDay: 3, platforms: ['youtube'] }),
-    })
-    expect(loadChannelsDir(dir)).toHaveLength(2)
-  })
-
-  it('ignores channels that do not declare the platform when summing a global quota', () => {
-    const dir = writeChannels({
-      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 6, platforms: ['youtube'] }),
-      'chan-b.toml': channelTomlLines({
-        name: 'chan-b',
-        videosPerDay: 6,
-        platforms: ['instagram'],
-      }),
-    })
-    expect(loadChannelsDir(dir)).toHaveLength(2)
-  })
-
-  it('ignores channels with no [publish] table at all', () => {
-    const dir = writeChannels({
-      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 6, platforms: ['youtube'] }),
-      'chan-b.toml': channelTomlLines({ name: 'chan-b', videosPerDay: 6, platforms: [] }),
-    })
-    expect(loadChannelsDir(dir)).toHaveLength(2)
-  })
-
-  it('rejects a channel-scope quota exceeded by one channel alone', () => {
-    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '2')
+  it('accepts videos_per_day above any platform daily quota (runtime detection owns limits)', () => {
     const dir = writeChannels({
       'chan-a.toml': channelTomlLines({
         name: 'chan-a',
-        videosPerDay: 3,
-        platforms: ['instagram'],
+        videosPerDay: 15,
+        platforms: ['youtube', 'instagram'],
       }),
     })
-    expect(() => loadChannelsDir(dir)).toThrow(
-      /chan-a declares 3 instagram videos\/day, exceeding instagram's 2\/day per-channel cap/,
-    )
-  })
-
-  it('does not sum a channel-scope quota across channels', () => {
-    vi.stubEnv('BRAINROT_IG_UPLOADS_PER_DAY', '3')
-    const dir = writeChannels({
-      'chan-a.toml': channelTomlLines({
-        name: 'chan-a',
-        videosPerDay: 3,
-        platforms: ['instagram'],
-      }),
-      'chan-b.toml': channelTomlLines({
-        name: 'chan-b',
-        videosPerDay: 3,
-        platforms: ['instagram'],
-      }),
-    })
-    expect(loadChannelsDir(dir)).toHaveLength(2)
-  })
-
-  it('surfaces a quota breach through tryLoadChannelsDir as an error string, not a throw', () => {
-    const dir = writeChannels({
-      'chan-a.toml': channelTomlLines({ name: 'chan-a', videosPerDay: 7, platforms: ['youtube'] }),
-    })
-    const loaded = tryLoadChannelsDir(dir)
-    expect(loaded.channels).toEqual([])
-    expect(loaded.error).toMatch(/exceeding youtube's 6\/day cap/)
+    expect(loadChannelsDir(dir)).toHaveLength(1)
   })
 })
 
