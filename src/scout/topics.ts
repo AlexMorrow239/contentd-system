@@ -167,6 +167,20 @@ export const RECENT_TITLES_LIMIT = 30
 
 // Rejected topics are noise (near-duplicates, off-niche); the scorer only
 // needs what the channel actually covered or queued.
+//
+// One title per STORY (not per row): a story's parts are one row each with
+// near-identical titles ("X (1/4)", "X (2/4)", ...), so at the corpus's
+// measured ~3.3 parts/story counting every row would let ~9 distinct stories
+// crowd out what used to be a 30-distinct-topic window, while the scorer's
+// "recently covered" prompt fills up with near-duplicate strings that all
+// describe the same post. Topic-mode rows (series_key NULL) have no series to
+// collapse and keep counting individually. The representative for a series is
+// its lowest part_index among non-rejected rows (recomputed per row via the
+// correlated MIN so a rejected part_index=1 doesn't hide the rest of an
+// otherwise-live series), with the "(i/N)" queue suffix stripped since it is
+// not part of the story's actual title.
+const PART_SUFFIX = /\s*\(\d+\/\d+\)\s*$/
+
 export function recentTopicTitles(
   db: Database,
   channel: string,
@@ -174,11 +188,16 @@ export function recentTopicTitles(
 ): string[] {
   const rows = db
     .prepare(
-      "SELECT title FROM topics WHERE channel = ? AND status != 'rejected' " +
-        'ORDER BY created_at DESC, id DESC LIMIT ?',
+      `SELECT t1.title AS title, t1.series_key AS seriesKey FROM topics t1
+       WHERE t1.channel = ? AND t1.status != 'rejected'
+         AND (t1.series_key IS NULL OR t1.part_index = (
+           SELECT MIN(t2.part_index) FROM topics t2
+           WHERE t2.channel = t1.channel AND t2.series_key = t1.series_key AND t2.status != 'rejected'
+         ))
+       ORDER BY t1.created_at DESC, t1.id DESC LIMIT ?`,
     )
-    .all(channel, limit) as { title: string }[]
-  return rows.map((r) => r.title)
+    .all(channel, limit) as { title: string; seriesKey: string | null }[]
+  return rows.map((r) => (r.seriesKey === null ? r.title : r.title.replace(PART_SUFFIX, '')))
 }
 
 // Queue depth for the scout's own gate: only 'candidate' rows count. A

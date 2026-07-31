@@ -34,6 +34,9 @@ function seedTopic(
     status: string
     jobId: string | null
     createdAt: string
+    seriesKey: string | null
+    partIndex: number | null
+    partCount: number | null
   }> = {},
 ): number {
   seq += 1
@@ -49,12 +52,16 @@ function seedTopic(
     status: 'candidate',
     jobId: null,
     createdAt: '2026-07-20T00:00:00.000Z',
+    seriesKey: null,
+    partIndex: null,
+    partCount: null,
     ...overrides,
   }
   const res = db
     .prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id, created_at) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id, created_at, ' +
+        'series_key, part_index, part_count) ' +
+        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .run(
       row.channel,
@@ -68,6 +75,9 @@ function seedTopic(
       row.status,
       row.jobId,
       row.createdAt,
+      row.seriesKey,
+      row.partIndex,
+      row.partCount,
     )
   return Number(res.lastInsertRowid)
 }
@@ -195,6 +205,60 @@ describe('recentTopicTitles', () => {
       seedTopic(db, { createdAt: `2026-07-19T00:00:${String(i).padStart(2, '0')}.000Z` })
     }
     expect(recentTopicTitles(db, 'chan-a')).toHaveLength(30)
+    db.close()
+  })
+
+  it('collapses a story series to one representative title, but counts topic rows individually', () => {
+    const db = memDb()
+    seedTopic(db, { title: 'Topic A', createdAt: '2026-07-19T00:00:00.000Z' })
+    seedTopic(db, { title: 'Topic B', createdAt: '2026-07-19T01:00:00.000Z' })
+    seedTopic(db, {
+      title: 'Story (1/4)',
+      seriesKey: 'S',
+      partIndex: 1,
+      partCount: 4,
+      createdAt: '2026-07-19T02:00:00.000Z',
+    })
+    seedTopic(db, {
+      title: 'Story (2/4)',
+      seriesKey: 'S',
+      partIndex: 2,
+      partCount: 4,
+      status: 'used',
+      createdAt: '2026-07-19T03:00:00.000Z',
+    })
+    seedTopic(db, {
+      title: 'Story (3/4)',
+      seriesKey: 'S',
+      partIndex: 3,
+      partCount: 4,
+      createdAt: '2026-07-19T04:00:00.000Z',
+    })
+    seedTopic(db, {
+      title: 'Story (4/4)',
+      seriesKey: 'S',
+      partIndex: 4,
+      partCount: 4,
+      createdAt: '2026-07-19T05:00:00.000Z',
+    })
+    // One 4-part story plus two topic-mode rows -> three entries, not five.
+    const titles = recentTopicTitles(db, 'chan-a')
+    expect(titles).toHaveLength(3)
+    expect(titles).toEqual(expect.arrayContaining(['Story', 'Topic A', 'Topic B']))
+    db.close()
+  })
+
+  it('shifts the series representative when its lowest part is rejected', () => {
+    const db = memDb()
+    seedTopic(db, {
+      title: 'Story (1/2)',
+      seriesKey: 'S',
+      partIndex: 1,
+      partCount: 2,
+      status: 'rejected',
+    })
+    seedTopic(db, { title: 'Story (2/2)', seriesKey: 'S', partIndex: 2, partCount: 2 })
+    expect(recentTopicTitles(db, 'chan-a')).toEqual(['Story'])
     db.close()
   })
 })
