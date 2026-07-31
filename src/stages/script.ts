@@ -6,6 +6,8 @@ import { assertBudget, recordCost } from '../jobs/costs.js'
 import { structuredCompletion } from '../providers/anthropic.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { platformEntrySchema } from '../publish/platform-meta.js'
+import { sanitizeStory } from '../stories/sanitize.js'
+import type { StoryPart } from '../stories/types.js'
 
 // Pre-flight budget reservation for the script LLM call (~$0.02). assertBudget
 // blocks the stage if the job or day is already too close to its cap.
@@ -34,6 +36,75 @@ export const ScriptOutputSchema = z.object({
 
 export type ScriptOutput = z.infer<typeof ScriptOutputSchema>
 export type ScriptArtifact = ScriptOutput
+
+// Story mode makes ONE model call, and it writes only platformMeta — narration
+// is assembled deterministically, so verbatim is guaranteed by construction
+// rather than by prompt discipline. Haiku because three short strings do not
+// need Sonnet; ~$0.001 against the topic path's ~$0.02.
+export const STORY_META_MODEL = 'claude-haiku-4-5'
+export const ESTIMATED_STORY_META_COST_MICROS = 2_000
+
+const STORY_OUTRO = 'The full story is linked in the description.'
+const PART_WORDS = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight']
+
+// visualDirection has no consumer — visuals-volume.ts picks a random
+// background clip regardless — so story segments carry a constant rather than
+// paying a model to invent phrases nothing reads.
+const STORY_VISUAL = 'story background'
+
+/**
+ * The spoken opener. Part 1 uses the post's own title, which in this genre is
+ * already the hook ("AITA for blocking a car in?"); the `(1/3)` suffix the
+ * scout appended for the queue is stripped, since it is not speech. Later
+ * parts get a short continuation line so voice.ts's HOOK_PAUSE_MS lands
+ * naturally before the narration resumes.
+ */
+function storyHook(topic: string, part: StoryPart): string {
+  if (part.partIndex > 1) {
+    const word = PART_WORDS[part.partIndex] ?? String(part.partIndex)
+    return `Part ${word}.`
+  }
+  return topic.replace(/\s*\(\d+\/\d+\)\s*$/, '').trim()
+}
+
+/**
+ * Paragraphs become segments. Sanitization runs here, on the way into the
+ * artifact, so the caption text and the spoken audio are the same string —
+ * captions render script.json's segments, so substituting anywhere later would
+ * desynchronize them.
+ */
+function storySegments(part: StoryPart): { text: string; visualDirection: string }[] {
+  const segments = sanitizeStory(part.bodyText)
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => p !== '')
+    .map((text) => ({ text, visualDirection: STORY_VISUAL }))
+  // Only the LAST part of a series that was cut short says so.
+  if (part.truncated && part.partIndex === part.partCount) {
+    segments.push({ text: STORY_OUTRO, visualDirection: STORY_VISUAL })
+  }
+  return segments
+}
+
+const storyMetaSchema = z.object({ platformMeta: platformMetaSchema })
+
+function buildStoryMetaPrompt(topic: string, part: StoryPart): string {
+  return `Write publishing metadata for one part of a narrated reddit story video.
+
+Video title context: ${topic}
+This is part ${part.partIndex} of ${part.partCount}.
+
+Do NOT write or summarize the story itself — the narration is fixed and is not your job.
+
+platformMeta: provide entries for youtube, tiktok, and instagram. For each entry:
+- title: at most 90 characters. No emojis.${
+    part.partCount > 1 ? ` End the title with " (${part.partIndex}/${part.partCount})".` : ''
+  }
+- description: 1 to 2 plain-spoken sentences. No emojis.
+- hashtags: at most 5 hashtags, each starting with "#", lowercase, no spaces.
+
+Tone: plain-spoken. Do not use emojis anywhere. Do not use markdown.`
+}
 
 function buildSystem(niche: string[]): string {
   return [
@@ -66,29 +137,10 @@ export function createScriptStage(client?: Anthropic): StageDef {
   return {
     name: 'script',
     async run(ctx: JobContext): Promise<void> {
-      assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS)
-      let artifact: ScriptArtifact
-      let costUsdMicros: number
-      try {
-        const { data, cost } = await structuredCompletion({
-          model: ctx.channel.scriptModel,
-          system: buildSystem(ctx.channel.niche),
-          prompt: buildPrompt(ctx.topic, ctx.channel.niche),
-          schema: ScriptOutputSchema,
-          maxTokens: 4096,
-          client,
-        })
-        artifact = data
-        costUsdMicros = cost.usdMicros
-      } catch (err) {
-        // A schema-invalid response is still a paid call: the adapter attaches the
-        // billed cost to the thrown error, so ledger it here before rethrowing so
-        // the spend is never lost, then let the stage fail as before.
-        const paid = errorCostUsdMicros(err)
-        if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
-        throw err
-      }
-      recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', costUsdMicros)
+      const artifact =
+        ctx.story === undefined
+          ? await runTopicScript(ctx, client)
+          : await runStoryScript(ctx, ctx.story, client)
       await fs.writeFile(
         ctx.artifactPath('script', 'script.json'),
         JSON.stringify(artifact, null, 2),
@@ -98,3 +150,72 @@ export function createScriptStage(client?: Anthropic): StageDef {
 }
 
 export const scriptStage = createScriptStage()
+
+async function runTopicScript(ctx: JobContext, client?: Anthropic): Promise<ScriptArtifact> {
+  assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS)
+  try {
+    const { data, cost } = await structuredCompletion({
+      model: ctx.channel.scriptModel,
+      system: buildSystem(ctx.channel.niche),
+      prompt: buildPrompt(ctx.topic, ctx.channel.niche),
+      schema: ScriptOutputSchema,
+      maxTokens: 4096,
+      client,
+    })
+    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros)
+    return data
+  } catch (err) {
+    // A schema-invalid response is still a paid call: the adapter attaches the
+    // billed cost to the thrown error, so ledger it here before rethrowing so
+    // the spend is never lost, then let the stage fail as before.
+    const paid = errorCostUsdMicros(err)
+    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
+    throw err
+  }
+}
+
+/**
+ * Story mode: narration is built from the post, and the model is asked only
+ * for platformMeta. The post body is never placed in a prompt, which is what
+ * makes "verbatim" a structural property rather than an instruction.
+ */
+async function runStoryScript(
+  ctx: JobContext,
+  part: StoryPart,
+  client?: Anthropic,
+): Promise<ScriptArtifact> {
+  assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_STORY_META_COST_MICROS)
+  let platformMeta: ScriptOutput['platformMeta']
+  try {
+    const { data, cost } = await structuredCompletion({
+      model: STORY_META_MODEL,
+      system:
+        'You write publishing metadata for short vertical videos that narrate reddit stories. ' +
+        'Return your answer ONLY by calling the `emit` tool. Never write prose or markdown.',
+      prompt: buildStoryMetaPrompt(ctx.topic, part),
+      schema: storyMetaSchema,
+      maxTokens: 1024,
+      client,
+    })
+    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros)
+    platformMeta = data.platformMeta
+  } catch (err) {
+    const paid = errorCostUsdMicros(err)
+    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
+    throw err
+  }
+
+  // A truncated series has an ending the video does not reach, so every
+  // platform's description carries the permalink the outro points at.
+  if (part.truncated && part.partIndex === part.partCount) {
+    for (const entry of Object.values(platformMeta)) {
+      entry.description = `${entry.description} Full story: ${part.sourceUrl}`
+    }
+  }
+
+  return {
+    hook: storyHook(ctx.topic, part),
+    segments: storySegments(part),
+    platformMeta,
+  }
+}

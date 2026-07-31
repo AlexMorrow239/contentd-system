@@ -3,7 +3,8 @@ import { promises as fs } from 'node:fs'
 import type Anthropic from '@anthropic-ai/sdk'
 import { BudgetExceededError } from '../../jobs/costs.js'
 import { createScriptStage, ESTIMATED_SCRIPT_COST_MICROS } from '../script.js'
-import { testChannel } from '../../testing/channel.js'
+import type { ScriptOutput } from '../script.js'
+import { testChannel, PLATFORM_META } from '../../testing/channel.js'
 import { makeCtx } from '../../testing/job.js'
 
 const VALID_SCRIPT = {
@@ -118,5 +119,114 @@ describe('scriptStage', () => {
     await expect(createScriptStage(client).run(ctx)).rejects.toBeInstanceOf(BudgetExceededError)
     expect(create).not.toHaveBeenCalled()
     expect(ESTIMATED_SCRIPT_COST_MICROS).toBeGreaterThan(1)
+  })
+})
+
+describe('createScriptStage story mode', () => {
+  // storyMetaSchema wraps the three platform entries in a `platformMeta` key —
+  // the story call asks ONLY for metadata, so the narration fields of
+  // ScriptOutput are absent from what the model returns.
+  const META = {
+    content: [
+      {
+        type: 'tool_use',
+        id: 't1',
+        name: 'emit',
+        input: {
+          platformMeta: {
+            youtube: PLATFORM_META.youtube,
+            tiktok: PLATFORM_META.tiktok,
+            instagram: PLATFORM_META.instagram,
+          },
+        },
+      },
+    ],
+    usage: { input_tokens: 100, output_tokens: 100 },
+  }
+
+  const story = {
+    bodyText: 'One month ago I hosted a movie night. She said she would kill me.\n\nThen she called my mother.',
+    partIndex: 1,
+    partCount: 3,
+    sourceUrl: 'https://reddit.com/r/AmItheAsshole/comments/abc/',
+    truncated: false,
+  }
+
+  it('narrates the body verbatim, sanitized, without sending it to a model', async () => {
+    const { client, create } = fakeClient(META)
+    const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
+    await createScriptStage(client).run(ctx)
+
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    const narration = artifact.segments.map((s) => s.text).join(' ')
+    expect(narration).toBe(
+      'One month ago I hosted a movie night. She said she would unalive me. Then she called my mother.',
+    )
+    // The narration must never appear in what was sent to the model.
+    const sentArgs = create.mock.calls[0][0]
+    const sentPrompt = JSON.stringify(sentArgs)
+    expect(sentPrompt).not.toContain('hosted a movie night')
+  })
+
+  it('uses the post title as the hook on part 1', async () => {
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    expect(artifact.hook).toBe('AITA for X?')
+  })
+
+  it('uses a continuation hook on later parts', async () => {
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({ topic: 'AITA for X? (2/3)', story: { ...story, partIndex: 2 } })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    expect(artifact.hook).toBe('Part two.')
+  })
+
+  it('appends the outro only on the final part of a truncated series', async () => {
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'AITA for X? (3/3)',
+      story: { ...story, partIndex: 3, partCount: 3, truncated: true },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    const last = artifact.segments[artifact.segments.length - 1].text
+    expect(last).toBe('The full story is linked in the description.')
+  })
+
+  it('omits the outro on a complete series', async () => {
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({ topic: 'AITA for X? (3/3)', story: { ...story, partIndex: 3, partCount: 3 } })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    const last = artifact.segments[artifact.segments.length - 1].text
+    expect(last).not.toContain('linked in the description')
+  })
+
+  it('puts the permalink in every platform description on a truncated series', async () => {
+    const { client } = fakeClient(META)
+    const ctx = makeCtx({
+      topic: 'AITA for X? (3/3)',
+      story: { ...story, partIndex: 3, partCount: 3, truncated: true },
+    })
+    await createScriptStage(client).run(ctx)
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
+    ) as ScriptOutput
+    for (const platform of ['youtube', 'tiktok', 'instagram'] as const) {
+      expect(artifact.platformMeta[platform].description).toContain(story.sourceUrl)
+    }
   })
 })
