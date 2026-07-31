@@ -314,7 +314,9 @@ const BLOCKED_PREDICATE = 'blockingCount > 0 OR rejectedCount >= ?'
  *
  * `blockedPlatforms` itself is NOT filtered by `platforms` — it reports every
  * platform database state rules out, so a caller can distinguish "not declared"
- * from "declared but blocked".
+ * from "declared but blocked". Exception: the series-predecessor gate computes
+ * blockage only over the declared `platforms`, because a predecessor's publish
+ * state is only meaningful for platforms the channel actually targets.
  *
  * The three conditions the DAO cannot see — the platform's quota, its
  * credential, and whether the video file still exists on disk — are the
@@ -322,11 +324,13 @@ const BLOCKED_PREDICATE = 'blockingCount > 0 OR rejectedCount >= ?'
  * until one row survives all three.
  *
  * Order: fewest prior failed rows of any kind first (spreads attempts during
- * a channel-wide outage instead of hammering one video), then newest library
- * row (fresh trend content over stale), then job id for determinism. Bounded
- * by a SQL LIMIT, not a JS truncation: the fully-blocked drop test is
- * expressible against `platforms`, so a channel's whole publish history (every
- * `metadata_json` included) never has to be loaded to return `limit` rows.
+ * a channel-wide outage instead of hammering one video), then continuation
+ * parts ahead of unrelated videos (so an in-flight series drains contiguously),
+ * then newest library row (fresh trend content over stale), then job id for
+ * determinism. Bounded by a SQL LIMIT, not a JS truncation: the fully-blocked
+ * drop test is expressible against `platforms`, so a channel's whole publish
+ * history (every `metadata_json` included) never has to be loaded to return
+ * `limit` rows.
  *
  * `createdAfter` is the aged-out horizon (agedCutoff, ./settled.ts): videos
  * older than it are never returned — PROVIDED something outranked them WHILE
@@ -445,6 +449,16 @@ export function channelVideoCandidates(
   // has. Computed here rather than inside the aggregate above, which is dense
   // and load-bearing; two small reads plus a set difference is easier to
   // verify and leaves the settled predicate untouched.
+  //
+  // The series gate runs AFTER the SQL LIMIT, so fully-blocked continuation
+  // parts still occupy candidate slots. Starvation is not reachable today: the
+  // gate is based on `MAX_VIDEO_CANDIDATES` (50, in src/loop/publish-next.ts)
+  // and real starvation requires >= ~51 concurrently-blocked parts ahead of a
+  // publishable video. Production is capped by `pendingInventory` at
+  // `ceil(videos_per_day * backlog_days)`, and src/config/channel.ts requires
+  // `max_parts <= videos_per_day * backlog_days`, so starvation would need
+  // `videos_per_day * backlog_days >= ~51` — unreachable on YouTube (~6/day
+  // cap) but legal on Instagram-only channels.
   //
   // Fails OPEN when the predecessor topic row is missing entirely (it should
   // never be — parts insert in one transaction): an unexpected gap publishes a

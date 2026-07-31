@@ -1373,6 +1373,19 @@ describe('channelVideoCandidates series ordering', () => {
     expect(found.find((v) => v.jobId === p2)?.blockedPlatforms).toEqual(['youtube'])
   })
 
+  it('keeps part 2 blocked when part 1 has a claimed (in-flight) row', () => {
+    const db = memDb()
+    const { p1, p2 } = seedSeries(db)
+    seedPublish(db, p1, {
+      platform: 'youtube',
+      channel: 'aita',
+      status: 'claimed',
+    })
+    const found = channelVideoCandidates(db, 'aita', ['youtube'], 50, '1970-01-01T00:00:00.000Z')
+    expect(found.find((v) => v.jobId === p2)?.blockedPlatforms).toEqual(['youtube'])
+    db.close()
+  })
+
   it('sorts a continuation part ahead of an unrelated newer video', () => {
     const db = memDb()
     const { p1, p2 } = seedSeries(db)
