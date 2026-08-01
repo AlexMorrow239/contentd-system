@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { openDb } from '../../db/index.js'
 import { actionsUnit } from '../../loop/actions-worker.js'
 import { resolvePaths } from '../../config/paths.js'
-import { seedTopic } from '../../testing/db.js'
+import { seedDaemonState, seedTopic } from '../../testing/db.js'
 import { tmpDir } from '../../testing/tmp.js'
 import { createApp } from '../server.js'
 import type { DashboardConfig } from '../config.js'
@@ -19,6 +19,9 @@ describe('dashboard to daemon action round trip', () => {
     mkdirSync(paths.channelsDir, { recursive: true })
     const db = openDb(paths.dbPath)
     const topicId = seedTopic(db, { status: 'candidate' })
+    // The POST /actions liveness gate probes daemon_state on its own handle;
+    // without a fresh heartbeat here the round trip never leaves the gate.
+    seedDaemonState(db, { lastSeenAt: new Date() })
     const config: DashboardConfig = { paths, port: 8787 }
 
     const form = new URLSearchParams({

@@ -19,11 +19,22 @@ function unescapeHtmlAttr(value: string): string {
     .replace(/&amp;/g, '&')
 }
 
-/** A config whose root exists and whose db is present, absent, or corrupt. */
+/**
+ * A config whose root exists and whose db is present, absent, or corrupt.
+ * The 'present' case seeds a fresh daemon_state heartbeat by default — the
+ * liveness gate on POST /actions reads an absent row as stale, and this is
+ * what keeps every existing test in this file (written before that gate
+ * existed) still asserting on the behaviour it actually intends to test
+ * rather than on staleness it never opted into.
+ */
 function seededConfig(db: 'present' | 'absent' | 'corrupt' = 'present'): DashboardConfig {
   const paths = resolvePaths(tmpDir('brainrot-dash-'))
   mkdirSync(join(paths.root, 'db'), { recursive: true })
-  if (db === 'present') openDb(paths.dbPath).close()
+  if (db === 'present') {
+    const handle = openDb(paths.dbPath)
+    seedDaemonState(handle, { lastSeenAt: new Date() })
+    handle.close()
+  }
   if (db === 'corrupt') writeFileSync(paths.dbPath, 'not a sqlite file')
   return { paths, port: 8787 }
 }
@@ -537,19 +548,70 @@ describe('POST /actions', () => {
   // same location, so it already proves sameSitePath's normalization keeps
   // the query string rather than dropping it.
 
-  it('returns 503 instead of 500 when operator_actions has never been created', async () => {
+  it('refuses to queue anything while the daemon is stale', async () => {
+    const config = seededConfig()
+    const db = openDb(config.paths.dbPath)
+    // Heartbeat is 10s against a 60s threshold: two minutes ago is unambiguous.
+    seedDaemonState(db, { lastSeenAt: new Date(Date.now() - 120_000) })
+    db.close()
+
+    const res = await post(config, { kind: 'digest.run', csrf: TOKEN, from: '/overview' })
+
+    expect(res.status).toBe(409)
+    expect(await res.text()).toContain('daemon not running')
+    const after = openDb(config.paths.dbPath)
+    expect(
+      (after.prepare('SELECT COUNT(*) AS n FROM operator_actions').get() as { n: number }).n,
+    ).toBe(0)
+    after.close()
+  })
+
+  it('queues normally while the daemon is fresh', async () => {
+    const config = seededConfig()
+    const res = await post(config, { kind: 'digest.run', csrf: TOKEN, from: '/overview' })
+    expect(res.status).toBe(303)
+    const after = openDb(config.paths.dbPath)
+    expect(
+      (after.prepare('SELECT COUNT(*) AS n FROM operator_actions').get() as { n: number }).n,
+    ).toBe(1)
+    after.close()
+  })
+
+  it('refuses when the database has no daemon_state row at all', async () => {
+    const config = seededConfig()
+    const db = openDb(config.paths.dbPath)
+    db.prepare('DELETE FROM daemon_state').run()
+    db.close()
+    // Fail closed: no row means no daemon has ever run against this root.
+    expect((await post(config, { kind: 'digest.run', csrf: TOKEN, from: '/overview' })).status).toBe(
+      409,
+    )
+  })
+
+  it('refuses with the daemon-down message when operator_actions has never been created', async () => {
     // A bare sqlite file that no openDb call has ever touched — the commonest
     // real-world cause, since schema.sql (and thus operator_actions) is only
     // applied by openDb/openDbActions' write-path sibling, never by this
     // route's own handle.
+    //
+    // Before the liveness gate this exercised enqueueAction's own catch block
+    // and returned 503 "could not queue the action". It no longer can: the
+    // gate's own actionsTableExists probe treats a missing operator_actions
+    // table as proof no openDb call — and so no daemon — has ever touched
+    // this root (daemonStaleFor's doc comment: operator_actions and
+    // daemon_state are created together by the same schema.sql exec, so
+    // checking one is a valid proxy for both). That makes this state
+    // unconditionally stale regardless of daemon_state content, so the gate
+    // now intercepts it first with 409 — a more accurate diagnosis than the
+    // old 503, and this test now pins that.
     const paths = resolvePaths(tmpDir('brainrot-dash-'))
     mkdirSync(join(paths.root, 'db'), { recursive: true })
     new BetterSqlite3(paths.dbPath).close()
     const config: DashboardConfig = { paths, port: 8787 }
 
     const res = await post(config, { kind: 'digest.run', csrf: TOKEN })
-    expect(res.status).toBe(503)
-    expect(await res.text()).toContain('could not queue the action')
+    expect(res.status).toBe(409)
+    expect(await res.text()).toContain('daemon not running')
   })
 })
 
@@ -583,7 +645,13 @@ describe('GET /actions/confirm', () => {
   })
 
   it('shows the daemon banner when no daemon_state row exists at all', async () => {
-    const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
+    // seededConfig() now seeds a fresh heartbeat by default (see its doc
+    // comment) — staleness has to be opted into explicitly here.
+    const config = seededConfig()
+    const db = openDb(config.paths.dbPath)
+    db.prepare('DELETE FROM daemon_state').run()
+    db.close()
+    const res = await createApp({ config, csrfToken: 'tok' }).request(
       '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
     )
     expect(res.status).toBe(200)

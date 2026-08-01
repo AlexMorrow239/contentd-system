@@ -148,6 +148,37 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
       return c.html(actionErrorPage(deps.config.paths.root, errorMessage(err)), 400)
     }
 
+    // Liveness gate. A queued action against a dead daemon is a lie: nothing
+    // drains it, and on restart the whole backlog fires at once — for a slow
+    // action that means a pile of renders. The heartbeat is 10s against a 60s
+    // threshold, so a stale reading is an outage, not a race.
+    //
+    // Probed on its OWN read-only handle, opened and closed before the write
+    // handle exists. That is what keeps the structural claim literally true:
+    // the entire write path is still a single INSERT on `openDbActions`.
+    let daemonStale: boolean
+    try {
+      const probe = openDbReadonly(deps.config.paths.dbPath)
+      try {
+        daemonStale = daemonStaleFor(probe, deps.now?.() ?? new Date())
+      } finally {
+        probe.close()
+      }
+    } catch {
+      // Unreadable database — the same conclusion `daemonStaleFor` draws when
+      // the table is missing. Fail closed.
+      daemonStale = true
+    }
+    if (daemonStale) {
+      return c.html(
+        actionErrorPage(
+          deps.config.paths.root,
+          'daemon not running — queued actions would not execute, so nothing was queued.',
+        ),
+        409,
+      )
+    }
+
     let db: Database
     try {
       db = openDbActions(deps.config.paths.dbPath)
