@@ -422,6 +422,29 @@ describe('POST /actions', () => {
     expect(await res.text()).toContain('unknown action')
   })
 
+  it('rejects a body Hono cannot parse as a form, and writes nothing', async () => {
+    // c.req.formData() throws when the content-type is neither
+    // multipart/form-data nor application/x-www-form-urlencoded — a
+    // text/plain body with any content triggers it. This exercises the
+    // catch block around that call rather than any validation logic.
+    const config = seededConfig()
+    const res = await createApp({ config, csrfToken: TOKEN }).request('/actions', {
+      method: 'POST',
+      body: 'not a form body',
+      headers: {
+        'content-type': 'text/plain',
+        host: '127.0.0.1:8787',
+        origin: 'http://127.0.0.1:8787',
+        'sec-fetch-site': 'same-origin',
+      },
+    })
+    expect(res.status).toBe(400)
+    expect(await res.text()).toContain('could not read the submitted form')
+    const db = openDb(config.paths.dbPath)
+    expect(db.prepare('SELECT count(*) AS n FROM operator_actions').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
   it('rejects invalid arguments with the schema message', async () => {
     const config = seededConfig()
     const res = await post(config, { kind: 'topics.reject', csrf: TOKEN })
@@ -453,6 +476,12 @@ describe('POST /actions', () => {
       { host: 'evil.example', origin: 'http://evil.example', 'sec-fetch-site': 'same-origin' },
     )
     expect(res.status).toBe(403)
+    // All three 403 cases in this block return the same status, so a status
+    // check alone would still pass if the loopback gate were removed and the
+    // refusal came from a different layer (e.g. the origin-vs-host agreement
+    // check, or the token check). Assert the reason names the loopback layer
+    // specifically — the exact string csrfFailure produces for this branch.
+    expect(await res.text()).toContain('whose Host (evil.example) is not a loopback address')
     const db = openDb(config.paths.dbPath)
     expect(db.prepare('SELECT count(*) AS n FROM operator_actions').get()).toEqual({ n: 0 })
     db.close()
@@ -467,19 +496,24 @@ describe('POST /actions', () => {
     db.close()
   })
 
-  it('does not let a backslash-prefixed from escape the dashboard origin', async () => {
+  it.each([
+    '/\\evil.example',
+    '/..//evil.example',
+    '/%2e%2e//evil.example',
+  ])('does not let from=%s escape the dashboard origin', async (from) => {
     // '\' is equivalent to '/' under WHATWG URL rules for a special scheme,
     // so a prefix-check guard (`startsWith('/') && !startsWith('//')`) would
-    // wrongly accept this and the browser would resolve it off-origin.
+    // wrongly accept `/\evil.example` and the browser would resolve it
+    // off-origin. `/..//evil.example` and its percent-encoded twin are the
+    // other half of that class: they parse same-origin against the sentinel
+    // (input-side check passes), but `.pathname` normalizes the `..` away and
+    // leaves `//evil.example`, which a browser resolves as scheme-relative —
+    // this is what the output-side re-check in sameSitePath catches.
     // Resolve the Location header the way a browser actually would, and
     // assert on .origin rather than string-comparing — a string comparison
     // would pass for the wrong reason (e.g. matching literal text) without
     // proving the browser-resolved target is actually same-origin.
-    const res = await post(seededConfig(), {
-      kind: 'digest.run',
-      csrf: TOKEN,
-      from: '/\\evil.example',
-    })
+    const res = await post(seededConfig(), { kind: 'digest.run', csrf: TOKEN, from })
     expect(res.status).toBe(303)
     const location = res.headers.get('location')
     expect(location).not.toBeNull()

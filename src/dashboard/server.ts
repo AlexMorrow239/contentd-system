@@ -491,12 +491,22 @@ function openAndValidate(dbPath: string): Database {
 }
 
 /**
- * The 303 target. `from` is operator-controlled, so it is validated by
+ * The 303 target. `from` is operator-controlled, so the INPUT is validated by
  * PARSING rather than by prefix checks: browsers resolve a Location header
  * under WHATWG URL rules, where `\` is equivalent to `/` in a special
  * scheme — so `startsWith('/') && !startsWith('//')` still lets
  * `/\evil.example` resolve to http://evil.example. Anything that does not
  * resolve back to the sentinel origin is refused.
+ *
+ * The OUTPUT is then re-checked, which looks redundant with the input check
+ * above but is not: normalization can *produce* a protocol-relative path the
+ * input never had. `/..//evil.example` parses same-origin against the
+ * sentinel (the `..` and the literal `//evil.example` are still separated by
+ * a resolved segment at parse time), but `.pathname` collapses the `..` away
+ * and leaves `//evil.example` — which a browser resolves as scheme-relative,
+ * off-origin. A normalized `pathname` can never contain a raw backslash
+ * (`new URL('/a\\b', …).pathname` is `/a/b`), so a plain prefix check is
+ * sound here even though it was not sound on the raw input.
  */
 function sameSitePath(from: string): string | null {
   if (!from.startsWith('/')) return null
@@ -507,7 +517,11 @@ function sameSitePath(from: string): string | null {
     return null
   }
   if (resolved.origin !== 'http://brainrot.invalid') return null
-  return `${resolved.pathname}${resolved.search}`
+  const path = `${resolved.pathname}${resolved.search}`
+  // A normalized pathname can never contain a raw backslash, so this
+  // output-side prefix check is sound where the input-side one was not.
+  if (!path.startsWith('/') || path.startsWith('//')) return null
+  return path
 }
 
 function actionErrorPage(root: string, message: string): string {
