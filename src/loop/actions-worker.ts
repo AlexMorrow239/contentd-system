@@ -35,6 +35,12 @@ export const MAX_FAST_DRAIN = 50
  * behind them. Sharing MAX_FAST_DRAIN's value is coincidence, not coupling:
  * the fast lane's own budget already equals this window, so reusing it there
  * costs nothing, and it caps how much work one poll does either way.
+ *
+ * The skip set above removes the redundant ACQUIRES, not this bound: 50 rows
+ * all blocked on `produce` still means row 51 was never in the query's result
+ * set and does not run this poll. That is left in place deliberately — it
+ * self-heals on the next poll, and a queue 50 deep on one lease is not a shape
+ * one operator clicking buttons produces.
  */
 export const ACTION_SCAN_WINDOW = MAX_FAST_DRAIN
 
@@ -125,8 +131,16 @@ export function actionsUnit(
 
     const done: number[] = []
     let blockedLease: ActionLease | undefined
+    // Leases already found held THIS poll. `acquireLease` takes a BEGIN
+    // IMMEDIATE write transaction, so re-attempting a lease that is not going
+    // to be free within one poll is pure WAL churn — 50 write transactions a
+    // second on the fast lane's 1s poll. Skipping also leaves the later rows
+    // completely untouched, which is what the notice assertion pins.
+    const heldThisPoll = new Set<ActionLease>()
     for (const row of pendingActions(db, lane, ACTION_SCAN_WINDOW)) {
       if (done.length >= budget) break
+      const declared = isActionKind(row.kind) ? ACTIONS[row.kind].lease : undefined
+      if (declared !== undefined && heldThisPoll.has(declared)) continue
       const outcome = await executeOne(db, row, {
         channelsDir: opts.channelsDir,
         runsRoot: opts.runsRoot,
@@ -136,6 +150,7 @@ export function actionsUnit(
       })
       if (outcome.blockedBy !== undefined) {
         blockedLease ??= outcome.blockedBy
+        heldThisPoll.add(outcome.blockedBy)
         continue
       }
       // A lost claim means another caller already took this row: this poll

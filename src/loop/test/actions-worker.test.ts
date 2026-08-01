@@ -101,6 +101,37 @@ describe('actionsUnit', () => {
     expect(getAction(db, runnable)?.status).toBe('done')
   })
 
+  it('attempts a held lease once per poll, skipping later rows that need it', async () => {
+    const db = memDb()
+    seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"a"}' })
+    seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"b"}' })
+    seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"c"}' })
+    // Someone else holds it for the whole poll.
+    expect(acquireLease(db, 'publish', 'pid:other', 60_000)).toBe(true)
+
+    const result = await unit(db)()
+
+    expect(result).toEqual({
+      worked: false,
+      line: { action: 'noop', reason: 'lease-held', lease: 'publish' },
+    })
+    const notices = db
+      .prepare('SELECT notice FROM operator_actions ORDER BY id ASC')
+      .all() as { notice: string | null }[]
+    // Only the FIRST blocked row is touched: the rest are skipped before any
+    // acquire attempt, so they never get a notice written.
+    expect(notices.map((r) => r.notice)).toEqual([
+      'waiting for the publish lease',
+      null,
+      null,
+    ])
+    // All three are still pending — skipping is not failing.
+    const statuses = db
+      .prepare('SELECT status FROM operator_actions ORDER BY id ASC')
+      .all() as { status: string }[]
+    expect(statuses.map((r) => r.status)).toEqual(['pending', 'pending', 'pending'])
+  })
+
   it('releases the lease it took', async () => {
     const db = memDb()
     seedJob(db, 'j1')
