@@ -56,6 +56,26 @@ describe('dashboard stage order', () => {
   })
 })
 
+describe('dashboard action isolation', () => {
+  it('never reaches src/actions/handlers.ts from src/dashboard/', async () => {
+    // handlers.ts transitively imports the publish adapters — and, from phase
+    // 2, Remotion and the provider clients. The dashboard is the one process
+    // terminating unauthenticated HTTP; it reads src/actions/catalog.ts, which
+    // is pure metadata, and enqueues. Same rule, same reason, as
+    // DASHBOARD_STAGE_ORDER above.
+    const files = (await srcFiles(join(SRC_ROOT, 'dashboard'))).filter(
+      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
+    )
+    expect(files.length).toBeGreaterThan(0)
+    const offenders: string[] = []
+    for (const file of files) {
+      const source = await readFile(file, 'utf8')
+      if (source.includes('actions/handlers')) offenders.push(relative(SRC_ROOT, file))
+    }
+    expect(offenders).toEqual([])
+  })
+})
+
 describe('publish-next platform agnosticism', () => {
   it('publish-next.ts contains no youtube/instagram string literal in its own source', async () => {
     // The tick drives platforms generically through the adapter registry

@@ -6,7 +6,7 @@ import { BrainrotError } from '../errors.js'
  * BOTH the dashboard (to render forms and validate submitted args) and the
  * daemon (to route to a handler), which is exactly why it must stay free of
  * heavy imports. The implementations live in ./handlers.ts, which the
- * dashboard may never import — an arch lint in src/arch.test.ts will enforce
+ * dashboard may never import — an arch lint in src/arch.test.ts enforces
  * this. Same discipline as DASHBOARD_STAGE_ORDER: a read-only viewer has no
  * business loading Remotion, Anthropic or credential code.
  */
