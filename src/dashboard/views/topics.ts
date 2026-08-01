@@ -2,6 +2,7 @@ import type { TopicRow, TopicStatus } from '../../scout/topics.js'
 import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
+import { actionForm, daemonBanner } from './actions.js'
 
 const TOPIC_STATUSES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
 
@@ -17,6 +18,35 @@ export interface TopicsPageData {
   total?: number
   channels: string[]
   filter: { channel?: string; status?: TopicStatus }
+  csrfToken: string
+  daemonStale: boolean
+}
+
+function topicActions(
+  row: { id: number; status: string },
+  csrfToken: string,
+  daemonStale: boolean,
+): SafeHtml {
+  if (row.status === 'candidate') {
+    return actionForm({
+      kind: 'topics.reject',
+      csrfToken,
+      from: '/topics',
+      fields: { ids: String(row.id) },
+      disabled: daemonStale,
+    })
+  }
+  if (row.status === 'claimed') {
+    return actionForm({
+      kind: 'topics.requeue',
+      csrfToken,
+      from: '/topics',
+      fields: { id: String(row.id) },
+      disabled: daemonStale,
+    })
+  }
+  // used / rejected are terminal: nothing to offer.
+  return html``
 }
 
 export function renderTopicsPage(data: TopicsPageData): SafeHtml {
@@ -33,7 +63,8 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
   </form>`
 
   if (data.topics.length === 0) {
-    return html`<h1>topics</h1>
+    return html`${daemonBanner(data.daemonStale)}
+      <h1>topics</h1>
       ${filters}
       <p class="empty">no topics match these filters</p>`
   }
@@ -64,17 +95,19 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
       </td>
       <td class="muted">${topic.reason}</td>
       <td>${formatTime(topic.createdAt)}</td>
+      <td>${topicActions(topic, data.csrfToken, data.daemonStale)}</td>
     </tr>`,
   )
 
-  return html`<h1>topics</h1>
+  return html`${daemonBanner(data.daemonStale)}
+    <h1>topics</h1>
     ${filters}
     ${truncationNotice(data.topics.length, data.total)}
     <table>
       <thead>
         <tr>
           <th>score</th><th>title</th><th>channel</th><th>status</th>
-          <th>job</th><th>source</th><th>reason</th><th>found</th>
+          <th>job</th><th>source</th><th>reason</th><th>found</th><th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>

@@ -30,7 +30,7 @@ function entry(overrides: Partial<LibraryEntry> = {}): LibraryEntry {
 }
 
 function pageData(entries: LibraryEntry[]): LibraryPageData {
-  return { entries, channels: ['chan-a'], filter: {} }
+  return { entries, channels: ['chan-a'], filter: {}, csrfToken: 'tok', daemonStale: false }
 }
 
 describe('renderLibraryPage', () => {
@@ -39,6 +39,8 @@ describe('renderLibraryPage', () => {
       entries: [baseEntry],
       channels: ['space'],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('<video controls preload="metadata" src="/library/j1/video">')
   })
@@ -48,6 +50,8 @@ describe('renderLibraryPage', () => {
       entries: [{ ...baseEntry, qc: { kind: 'issues', issues: ['duration 71s > 60s'] } }],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('duration 71s &gt; 60s')
   })
@@ -57,6 +61,8 @@ describe('renderLibraryPage', () => {
       entries: [{ ...baseEntry, qc: { kind: 'unparseable' } }],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('unparseable metadata')
   })
@@ -66,6 +72,8 @@ describe('renderLibraryPage', () => {
       entries: [baseEntry],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('href="/jobs/j1"')
   })
@@ -75,6 +83,8 @@ describe('renderLibraryPage', () => {
       entries: [],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('no library entries match')
   })
@@ -84,6 +94,8 @@ describe('renderLibraryPage', () => {
       entries: [{ ...baseEntry, topic: '<img src=x onerror=alert(1)>' }],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('<img src=x')
   })
@@ -94,6 +106,8 @@ describe('renderLibraryPage', () => {
       total: 1432,
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('showing 1 of 1,432')
   })
@@ -104,6 +118,8 @@ describe('renderLibraryPage', () => {
       total: 1,
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('showing')
   })
@@ -152,5 +168,33 @@ describe('renderLibraryPage', () => {
       pageData([entry({ links: [{ platform: 'youtube', url: 'https://x/"><script>alert(1)</script>' }] })]),
     ).value
     expect(html).not.toContain('<script>alert(1)</script>')
+  })
+
+  it('offers approve on a needs-review row only', () => {
+    const out = renderLibraryPage({
+      entries: [entry({ jobId: 'j1', state: 'needs-review' }), entry({ jobId: 'j2', state: 'ready' })],
+      total: 2,
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('name="kind" value="library.approve"')
+    expect(out).toContain('name="jobIds" value="j1"')
+    expect(out).not.toContain('name="jobIds" value="j2"')
+  })
+
+  it('offers no reject control yet', () => {
+    // library.reject also deletes stored objects, so it is a slow-lane action
+    // and lands in phase 2. A control here would enqueue a kind with no handler.
+    const out = renderLibraryPage({
+      entries: [entry({ jobId: 'j1', state: 'needs-review' })],
+      total: 1,
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).not.toContain('library.reject')
   })
 })

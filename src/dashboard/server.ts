@@ -14,6 +14,7 @@ import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { enqueueAction } from '../actions/queue.js'
 import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
+import { daemonIsStale, readDaemonState } from '../loop/daemon-state.js'
 import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
 import type { DashboardConfig } from './config.js'
 import { html } from './html.js'
@@ -27,7 +28,7 @@ import {
 import { countJobs, getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
 import { buildOverview } from './queries/overview.js'
-import { buildPublishGrids } from './queries/publishes.js'
+import { buildPublishGrids, interruptedPublishes } from './queries/publishes.js'
 import { countTopics, topicChannels } from './queries/topics.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
@@ -215,13 +216,23 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const now = deps.now?.() ?? new Date()
     const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
 
+    // A pre-migration database has no daemon_state table either, so the probe
+    // guards both reads: absent means "no daemon has initialized this root",
+    // which renders every control disabled rather than 500-ing the viewer.
+    const daemonStale = actionsTableExists(db)
+      ? daemonIsStale(readDaemonState(db), now)
+      : true
+
     return c.html(
       layout({
         title: 'overview',
         root: deps.config.paths.root,
         activeNav: 'overview',
-        refreshSeconds: 30,
-        body: renderOverviewPage(buildOverview(db, channels, now), error),
+        refreshSeconds: c.req.query('action') !== undefined ? 3 : 30,
+        body: renderOverviewPage(buildOverview(db, channels, now), error, {
+          csrfToken,
+          daemonStale,
+        }),
       }),
     )
   })
@@ -286,16 +297,30 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const rawChannel = c.req.query('channel')
     const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
 
+    // A pre-migration database has no daemon_state table either, so the probe
+    // guards both reads: absent means "no daemon has initialized this root",
+    // which renders every control disabled rather than 500-ing the viewer.
+    const daemonStale = actionsTableExists(db)
+      ? daemonIsStale(readDaemonState(db), deps.now?.() ?? new Date())
+      : true
+    // Just-submitted pages poll briefly so the outcome appears without the
+    // operator touching anything — the queue is asynchronous and the PRG
+    // redirect lands here before the worker has run.
+    const refreshSeconds = c.req.query('action') !== undefined ? 3 : undefined
+
     return c.html(
       layout({
         title: 'library',
         root: deps.config.paths.root,
         activeNav: 'library',
+        refreshSeconds,
         body: renderLibraryPage({
           entries: listLibraryEntries(db, { state, channel }),
           total: countLibraryEntries(db, { state, channel }),
           channels: libraryChannels(db),
           filter: { state, channel },
+          csrfToken,
+          daemonStale,
         }),
       }),
     )
@@ -356,16 +381,29 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     // panel into a warning instead of 500-ing the page.
     const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
 
+    // A pre-migration database has no daemon_state table either, so the probe
+    // guards both reads: absent means "no daemon has initialized this root",
+    // which renders every control disabled rather than 500-ing the viewer.
+    const daemonStale = actionsTableExists(db) ? daemonIsStale(readDaemonState(db), now) : true
+    // Just-submitted pages poll briefly so the outcome appears without the
+    // operator touching anything — the queue is asynchronous and the PRG
+    // redirect lands here before the worker has run.
+    const refreshSeconds = c.req.query('action') !== undefined ? 3 : undefined
+
     return c.html(
       layout({
         title: 'publishes',
         root: deps.config.paths.root,
         activeNav: 'publishes',
+        refreshSeconds,
         body: renderPublishesPage({
           grids: buildPublishGrids(db, channels, days, now),
           days,
           quotas: buildPlatformQuotas(db, channels, localDay(now), now),
+          interrupted: interruptedPublishes(db),
           configError: error,
+          csrfToken,
+          daemonStale,
         }),
       }),
     )
@@ -380,11 +418,23 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const rawChannel = c.req.query('channel')
     const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
 
+    // A pre-migration database has no daemon_state table either, so the probe
+    // guards both reads: absent means "no daemon has initialized this root",
+    // which renders every control disabled rather than 500-ing the viewer.
+    const daemonStale = actionsTableExists(db)
+      ? daemonIsStale(readDaemonState(db), deps.now?.() ?? new Date())
+      : true
+    // Just-submitted pages poll briefly so the outcome appears without the
+    // operator touching anything — the queue is asynchronous and the PRG
+    // redirect lands here before the worker has run.
+    const refreshSeconds = c.req.query('action') !== undefined ? 3 : undefined
+
     return c.html(
       layout({
         title: 'topics',
         root: deps.config.paths.root,
         activeNav: 'topics',
+        refreshSeconds,
         body: renderTopicsPage({
           topics: listTopics(db, { channel, status, limit: 200 }),
           total: countTopics(db, { channel, status }),
@@ -392,6 +442,8 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           // full unfiltered channel set for the dropdown, not filtered rows.
           channels: topicChannels(db),
           filter: { channel, status },
+          csrfToken,
+          daemonStale,
         }),
       }),
     )

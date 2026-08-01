@@ -2,6 +2,7 @@ import { html, SafeHtml } from '../html.js'
 import type { OverviewData, SpendAgainstCap, StatusCount } from '../queries/overview.js'
 import { formatTime, formatUsd } from './jobs.js'
 import { href } from './layout.js'
+import { actionForm, daemonBanner } from './actions.js'
 
 function countList(counts: StatusCount[]): SafeHtml {
   if (counts.length === 0) return html`<p class="empty">none</p>`
@@ -38,11 +39,30 @@ function unattributedSpendLine(usdMicros: number): SafeHtml {
   </tr>`
 }
 
-export function renderOverviewPage(data: OverviewData, configError?: string): SafeHtml {
+export interface OverviewPageOptions {
+  csrfToken: string
+  daemonStale: boolean
+}
+
+export function renderOverviewPage(
+  data: OverviewData,
+  configError: string | undefined,
+  opts: OverviewPageOptions,
+): SafeHtml {
   const warning =
     configError === undefined
       ? html``
       : html`<p class="warning">channel config error: ${configError}</p>`
+
+  const controls = html`<div class="page-actions">
+    ${actionForm({
+      kind: 'digest.run',
+      csrfToken: opts.csrfToken,
+      from: '/',
+      fields: {},
+      disabled: opts.daemonStale,
+    })}
+  </div>`
 
   const attention =
     data.attention.length === 0
@@ -94,8 +114,10 @@ export function renderOverviewPage(data: OverviewData, configError?: string): Sa
           </tbody>
         </table>`
 
-  return html`<h1>overview</h1>
+  return html`${daemonBanner(opts.daemonStale)}
+    <h1>overview</h1>
     ${warning}
+    ${controls}
     <div class="grid">
       <div class="panel">
         <h2>jobs</h2>

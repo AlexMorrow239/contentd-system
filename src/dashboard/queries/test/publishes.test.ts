@@ -3,8 +3,8 @@ import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../../config/channel.js'
 import type { PublishTargetConfig } from '../../../publish/types.js'
 import { testChannel } from '../../../testing/channel.js'
-import { memDb } from '../../../testing/db.js'
-import { buildPublishGrids, cellKey } from '../publishes.js'
+import { memDb, seedJob, seedPublish } from '../../../testing/db.js'
+import { buildPublishGrids, cellKey, interruptedPublishes } from '../publishes.js'
 
 function channelWithTargets(
   name: string,
@@ -191,6 +191,18 @@ describe('buildPublishGrids', () => {
     const instagramCell = grid?.cells.get(cellKey('2026-07-25', 1, 'instagram'))
     expect(instagramCell?.status).toBe('failed')
     expect(instagramCell?.error).toBe('boom')
+    db.close()
+  })
+})
+
+describe('interruptedPublishes', () => {
+  it('returns only interrupted rows, oldest first', () => {
+    const db = memDb()
+    seedJob(db, 'j1')
+    seedJob(db, 'j2')
+    seedPublish(db, 'j1', { status: 'interrupted', seq: 1 })
+    seedPublish(db, 'j2', { status: 'done', seq: 2 })
+    expect(interruptedPublishes(db).map((r) => r.jobId)).toEqual(['j1'])
     db.close()
   })
 })

@@ -35,6 +35,8 @@ describe('renderTopicsPage', () => {
       ],
       channels: ['space'],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out.indexOf('high')).toBeLessThan(out.indexOf('low'))
   })
@@ -44,6 +46,8 @@ describe('renderTopicsPage', () => {
       topics: [topic()],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('href="https://reddit.com/r/space/1"')
     expect(out).toContain('reddit:r/space')
@@ -54,6 +58,8 @@ describe('renderTopicsPage', () => {
       topics: [topic({ status: 'claimed', jobId: 'j9' })],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('href="/jobs/j9"')
   })
@@ -63,6 +69,8 @@ describe('renderTopicsPage', () => {
       topics: [topic({ reason: 'strong hook' })],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('strong hook')
   })
@@ -73,6 +81,8 @@ describe('renderTopicsPage', () => {
       topics: [topic({ title: '<script>alert(1)</script>' })],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('<script>alert(1)</script>')
   })
@@ -82,6 +92,8 @@ describe('renderTopicsPage', () => {
       topics: [topic({ url: 'https://x/"onmouseover="alert(1)' })],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('onmouseover="alert(1)"')
     expect(out).toContain('&quot;onmouseover=')
@@ -92,6 +104,8 @@ describe('renderTopicsPage', () => {
       topics: [topic({ url: 'javascript:alert(1)', source: 'reddit:r/space' })],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('href="javascript:alert(1)"')
     expect(out).not.toContain('<a href="javascript:')
@@ -103,6 +117,8 @@ describe('renderTopicsPage', () => {
       topics: [],
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('no topics match')
   })
@@ -113,6 +129,8 @@ describe('renderTopicsPage', () => {
       total: 1432,
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('showing 1 of 1,432')
   })
@@ -123,7 +141,44 @@ describe('renderTopicsPage', () => {
       total: 1,
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('showing')
+  })
+
+  it('offers reject on a candidate and requeue on a claimed topic', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ id: 1, status: 'candidate' }), topic({ id: 2, status: 'claimed', title: 'b' })],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('name="kind" value="topics.reject"')
+    expect(out).toContain('name="kind" value="topics.requeue"')
+  })
+
+  it('offers nothing on a terminal topic', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ id: 1, status: 'rejected' })],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).not.toContain('name="kind"')
+  })
+
+  it('disables the controls and warns when the daemon is down', () => {
+    const out = renderTopicsPage({
+      topics: [topic({ id: 1, status: 'candidate' })],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: true,
+    }).value
+    expect(out).toContain('daemon not running')
+    expect(out).toContain('disabled')
   })
 })

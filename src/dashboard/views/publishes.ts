@@ -1,9 +1,10 @@
 import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import type { PublishRow } from '../../publish/publishes.js'
 import type { Platform } from '../../publish/types.js'
-import type { ChannelGrid } from '../queries/publishes.js'
+import type { ChannelGrid, InterruptedPublish } from '../queries/publishes.js'
 import { cellKey } from '../queries/publishes.js'
 import { href } from './layout.js'
+import { actionForm, daemonBanner } from './actions.js'
 
 // One platform's quota, shaped for display rather than for the enforcement
 // check itself (PlatformQuota in publish/types.ts). A 'global' quota
@@ -34,7 +35,51 @@ export interface PublishesPageData {
   grids: ChannelGrid[]
   days: number
   quotas: PlatformQuotaView[]
+  interrupted: InterruptedPublish[]
+  csrfToken: string
+  daemonStale: boolean
   configError?: string
+}
+
+function interruptedSection(
+  rows: InterruptedPublish[],
+  csrfToken: string,
+  daemonStale: boolean,
+): SafeHtml {
+  if (rows.length === 0) return html``
+  const items = rows.map(
+    (row) => html`<tr>
+      <td><a href="${href(`/jobs/${row.jobId}`)}">${row.jobId}</a></td>
+      <td>${row.channel}</td>
+      <td>${row.platform}</td>
+      <td>${row.createdAt}</td>
+      <td>
+        ${actionForm({
+          kind: 'publish.retry',
+          csrfToken,
+          from: '/publishes',
+          fields: { jobId: row.jobId },
+          disabled: daemonStale,
+        })}
+        ${actionForm({
+          kind: 'publish.markDone',
+          csrfToken,
+          from: '/publishes',
+          fields: { jobId: row.jobId },
+          disabled: daemonStale,
+        })}
+      </td>
+    </tr>`,
+  )
+  return html`<section class="interrupted">
+    <h2>interrupted uploads</h2>
+    <p class="muted">
+      The daemon could not confirm these landed. Check the platform, then clear them for another
+      attempt or record the post id.
+    </p>
+    <table><thead><tr><th>job</th><th>channel</th><th>platform</th><th>when</th><th></th></tr></thead>
+    <tbody>${items}</tbody></table>
+  </section>`
 }
 
 function renderCell(row: PublishRow | undefined): SafeHtml {
@@ -110,13 +155,17 @@ export function renderPublishesPage(data: PublishesPageData): SafeHtml {
     ${data.quotas.map(renderQuota)}
   </div>`
 
+  const interrupted = interruptedSection(data.interrupted, data.csrfToken, data.daemonStale)
+
   if (data.grids.length === 0) {
-    return html`<h1>publishes</h1>
-      ${warning} ${quota}
+    return html`${daemonBanner(data.daemonStale)}
+      <h1>publishes</h1>
+      ${warning} ${interrupted} ${quota}
       <p class="empty">no channel has a [publish] schedule</p>`
   }
 
-  return html`<h1>publishes · last ${String(data.days)} days</h1>
-    ${warning} ${quota}
+  return html`${daemonBanner(data.daemonStale)}
+    <h1>publishes · last ${String(data.days)} days</h1>
+    ${warning} ${interrupted} ${quota}
     ${data.grids.map((grid) => renderGrid(grid))}`
 }

@@ -3,6 +3,7 @@ import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import type { LibraryEntry, QcSummary } from '../queries/library.js'
 import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
+import { actionForm, daemonBanner } from './actions.js'
 
 const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
 
@@ -61,6 +62,23 @@ export interface LibraryPageData {
   total?: number
   channels: string[]
   filter: { state?: LibraryState; channel?: string }
+  csrfToken: string
+  daemonStale: boolean
+}
+
+function libraryActions(
+  row: { jobId: string; state: string },
+  csrfToken: string,
+  daemonStale: boolean,
+): SafeHtml {
+  if (row.state !== 'needs-review') return html``
+  return actionForm({
+    kind: 'library.approve',
+    csrfToken,
+    from: '/library',
+    fields: { jobIds: row.jobId },
+    disabled: daemonStale,
+  })
 }
 
 export function renderLibraryPage(data: LibraryPageData): SafeHtml {
@@ -77,7 +95,8 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
   </form>`
 
   if (data.entries.length === 0) {
-    return html`<h1>library</h1>
+    return html`${daemonBanner(data.daemonStale)}
+      <h1>library</h1>
       ${filters}
       <p class="empty">no library entries match these filters</p>`
   }
@@ -94,15 +113,17 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
       <td>${renderLinks(entry.links)}</td>
       <td>${renderQc(entry.qc)}</td>
       <td>${formatTime(entry.createdAt)}</td>
+      <td>${libraryActions(entry, data.csrfToken, data.daemonStale)}</td>
     </tr>`,
   )
 
-  return html`<h1>library</h1>
+  return html`${daemonBanner(data.daemonStale)}
+    <h1>library</h1>
     ${filters}
     ${truncationNotice(data.entries.length, data.total)}
     <table>
       <thead>
-        <tr><th>video</th><th>job</th><th>topic</th><th>state</th><th>live</th><th>qc</th><th>created</th></tr>
+        <tr><th>video</th><th>job</th><th>topic</th><th>state</th><th>live</th><th>qc</th><th>created</th><th></th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>`

@@ -151,3 +151,25 @@ export function buildPublishGrids(
     return [{ channel: channel.name, rows, days: dayList, cells }]
   })
 }
+
+export interface InterruptedPublish {
+  jobId: string
+  channel: string
+  platform: string
+  createdAt: string
+}
+
+/**
+ * Uploads whose outcome the daemon could not confirm — publish-next's repair
+ * sweep never guesses whether the video actually landed. They are the only
+ * rows an operator resolves by hand, which is why they get their own section
+ * with the two actions that resolve them.
+ */
+export function interruptedPublishes(db: Database): InterruptedPublish[] {
+  return db
+    .prepare(
+      `SELECT job_id AS jobId, channel, platform, created_at AS createdAt
+       FROM publishes WHERE status = 'interrupted' ORDER BY created_at ASC, id ASC`,
+    )
+    .all() as InterruptedPublish[]
+}

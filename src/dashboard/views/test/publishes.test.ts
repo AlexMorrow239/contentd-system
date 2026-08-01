@@ -43,6 +43,9 @@ function pageData(cells: Map<string, PublishRow>) {
     ],
     days: 1,
     quotas: [YOUTUBE_QUOTA],
+    interrupted: [],
+    csrfToken: 'tok',
+    daemonStale: false,
   }
 }
 
@@ -118,6 +121,9 @@ describe('renderPublishesPage', () => {
       quotas: [
         { platform: 'youtube', scope: 'global', used: 0, backedOff: false },
       ] as PlatformQuotaView[],
+      interrupted: [],
+      csrfToken: 'tok',
+      daemonStale: false,
     }
     const out = renderPublishesPage(data).value
     expect(out).toContain('#2 instagram')
@@ -159,6 +165,9 @@ describe('renderPublishesPage', () => {
       grids: [],
       days: 7,
       quotas: [{ platform: 'youtube', scope: 'global', used: 0, backedOff: false }],
+      interrupted: [],
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('no channel has a [publish] schedule')
   })
@@ -198,5 +207,34 @@ describe('renderPublishesPage', () => {
     }
     const out = renderPublishesPage(data).value
     expect(out).toContain('instagram: no channel has a [publish.instagram] target configured')
+  })
+
+  it('lists interrupted uploads with both resolution controls', () => {
+    const out = renderPublishesPage({
+      grids: [],
+      days: 14,
+      quotas: [],
+      interrupted: [
+        { jobId: 'j1', channel: 'chan-a', platform: 'youtube', createdAt: '2026-08-01T10:00:00Z' },
+      ],
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('interrupted uploads')
+    expect(out).toContain('name="kind" value="publish.retry"')
+    // mark-done needs confirming, so it is a link to the interstitial, not a form.
+    expect(out).toContain('/actions/confirm?kind=publish.markDone')
+  })
+
+  it('omits the interrupted section when there is nothing to resolve', () => {
+    const out = renderPublishesPage({
+      grids: [],
+      days: 14,
+      quotas: [],
+      interrupted: [],
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).not.toContain('interrupted uploads')
   })
 })
