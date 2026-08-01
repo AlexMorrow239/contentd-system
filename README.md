@@ -378,7 +378,7 @@ are gone (a `.env` still setting them is silently ignored).
 ## Automation
 
 Production is one long-running process: `brainrot run` is the container's
-`CMD` and starts a daemon with four workers running concurrently — there is
+`CMD` and starts a daemon with six workers running concurrently — there is
 no host cron, no launchd agent, and no per-worker container anymore. Each
 worker polls in a tight loop: check demand, do one unit of work if there is
 any, and re-check immediately; an idle worker sleeps 30 seconds before
@@ -388,11 +388,14 @@ seconds rather than taking the daemon down. `scout` fills the topic queue,
 produce one video), `publish` picks one `ready` video from the channel
 furthest behind its `videos_per_day` pace and fans it out to every platform
 that channel declares (see Publishing above), and `digest` prints a daily
-report once per local day. Because throughput now follows demand rather than
-a clock, there's nothing scheduled to fall behind: a channel with videos
-ready gets them produced and published as fast as its own gates (backlog
-caps, cooldowns, quotas) allow, and a channel with nothing to do costs
-nothing but an idle poll.
+report once per local day. The remaining two, `actions-fast` and
+`actions-slow`, drain the dashboard's operator-action queue instead of the
+pipeline — see "The dashboard can now publish — and will soon spend money
+too" below.
+Because throughput now follows demand rather than a clock, there's nothing
+scheduled to fall behind: a channel with videos ready gets them produced and
+published as fast as its own gates (backlog caps, cooldowns, quotas) allow,
+and a channel with nothing to do costs nothing but an idle poll.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
@@ -458,7 +461,7 @@ means "start" can silently run old code. `--build` makes it always build (or
 confirm current) first.
 
 This brings up both services: `whisperx` (the caption-alignment sidecar) and
-`brainrot` (the daemon: `brainrot run`, four workers polling for demand),
+`brainrot` (the daemon: `brainrot run`, six workers polling for demand),
 which waits on `whisperx`'s healthcheck before its workers start. There is
 one log stream for everything the daemon does:
 
@@ -508,17 +511,21 @@ produce, a fan-out with any platform entry not `published` (a
 ### Cadence
 
 There is no schedule to configure — throughput comes from the poll loop
-itself (`src/loop/daemon.ts`). Each of the four workers checks demand, does
-one unit of work if there is any, and re-checks immediately; an idle worker
-sleeps 30 seconds (`IDLE_SLEEP_MS`) before its next check, and a worker whose
-unit throws sleeps 60 seconds (`ERROR_SLEEP_MS`) instead. `scout` layers a
-per-channel clock on top of that poll, `SCOUT_RECHECK_MS` (20 minutes), so a
-channel isn't refetched on every 30-second idle poll even when nothing about
-it changed — the clock is in-memory, so a daemon restart resets it and
-re-scouts immediately, which is harmless. `digest` is the one worker still on
-a real clock: it fires once per local day at or after 08:00 (`DIGEST_HOUR`),
-printed to the log stream only — nothing else delivers it — and a restart
-later the same day can re-fire it once.
+itself (`src/loop/daemon.ts`). Each of the daemon's four pipeline workers
+(produce, publish, scout, digest) checks demand, does one unit of work if
+there is any, and re-checks immediately; an idle worker sleeps 30 seconds
+(`IDLE_SLEEP_MS`) before its next check, and a worker whose unit throws
+sleeps 60 seconds (`ERROR_SLEEP_MS`) instead. `scout` layers a per-channel
+clock on top of that poll, `SCOUT_RECHECK_MS` (20 minutes), so a channel
+isn't refetched on every 30-second idle poll even when nothing about it
+changed — the clock is in-memory, so a daemon restart resets it and
+re-scouts immediately, which is harmless. `digest` is the one pipeline
+worker still on a real clock: it fires once per local day at or after 08:00
+(`DIGEST_HOUR`), printed to the log stream only — nothing else delivers it —
+and a restart later the same day can re-fire it once. The other two workers,
+`actions-fast` and `actions-slow`, follow the same check-then-sleep shape but
+poll at ~1s and 30s respectively for a different queue — see "The dashboard
+can now publish — and will soon spend money too" below.
 
 Times that matter are container-local (`TZ=America/Chicago`, set in
 `deploy/docker/Dockerfile` and pinned again in `docker-compose.yml`'s
@@ -531,19 +538,20 @@ no hot reload.
 
 ### Dashboard
 
-A read-only web view of the production database, served by the `dashboard`
-compose service:
+A web view of the production database, served by the `dashboard` compose
+service:
 
 ```bash
 docker compose up -d dashboard
 open http://127.0.0.1:8787
 ```
 
-Five views: an overview (job health, spend against all three budget caps,
+Six pages: an overview (job health, spend against all three budget caps,
 held leases, YouTube quota), jobs with a per-stage timeline and the raw error
 text, the library with inline video playback, the publish schedule as a
-day-by-ordinal grid including attempts that never happened, and the scout
-topic queue.
+day-by-ordinal grid including attempts that never happened, the scout topic
+queue, and an action history page (`/actions`) listing every operator action
+that has been queued, with its status, result and error.
 
 The dashboard serves whichever root it is given, like every other entrypoint —
 there is no in-page database switcher, and the footer names the root being
@@ -554,16 +562,48 @@ second dashboard against the dev root:
 BRAINROT_ROOT=local pnpm exec tsx src/dashboard/server.ts
 ```
 
-The dashboard **never writes**. Its connection opens read-only, so
-`library approve/reject`, `topics requeue/reject/prune-media` and
-`publish retry/mark-done`
-remain CLI-only — those race a live daemon worker, and a button is not the right
-affordance for that. The `brainrot-data` mount is read-write on purpose: SQLite
-must create the `-shm` file to read a WAL database, so the read-only guarantee
-lives in the connection flag rather than the mount.
+Every page it *reads* still opens the database through a read-only connection
+— the `brainrot-data` mount is read-write on purpose (SQLite must create the
+`-shm` file even to read a WAL database), but the guarantee lives in the
+connection flag, not the mount. What changed is that the dashboard now also
+*writes*, in one narrow way: buttons on the overview, library, topics and
+publishes pages queue an operator action (`POST /actions`) that the daemon
+executes, rather than mutating anything itself. Six actions are wired today —
+`topics reject/requeue`, `library approve`, `publish retry/mark-done`, and
+`run digest`. `library reject`, `topics prune-media`, `produce`, `resume`,
+`scout`, `produce-next`, `publish-next` and `auth` are still CLI-only; that is
+this phase's scope boundary, not a structural limit, and a later plan moves
+them onto the same queue.
 
-The port is bound to `127.0.0.1` and there is no authentication. Do not
-republish it on `0.0.0.0`.
+### The dashboard can now publish — and will soon spend money too
+
+The dashboard queues operator actions (`POST /actions`) that the daemon
+executes. It has **no authentication**. The only things standing between a web
+page you visit and your production pipeline are:
+
+1. the loopback binding (`127.0.0.1:8787` in `docker-compose.yml`), and
+2. the same-origin + CSRF-token check in `src/dashboard/csrf.ts`.
+
+Today's six wired actions (`topics reject/requeue`, `library approve`,
+`publish retry/mark-done`, `run digest`) already let a caller promote a video
+to `ready` or clear a stuck upload — both feed straight into the daemon's
+normal publish worker, so the result is a **real, public upload** to
+YouTube/Instagram, not just a row change. No action wired yet spends provider
+money directly — `produce`, `resume` and `scout` are still CLI-only — but they
+queue through this exact same unauthenticated endpoint and are the next phase
+of this same plan, so the security boundary has to hold before they land, not
+after.
+
+**Do not put the dashboard behind a tunnel, reverse proxy, or `0.0.0.0`
+binding.** Doing so turns it into remote code execution against your channels
+and your published accounts today, and against your provider budgets the
+moment the next phase ships. If you need remote access, use an SSH
+port-forward to loopback on both ends — never a published port.
+
+Actions run inside the daemon under the same leases its workers take, so unlike
+the equivalent CLI commands they never race a live render or upload. The daemon
+must be running for a queued action to execute; the dashboard shows a banner
+when it is not.
 
 ### Development vs. production
 

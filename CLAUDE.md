@@ -98,20 +98,23 @@ duration. Voice synthesis has its own independent fallback chain
 on failure or absence — this is a plain per-channel setting, not a pipeline
 branch.
 
-### One daemon, four workers share one SQLite file
+### One daemon, six workers share one SQLite file
 
 `brainrot run` (`src/loop/daemon.ts`) is the container's `CMD` and the only
 long-running process — there is no host cron and no per-loop container
-anymore. It starts four workers concurrently: produce, publish, scout,
-digest. Every worker shares one shape (`runWorker`): check demand → do one
-unit of work → re-check immediately, so throughput now follows demand, not
-a schedule. An idle unit sleeps `IDLE_SLEEP_MS` (30s) before its next check;
-a unit that throws logs a `worker-error` line and sleeps `ERROR_SLEEP_MS`
-(60s) instead of taking the daemon down. Consecutive identical idle lines
-are deduped (keyed on the emitted JSON) so a quiet night is silent rather
-than one line every 30 seconds forever — any worked unit or error resets the
-dedupe so the next idle reason is still reported once. `digest` is the one
-worker that isn't demand-driven: it's time-gated, firing once per local day
+anymore. It starts six workers concurrently: produce, publish, scout, digest,
+and a pair — `actions-fast` / `actions-slow` — covered in their own
+subsection below. Every worker shares one shape (`runWorker`): check demand →
+do one unit of work → re-check immediately, so throughput now follows demand,
+not a schedule. An idle unit sleeps `IDLE_SLEEP_MS` (30s) before its next
+check — `runWorker` takes a per-worker override, which is what lets
+`actions-fast` poll at ~1s instead — and a unit that throws logs a
+`worker-error` line and sleeps `ERROR_SLEEP_MS` (60s) instead of taking the
+daemon down. Consecutive identical idle lines are deduped (keyed on the
+emitted JSON) so a quiet night is silent rather than one line every 30
+seconds forever — any worked unit or error resets the dedupe so the next idle
+reason is still reported once. `digest` is one of the original four pipeline
+workers that isn't demand-driven: it's time-gated, firing once per local day
 at or after `DIGEST_HOUR` (08:00), with an in-memory guard so a same-day
 restart can re-fire it once — acceptable for a read-only report whose only
 delivery is the log stream.
@@ -209,10 +212,20 @@ publishing the moment its backlog drains, and every other line in the digest
 would stay quiet about it. Channels with no scout sources are excluded — they
 are fed by manual `brainrot produce`, where an empty queue is normal.
 
-Manual commands (`produce`, `resume`, `auth <platform>`,
-`library approve/reject`, `publish retry/mark-done`) deliberately run
-**outside** these leases — they are operator actions that can race a live
-daemon worker if the daemon container isn't stopped first.
+Manual **CLI** commands (`produce`, `resume`, `auth <platform>`,
+`library approve/reject`, `publish retry/mark-done`, `topics reject/requeue`)
+deliberately run **outside** these leases — they are operator actions that can
+race a live daemon worker if the daemon container isn't stopped first. This is
+the CLI path only, and it is deliberate: the CLI is the break-glass tool and
+has to work when the daemon is down or wedged, which is exactly when it is
+needed.
+
+The **dashboard** path does not have this property. Its controls enqueue into
+`operator_actions`, which the daemon's `actions-fast` / `actions-slow` workers
+drain in-process, taking the same leases — so a dashboard-triggered
+`publish retry` waits for the publish lease instead of racing an upload. Prefer
+the dashboard for routine operator work; reach for the CLI when the daemon
+itself is the problem.
 
 The scout side gates on score rather than a window: `scoutChannel` stores
 only topics scoring at or above `SCOUT_MIN_SCORE` (80, a code constant in
@@ -267,6 +280,64 @@ topics. The settled predicate is shared by the reclaim sweep,
 — that sharing is load-bearing: define inventory independently and an
 attempt-capped or passed-over video counts forever, wedging the channel's
 production permanently.
+
+### The operator-action queue: two more workers, drained fast and slow
+
+The dashboard's only write is an `INSERT` into `operator_actions`
+(`src/db/schema.sql`, alongside a one-row `daemon_state` liveness table). Two
+more daemon workers, `actions-fast` and `actions-slow`, drain that queue
+in-process **under the same leases the other four workers take** — this is
+what makes a dashboard-triggered mutation race-free where the equivalent CLI
+command is not (see "outside these leases", above).
+
+`src/actions/` is split three ways by what may import it: `catalog.ts` is
+pure metadata (`kind`, `lane`, label, zod arg schema, `confirm` flag, the
+lease it needs) with no heavy imports, read by **both** the dashboard (to
+render forms and validate submitted args) and the daemon; `handlers.ts` holds
+the `run` implementations — `runJob`, `resumeJob`, `scoutAll`, the publish
+adapters — and is imported **only** by the daemon; `queue.ts` is the DAO
+(`enqueue`, `claimNext`/`pendingActions`, `complete`, `fail`, `listRecent`).
+The split is load-bearing, not organizational, the same discipline
+`DASHBOARD_STAGE_ORDER` already follows: the dashboard is the one process
+that terminates unauthenticated HTTP and must never pull in Remotion,
+Anthropic, or credential code. An arch lint in `src/arch.test.ts`
+("dashboard action isolation") walks `src/dashboard/**`'s imports
+**transitively** — a real DFS over the module graph, not a substring grep —
+and fails if any path reaches `src/actions/handlers.ts`.
+
+Six actions exist today, all in the `fast` lane: `topics.reject`,
+`topics.requeue`, `library.approve`, `publish.retry`, `publish.markDone`,
+`digest.run`. The `slow` lane — anything that can take seconds or minutes: a
+render, an upload, a provider call — is built and its worker is registered,
+but carries no actions yet; that's a later plan. `actions-fast` drains up to
+`MAX_FAST_DRAIN` (50) pending rows per poll on its ~1s idle sleep so a
+checkbox click feels immediate, and also carries the daemon heartbeat
+(stamping `daemon_state`, throttled to `DAEMON_HEARTBEAT_MS` so a 1s poll
+doesn't churn the WAL) that lets the dashboard tell "queued" from "queued
+into the void." `actions-slow` claims and completes at most one row per poll
+on the standard 30s sleep, so one long action can never block the poll that
+would report it.
+
+An action whose required lease (`produce`, `publish`, or `scout` — named
+exactly as the other workers name them) is already held is **skipped, not
+awaited**: it stays `pending`, explains itself through the row's `notice`
+column ("waiting for the publish lease"), and is retried on the next poll.
+Taking the head of the queue and blocking on it would let one long upload
+stall every trivial mutation behind it — the head-of-line problem the two
+lanes exist to prevent. Each poll's scan window (`ACTION_SCAN_WINDOW`) is
+deliberately wider than its completion budget, so a couple of consecutive
+lease-blocked rows can't idle a lane with runnable work sitting behind them.
+The two fast actions that do take a lease (`publish.retry`/`publish.markDone`,
+since they mutate `publishes` rows) hold it for `FAST_ACTION_LEASE_TTL_MS`
+(60s) rather than the lease's own long TTL — using `publish`'s real 30-minute
+TTL there would mean a SIGKILL inside a fast action's ~1ms window orphans the
+lease for the full 30 minutes, since the row-repair sweep below heals the row
+but not the lease.
+
+A `running` row left behind by a daemon crash is swept to `failed`
+(`error_kind: 'interrupted'`) once per worker start, with no age threshold —
+within one process, a `running` row on the very first poll can only be from a
+dead process, so there is nothing to guess.
 
 ### Config: channel TOML is the unit of everything
 
@@ -610,17 +681,21 @@ its adapter only when within its expiry window (`IG_TOKEN_REFRESH_WINDOW_MS`)
 credential material must never reach logs or stdout — CLI commands print
 only confirmations.
 
-### The dashboard is read-only, and structurally so
+### The dashboard's read-only guarantee narrows, not disappears
 
 `src/dashboard/` serves a localhost web view of the database (compose service
 `dashboard`, port 8787, loopback-bound). It serves one `BRAINROT_ROOT` per
 process — there is no in-page switcher, and the footer names the root being
 served; viewing the other root means running a second dashboard against it.
-It opens SQLite through
-`openDbReadonly` — a sibling of `openDb` that skips the `mkdirSync` and the
-`schema.sql` exec, both of which are writes — so no route can mutate state.
-Operator mutations stay on the CLI, where the lease-race caveats are
-documented.
+Every GET route still opens SQLite through `openDbReadonly` — a sibling of
+`openDb` that skips the `mkdirSync` and the `schema.sql` exec, both of which
+are writes — so no read route can mutate state. `POST /actions` is the one
+exception: it opens a separate `openDbActions` handle whose only statement is
+an `INSERT INTO operator_actions`, and the daemon does the actual mutating
+out-of-process (see "the operator-action queue", above). That's also why the
+dashboard still holds no `ANTHROPIC_API_KEY` and no `BRAINROT_TOKEN_KEY`
+despite being able to queue a render or a publish: the credentials that
+mutation needs live only in the daemon.
 
 The module splits SQL from HTML and enforces it by structure: `queries/*` are
 `(db, params) -> typed data` and emit no markup, `views/*` are
