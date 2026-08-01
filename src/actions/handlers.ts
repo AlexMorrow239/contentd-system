@@ -14,9 +14,10 @@ import { ACTIONS, parseActionArgs, type ActionArgs, type ActionKind } from './ca
 
 /**
  * Handler implementations. DAEMON ONLY — src/arch.test.ts fails the build if
- * anything under src/dashboard/ reaches this module, because it transitively
- * pulls publish adapters (and, from phase 2, Remotion and the provider
- * clients) into whatever process imports it. The dashboard reads ./catalog.js
+ * anything under src/dashboard/ imports this module, directly OR
+ * transitively (including via a re-export), because it transitively pulls
+ * publish adapters (and, from phase 2, Remotion and the provider clients)
+ * into whatever process imports it. The dashboard reads ./catalog.js
  * instead, which is pure metadata.
  *
  * Each handler mirrors its CLI command's semantics exactly, including which
@@ -38,15 +39,40 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'topics.reject': (ctx, args) =>
     Promise.resolve({ rejected: rejectTopics(ctx.db, args.ids), requested: args.ids.length }),
 
-  'topics.requeue': (ctx, args) => {
+  // Each handler below is genuinely synchronous, but stays `async` so a
+  // thrown error becomes a rejected Promise rather than a synchronous throw —
+  // the sole caller is `async runAction`, but a future direct
+  // `ACTION_HANDLERS[k](ctx, args).catch(...)` must not blow past the
+  // `.catch`. Same convention as storage/fake.ts. require-await doesn't know
+  // that distinction, hence the per-handler disable.
+  // eslint-disable-next-line @typescript-eslint/require-await
+  'topics.requeue': async (ctx, args) => {
     const outcome = requeueTopic(ctx.db, args.id)
     if (!outcome.ok) {
+      // 'job-active' is someone else holding the topic (its job is still
+      // live) — errors.ts defines that as 'conflict', not 'refused'. The
+      // CLI's `topics requeue` reports the same structured detail
+      // (status / jobId / jobStatus) on stdout; it travels here as context
+      // so the dashboard can render it too.
+      const kind =
+        outcome.reason === 'unknown'
+          ? 'not-found'
+          : outcome.reason === 'job-active'
+            ? 'conflict'
+            : 'refused'
+      const context =
+        outcome.reason === 'job-active'
+          ? { jobId: outcome.jobId, jobStatus: outcome.jobStatus }
+          : outcome.reason === 'not-claimed'
+            ? { status: outcome.status }
+            : undefined
       throw new BrainrotError(`topic ${args.id} not requeued: ${outcome.reason}`, {
         domain: 'job',
-        kind: outcome.reason === 'unknown' ? 'not-found' : 'refused',
+        kind,
+        context,
       })
     }
-    return Promise.resolve({ ok: true })
+    return { ok: true }
   },
 
   'library.approve': (ctx, args) => {
@@ -57,17 +83,19 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     return Promise.resolve({ approved, requested: args.jobIds.length, reclaimed })
   },
 
-  'publish.retry': (ctx, args) => {
+  // eslint-disable-next-line @typescript-eslint/require-await
+  'publish.retry': async (ctx, args) => {
     if (!retryInterrupted(ctx.db, args.jobId)) {
       throw new BrainrotError(`no interrupted publish for job ${args.jobId}`, {
         domain: 'publish',
         kind: 'not-found',
       })
     }
-    return Promise.resolve({ cleared: true })
+    return { cleared: true }
   },
 
-  'publish.markDone': (ctx, args) => {
+  // eslint-disable-next-line @typescript-eslint/require-await
+  'publish.markDone': async (ctx, args) => {
     // The interrupted row names its own platform, so the url comes from that
     // platform's adapter — there is no platform argument to get wrong. A
     // platform whose url is not derivable from the id alone records none.
@@ -80,7 +108,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
         kind: 'not-found',
       })
     }
-    return Promise.resolve({ platform, postId: args.postId, url })
+    return { platform, postId: args.postId, url }
   },
 
   'digest.run': (ctx) => {

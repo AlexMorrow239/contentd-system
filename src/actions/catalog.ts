@@ -11,7 +11,12 @@ import { BrainrotError } from '../errors.js'
  * business loading Remotion, Anthropic or credential code.
  */
 
-/** `fast` = a few SQL statements, no network, no filesystem. `slow` = anything else. */
+/**
+ * `fast` = completes in milliseconds: local SQLite reads/writes and, as
+ * `digest.run` shows, a config-directory read — but never a network call, a
+ * provider call, or a render. `slow` = anything that can take seconds or
+ * longer (a render, an upload, a provider call).
+ */
 export type ActionLane = 'fast' | 'slow'
 
 /** The lease an action must hold, named exactly as the daemon's workers name it. */

@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises'
-import { join, relative } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { DASHBOARD_STAGE_ORDER } from './dashboard/queries/jobs.js'
@@ -34,6 +34,55 @@ async function srcFiles(dir: string = SRC_ROOT): Promise<string[]> {
 }
 
 /**
+ * Resolves an import specifier against the file that contains it, mapping
+ * the ESM `.js` extension back to the `.ts` source on disk. Returns
+ * undefined for a bare/package specifier (`hono`, `node:fs`,
+ * `better-sqlite3`, …) — those aren't part of this repo's own import graph.
+ */
+function resolveRelativeSpecifier(fromFile: string, spec: string): string | undefined {
+  if (!spec.startsWith('.')) return undefined
+  const tsSpec = spec.endsWith('.js') ? `${spec.slice(0, -'.js'.length)}.ts` : spec
+  return join(dirname(fromFile), tsSpec)
+}
+
+/**
+ * DFS over the import graph (both `import ... from` and `export ... from`
+ * re-exports — a barrel is exactly the shape this needs to see through)
+ * starting from `startFiles`, looking for `target`. Returns the chain of
+ * absolute paths from whichever start file reaches it first, or null if none
+ * do. A visited set stops a cycle, or a diamond-shaped import graph, from
+ * re-walking the same file twice.
+ */
+async function findImportChain(startFiles: string[], target: string): Promise<string[] | null> {
+  const visited = new Set<string>()
+  async function walk(file: string, chain: string[]): Promise<string[] | null> {
+    if (file === target) return chain
+    if (visited.has(file)) return null
+    visited.add(file)
+    let source: string
+    try {
+      source = await readFile(file, 'utf8')
+    } catch {
+      // A resolved specifier that doesn't exist on disk (e.g. a mis-mapped
+      // extension) is not this lint's problem to diagnose — just a dead end.
+      return null
+    }
+    for (const match of source.matchAll(/from\s+'([^']+)'/g)) {
+      const resolved = resolveRelativeSpecifier(file, match[1])
+      if (resolved === undefined) continue
+      const found = await walk(resolved, [...chain, resolved])
+      if (found !== null) return found
+    }
+    return null
+  }
+  for (const start of startFiles) {
+    const found = await walk(start, [start])
+    if (found !== null) return found
+  }
+  return null
+}
+
+/**
  * Repo-wide architecture lints: assertions about how modules may depend on
  * each other, rather than about any module's behavior.
  *
@@ -57,22 +106,27 @@ describe('dashboard stage order', () => {
 })
 
 describe('dashboard action isolation', () => {
-  it('never reaches src/actions/handlers.ts from src/dashboard/', async () => {
+  it('never directly or transitively imports src/actions/handlers.ts from src/dashboard/', async () => {
     // handlers.ts transitively imports the publish adapters — and, from phase
     // 2, Remotion and the provider clients. The dashboard is the one process
     // terminating unauthenticated HTTP; it reads src/actions/catalog.ts, which
     // is pure metadata, and enqueues. Same rule, same reason, as
     // DASHBOARD_STAGE_ORDER above.
+    //
+    // This walks the import graph rather than grepping for the literal
+    // substring "actions/handlers": a dashboard file importing a module that
+    // itself imports handlers.ts — or a barrel re-exporting from it — would
+    // pass a one-hop text grep while still pulling the publish adapters into
+    // the dashboard process. Same specifier-parsing shape as the "src/stories
+    // purity" lint below.
+    const target = join(SRC_ROOT, 'actions', 'handlers.ts')
     const files = (await srcFiles(join(SRC_ROOT, 'dashboard'))).filter(
       (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
     )
     expect(files.length).toBeGreaterThan(0)
-    const offenders: string[] = []
-    for (const file of files) {
-      const source = await readFile(file, 'utf8')
-      if (source.includes('actions/handlers')) offenders.push(relative(SRC_ROOT, file))
-    }
-    expect(offenders).toEqual([])
+
+    const chain = await findImportChain(files, target)
+    expect(chain === null ? null : chain.map((f) => relative(SRC_ROOT, f)).join(' -> ')).toBeNull()
   })
 })
 

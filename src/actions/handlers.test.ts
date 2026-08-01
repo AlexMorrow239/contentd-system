@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
-import { memDb, seedJob, seedLibrary, seedPublish, seedTopic } from '../testing/db.js'
+import {
+  memDb,
+  seedJob,
+  seedLibrary,
+  seedLibraryObject,
+  seedPublish,
+  seedTopic,
+} from '../testing/db.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
 
@@ -17,8 +24,10 @@ function ctx(db: Database): ActionContext {
 
 describe('action handlers', () => {
   it('has exactly one handler per catalog entry', () => {
-    // The anti-drift guard: a catalog entry with no handler would enqueue
-    // fine and then fail in the worker, minutes later, with a confusing error.
+    // `ACTION_HANDLERS`'s mapped type already makes a missing handler a
+    // compile error — this is cheap insurance against a future `as any` cast
+    // or object-spread escaping that guarantee at runtime, not what actually
+    // prevents the drift.
     expect(Object.keys(ACTION_HANDLERS).sort()).toEqual([...ACTION_KINDS].sort())
   })
 
@@ -51,7 +60,25 @@ describe('action handlers', () => {
     )
   })
 
-  it('approves needs-review library rows and reports reclaimed refusals', async () => {
+  it('surfaces a job-active requeue refusal as a conflict, with the job detail attached', async () => {
+    // 'job-active' means someone else (a live job) still holds the topic —
+    // errors.ts defines that as 'conflict', not 'refused'.
+    const db = memDb()
+    seedJob(db, 'j1', { status: 'running' })
+    const id = seedTopic(db, { status: 'claimed', jobId: 'j1' })
+    let caught: unknown
+    try {
+      await runAction(ctx(db), 'topics.requeue', { id: String(id) })
+    } catch (err) {
+      caught = err
+    }
+    expect(caught).toBeInstanceOf(BrainrotError)
+    const err = caught as BrainrotError
+    expect(err.kind).toBe('conflict')
+    expect(err.context).toEqual({ jobId: 'j1', jobStatus: 'running' })
+  })
+
+  it('approves a clean needs-review library row', async () => {
     const db = memDb()
     seedJob(db, 'j1')
     seedLibrary(db, 'j1', { state: 'needs-review' })
@@ -59,6 +86,18 @@ describe('action handlers', () => {
       approved: 1,
       requested: 1,
       reclaimed: [],
+    })
+  })
+
+  it('refuses to approve a reclaimed row and reports it, not as an error', async () => {
+    const db = memDb()
+    seedJob(db, 'j1')
+    seedLibrary(db, 'j1', { state: 'needs-review' })
+    seedLibraryObject(db, 'j1', { reclaimedAt: '2026-07-30T00:00:00Z' })
+    expect(await runAction(ctx(db), 'library.approve', { jobIds: 'j1' })).toEqual({
+      approved: 0,
+      requested: 1,
+      reclaimed: ['j1'],
     })
   })
 
@@ -88,6 +127,28 @@ describe('action handlers', () => {
     // The interrupted row names the platform, so no --platform arg exists to
     // get wrong — and a Shorts url can never be recorded against an IG media id.
     expect(result.url).toContain('abc123')
+  })
+
+  it('fails mark-done when the job has no interrupted publish', async () => {
+    const db = memDb()
+    seedJob(db, 'j1')
+    await expect(
+      runAction(ctx(db), 'publish.markDone', { jobId: 'j1', postId: 'abc123' }),
+    ).rejects.toThrow(/no interrupted publish/)
+  })
+
+  it('marks an interrupted instagram publish done with no derivable url', async () => {
+    const db = memDb()
+    seedJob(db, 'j1')
+    seedPublish(db, 'j1', { status: 'interrupted', platform: 'instagram' })
+    const result = (await runAction(ctx(db), 'publish.markDone', {
+      jobId: 'j1',
+      postId: 'abc123',
+    })) as { url: string | null }
+    // Instagram's post id alone doesn't determine a permalink — its adapter's
+    // postUrl always returns null (src/publish/platforms/instagram.ts), so a
+    // mark-done on Instagram must record no url rather than a fabricated one.
+    expect(result.url).toBeNull()
   })
 
   it('returns the digest text', async () => {
