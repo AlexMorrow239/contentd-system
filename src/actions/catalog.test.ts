@@ -12,6 +12,7 @@ describe('ACTIONS catalog', () => {
       'publish.next',
       'publish.nextDryRun',
       'publish.retry',
+      'scout.run',
       'topics.reject',
       'topics.requeue',
     ])

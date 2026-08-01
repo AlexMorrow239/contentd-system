@@ -1,6 +1,9 @@
+import { writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
+import { channelToml, writeChannelsDir } from '../testing/channel.js'
 import {
   memDb,
   seedJob,
@@ -9,6 +12,7 @@ import {
   seedPublish,
   seedTopic,
 } from '../testing/db.js'
+import { tmpDir } from '../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
 
@@ -193,5 +197,33 @@ describe('action handlers', () => {
 
     await ACTION_HANDLERS['publish.nextDryRun'](ctx, {}, { publishNextTick: tick })
     expect(tick).toHaveBeenLastCalledWith(db, { channelsDir: '/ch', dryRun: true })
+  })
+
+  it('scout.run forces past the recheck cooldown', async () => {
+    const db = memDb()
+    const scout = vi.fn().mockResolvedValue([{ channel: 'a', inserted: 2 }])
+    const dir = writeChannelsDir({ 'a.toml': channelToml({ name: 'a' }) }, tmpDir('scout-action'))
+    const result = await ACTION_HANDLERS['scout.run'](
+      { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+      {},
+      { scoutAll: scout },
+    )
+    // force:true is the whole point — SCOUT_RECHECK_MS is 20 minutes, so an
+    // unforced "scout now" button would silently no-op most times it is clicked.
+    expect(scout).toHaveBeenCalledWith(db, expect.any(Array), { force: true })
+    expect(result).toEqual({ channels: [{ channel: 'a', inserted: 2 }] })
+  })
+
+  it('scout.run fails loudly on a broken channels directory', async () => {
+    const db = memDb()
+    const dir = tmpDir('scout-action-broken')
+    writeFileSync(join(dir, 'bad.toml'), 'name = ')
+    await expect(
+      ACTION_HANDLERS['scout.run'](
+        { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+        {},
+        {},
+      ),
+    ).rejects.toThrow(/bad\.toml/)
   })
 })

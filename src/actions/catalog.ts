@@ -141,6 +141,16 @@ export const ACTIONS = {
     lease: undefined,
     args: z.object({}),
   },
+  'scout.run': {
+    lane: 'slow',
+    label: 'scout now',
+    confirm: false,
+    danger: undefined,
+    // Unlike the tick actions, `scoutAll` does NOT lease — the CLI command and
+    // the daemon's scoutUnit each lease around it, so this action must too.
+    lease: 'scout',
+    args: z.object({}),
+  },
 } as const satisfies Record<string, ActionDescriptor>
 
 export type ActionKind = keyof typeof ACTIONS

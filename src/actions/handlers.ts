@@ -6,11 +6,8 @@ import { buildDigest } from '../loop/digest.js'
 import { produceNextTick } from '../loop/produce-next.js'
 import { publishNextTick } from '../loop/publish-next.js'
 import { ADAPTERS } from '../publish/platforms/index.js'
-import {
-  interruptedPlatform,
-  markInterruptedDone,
-  retryInterrupted,
-} from '../publish/publishes.js'
+import { interruptedPlatform, markInterruptedDone, retryInterrupted } from '../publish/publishes.js'
+import { scoutAll } from '../scout/scout.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
 import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 
@@ -59,6 +56,7 @@ export interface ActionContext {
 type HandlerDeps = {
   produceNextTick?: typeof produceNextTick
   publishNextTick?: typeof publishNextTick
+  scoutAll?: typeof scoutAll
 }
 
 type Handler<K extends ActionKind> = (
@@ -133,7 +131,8 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     // platform whose url is not derivable from the id alone records none.
     const platform = interruptedPlatform(ctx.db, args.jobId)
     const url = platform === null ? null : ADAPTERS[platform]().postUrl(args.postId)
-    const ok = platform !== null && markInterruptedDone(ctx.db, args.jobId, args.postId, url, ctx.now)
+    const ok =
+      platform !== null && markInterruptedDone(ctx.db, args.jobId, args.postId, url, ctx.now)
     if (!ok) {
       throw new BrainrotError(`no interrupted publish for job ${args.jobId}`, {
         domain: 'publish',
@@ -174,6 +173,23 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       channelsDir: ctx.channelsDir,
       dryRun: true,
     }),
+
+  'scout.run': async (ctx, _args, deps) => {
+    const loaded = tryLoadChannelsDir(ctx.channelsDir)
+    if (loaded.error !== undefined) {
+      throw new BrainrotError(`scout: ${loaded.error}`, { domain: 'config', kind: 'invalid' })
+    }
+    // force:true unconditionally — an operator clicking "scout now" means now,
+    // and SCOUT_RECHECK_MS (20 min) would otherwise swallow the click.
+    //
+    // A ScoutRunFailedError propagates and records the action `failed`, which
+    // matches the CLI's exit 1. The per-channel detail it carries is lost:
+    // `failAction` stores a message and a kind, not a result. Accepted — the
+    // failure message names the systemic cause, which is the actionable part.
+    return {
+      channels: await (deps?.scoutAll ?? scoutAll)(ctx.db, loaded.channels, { force: true }),
+    }
+  },
 }
 
 /**
