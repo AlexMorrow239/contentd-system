@@ -8,6 +8,7 @@ const NAV: { key: NavKey; label: string; path: string }[] = [
   { key: 'library', label: 'library', path: '/library' },
   { key: 'publishes', label: 'publishes', path: '/publishes' },
   { key: 'topics', label: 'topics', path: '/topics' },
+  { key: 'actions', label: 'actions', path: '/actions' },
 ]
 
 /**

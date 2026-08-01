@@ -17,6 +17,7 @@ import { formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js
 import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
 import type { DashboardConfig } from './config.js'
 import { html } from './html.js'
+import { actionsTableExists, buildActionsPage } from './queries/actions.js'
 import {
   countLibraryEntries,
   findLibraryVideoPath,
@@ -31,6 +32,7 @@ import { countTopics, topicChannels } from './queries/topics.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
 import { parseRange, resolveVideoPath } from './video.js'
+import { missingTableBanner, renderActionsPage } from './views/actions.js'
 import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
@@ -391,6 +393,38 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           channels: topicChannels(db),
           filter: { channel, status },
         }),
+      }),
+    )
+  })
+
+  app.get('/actions', (c) => {
+    const db = c.get('db')
+    const now = deps.now?.() ?? new Date()
+    if (!actionsTableExists(db)) {
+      return c.html(
+        layout({
+          title: 'actions',
+          root: deps.config.paths.root,
+          activeNav: 'actions',
+          body: missingTableBanner(),
+        }),
+      )
+    }
+    const data = buildActionsPage(db, now)
+    const rawId = Number(c.req.query('action') ?? '')
+    const highlightId = Number.isInteger(rawId) && rawId > 0 ? rawId : undefined
+    return c.html(
+      layout({
+        title: 'actions',
+        root: deps.config.paths.root,
+        activeNav: 'actions',
+        // A page holding unfinished work refreshes fast enough to show the
+        // outcome without the operator touching anything; an idle page does
+        // not refresh at all.
+        refreshSeconds: data.actions.some((a) => a.status === 'pending' || a.status === 'running')
+          ? 3
+          : undefined,
+        body: renderActionsPage(data, { highlightId }),
       }),
     )
   })
