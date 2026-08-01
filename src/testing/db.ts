@@ -319,3 +319,68 @@ export function seedCost(
     )
   }
 }
+
+export interface ActionRowSeed {
+  kind: string
+  lane: string
+  args: string
+  status: string
+  requestedBy: string
+  createdAt: string | null
+  startedAt: string | null
+  finishedAt: string | null
+  result: string | null
+  error: string | null
+  errorKind: string | null
+  notice: string | null
+}
+
+/** Returns the autoincrement id, which the queue tests assert on. */
+export function seedAction(db: Database, overrides: Partial<ActionRowSeed> = {}): number {
+  const row = {
+    kind: 'topics.reject',
+    lane: 'fast',
+    args: '{"ids":[1]}',
+    status: 'pending',
+    requestedBy: 'dashboard',
+    createdAt: null,
+    startedAt: null,
+    finishedAt: null,
+    result: null,
+    error: null,
+    errorKind: null,
+    notice: null,
+    ...overrides,
+  }
+  const cols = [
+    'kind', 'lane', 'args', 'status', 'requested_by',
+    'started_at', 'finished_at', 'result', 'error', 'error_kind', 'notice',
+  ]
+  const vals: unknown[] = [
+    row.kind, row.lane, row.args, row.status, row.requestedBy,
+    row.startedAt, row.finishedAt, row.result, row.error, row.errorKind, row.notice,
+  ]
+  // created_at has a schema default; naming it with NULL would override the
+  // default with NULL, so it is only named when the caller pinned a value.
+  if (row.createdAt !== null) {
+    cols.push('created_at')
+    vals.push(row.createdAt)
+  }
+  const info = db
+    .prepare(
+      `INSERT INTO operator_actions (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+    )
+    .run(...vals)
+  return Number(info.lastInsertRowid)
+}
+
+export function seedDaemonState(
+  db: Database,
+  opts: { pid?: number; startedAt?: Date; lastSeenAt: Date },
+): void {
+  const startedAt = (opts.startedAt ?? opts.lastSeenAt).toISOString()
+  db.prepare(
+    `INSERT INTO daemon_state (id, pid, started_at, last_seen_at) VALUES (1, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET pid = excluded.pid, last_seen_at = excluded.last_seen_at`,
+  ).run(opts.pid ?? 1234, startedAt, opts.lastSeenAt.toISOString())
+}

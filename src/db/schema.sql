@@ -120,3 +120,46 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   PRIMARY KEY (platform, channel)
 );
+
+-- The operator-action queue. The dashboard's ONLY write is an INSERT here;
+-- the daemon's actions-fast / actions-slow workers drain it and execute each
+-- action in-process, under the same leases the produce/publish workers take.
+-- That is what makes a dashboard-triggered mutation race-free where the
+-- equivalent CLI command is not (see CLAUDE.md, "outside these leases").
+--
+-- `notice` carries an interactive payload published by an action that is
+-- STILL RUNNING — today only the OAuth consent URL, which the operator has to
+-- click before the action can finish. Never a credential: handlers record the
+-- consent url, never the code or the token.
+--
+-- Rows are kept indefinitely as an audit log. The table is tiny and the
+-- /actions page reads a bounded window, so there is no pruning step.
+CREATE TABLE IF NOT EXISTS operator_actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  lane TEXT NOT NULL CHECK (lane IN ('fast','slow')),
+  args TEXT NOT NULL,                 -- JSON object, validated against the catalog schema
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending','running','done','failed')),
+  requested_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  started_at TEXT, finished_at TEXT,
+  result TEXT,                        -- JSON, the handler's return value
+  error TEXT,
+  error_kind TEXT,                    -- classify()'s kind
+  notice TEXT
+);
+-- The workers' hot path: "oldest pending row in this lane".
+CREATE INDEX IF NOT EXISTS ix_operator_actions_queue
+  ON operator_actions (lane, status, id);
+
+-- Daemon liveness, so the dashboard can tell "queued" from "queued into the
+-- void". One row, enforced by the CHECK: this is process state, not history.
+-- Stamped by the actions-fast worker on a throttle (DAEMON_HEARTBEAT_MS), not
+-- on every poll — a 1s poll writing every tick would churn the WAL for nothing.
+CREATE TABLE IF NOT EXISTS daemon_state (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  pid INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL
+);

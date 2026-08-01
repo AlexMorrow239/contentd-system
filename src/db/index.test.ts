@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { openDb, openDbReadonly } from './index.js'
 import { tmpDir } from '../testing/tmp.js'
+import { memDb } from '../testing/db.js'
 
 function tempDbPath(): string {
   const dir = tmpDir('brainrot-db-')
@@ -96,5 +97,34 @@ describe('openDbReadonly', () => {
     const db = openDbReadonly(path)
     expect(db.pragma('busy_timeout', { simple: true })).toBe(5000)
     db.close()
+  })
+})
+
+describe('schemas', () => {
+  it('creates the operator_actions table with its lane and status checks', () => {
+    const db = memDb()
+    const cols = db.prepare('PRAGMA table_info(operator_actions)').all() as { name: string }[]
+    expect(cols.map((c) => c.name)).toEqual([
+      'id', 'kind', 'lane', 'args', 'status', 'requested_by',
+      'created_at', 'started_at', 'finished_at',
+      'result', 'error', 'error_kind', 'notice',
+    ])
+    expect(() =>
+      db
+        .prepare(
+          "INSERT INTO operator_actions (kind, lane, args, status, requested_by) VALUES ('x','sideways','{}','pending','dashboard')",
+        )
+        .run(),
+    ).toThrow(/CHECK constraint/)
+  })
+
+  it('creates a single-row daemon_state table', () => {
+    const db = memDb()
+    const cols = db.prepare('PRAGMA table_info(daemon_state)').all() as { name: string }[]
+    expect(cols.map((c) => c.name)).toEqual(['id', 'pid', 'started_at', 'last_seen_at'])
+    db.prepare("INSERT INTO daemon_state (id, pid, started_at, last_seen_at) VALUES (1, 7, 'a', 'b')").run()
+    expect(() =>
+      db.prepare("INSERT INTO daemon_state (id, pid, started_at, last_seen_at) VALUES (2, 8, 'a', 'b')").run(),
+    ).toThrow(/CHECK constraint/)
   })
 })
