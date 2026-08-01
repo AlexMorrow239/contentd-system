@@ -163,4 +163,22 @@ describe('renderConfirmPage', () => {
     expect(out).toContain('name="postId"')
     expect(out).toContain('type="text"')
   })
+
+  it('escapes hostile characters in field values', () => {
+    // Field values come from query parameters (operator-controlled but still
+    // untrusted input rendered into the form). The html template must escape
+    // them, so a value with quotes and angle brackets does not break out.
+    const hostile = 'j1" <script>alert(1)</script>'
+    const out = renderConfirmPage({
+      kind: 'publish.markDone',
+      csrfToken: 'tok',
+      from: '/publishes',
+      fields: { jobId: hostile },
+      missing: [],
+    }).value
+    expect(out).not.toContain(hostile)
+    expect(out).toContain('&quot;')
+    expect(out).toContain('&lt;')
+    expect(out).toContain('&gt;')
+  })
 })

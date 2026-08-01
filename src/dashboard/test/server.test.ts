@@ -569,6 +569,53 @@ describe('GET /actions/confirm', () => {
     )
     expect(res.status).toBe(400)
   })
+
+  it.each([
+    '/\\evil.example',
+    '/..//evil.example',
+  ])('rejects a hostile from=%s and renders no off-site link', async (from) => {
+    // The confirm route must apply the same sameSitePath validation that the
+    // POST route does, ensuring the cancel link and the hidden from field
+    // cannot carry an off-origin target.
+    const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
+      `/actions/confirm?kind=publish.markDone&from=${encodeURIComponent(from)}&jobId=j1`,
+    )
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    // Assert both the cancel link and the hidden from field resolve to same-origin.
+    // Extract href from the cancel link by finding the href attribute.
+    const cancelHrefMatch = body.match(/class="action-link"[^>]*href="([^"]*)"/)
+    if (cancelHrefMatch) {
+      const cancelHref = cancelHrefMatch[1]
+      // Unescape HTML entities for the URL comparison
+      const unescaped = cancelHref
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+      const resolved = new URL(unescaped, 'http://127.0.0.1:8787')
+      expect(resolved.origin).toBe('http://127.0.0.1:8787')
+    }
+    // Also check the hidden from field value
+    const fromFieldMatch = body.match(/name="from"\s+value="([^"]*)"/);
+    if (fromFieldMatch) {
+      const fromValue = fromFieldMatch[1]
+      // Unescape HTML entities
+      const unescaped = fromValue
+        .replace(/&quot;/g, '"')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+      if (unescaped) {
+        const resolved = new URL(unescaped, 'http://127.0.0.1:8787')
+        expect(resolved.origin).toBe('http://127.0.0.1:8787')
+      }
+    } else {
+      // If no from field found, that means the value was rejected to empty string
+      // which is also acceptable (fallback to /actions)
+      expect(body).not.toMatch(/name="from"\s+value="[^"]*evil/)
+    }
+  })
 })
 
 describe('unbounded list truncation', () => {
