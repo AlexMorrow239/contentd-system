@@ -82,4 +82,31 @@ describe('ACTIONS catalog', () => {
       ]),
     ).toEqual({ ids: ['1', '2'], jobId: 'j1' })
   })
+
+  it('does not let a repeated __proto__ field reach Object.prototype', () => {
+    // The accumulator is Object.create(null), so a `__proto__` key is just an
+    // own property like any other — it must not pollute Object.prototype for
+    // every other object in the process.
+    const before = ({} as Record<string, unknown>).polluted
+    const out = formToArgs([
+      ['__proto__', 'a'],
+      ['__proto__', 'b'],
+    ])
+    expect(Object.getPrototypeOf({})).toBe(Object.prototype)
+    expect(({} as Record<string, unknown>).polluted).toBe(before)
+    expect(out.__proto__).toEqual(['a', 'b'])
+  })
+
+  it('accepts the null-prototype object formToArgs produces', () => {
+    // parseActionArgs' zod schemas must not choke on an accumulator with no
+    // prototype — Object.entries/Object.fromEntries and zod's own object
+    // parsing all work by own-enumerable-key iteration, not prototype walk,
+    // but this pins that behaviour rather than assuming it.
+    const fields = formToArgs([
+      ['ids', '4'],
+      ['ids', '5'],
+    ])
+    expect(Object.getPrototypeOf(fields)).toBeNull()
+    expect(parseActionArgs('topics.reject', fields)).toEqual({ ids: [4, 5] })
+  })
 })

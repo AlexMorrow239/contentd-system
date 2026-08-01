@@ -440,6 +440,59 @@ describe('POST /actions', () => {
     db.close()
   })
 
+  it('refuses a correct token carried on a forged non-loopback Host, and writes nothing', async () => {
+    // The highest-value case in this block: proves the DNS-rebinding defence
+    // (csrf.ts's loopback Host allowlist) is still wired to this route after
+    // the header-bridge shim, not just unit-tested in isolation. A forged
+    // Host/Origin pair that AGREES with each other but isn't loopback, sent
+    // alongside the genuinely correct CSRF token, must still be refused.
+    const config = seededConfig()
+    const res = await post(
+      config,
+      { kind: 'topics.reject', csrf: TOKEN, ids: '4' },
+      { host: 'evil.example', origin: 'http://evil.example', 'sec-fetch-site': 'same-origin' },
+    )
+    expect(res.status).toBe(403)
+    const db = openDb(config.paths.dbPath)
+    expect(db.prepare('SELECT count(*) AS n FROM operator_actions').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('refuses a submission with no csrf field, and writes nothing', async () => {
+    const config = seededConfig()
+    const res = await post(config, { kind: 'topics.reject', ids: '4' })
+    expect(res.status).toBe(403)
+    const db = openDb(config.paths.dbPath)
+    expect(db.prepare('SELECT count(*) AS n FROM operator_actions').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('does not let a backslash-prefixed from escape the dashboard origin', async () => {
+    // '\' is equivalent to '/' under WHATWG URL rules for a special scheme,
+    // so a prefix-check guard (`startsWith('/') && !startsWith('//')`) would
+    // wrongly accept this and the browser would resolve it off-origin.
+    // Resolve the Location header the way a browser actually would, and
+    // assert on .origin rather than string-comparing — a string comparison
+    // would pass for the wrong reason (e.g. matching literal text) without
+    // proving the browser-resolved target is actually same-origin.
+    const res = await post(seededConfig(), {
+      kind: 'digest.run',
+      csrf: TOKEN,
+      from: '/\\evil.example',
+    })
+    expect(res.status).toBe(303)
+    const location = res.headers.get('location')
+    expect(location).not.toBeNull()
+    const resolved = new URL(location as string, 'http://127.0.0.1:8787')
+    expect(resolved.origin).toBe('http://127.0.0.1:8787')
+  })
+
+  // A from=/topics?status=candidate query-string-preservation case is not
+  // duplicated here: 'redirects to the submitting page carrying the new
+  // action id' above already posts exactly that from value and asserts the
+  // same location, so it already proves sameSitePath's normalization keeps
+  // the query string rather than dropping it.
+
   it('returns 503 instead of 500 when operator_actions has never been created', async () => {
     // A bare sqlite file that no openDb call has ever touched — the commonest
     // real-world cause, since schema.sql (and thus operator_actions) is only

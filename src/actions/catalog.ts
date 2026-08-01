@@ -163,7 +163,14 @@ export function parseActionArgs(kind: ActionKind, raw: unknown): unknown {
  * both parse.
  */
 export function formToArgs(entries: [string, string][]): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {}
+  // Object.create(null) rather than `{}`: a field literally named
+  // `__proto__` appearing twice would otherwise reach the array branch below
+  // and assign onto Object.prototype. Inert today — none of the keys this
+  // route reads off the result exist on Array.prototype — but this function
+  // is the first thing in the codebase to see unauthenticated form input, so
+  // the hazard is closed structurally rather than left to depend on that
+  // staying true.
+  const out = Object.create(null) as Record<string, string | string[]>
   for (const [key, value] of entries) {
     const existing = out[key]
     if (existing === undefined) out[key] = value

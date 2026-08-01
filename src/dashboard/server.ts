@@ -79,7 +79,21 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   // every other route depends on. Its own handle inserts a single queue row
   // and closes.
   app.post('/actions', async (c) => {
-    const form = await c.req.formData()
+    // The body must be read before the CSRF/origin check runs — the
+    // submitted token only exists in the body, and csrfFailure is atomic
+    // over all four of its checks (it cannot be told "just check origin
+    // first"). That means a cross-site page can make this process buffer a
+    // body it will then refuse; accepted as a consequence of the zero-JS
+    // form design rather than something worth a second parse pass to avoid.
+    let form: FormData
+    try {
+      form = await c.req.formData()
+    } catch (err) {
+      return c.html(
+        actionErrorPage(deps.config.paths.root, `could not read the submitted form: ${errorMessage(err)}`),
+        400,
+      )
+    }
     const entries: [string, string][] = []
     for (const [key, value] of form.entries()) {
       if (typeof value === 'string') entries.push([key, value])
@@ -90,16 +104,21 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     // inside csrf.ts, not exported), but this dashboard ships zero
     // client-side JS: a plain <form> POST can never set a custom header, so
     // the token can only travel as the hidden `csrf` body field (CSRF_FIELD).
-    // This shim is the bridge — real headers answer the site-identity checks
-    // (sec-fetch-site/origin/host, all genuinely browser-set and never
-    // spoofable by a bare form submission), and anything else falls back to
-    // the submitted field, which in practice is only ever the token lookup.
+    // This shim is the bridge — it answers ONLY the CSRF token header lookup
+    // from the submitted form field; every other header name (including any
+    // csrf.ts adds in the future) falls through to the real request headers,
+    // which for a plain form POST are genuinely absent. The default must
+    // fail CLOSED, not open: answering an unrecognized header name with
+    // operator-supplied form data would let a future site-identity check
+    // added to csrfFailure be satisfied from the body instead of a real,
+    // unspoofable browser header.
     const submittedToken = typeof fields[CSRF_FIELD] === 'string' ? fields[CSRF_FIELD] : ''
-    const SITE_IDENTITY_HEADERS = new Set(['sec-fetch-site', 'origin', 'host'])
     const refusal = csrfFailure(
       {
         header: (name) =>
-          SITE_IDENTITY_HEADERS.has(name) ? (c.req.header(name) ?? undefined) : submittedToken,
+          name.toLowerCase() === 'x-brainrot-csrf'
+            ? submittedToken
+            : (c.req.header(name) ?? undefined),
       },
       csrfToken,
     )
@@ -159,7 +178,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     // honoured; anything else falls back to /actions. Without this the
     // dashboard would be an open redirect.
     const from = typeof fields.from === 'string' ? fields.from : ''
-    const target = from.startsWith('/') && !from.startsWith('//') ? from : '/actions'
+    const target = sameSitePath(from) ?? '/actions'
     const separator = target.includes('?') ? '&' : '?'
     return c.redirect(`${target}${separator}action=${String(id)}`, 303)
   })
@@ -469,6 +488,26 @@ function openAndValidate(dbPath: string): Database {
     throw err
   }
   return db
+}
+
+/**
+ * The 303 target. `from` is operator-controlled, so it is validated by
+ * PARSING rather than by prefix checks: browsers resolve a Location header
+ * under WHATWG URL rules, where `\` is equivalent to `/` in a special
+ * scheme — so `startsWith('/') && !startsWith('//')` still lets
+ * `/\evil.example` resolve to http://evil.example. Anything that does not
+ * resolve back to the sentinel origin is refused.
+ */
+function sameSitePath(from: string): string | null {
+  if (!from.startsWith('/')) return null
+  let resolved: URL
+  try {
+    resolved = new URL(from, 'http://brainrot.invalid')
+  } catch {
+    return null
+  }
+  if (resolved.origin !== 'http://brainrot.invalid') return null
+  return `${resolved.pathname}${resolved.search}`
 }
 
 function actionErrorPage(root: string, message: string): string {
