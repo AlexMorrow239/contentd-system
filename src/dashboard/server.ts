@@ -3,7 +3,7 @@ import { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import type { Database } from 'better-sqlite3'
 import { Hono } from 'hono'
-import { openDbReadonly } from '../db/index.js'
+import { openDbActions, openDbReadonly } from '../db/index.js'
 import { errorMessage } from '../errors.js'
 import type { LibraryState } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
@@ -12,6 +12,9 @@ import { quotaBackedOff, uploadsUsedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
+import { enqueueAction } from '../actions/queue.js'
+import { formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
+import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
 import type { DashboardConfig } from './config.js'
 import { html } from './html.js'
 import {
@@ -44,6 +47,8 @@ export interface DashboardDeps {
   config: DashboardConfig
   /** Injectable clock so time-dependent views are testable. */
   now?: () => Date
+  /** Injectable so route tests can post a known token. */
+  csrfToken?: string
 }
 
 const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url))
@@ -54,12 +59,109 @@ const TOPIC_STATUS_VALUES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rej
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
   const app = new Hono<{ Variables: DashboardVars }>()
+  // `deps.csrfToken ?? mintCsrfToken()` alone is not enough: `??` only
+  // substitutes on null/undefined, so an explicit `csrfToken: ''` (a
+  // misconfigured deps object, or a future test) would sail straight through
+  // and become the expected token — and csrfFailure's timingSafeEqual-based
+  // compare treats two empty strings as a match. `||` also treats '' as
+  // absent, which is exactly the fallback wanted here.
+  const csrfToken = deps.csrfToken || mintCsrfToken()
 
   // Registered BEFORE the db middleware on purpose: Hono dispatches matching
   // handlers in registration order, so the stylesheet is served even when the
   // database is missing — which is exactly when you want a readable page.
   app.get('/static/dashboard.css', (c) => {
     return c.body(readFileSync(cssPath, 'utf8'), 200, { 'content-type': 'text/css; charset=utf-8' })
+  })
+
+  // Registered ahead of the read-only db middleware on purpose: this is the
+  // one route that writes, and it must not inherit the readonly connection
+  // every other route depends on. Its own handle inserts a single queue row
+  // and closes.
+  app.post('/actions', async (c) => {
+    const form = await c.req.formData()
+    const entries: [string, string][] = []
+    for (const [key, value] of form.entries()) {
+      if (typeof value === 'string') entries.push([key, value])
+    }
+    const fields = formToArgs(entries)
+
+    // csrfFailure reads its token via a header lookup (a private constant
+    // inside csrf.ts, not exported), but this dashboard ships zero
+    // client-side JS: a plain <form> POST can never set a custom header, so
+    // the token can only travel as the hidden `csrf` body field (CSRF_FIELD).
+    // This shim is the bridge — real headers answer the site-identity checks
+    // (sec-fetch-site/origin/host, all genuinely browser-set and never
+    // spoofable by a bare form submission), and anything else falls back to
+    // the submitted field, which in practice is only ever the token lookup.
+    const submittedToken = typeof fields[CSRF_FIELD] === 'string' ? fields[CSRF_FIELD] : ''
+    const SITE_IDENTITY_HEADERS = new Set(['sec-fetch-site', 'origin', 'host'])
+    const refusal = csrfFailure(
+      {
+        header: (name) =>
+          SITE_IDENTITY_HEADERS.has(name) ? (c.req.header(name) ?? undefined) : submittedToken,
+      },
+      csrfToken,
+    )
+    if (refusal !== null) return c.html(actionErrorPage(deps.config.paths.root, refusal), 403)
+
+    const kind = typeof fields.kind === 'string' ? fields.kind : ''
+    if (!isActionKind(kind)) {
+      return c.html(
+        actionErrorPage(deps.config.paths.root, `unknown action ${JSON.stringify(kind)}`),
+        400,
+      )
+    }
+    // `kind`, the token and the return path are transport, not arguments —
+    // stripped by name rather than by destructuring so no unused bindings are
+    // introduced and the excluded set stays readable.
+    const TRANSPORT_FIELDS = new Set(['kind', CSRF_FIELD, 'from'])
+    const rest = Object.fromEntries(
+      Object.entries(fields).filter(([key]) => !TRANSPORT_FIELDS.has(key)),
+    )
+    let args: unknown
+    try {
+      args = parseActionArgs(kind, rest)
+    } catch (err) {
+      return c.html(actionErrorPage(deps.config.paths.root, errorMessage(err)), 400)
+    }
+
+    let db: Database
+    try {
+      db = openDbActions(deps.config.paths.dbPath)
+    } catch (err) {
+      return c.html(
+        actionErrorPage(
+          deps.config.paths.root,
+          `could not open the database for writing: ${errorMessage(err)}`,
+        ),
+        503,
+      )
+    }
+    let id: number
+    try {
+      id = enqueueAction(db, { kind, args, requestedBy: 'dashboard' })
+    } catch (err) {
+      // The commonest cause is a database no openDb call has ever touched, so
+      // operator_actions does not exist yet. Say so rather than 500-ing.
+      return c.html(
+        actionErrorPage(
+          deps.config.paths.root,
+          `could not queue the action: ${errorMessage(err)} — start the daemon once against this root to initialize the schema.`,
+        ),
+        503,
+      )
+    } finally {
+      db.close()
+    }
+
+    // `from` is operator-controlled, so only a same-site absolute path is
+    // honoured; anything else falls back to /actions. Without this the
+    // dashboard would be an open redirect.
+    const from = typeof fields.from === 'string' ? fields.from : ''
+    const target = from.startsWith('/') && !from.startsWith('//') ? from : '/actions'
+    const separator = target.includes('?') ? '&' : '?'
+    return c.redirect(`${target}${separator}action=${String(id)}`, 303)
   })
 
   // One read-only connection per request. Opening SQLite is sub-millisecond,
@@ -367,6 +469,17 @@ function openAndValidate(dbPath: string): Database {
     throw err
   }
   return db
+}
+
+function actionErrorPage(root: string, message: string): string {
+  return layout({
+    title: 'action refused',
+    root,
+    activeNav: 'actions',
+    body: html`<h1>action refused</h1>
+      <p class="error">${message}</p>
+      <p class="muted"><a href="/actions">back to actions</a></p>`,
+  })
 }
 
 function missingDbPage(dbPath: string, root: string): string {

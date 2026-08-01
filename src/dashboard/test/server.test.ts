@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import BetterSqlite3 from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
 import { localDay } from '../../publish/schedule.js'
 import { resolvePaths } from '../../config/paths.js'
@@ -330,6 +331,128 @@ describe('/', () => {
     const body = await res.text()
     expect(body).toContain('<meta http-equiv="refresh" content="30">')
     expect(body).toContain('overview')
+  })
+})
+
+describe('POST /actions', () => {
+  const TOKEN = 'test-token'
+
+  function post(config: DashboardConfig, body: Record<string, string | string[]>, headers: Record<string, string> = {}) {
+    const form = new URLSearchParams()
+    for (const [key, value] of Object.entries(body)) {
+      for (const v of Array.isArray(value) ? value : [value]) form.append(key, v)
+    }
+    return createApp({ config, csrfToken: TOKEN }).request('/actions', {
+      method: 'POST',
+      body: form,
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        host: '127.0.0.1:8787',
+        origin: 'http://127.0.0.1:8787',
+        'sec-fetch-site': 'same-origin',
+        ...headers,
+      },
+    })
+  }
+
+  it('enqueues a pending row and redirects back', async () => {
+    const config = seededConfig()
+    const res = await post(config, { kind: 'topics.reject', csrf: TOKEN, ids: '4', from: '/topics' })
+    expect(res.status).toBe(303)
+    const db = openDb(config.paths.dbPath)
+    const rows = db.prepare('SELECT kind, lane, args, status FROM operator_actions').all() as {
+      kind: string; lane: string; args: string; status: string
+    }[]
+    expect(rows).toEqual([
+      { kind: 'topics.reject', lane: 'fast', args: '{"ids":[4]}', status: 'pending' },
+    ])
+    db.close()
+  })
+
+  it('redirects to the submitting page carrying the new action id', async () => {
+    const res = await post(seededConfig(), { kind: 'topics.reject', csrf: TOKEN, ids: '4', from: '/topics?status=candidate' })
+    expect(res.headers.get('location')).toBe('/topics?status=candidate&action=1')
+  })
+
+  it('redirects to /actions when the form names no origin page', async () => {
+    const res = await post(seededConfig(), { kind: 'digest.run', csrf: TOKEN })
+    expect(res.headers.get('location')).toBe('/actions?action=1')
+  })
+
+  it('refuses an off-site redirect target', async () => {
+    // `from` is operator-controlled; an absolute url would make the dashboard
+    // an open redirect.
+    const res = await post(seededConfig(), { kind: 'digest.run', csrf: TOKEN, from: 'https://evil.example/x' })
+    expect(res.headers.get('location')).toBe('/actions?action=1')
+  })
+
+  it('rejects a cross-site submission without writing', async () => {
+    const config = seededConfig()
+    const res = await post(config, { kind: 'topics.reject', csrf: TOKEN, ids: '4' }, { 'sec-fetch-site': 'cross-site', origin: 'http://evil.example' })
+    expect(res.status).toBe(403)
+    const db = openDb(config.paths.dbPath)
+    expect(db.prepare('SELECT count(*) AS n FROM operator_actions').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('escapes an attacker-influenceable header value in the rejection reason', async () => {
+    // sec-fetch-site is echoed verbatim into the reason string by csrfFailure
+    // and is attacker-controlled on a cross-origin request; the reject page
+    // must render it through the escaping `html` template, never raw().
+    const res = await post(
+      seededConfig(),
+      { kind: 'topics.reject', csrf: TOKEN, ids: '4' },
+      { 'sec-fetch-site': '<script>alert(1)</script>' },
+    )
+    expect(res.status).toBe(403)
+    const body = await res.text()
+    expect(body).not.toContain('<script>alert(1)</script>')
+    expect(body).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
+  })
+
+  it('rejects a stale token with a reload instruction', async () => {
+    const res = await post(seededConfig(), { kind: 'topics.reject', csrf: 'old', ids: '4' })
+    expect(res.status).toBe(403)
+    expect(await res.text()).toContain('reload the page')
+  })
+
+  it('rejects an unknown action kind', async () => {
+    const res = await post(seededConfig(), { kind: 'topics.nuke', csrf: TOKEN })
+    expect(res.status).toBe(400)
+    expect(await res.text()).toContain('unknown action')
+  })
+
+  it('rejects invalid arguments with the schema message', async () => {
+    const config = seededConfig()
+    const res = await post(config, { kind: 'topics.reject', csrf: TOKEN })
+    expect(res.status).toBe(400)
+    expect(await res.text()).toContain('invalid arguments')
+    const db = openDb(config.paths.dbPath)
+    expect(db.prepare('SELECT count(*) AS n FROM operator_actions').get()).toEqual({ n: 0 })
+    db.close()
+  })
+
+  it('groups repeated fields into a list argument', async () => {
+    const config = seededConfig()
+    await post(config, { kind: 'topics.reject', csrf: TOKEN, ids: ['4', '5'] })
+    const db = openDb(config.paths.dbPath)
+    expect(db.prepare('SELECT args FROM operator_actions').get()).toEqual({ args: '{"ids":[4,5]}' })
+    db.close()
+  })
+
+  it('returns 503 instead of 500 when operator_actions has never been created', async () => {
+    // A bare sqlite file that no openDb call has ever touched — the commonest
+    // real-world cause, since schema.sql (and thus operator_actions) is only
+    // applied by openDb/openDbActions' write-path sibling, never by this
+    // route's own handle.
+    const paths = resolvePaths(tmpDir('brainrot-dash-'))
+    mkdirSync(join(paths.root, 'db'), { recursive: true })
+    new BetterSqlite3(paths.dbPath).close()
+    const config: DashboardConfig = { paths, port: 8787 }
+
+    const res = await post(config, { kind: 'digest.run', csrf: TOKEN })
+    expect(res.status).toBe(503)
+    expect(await res.text()).toContain('could not queue the action')
   })
 })
 
