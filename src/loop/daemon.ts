@@ -4,6 +4,7 @@ import { errorMessage } from '../errors.js'
 import { localDay } from '../publish/schedule.js'
 import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from '../scout/scout.js'
 import type { ScoutChannelResult } from '../scout/scout.js'
+import { FAST_IDLE_SLEEP_MS, actionsUnit } from './actions-worker.js'
 import { buildDigest } from './digest.js'
 import { acquireLease, releaseLease } from './lease.js'
 import { produceNextTick } from './produce-next.js'
@@ -244,8 +245,12 @@ export async function runDaemon(
   // of them to actually leave its loop, so runDaemon never returns (or
   // rejects) while a worker is still touching the db — which is exactly what
   // cli.ts's `finally { db.close() }` would otherwise race.
-  const supervise = (name: string, unit: () => Promise<UnitResult>): Promise<void> =>
-    runWorker(name, unit, signal, deps).catch((err: unknown) => {
+  const supervise = (
+    name: string,
+    unit: () => Promise<UnitResult>,
+    workerOpts: { idleSleepMs?: number } = {},
+  ): Promise<void> =>
+    runWorker(name, unit, signal, deps, workerOpts).catch((err: unknown) => {
       controller.abort()
       throw err
     })
@@ -254,6 +259,27 @@ export async function runDaemon(
     supervise('publish', publishUnit(db, { channelsDir: opts.channelsDir })),
     supervise('scout', scoutUnit(db, { channelsDir: opts.channelsDir, now: opts.now })),
     supervise('digest', digestUnit(db, { channelsDir: opts.channelsDir, now: opts.now })),
+    // The operator-action lanes. actions-fast also carries the daemon
+    // heartbeat the dashboard reads to tell "queued" from "queued into the
+    // void", which is why it polls at FAST_IDLE_SLEEP_MS rather than the 30s
+    // default.
+    supervise(
+      'actions-fast',
+      actionsUnit(db, 'fast', {
+        channelsDir: opts.channelsDir,
+        runsRoot: opts.runsRoot,
+        now: opts.now,
+      }),
+      { idleSleepMs: FAST_IDLE_SLEEP_MS },
+    ),
+    supervise(
+      'actions-slow',
+      actionsUnit(db, 'slow', {
+        channelsDir: opts.channelsDir,
+        runsRoot: opts.runsRoot,
+        now: opts.now,
+      }),
+    ),
   ])
   // Surface the failure only after every worker has left its loop. A second
   // worker rejecting during the cascade is almost always a consequence of the

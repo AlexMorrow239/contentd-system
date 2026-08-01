@@ -13,10 +13,13 @@ import {
 } from '../daemon.js'
 import type { UnitResult, WorkerDeps } from '../daemon.js'
 import { acquireLease, releaseLease } from '../lease.js'
+import { readDaemonState } from '../daemon-state.js'
 import { ScoutRunFailedError } from '../../scout/scout.js'
 import type { ScoutChannelResult } from '../../scout/scout.js'
-import { memDb } from '../../testing/db.js'
+import { enqueueAction, getAction } from '../../actions/queue.js'
+import { memDb, seedAction, seedTopic } from '../../testing/db.js'
 import { channelToml, writeChannelsDir } from '../../testing/channel.js'
+import { tmpDir } from '../../testing/tmp.js'
 
 // Harness: runs `unit` under runWorker, aborting after `iterations` calls.
 async function drive(
@@ -486,5 +489,69 @@ describe('runDaemon', () => {
     const atReturn = sleeps
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect(sleeps).toBe(atReturn)
+  })
+
+  it('polls the fast action lane, which stamps the daemon heartbeat', async () => {
+    // Asserted through a SIDE EFFECT, not an emitted line: an idle actions
+    // worker deliberately emits NOTHING (Task 6's byte-stable idle result), so
+    // there is no log line to look for. The heartbeat stamp is actions-fast's
+    // observable proof of life.
+    const db = memDb()
+    const controller = new AbortController()
+    await runDaemon(db, {
+      channelsDir: tmpDir('brainrot-daemon-'),
+      runsRoot: tmpDir('brainrot-runs-'),
+      emit: () => {},
+      sleep: () => {
+        controller.abort()
+        return Promise.resolve()
+      },
+      signal: controller.signal,
+    })
+    expect(readDaemonState(db)?.pid).toBe(process.pid)
+  })
+
+  it('polls the slow action lane, whose startup sweep is lane-scoped', async () => {
+    // Also a side effect, and deliberately one that needs NO slow-lane action
+    // kind to exist: failRunningActions is a lane-scoped SQL update that never
+    // looks at `kind`, so a stale slow-lane row being swept proves actions-slow
+    // was constructed and polled. Every ACTIONS entry is fast-lane in phase 1.
+    const db = memDb()
+    const stale = seedAction(db, { lane: 'slow', kind: 'produce', status: 'running' })
+    const controller = new AbortController()
+    await runDaemon(db, {
+      channelsDir: tmpDir('brainrot-daemon-'),
+      runsRoot: tmpDir('brainrot-runs-'),
+      emit: () => {},
+      sleep: () => {
+        controller.abort()
+        return Promise.resolve()
+      },
+      signal: controller.signal,
+    })
+    expect(getAction(db, stale)?.status).toBe('failed')
+    expect(getAction(db, stale)?.error).toContain('daemon restart')
+  })
+
+  it('executes a queued action end to end through the daemon', async () => {
+    const db = memDb()
+    const topic = seedTopic(db)
+    const id = enqueueAction(db, {
+      kind: 'topics.reject',
+      args: { ids: [topic] },
+      requestedBy: 'dashboard',
+    })
+    const controller = new AbortController()
+    await runDaemon(db, {
+      channelsDir: tmpDir('brainrot-daemon-'),
+      runsRoot: tmpDir('brainrot-runs-'),
+      emit: () => {},
+      sleep: () => {
+        controller.abort()
+        return Promise.resolve()
+      },
+      signal: controller.signal,
+    })
+    expect(getAction(db, id)?.status).toBe('done')
   })
 })
