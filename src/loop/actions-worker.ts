@@ -11,15 +11,9 @@ import {
   type ActionRow,
 } from '../actions/queue.js'
 import { BrainrotError } from '../errors.js'
-import { SCOUT_LEASE_TTL_MS } from '../scout/scout.js'
 import type { UnitResult } from './daemon.js'
 import { DAEMON_HEARTBEAT_MS, stampDaemonSeen } from './daemon-state.js'
-import {
-  acquireLease,
-  releaseLease,
-  PRODUCE_LEASE_TTL_MS,
-  PUBLISH_LEASE_TTL_MS,
-} from './lease.js'
+import { acquireLease, extendLease, releaseLease } from './lease.js'
 
 /** The fast lane's poll. A row mutation must feel immediate, not 30s away. */
 export const FAST_IDLE_SLEEP_MS = 1_000
@@ -56,14 +50,27 @@ export const ACTION_SCAN_WINDOW = MAX_FAST_DRAIN
  */
 export const FAST_ACTION_LEASE_TTL_MS = 60_000
 
-const LEASE_TTL_MS: Record<ActionLease, number> = {
-  produce: PRODUCE_LEASE_TTL_MS,
-  publish: PUBLISH_LEASE_TTL_MS,
-  scout: SCOUT_LEASE_TTL_MS,
-}
+/**
+ * The slow lane's own lease TTL, deliberately far below the leases' own
+ * defaults (`produce` is 90 minutes). A slow action can legitimately run for
+ * minutes, so unlike the fast lane it cannot simply use a short fixed window —
+ * it holds a SHORT window and refreshes it below. What that buys is the orphan
+ * case: a SIGKILL mid-render heals the action row via `failRunningActions` but
+ * NOT the lease, so with the 90-minute default the daemon's own produce worker
+ * would stall for 90 minutes. Five is the cost of the same crash now.
+ */
+export const SLOW_ACTION_LEASE_TTL_MS = 300_000
 
-function leaseTtlMs(lane: ActionLane, lease: ActionLease): number {
-  return lane === 'fast' ? FAST_ACTION_LEASE_TTL_MS : LEASE_TTL_MS[lease]
+/**
+ * How often a running slow action pushes its lease expiry out. Five beats fit
+ * inside one TTL, which is the tolerance for a synchronous stretch that starves
+ * the event loop (a render is mostly async — headless browser and spawned
+ * ffmpeg — but nothing here guarantees that).
+ */
+export const SLOW_ACTION_HEARTBEAT_MS = 60_000
+
+function leaseTtlMs(lane: ActionLane): number {
+  return lane === 'fast' ? FAST_ACTION_LEASE_TTL_MS : SLOW_ACTION_LEASE_TTL_MS
 }
 
 /**
@@ -174,9 +181,10 @@ async function executeOne(
 
   const lease = ACTIONS[row.kind].lease
   let holder: string | undefined
+  let beat: ReturnType<typeof setInterval> | undefined
   if (lease !== undefined) {
     holder = `pid:${process.pid}:action:${row.id}`
-    if (!acquireLease(db, lease, holder, leaseTtlMs(deps.lane, lease))) {
+    if (!acquireLease(db, lease, holder, leaseTtlMs(deps.lane))) {
       // Guarded on the text actually changing: the fast lane polls every 1s,
       // so an unconditional write here is one WAL write per second per
       // blocked row for as long as the lease is held — exactly the churn
@@ -184,6 +192,25 @@ async function executeOne(
       const text = `waiting for the ${lease} lease`
       if (row.notice !== text) setActionNotice(db, row.id, text)
       return { blockedBy: lease }
+    }
+    // Only the slow lane: a fast action's whole acquire-to-release window is a
+    // single SQLite UPDATE, so it cannot outlive even the 60s fast TTL.
+    if (deps.lane === 'slow') {
+      // `let holder` doesn't narrow inside a closure even though it was just
+      // assigned above; capture it as a const so the interval callback below
+      // sees `string`, not `string | undefined`.
+      const activeHolder = holder
+      beat = setInterval(() => {
+        // The return value is deliberately ignored. `false` means this holder
+        // was already evicted — which can only happen after five consecutive
+        // missed beats — and the handler is mid-flight by then, so there is
+        // nothing to abort. `produce-next`'s own heartbeat ignores it for the
+        // same reason.
+        extendLease(db, lease, activeHolder, SLOW_ACTION_LEASE_TTL_MS)
+      }, SLOW_ACTION_HEARTBEAT_MS)
+      // Never hold the process open: on SIGTERM the daemon must be able to
+      // exit once the in-flight action settles.
+      beat.unref()
     }
   }
 
@@ -219,6 +246,7 @@ async function executeOne(
     }
     return {}
   } finally {
+    if (beat !== undefined) clearInterval(beat)
     if (lease !== undefined && holder !== undefined) releaseLease(db, lease, holder)
   }
 }

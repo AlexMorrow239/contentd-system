@@ -6,7 +6,13 @@ import { memDb, seedAction, seedJob, seedTopic } from '../../testing/db.js'
 import { acquireLease } from '../lease.js'
 import { readDaemonState } from '../daemon-state.js'
 import type { UnitResult } from '../daemon.js'
-import { actionsUnit, FAST_ACTION_LEASE_TTL_MS, MAX_FAST_DRAIN } from '../actions-worker.js'
+import {
+  actionsUnit,
+  FAST_ACTION_LEASE_TTL_MS,
+  MAX_FAST_DRAIN,
+  SLOW_ACTION_HEARTBEAT_MS,
+  SLOW_ACTION_LEASE_TTL_MS,
+} from '../actions-worker.js'
 import { PUBLISH_LEASE_TTL_MS } from '../lease.js'
 
 function unit(db: Database, lane: 'fast' | 'slow' = 'fast'): () => Promise<UnitResult> {
@@ -15,6 +21,13 @@ function unit(db: Database, lane: 'fast' | 'slow' = 'fast'): () => Promise<UnitR
     runsRoot: '/nonexistent/runs',
     now: () => new Date('2026-08-01T10:00:00Z'),
   })
+}
+
+function leaseExpiry(db: Database, name: string): string {
+  const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get(name) as
+    | { expires_at: string }
+    | undefined
+  return row?.expires_at ?? ''
 }
 
 describe('actionsUnit', () => {
@@ -293,5 +306,115 @@ describe('actionsUnit', () => {
     const statuses = ids.map((id) => getAction(db, id)?.status)
     expect(statuses.filter((s) => s === 'done')).toHaveLength(MAX_FAST_DRAIN)
     expect(statuses.filter((s) => s === 'pending')).toHaveLength(1)
+  })
+
+  // The next four tests seed `kind: 'publish.retry'` onto the SLOW lane, which
+  // is not how `publish.retry` is actually registered (it's a fast action).
+  // That's deliberate: `lane` is a plain column the worker filters rows on,
+  // while the LEASE it takes comes from the catalog entry for `kind`. Reusing
+  // an existing fast-lane kind on the slow lane exercises the slow-lane TTL
+  // and heartbeat code path before any real slow-lane action kind exists
+  // (those land in later tasks) — do not "fix" this to a real slow kind.
+
+  it('acquires a slow action lease with the slow TTL, not the lease default', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
+    try {
+      const db = memDb()
+      seedAction(db, { kind: 'publish.retry', lane: 'slow', args: '{"jobId":"j1"}' })
+      let expiryDuringRun = ''
+      const unit = actionsUnit(db, 'slow', {
+        channelsDir: 'c',
+        runsRoot: 'r',
+        run: () => {
+          expiryDuringRun = leaseExpiry(db, 'publish')
+          return Promise.resolve({ ok: true })
+        },
+      })
+      await unit()
+      expect(expiryDuringRun).toBe(
+        new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString(),
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refreshes a slow action lease while the handler is still running', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
+    try {
+      const db = memDb()
+      seedAction(db, { kind: 'publish.retry', lane: 'slow', args: '{"jobId":"j1"}' })
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const unit = actionsUnit(db, 'slow', {
+        channelsDir: 'c',
+        runsRoot: 'r',
+        run: async () => {
+          await gate
+          return { ok: true }
+        },
+      })
+      const running = unit()
+      await vi.advanceTimersByTimeAsync(0)
+      const before = leaseExpiry(db, 'publish')
+      await vi.advanceTimersByTimeAsync(SLOW_ACTION_HEARTBEAT_MS)
+      const after = leaseExpiry(db, 'publish')
+      expect(after > before).toBe(true)
+      release()
+      await running
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops refreshing once the handler settles, win or lose', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
+    try {
+      const db = memDb()
+      seedAction(db, { kind: 'publish.retry', lane: 'slow', args: '{"jobId":"j1"}' })
+      const unit = actionsUnit(db, 'slow', {
+        channelsDir: 'c',
+        runsRoot: 'r',
+        run: () => Promise.reject(new Error('boom')),
+      })
+      await unit()
+      // The lease row is gone (released in the finally), so a surviving interval
+      // would be extending nothing — assert the timer itself is cleared.
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the fast lane on the fast TTL with no heartbeat', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
+    try {
+      const db = memDb()
+      seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"j1"}' })
+      let expiryDuringRun = ''
+      let timersDuringRun = -1
+      const unit = actionsUnit(db, 'fast', {
+        channelsDir: 'c',
+        runsRoot: 'r',
+        run: () => {
+          expiryDuringRun = leaseExpiry(db, 'publish')
+          timersDuringRun = vi.getTimerCount()
+          return Promise.resolve({ ok: true })
+        },
+      })
+      await unit()
+      expect(expiryDuringRun).toBe(
+        new Date(Date.now() + FAST_ACTION_LEASE_TTL_MS).toISOString(),
+      )
+      expect(timersDuringRun).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
