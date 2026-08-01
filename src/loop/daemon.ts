@@ -56,7 +56,11 @@ export async function runWorker(
   unit: () => Promise<UnitResult>,
   signal: AbortSignal,
   deps: WorkerDeps,
+  // The actions-fast worker polls at ~1s so a row mutation feels immediate;
+  // every other worker keeps the 30s default.
+  opts: { idleSleepMs?: number } = {},
 ): Promise<void> {
+  const idleSleepMs = opts.idleSleepMs ?? IDLE_SLEEP_MS
   let lastIdleKey: string | undefined
   while (!signal.aborted) {
     let result: UnitResult
@@ -82,7 +86,7 @@ export async function runWorker(
         deps.emit({ worker: name, ...result.line })
       }
     }
-    await deps.sleep(IDLE_SLEEP_MS)
+    await deps.sleep(idleSleepMs)
   }
 }
 
