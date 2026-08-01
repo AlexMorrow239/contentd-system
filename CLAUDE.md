@@ -286,17 +286,28 @@ production permanently.
 The dashboard's only write is an `INSERT` into `operator_actions`
 (`src/db/schema.sql`, alongside a one-row `daemon_state` liveness table). Two
 more daemon workers, `actions-fast` and `actions-slow`, drain that queue
-in-process **under the same leases the other four workers take** — this is
-what makes a dashboard-triggered mutation race-free where the equivalent CLI
-command is not (see "outside these leases", above).
+in-process **under the same leases the `produce`, `publish` and `scout`
+workers take** (`digest` takes no lease at all) — this is what makes a
+dashboard-triggered mutation race-free where the equivalent CLI command is
+not (see "outside these leases", above).
 
 `src/actions/` is split three ways by what may import it: `catalog.ts` is
 pure metadata (`kind`, `lane`, label, zod arg schema, `confirm` flag, the
 lease it needs) with no heavy imports, read by **both** the dashboard (to
 render forms and validate submitted args) and the daemon; `handlers.ts` holds
-the `run` implementations — `runJob`, `resumeJob`, `scoutAll`, the publish
-adapters — and is imported **only** by the daemon; `queue.ts` is the DAO
-(`enqueue`, `claimNext`/`pendingActions`, `complete`, `fail`, `listRecent`).
+the `run` implementations for today's six actions — it imports
+`approveLibrary`, `buildDigest`, the publish `ADAPTERS`,
+`interruptedPlatform`/`markInterruptedDone`/`retryInterrupted`, and
+`rejectTopics`/`requeueTopic` — and is imported **only** by the daemon. The
+phase-2 names this section once implied (`runJob`, `resumeJob`, `scoutAll`,
+which belong to `produce`/`resume`/`scout`) are **not present here yet**:
+`grep -n "runJob\|resumeJob\|scoutAll" src/actions/*.ts` returns nothing;
+`queue.ts` is the DAO (`enqueueAction`, `pendingActions`, `startAction`,
+`completeAction`, `failAction`, `setActionNotice`, `getAction`,
+`listRecentActions`, `failRunningActions`) — there is no `claimNext`;
+`pendingActions` plus `startAction`'s `status = 'pending'` guard together
+serve that role.
+
 The split is load-bearing, not organizational, the same discipline
 `DASHBOARD_STAGE_ORDER` already follows: the dashboard is the one process
 that terminates unauthenticated HTTP and must never pull in Remotion,
@@ -324,9 +335,14 @@ awaited**: it stays `pending`, explains itself through the row's `notice`
 column ("waiting for the publish lease"), and is retried on the next poll.
 Taking the head of the queue and blocking on it would let one long upload
 stall every trivial mutation behind it — the head-of-line problem the two
-lanes exist to prevent. Each poll's scan window (`ACTION_SCAN_WINDOW`) is
-deliberately wider than its completion budget, so a couple of consecutive
-lease-blocked rows can't idle a lane with runnable work sitting behind them.
+lanes exist to prevent. Each poll's scan window (`ACTION_SCAN_WINDOW`, set to
+`MAX_FAST_DRAIN`) gives the slow lane (completion budget 1) a genuine 50-row
+margin, so a couple of consecutive lease-blocked rows can't idle it with
+runnable work sitting behind them; the fast lane's own completion budget
+already equals `MAX_FAST_DRAIN`, so its scan window is equal, not wider —
+the source comment in `src/loop/actions-worker.ts` calls that shared value a
+coincidence, not a coupling.
+
 The two fast actions that do take a lease (`publish.retry`/`publish.markDone`,
 since they mutate `publishes` rows) hold it for `FAST_ACTION_LEASE_TTL_MS`
 (60s) rather than the lease's own long TTL — using `publish`'s real 30-minute
@@ -334,10 +350,13 @@ TTL there would mean a SIGKILL inside a fast action's ~1ms window orphans the
 lease for the full 30 minutes, since the row-repair sweep below heals the row
 but not the lease.
 
-A `running` row left behind by a daemon crash is swept to `failed`
-(`error_kind: 'interrupted'`) once per worker start, with no age threshold —
-within one process, a `running` row on the very first poll can only be from a
-dead process, so there is nothing to guess.
+A `running` row left behind by a daemon crash is swept to `failed` once per
+worker start, with no age threshold — within one process, a `running` row on
+the very first poll can only be from a dead process, so there is nothing to
+guess. The row's `error` message says "interrupted by a daemon restart", but
+its `error_kind` is `'internal'` — `'interrupted'` is not a member of this
+codebase's `kind` vocabulary (`src/errors.ts`) at all; the word appears only
+in the message text, not the classification.
 
 ### Config: channel TOML is the unit of everything
 

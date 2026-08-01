@@ -570,10 +570,12 @@ connection flag, not the mount. What changed is that the dashboard now also
 publishes pages queue an operator action (`POST /actions`) that the daemon
 executes, rather than mutating anything itself. Six actions are wired today —
 `topics reject/requeue`, `library approve`, `publish retry/mark-done`, and
-`run digest`. `library reject`, `topics prune-media`, `produce`, `resume`,
-`scout`, `produce-next`, `publish-next` and `auth` are still CLI-only; that is
-this phase's scope boundary, not a structural limit, and a later plan moves
-them onto the same queue.
+`run digest`. Everything else stays CLI-only for now — `library reject`,
+`topics prune-media`, `produce`, `resume`, `scout`, `produce-next`,
+`publish-next`, `auth`, `library backfill-store` and `publish preflight`
+among them; the list is illustrative, not exhaustive. That is this phase's
+scope boundary, not a structural limit, and a later plan moves some of them
+onto the same queue.
 
 ### The dashboard can now publish — and will soon spend money too
 
