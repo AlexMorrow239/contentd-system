@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { memDb, seedAction, seedDaemonState } from '../../../testing/db.js'
-import { actionsTableExists, buildActionsPage, pendingActionCount } from '../actions.js'
+import { actionsTableExists, buildActionsPage } from '../actions.js'
 
 describe('buildActionsPage', () => {
   it('reports the daemon stale when nothing has ever stamped', () => {
@@ -20,14 +20,6 @@ describe('buildActionsPage', () => {
     const a = seedAction(db)
     const b = seedAction(db)
     expect(buildActionsPage(db, new Date()).actions.map((r) => r.id)).toEqual([b, a])
-  })
-
-  it('counts only pending rows', () => {
-    const db = memDb()
-    seedAction(db, { status: 'pending' })
-    seedAction(db, { status: 'running' })
-    seedAction(db, { status: 'done' })
-    expect(pendingActionCount(db)).toBe(1)
   })
 })
 

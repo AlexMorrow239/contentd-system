@@ -21,18 +21,6 @@ export function buildActionsPage(db: Database, now: Date): ActionsPageData {
 }
 
 /**
- * Rows still waiting to be picked up by a worker — 'running' is deliberately
- * excluded, since that row already has a worker's attention and is not what
- * an operator means by "pending".
- */
-export function pendingActionCount(db: Database): number {
-  const row = db
-    .prepare("SELECT count(*) AS n FROM operator_actions WHERE status = 'pending'")
-    .get() as { n: number }
-  return row.n
-}
-
-/**
  * openDbReadonly never runs schema.sql, so a dashboard pointed at a database
  * no openDb call has ever touched has no operator_actions table. Probing lets
  * the page disable its controls with an explanation instead of 500-ing — the
