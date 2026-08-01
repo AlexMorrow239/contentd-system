@@ -713,8 +713,10 @@ exception: it opens a separate `openDbActions` handle whose only statement is
 an `INSERT INTO operator_actions`, and the daemon does the actual mutating
 out-of-process (see "the operator-action queue", above). That's also why the
 dashboard still holds no `ANTHROPIC_API_KEY` and no `BRAINROT_TOKEN_KEY`
-despite being able to queue a render or a publish: the credentials that
-mutation needs live only in the daemon.
+despite being able to queue an action that ends in a real upload: the
+credentials that mutation needs live only in the daemon. (Queueing a *render*
+is prospective, not current — `produce`/`resume`/`scout` stay CLI-only until a
+later phase wires them.)
 
 The module splits SQL from HTML and enforces it by structure: `queries/*` are
 `(db, params) -> typed data` and emit no markup, `views/*` are
