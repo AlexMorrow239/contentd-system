@@ -22,9 +22,10 @@ export interface DaemonState {
 }
 
 /**
- * Heartbeat. `started_at` is preserved across beats from the same pid so the
- * dashboard can report uptime, and reset when a different pid takes the row —
- * a restart is a new daemon, not a continuation.
+ * Heartbeat. `started_at` is preserved across beats from the same pid and
+ * reset when a different pid takes the row — that's what lets a reader
+ * distinguish a restart (new pid, `started_at` jumps) from a continuation
+ * (same pid, `started_at` holds), not currently used to report uptime.
  */
 export function stampDaemonSeen(db: Database, pid: number, now: Date): void {
   const iso = now.toISOString()

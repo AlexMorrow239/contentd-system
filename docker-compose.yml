@@ -235,12 +235,15 @@ services:
       # soon spend money too".
       - '127.0.0.1:8787:8787'
     volumes:
-      # READ-WRITE mount with a READ-ONLY connection — SQLite must create the
-      # -shm file to read a WAL database, so a :ro mount breaks the dashboard
-      # outright; the read-only guarantee lives in openDbReadonly's connection
-      # flag. Same named volume as the brainrot service, for the WAL/virtiofs
-      # reason documented there — and doubly so here, since this is a SECOND
-      # concurrent opener.
+      # READ-WRITE mount. SQLite must create the -shm file to read a WAL
+      # database, so a :ro mount breaks the dashboard outright even for its
+      # read routes. The guarantee is narrower than "read-only" now: every GET
+      # route opens the db through openDbReadonly (no mkdir, no schema exec,
+      # no migrate); the one write path is POST /actions, a single
+      # `INSERT INTO operator_actions` through openDbActions (also no mkdir,
+      # no schema exec, no migrate — see src/db/index.ts). Same named volume
+      # as the brainrot service, for the WAL/virtiofs reason documented there
+      # — and doubly so here, since this is a SECOND concurrent opener.
       - brainrot-data:/app/state/db
       - ./prod/runs:/app/state/runs:ro # video playback only
       - ./prod/channels:/app/state/channels:ro

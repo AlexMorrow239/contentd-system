@@ -77,7 +77,13 @@ export function failAction(db: Database, id: number, err: unknown, now: Date): v
   ).run(errorMessage(err), classify(err).kind, now.toISOString(), id)
 }
 
-/** Publishes something the operator must act on while the action still runs. */
+/**
+ * Publishes an interactive status for the row to show the operator. Today the
+ * only caller is the worker's lease-blocked path, writing to a row that is
+ * still `pending` (e.g. "waiting for the publish lease"). Once `auth`
+ * (phase 3) lands, a running action is expected to use this for an OAuth
+ * consent URL — never a credential.
+ */
 export function setActionNotice(db: Database, id: number, notice: string | null): void {
   db.prepare('UPDATE operator_actions SET notice = ? WHERE id = ?').run(notice, id)
 }

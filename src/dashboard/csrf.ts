@@ -48,6 +48,18 @@ const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '[::1]'])
  * so IPv6 bracket forms and case are handled the same way a browser would
  * rather than by hand-rolled string matching. Returns false for anything
  * unparseable, including an empty string.
+ *
+ * A Host value containing `@`, `/` or `//` (e.g. `evil.example@127.0.0.1`)
+ * can fool THIS function — URL parsing treats the text before `@` as
+ * userinfo and reports the loopback address as the hostname, so it passes.
+ * That is not a hole: `csrfFailure` below compares the RAW `host` string
+ * against `new URL(origin).host`, and `.host` on a parsed URL can never
+ * contain `@`, `/` or `//` — a browser-supplied Origin is always clean. So a
+ * Host value that slips past this allowlist via a parsing quirk still can
+ * never raw-string-equal a legitimate Origin's `.host`, and the request is
+ * rejected one line later. That's a genuine second gate, not luck — a future
+ * "cleanup" that reparses `host` the same way before comparing (instead of
+ * comparing the raw string) would quietly delete it.
  */
 function isLoopbackHost(host: string): boolean {
   try {

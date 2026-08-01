@@ -336,9 +336,10 @@ column ("waiting for the publish lease"), and is retried on the next poll.
 Taking the head of the queue and blocking on it would let one long upload
 stall every trivial mutation behind it — the head-of-line problem the two
 lanes exist to prevent. Each poll's scan window (`ACTION_SCAN_WINDOW`, set to
-`MAX_FAST_DRAIN`) gives the slow lane (completion budget 1) a genuine 50-row
-margin, so a couple of consecutive lease-blocked rows can't idle it with
-runnable work sitting behind them; the fast lane's own completion budget
+`MAX_FAST_DRAIN`) gives the slow lane (completion budget 1) a genuine 49-row
+margin (window 50 minus the 1 completion it needs), so a couple of
+consecutive lease-blocked rows can't idle it with runnable work sitting
+behind them; the fast lane's own completion budget
 already equals `MAX_FAST_DRAIN`, so its scan window is equal, not wider —
 the source comment in `src/loop/actions-worker.ts` calls that shared value a
 coincidence, not a coupling.
@@ -718,6 +719,22 @@ credentials that mutation needs live only in the daemon. (Queueing a *render*
 is prospective, not current — `produce`/`resume`/`scout` stay CLI-only until a
 later phase wires them.)
 
+`POST /actions` is guarded by two independent layers (`src/dashboard/csrf.ts`),
+either of which alone would stop the classic cross-site-form attack: proof the
+request is same-origin (`Sec-Fetch-Site`, then `Origin` vs `Host`), and the
+boot-minted CSRF token. The same-origin proof needs its own loopback-Host
+allowlist ahead of the `Origin`-vs-`Host` comparison — that comparison only
+proves the two headers *agree*, which a DNS-rebinding attacker satisfies
+trivially, so the allowlist is the sole check asking "is this host ours" at
+all. The redirect guard behind the confirm-page `from` link (`sameSitePath` in
+`src/dashboard/server.ts`) re-validates its own *output*, not just the input,
+for the same reason: `/..//evil.example` parses as same-origin and then
+*normalizes* to `//evil.example`, a protocol-relative off-site URL — a check
+that ran once on the raw input would miss it. Both of these are exactly the
+kind of thing a "simplify this" pass deletes without understanding why it was
+there; see the "do not simplify this away" comments in `csrf.ts` itself before
+touching either.
+
 The module splits SQL from HTML and enforces it by structure: `queries/*` are
 `(db, params) -> typed data` and emit no markup, `views/*` are
 `(data) -> SafeHtml` and issue no SQL. Interpolation goes through `html.ts`,
@@ -861,7 +878,7 @@ Conventions:
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~13s wall / ~70s CPU for 1020 tests across 77
+**Performance.** The suite runs ~13s wall / ~70s CPU for 1476 tests across 94
 files (warm; a first run after `pnpm install` is slower while the Remotion
 webpack cache in `node_modules/.cache` fills, and any measurement taken while
 something else is loading the machine can read 3x high). Wall clock is set by

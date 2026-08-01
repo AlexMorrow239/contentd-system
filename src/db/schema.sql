@@ -127,10 +127,13 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (
 -- That is what makes a dashboard-triggered mutation race-free where the
 -- equivalent CLI command is not (see CLAUDE.md, "outside these leases").
 --
--- `notice` carries an interactive payload published by an action that is
--- STILL RUNNING — today only the OAuth consent URL, which the operator has to
--- click before the action can finish. Never a credential: handlers record the
--- consent url, never the code or the token.
+-- `notice` carries an interactive status an action wants the operator to see
+-- before it can proceed. Today the only writer is the worker's lease-blocked
+-- path, stamped on a row that is still `pending` (e.g. "waiting for the
+-- publish lease"). Once `auth` (phase 3) lands, a running action is expected
+-- to use it for an OAuth consent URL the operator must click — never a
+-- credential: handlers must record the consent url, never the code or the
+-- token.
 --
 -- Rows are kept indefinitely as an audit log. The table is tiny and the
 -- /actions page reads a bounded window, so there is no pruning step.
