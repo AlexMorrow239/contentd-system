@@ -6,9 +6,9 @@ import { BrainrotError } from '../errors.js'
  * BOTH the dashboard (to render forms and validate submitted args) and the
  * daemon (to route to a handler), which is exactly why it must stay free of
  * heavy imports. The implementations live in ./handlers.ts, which the
- * dashboard may never import — src/arch.test.ts enforces it. Same discipline
- * as DASHBOARD_STAGE_ORDER: a read-only viewer has no business loading
- * Remotion, Anthropic or credential code.
+ * dashboard may never import — an arch lint in src/arch.test.ts will enforce
+ * this. Same discipline as DASHBOARD_STAGE_ORDER: a read-only viewer has no
+ * business loading Remotion, Anthropic or credential code.
  */
 
 /** `fast` = a few SQL statements, no network, no filesystem. `slow` = anything else. */
@@ -17,6 +17,13 @@ export type ActionLane = 'fast' | 'slow'
 /** The lease an action must hold, named exactly as the daemon's workers name it. */
 export type ActionLease = 'produce' | 'publish' | 'scout'
 
+/**
+ * Every entry spells out EVERY key, `undefined` included. `as const satisfies`
+ * drops an absent optional key from the resulting literal type, so omitting
+ * `lease`/`danger` makes `ACTIONS[kind].lease` a compile error the moment
+ * `kind` is widened to the union — which is exactly how the worker and the
+ * confirm interstitial read them.
+ */
 export interface ActionDescriptor {
   lane: ActionLane
   /** Button text and the name shown on the /actions page. */
@@ -35,7 +42,7 @@ export interface ActionDescriptor {
  * becomes `[]` so the `.min(1)` below is what reports an empty submission,
  * rather than a confusing "expected array, received undefined".
  */
-function list<T extends z.ZodTypeAny>(inner: T): z.ZodTypeAny {
+function list<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.infer<T>[]> {
   return z.preprocess(
     (v) => (Array.isArray(v) ? (v as unknown[]) : v === undefined ? [] : [v]),
     z.array(inner).min(1),
@@ -50,6 +57,7 @@ export const ACTIONS = {
     lane: 'fast',
     label: 'reject',
     confirm: false,
+    danger: undefined,
     lease: undefined,
     args: z.object({ ids: list(topicId) }),
   },
@@ -57,6 +65,7 @@ export const ACTIONS = {
     lane: 'fast',
     label: 'requeue',
     confirm: false,
+    danger: undefined,
     lease: undefined,
     args: z.object({ id: topicId }),
   },
@@ -64,6 +73,7 @@ export const ACTIONS = {
     lane: 'fast',
     label: 'approve',
     confirm: false,
+    danger: undefined,
     lease: undefined,
     args: z.object({ jobIds: list(jobId) }),
   },
@@ -71,6 +81,7 @@ export const ACTIONS = {
     lane: 'fast',
     label: 'retry',
     confirm: false,
+    danger: undefined,
     lease: 'publish',
     args: z.object({ jobId }),
   },
@@ -88,6 +99,7 @@ export const ACTIONS = {
     lane: 'fast',
     label: 'run digest',
     confirm: false,
+    danger: undefined,
     lease: undefined,
     args: z.object({}),
   },
@@ -126,7 +138,10 @@ export function parseActionArgs(kind: ActionKind, raw: unknown): unknown {
   const parsed = ACTIONS[kind].args.safeParse(raw)
   if (!parsed.success) {
     const detail = parsed.error.issues
-      .map((i) => `${i.path.join('.') === '' ? '(root)' : i.path.join('.')}: ${i.message}`)
+      .map((i) => {
+        const path = i.path.join('.')
+        return `${path === '' ? '(root)' : path}: ${i.message}`
+      })
       .join('; ')
     throw new BrainrotError(`invalid arguments for ${kind} — ${detail}`, {
       domain: 'config',
