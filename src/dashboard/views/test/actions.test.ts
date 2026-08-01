@@ -23,10 +23,7 @@ function action(overrides: Partial<ActionRow> = {}): ActionRow {
 
 describe('renderActionsPage', () => {
   it('renders each action with its status', () => {
-    const out = renderActionsPage(
-      { actions: [action()], daemonStale: false, daemonState: null },
-      {},
-    ).value
+    const out = renderActionsPage({ actions: [action()], daemonStale: false }, {}).value
     expect(out).toContain('topics.reject')
     expect(out).toContain('done')
   })
@@ -36,7 +33,6 @@ describe('renderActionsPage', () => {
       {
         actions: [action({ status: 'failed', error: 'no such job', errorKind: 'not-found' })],
         daemonStale: false,
-        daemonState: null,
       },
       {},
     ).value
@@ -49,7 +45,6 @@ describe('renderActionsPage', () => {
       {
         actions: [action({ status: 'running', notice: 'waiting for the publish lease' })],
         daemonStale: false,
-        daemonState: null,
       },
       {},
     ).value
@@ -61,7 +56,6 @@ describe('renderActionsPage', () => {
       {
         actions: [action({ status: 'failed', error: '<script>alert(1)</script>' })],
         daemonStale: false,
-        daemonState: null,
       },
       {},
     ).value
@@ -71,14 +65,14 @@ describe('renderActionsPage', () => {
 
   it('marks the highlighted action', () => {
     const out = renderActionsPage(
-      { actions: [action({ id: 9 })], daemonStale: false, daemonState: null },
+      { actions: [action({ id: 9 })], daemonStale: false },
       { highlightId: 9 },
     ).value
     expect(out).toContain('class="row highlight"')
   })
 
   it('says so when nothing has been queued yet', () => {
-    const out = renderActionsPage({ actions: [], daemonStale: false, daemonState: null }, {}).value
+    const out = renderActionsPage({ actions: [], daemonStale: false }, {}).value
     expect(out).toContain('no operator actions yet')
   })
 })

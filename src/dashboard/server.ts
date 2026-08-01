@@ -12,7 +12,7 @@ import { quotaBackedOff, uploadsUsedToday } from '../publish/publishes.js'
 import { localDay } from '../publish/schedule.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
-import { enqueueAction } from '../actions/queue.js'
+import { enqueueAction, getAction } from '../actions/queue.js'
 import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
 import { daemonIsStale, readDaemonState } from '../loop/daemon-state.js'
 import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
@@ -165,11 +165,15 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
       id = enqueueAction(db, { kind, args, requestedBy: 'dashboard' })
     } catch (err) {
       // The commonest cause is a database no openDb call has ever touched, so
-      // operator_actions does not exist yet. Say so rather than 500-ing.
+      // operator_actions does not exist yet — but this catch also sees things
+      // like a transient SQLITE_BUSY, which that fix does not address. Lead
+      // with the driver's own message and offer the schema explanation as the
+      // likely cause, not the only one.
       return c.html(
         actionErrorPage(
           deps.config.paths.root,
-          `could not queue the action: ${errorMessage(err)} — start the daemon once against this root to initialize the schema.`,
+          `could not queue the action: ${errorMessage(err)} — if the table is missing, ` +
+            'start the daemon once against this root to initialize the schema.',
         ),
         503,
       )
@@ -215,20 +219,14 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const db = c.get('db')
     const now = deps.now?.() ?? new Date()
     const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
-
-    // A pre-migration database has no daemon_state table either, so the probe
-    // guards both reads: absent means "no daemon has initialized this root",
-    // which renders every control disabled rather than 500-ing the viewer.
-    const daemonStale = actionsTableExists(db)
-      ? daemonIsStale(readDaemonState(db), now)
-      : true
+    const daemonStale = daemonStaleFor(db, now)
 
     return c.html(
       layout({
         title: 'overview',
         root: deps.config.paths.root,
         activeNav: 'overview',
-        refreshSeconds: c.req.query('action') !== undefined ? 3 : 30,
+        refreshSeconds: actionPollSeconds(db, c.req.query('action')) ?? 30,
         body: renderOverviewPage(buildOverview(db, channels, now), error, {
           csrfToken,
           daemonStale,
@@ -297,16 +295,8 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const rawChannel = c.req.query('channel')
     const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
 
-    // A pre-migration database has no daemon_state table either, so the probe
-    // guards both reads: absent means "no daemon has initialized this root",
-    // which renders every control disabled rather than 500-ing the viewer.
-    const daemonStale = actionsTableExists(db)
-      ? daemonIsStale(readDaemonState(db), deps.now?.() ?? new Date())
-      : true
-    // Just-submitted pages poll briefly so the outcome appears without the
-    // operator touching anything — the queue is asynchronous and the PRG
-    // redirect lands here before the worker has run.
-    const refreshSeconds = c.req.query('action') !== undefined ? 3 : undefined
+    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+    const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
 
     return c.html(
       layout({
@@ -381,14 +371,8 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     // panel into a warning instead of 500-ing the page.
     const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
 
-    // A pre-migration database has no daemon_state table either, so the probe
-    // guards both reads: absent means "no daemon has initialized this root",
-    // which renders every control disabled rather than 500-ing the viewer.
-    const daemonStale = actionsTableExists(db) ? daemonIsStale(readDaemonState(db), now) : true
-    // Just-submitted pages poll briefly so the outcome appears without the
-    // operator touching anything — the queue is asynchronous and the PRG
-    // redirect lands here before the worker has run.
-    const refreshSeconds = c.req.query('action') !== undefined ? 3 : undefined
+    const daemonStale = daemonStaleFor(db, now)
+    const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
 
     return c.html(
       layout({
@@ -418,16 +402,8 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const rawChannel = c.req.query('channel')
     const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
 
-    // A pre-migration database has no daemon_state table either, so the probe
-    // guards both reads: absent means "no daemon has initialized this root",
-    // which renders every control disabled rather than 500-ing the viewer.
-    const daemonStale = actionsTableExists(db)
-      ? daemonIsStale(readDaemonState(db), deps.now?.() ?? new Date())
-      : true
-    // Just-submitted pages poll briefly so the outcome appears without the
-    // operator touching anything — the queue is asynchronous and the PRG
-    // redirect lands here before the worker has run.
-    const refreshSeconds = c.req.query('action') !== undefined ? 3 : undefined
+    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+    const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
 
     return c.html(
       layout({
@@ -452,7 +428,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   app.get('/actions/confirm', (c) => {
     const db = c.get('db')
     const now = deps.now?.() ?? new Date()
-    const daemonStale = actionsTableExists(db) ? daemonIsStale(readDaemonState(db), now) : true
+    const daemonStale = daemonStaleFor(db, now)
 
     const kind = c.req.query('kind') ?? ''
     if (!isActionKind(kind) || !ACTIONS[kind].confirm) {
@@ -614,6 +590,34 @@ function openAndValidate(dbPath: string): Database {
     throw err
   }
   return db
+}
+
+/**
+ * Whether the daemon should be reported down, with the fallback every caller
+ * needs: a pre-migration database has no daemon_state table either, so the
+ * probe guards both reads — absent means "no daemon has initialized this
+ * root," which renders every control disabled rather than 500-ing the
+ * viewer.
+ */
+function daemonStaleFor(db: Database, now: Date): boolean {
+  return actionsTableExists(db) ? daemonIsStale(readDaemonState(db), now) : true
+}
+
+/**
+ * `?action=<id>` marks a just-submitted page: poll briefly so the outcome
+ * appears without the operator touching anything — the queue is asynchronous
+ * and the PRG redirect lands here before the worker has run. Bounded to
+ * while THAT action is still pending/running, not the query param's mere
+ * presence — a page left open on `?action=<id>` after the action has already
+ * settled must stop polling, not refresh every 3s forever.
+ */
+function actionPollSeconds(db: Database, rawId: string | undefined): number | undefined {
+  const id = Number(rawId ?? '')
+  if (!Number.isInteger(id) || id <= 0) return undefined
+  const action = getAction(db, id)
+  return action !== null && (action.status === 'pending' || action.status === 'running')
+    ? 3
+    : undefined
 }
 
 /**

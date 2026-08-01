@@ -10,7 +10,7 @@ import {
   retryInterrupted,
 } from '../publish/publishes.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
-import { ACTIONS, parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
+import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 
 /**
  * Handler implementations. DAEMON ONLY — src/arch.test.ts fails the build if
@@ -20,16 +20,31 @@ import { ACTIONS, parseActionArgs, type ActionArgs, type ActionKind } from './ca
  * into whatever process imports it. The dashboard reads ./catalog.js
  * instead, which is pure metadata.
  *
- * Each handler mirrors its CLI command's semantics exactly, including which
- * outcomes are failures: `publish retry` on a job with no interrupted row
- * exits 1, so the action throws rather than recording a misleading success.
+ * Each handler mirrors its CLI command's semantics, including which outcomes
+ * are failures: `publish retry` on a job with no interrupted row exits 1, so
+ * the action throws rather than recording a misleading success. One
+ * deliberate exception: `library.approve` on a reclaimed job exits 1 on the
+ * CLI but records `done` here with `reclaimed: [...]`, so the page can still
+ * report the approvals that did succeed in the same batch.
+ */
+
+/**
+ * `runsRoot` and `setNotice` are deliberate phase-2 scaffolding: no handler
+ * below uses either yet. `runsRoot` is here for a future render-triggering
+ * action; `setNotice` is here for `auth` (phase 3), expected to publish an
+ * OAuth consent URL through it — never a credential. Neither is dead code —
+ * don't delete them for being currently unused.
  */
 export interface ActionContext {
   db: Database
   now: Date
   channelsDir: string
   runsRoot: string
-  /** Publishes an interactive payload while the action is still running. */
+  /**
+   * Publishes an interactive status for the operator to see. No current
+   * handler calls this — today the only writer of `notice` is the worker's
+   * own lease-blocked path.
+   */
   setNotice: (text: string) => void
 }
 
@@ -137,6 +152,3 @@ export async function runAction(
   const handler = ACTION_HANDLERS[kind] as (ctx: ActionContext, args: unknown) => Promise<unknown>
   return handler(ctx, args)
 }
-
-/** Re-exported so the worker can read lane/lease without a second import. */
-export { ACTIONS }

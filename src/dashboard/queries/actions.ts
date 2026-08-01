@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { listRecentActions, type ActionRow } from '../../actions/queue.js'
-import { daemonIsStale, readDaemonState, type DaemonState } from '../../loop/daemon-state.js'
+import { daemonIsStale, readDaemonState } from '../../loop/daemon-state.js'
 
 /** One screen's worth of audit history; the table itself is never pruned. */
 export const ACTIONS_PAGE_LIMIT = 100
@@ -8,15 +8,12 @@ export const ACTIONS_PAGE_LIMIT = 100
 export interface ActionsPageData {
   actions: ActionRow[]
   daemonStale: boolean
-  daemonState: DaemonState | null
 }
 
 export function buildActionsPage(db: Database, now: Date): ActionsPageData {
-  const daemonState = readDaemonState(db)
   return {
     actions: listRecentActions(db, ACTIONS_PAGE_LIMIT),
-    daemonStale: daemonIsStale(daemonState, now),
-    daemonState,
+    daemonStale: daemonIsStale(readDaemonState(db), now),
   }
 }
 

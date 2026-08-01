@@ -128,6 +128,22 @@ describe('dashboard action isolation', () => {
     const chain = await findImportChain(files, target)
     expect(chain === null ? null : chain.map((f) => relative(SRC_ROOT, f)).join(' -> ')).toBeNull()
   })
+
+  it('positive control: the walker does find actions/catalog.ts reachable from the dashboard', async () => {
+    // The test above proves handlers.ts is UNREACHABLE — a claim that only
+    // means something if findImportChain can also find things that ARE
+    // reachable. Without this, a walker silently broken to always return null
+    // (a bad edit to the regex, the visited-set, or resolveRelativeSpecifier)
+    // would make the isolation test above pass for the wrong reason: "found
+    // nothing" instead of "checked everything and found nothing". catalog.ts
+    // is real, known-reachable metadata the dashboard is expected to import.
+    const target = join(SRC_ROOT, 'actions', 'catalog.ts')
+    const files = (await srcFiles(join(SRC_ROOT, 'dashboard'))).filter(
+      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
+    )
+    const chain = await findImportChain(files, target)
+    expect(chain).not.toBeNull()
+  })
 })
 
 describe('publish-next platform agnosticism', () => {

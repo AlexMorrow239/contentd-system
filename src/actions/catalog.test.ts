@@ -73,6 +73,22 @@ describe('ACTIONS catalog', () => {
     expect(actionArgNames('digest.run')).toEqual([])
   })
 
+  it('never declares an argument named kind, csrf or from', () => {
+    // src/dashboard/server.ts's TRANSPORT_FIELDS (`kind`, CSRF_FIELD = 'csrf',
+    // `from`) strips these three from the submitted form before args are
+    // parsed, so an action declaring one of them as a real argument would have
+    // it silently dropped rather than rejected — a bug that would otherwise
+    // stay latent until someone actually added such an action. Turning it into
+    // a red test here, ahead of the collision, is cheaper than debugging it
+    // through the confirm interstitial later.
+    const reserved = new Set(['kind', 'csrf', 'from'])
+    for (const kind of Object.keys(ACTIONS) as (keyof typeof ACTIONS)[]) {
+      for (const name of actionArgNames(kind)) {
+        expect(reserved.has(name), `${kind} declares reserved argument name "${name}"`).toBe(false)
+      }
+    }
+  })
+
   it('groups repeated form keys into arrays and leaves single keys scalar', () => {
     expect(
       formToArgs([

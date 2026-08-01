@@ -10,6 +10,15 @@ import { createApp } from '../server.js'
 import { tmpDir } from '../../testing/tmp.js'
 import { seedDaemonState } from '../../testing/db.js'
 
+/** Reverses html.ts's escaping, so a value pulled out of rendered markup can be parsed as a URL. */
+function unescapeHtmlAttr(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
 /** A config whose root exists and whose db is present, absent, or corrupt. */
 function seededConfig(db: 'present' | 'absent' | 'corrupt' = 'present'): DashboardConfig {
   const paths = resolvePaths(tmpDir('brainrot-dash-'))
@@ -602,47 +611,28 @@ describe('GET /actions/confirm', () => {
     '/\\evil.example',
     '/..//evil.example',
   ])('rejects a hostile from=%s and renders no off-site link', async (from) => {
-    // The confirm route must apply the same sameSitePath validation that the
-    // POST route does, ensuring the cancel link and the hidden from field
-    // cannot carry an off-origin target.
+    // The confirm route must apply the same sameSitePath validation the POST
+    // route does (see the it.each above), so the cancel link and the hidden
+    // `from` field can never carry an off-origin target. renderConfirmPage
+    // renders both unconditionally, so both regexes must match here — an
+    // `if (match)` guard would let a markup change silently stop checking
+    // anything but the 200. Resolve each attribute the way a browser would
+    // and assert on `.origin`, not string content.
     const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
       `/actions/confirm?kind=publish.markDone&from=${encodeURIComponent(from)}&jobId=j1`,
     )
     expect(res.status).toBe(200)
     const body = await res.text()
-    // Assert both the cancel link and the hidden from field resolve to same-origin.
-    // Extract href from the cancel link by finding the href attribute.
+
     const cancelHrefMatch = body.match(/class="action-link"[^>]*href="([^"]*)"/)
-    if (cancelHrefMatch) {
-      const cancelHref = cancelHrefMatch[1]
-      // Unescape HTML entities for the URL comparison
-      const unescaped = cancelHref
-        .replace(/&quot;/g, '"')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-      const resolved = new URL(unescaped, 'http://127.0.0.1:8787')
-      expect(resolved.origin).toBe('http://127.0.0.1:8787')
-    }
-    // Also check the hidden from field value
-    const fromFieldMatch = body.match(/name="from"\s+value="([^"]*)"/);
-    if (fromFieldMatch) {
-      const fromValue = fromFieldMatch[1]
-      // Unescape HTML entities
-      const unescaped = fromValue
-        .replace(/&quot;/g, '"')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&amp;/g, '&')
-      if (unescaped) {
-        const resolved = new URL(unescaped, 'http://127.0.0.1:8787')
-        expect(resolved.origin).toBe('http://127.0.0.1:8787')
-      }
-    } else {
-      // If no from field found, that means the value was rejected to empty string
-      // which is also acceptable (fallback to /actions)
-      expect(body).not.toMatch(/name="from"\s+value="[^"]*evil/)
-    }
+    expect(cancelHrefMatch).not.toBeNull()
+    const cancelHref = unescapeHtmlAttr((cancelHrefMatch as RegExpMatchArray)[1])
+    expect(new URL(cancelHref, 'http://127.0.0.1:8787').origin).toBe('http://127.0.0.1:8787')
+
+    const fromFieldMatch = body.match(/name="from"\s+value="([^"]*)"/)
+    expect(fromFieldMatch).not.toBeNull()
+    const fromValue = unescapeHtmlAttr((fromFieldMatch as RegExpMatchArray)[1])
+    expect(new URL(fromValue, 'http://127.0.0.1:8787').origin).toBe('http://127.0.0.1:8787')
   })
 })
 

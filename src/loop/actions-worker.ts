@@ -177,7 +177,12 @@ async function executeOne(
   if (lease !== undefined) {
     holder = `pid:${process.pid}:action:${row.id}`
     if (!acquireLease(db, lease, holder, leaseTtlMs(deps.lane, lease))) {
-      setActionNotice(db, row.id, `waiting for the ${lease} lease`)
+      // Guarded on the text actually changing: the fast lane polls every 1s,
+      // so an unconditional write here is one WAL write per second per
+      // blocked row for as long as the lease is held — exactly the churn
+      // DAEMON_HEARTBEAT_MS throttles the heartbeat stamp against, above.
+      const text = `waiting for the ${lease} lease`
+      if (row.notice !== text) setActionNotice(db, row.id, text)
       return { blockedBy: lease }
     }
   }

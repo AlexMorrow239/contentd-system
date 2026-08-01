@@ -6,7 +6,6 @@ describe('buildActionsPage', () => {
   it('reports the daemon stale when nothing has ever stamped', () => {
     const page = buildActionsPage(memDb(), new Date('2026-08-01T10:00:00Z'))
     expect(page.daemonStale).toBe(true)
-    expect(page.daemonState).toBeNull()
   })
 
   it('reports the daemon live inside the heartbeat window', () => {
