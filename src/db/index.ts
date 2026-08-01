@@ -61,5 +61,11 @@ export function openDbReadonly(dbPath: string): Database {
 export function openDbActions(dbPath: string): Database {
   const db = new BetterSqlite3(dbPath, { fileMustExist: true })
   db.pragma('busy_timeout = 5000')
+  // Matches openDb: better-sqlite3 v12+ defaults foreign_keys ON, and this
+  // project keeps FK enforcement OFF by design. operator_actions declares no
+  // REFERENCES today, so nothing breaks without this — set anyway so this
+  // handle stays consistent with every other write handle rather than being
+  // an exception a future REFERENCES column would silently trip over.
+  db.pragma('foreign_keys = OFF')
   return db
 }

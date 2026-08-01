@@ -73,6 +73,94 @@ describe('csrfFailure', () => {
       ),
     ).toContain('origin')
   })
+
+  it('rejects a same-site (but not same-origin) Sec-Fetch-Site', () => {
+    // same-site covers sibling subdomains — a future well-meaning relaxation
+    // ("same-site is basically the same thing") would reopen the attack this
+    // header exists to close. Only same-origin may pass.
+    expect(
+      csrfFailure(
+        req({
+          host: '127.0.0.1:8787',
+          origin: 'http://127.0.0.1:8787',
+          'sec-fetch-site': 'same-site',
+          'x-brainrot-csrf': token,
+        }),
+        token,
+      ),
+    ).toContain('same-site')
+  })
+
+  it('rejects an opaque Origin: null (the sandboxed-iframe form)', () => {
+    expect(
+      csrfFailure(
+        req({ host: '127.0.0.1:8787', origin: 'null', 'x-brainrot-csrf': token }),
+        token,
+      ),
+    ).toContain('origin')
+  })
+
+  describe('loopback Host allowlist', () => {
+    it('accepts an SSH-port-forward Host whose port differs from the configured one', () => {
+      // ssh -L 9999:127.0.0.1:8787 makes the browser send Host: localhost:9999.
+      // The allowlist matches on hostname only, so a forwarded port must still
+      // pass.
+      expect(
+        csrfFailure(
+          req({
+            host: 'localhost:9999',
+            origin: 'http://localhost:9999',
+            'sec-fetch-site': 'same-origin',
+            'x-brainrot-csrf': token,
+          }),
+          token,
+        ),
+      ).toBeNull()
+    })
+
+    it('accepts a bracketed IPv6 loopback Host', () => {
+      expect(
+        csrfFailure(
+          req({
+            host: '[::1]:8787',
+            origin: 'http://[::1]:8787',
+            'sec-fetch-site': 'same-origin',
+            'x-brainrot-csrf': token,
+          }),
+          token,
+        ),
+      ).toBeNull()
+    })
+
+    it('rejects a DNS-rebinding request whose Host/Origin agree but are not loopback', () => {
+      // The attacker's rebound name satisfies Origin === Host and
+      // Sec-Fetch-Site: same-origin (the browser genuinely considers it
+      // same-origin to itself once evil.example resolves to 127.0.0.1) and
+      // carries the real token lifted from the page it just read. The
+      // allowlist is the only layer that still catches it.
+      expect(
+        csrfFailure(
+          req({
+            host: 'evil.example:8787',
+            origin: 'http://evil.example:8787',
+            'sec-fetch-site': 'same-origin',
+            'x-brainrot-csrf': token,
+          }),
+          token,
+        ),
+      ).toContain('loopback')
+    })
+
+    it('rejects an empty Host even though it would equal an opaque Origin\'s empty host', () => {
+      // Origin: file:///x parses to host ''. Before the allowlist, an equally
+      // empty Host header would satisfy originHost === host and pass the
+      // origin layer entirely.
+      expect(new URL('file:///x').host).toBe('')
+      expect(
+        csrfFailure(req({ host: '', origin: 'file:///x', 'x-brainrot-csrf': token }), token),
+      ).toContain('loopback')
+    })
+  })
 })
 
 describe('mintCsrfToken', () => {

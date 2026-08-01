@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync } from 'node:fs'
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { openDb, openDbActions, openDbReadonly } from './index.js'
 import { tmpDir } from '../testing/tmp.js'
-import { memDb, fileDb } from '../testing/db.js'
+import { memDb } from '../testing/db.js'
 
 function tempDbPath(): string {
   const dir = tmpDir('brainrot-db-')
@@ -101,11 +101,40 @@ describe('openDbReadonly', () => {
 })
 
 describe('openDbActions', () => {
-  it('opens a writable actions handle without creating or migrating anything', () => {
-    const { root } = fileDb()
-    const missing = join(root, 'nope', 'brainrot.db')
+  it('throws on a missing path without creating its parent directory', () => {
+    const root = tmpDir('brainrot-actions-')
+    const missingParent = join(root, 'nope')
+    const missing = join(missingParent, 'brainrot.db')
     // fileMustExist: a viewer pointed at the wrong root must report, not create.
-    expect(() => openDbActions(missing)).toThrow()
+    expect(() => openDbActions(missing)).toThrow(/cannot open database/i)
+    // And it must not have mkdir'd the parent while failing to open.
+    expect(existsSync(missingParent)).toBe(false)
+  })
+
+  it('opens an existing empty file without execing schema.sql or running migrations', () => {
+    const root = tmpDir('brainrot-actions-')
+    const path = join(root, 'empty.db')
+    writeFileSync(path, '') // a valid, empty SQLite file: zero tables
+    const db = openDbActions(path)
+    const rows = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()
+    // If a future edit "fixes" a missing-table error by adding a schema exec
+    // or migrate call to openDbActions, this goes from empty to populated.
+    expect(rows).toHaveLength(0)
+    db.close()
+  })
+
+  it('is genuinely writable: can insert into operator_actions', () => {
+    const root = tmpDir('brainrot-actions-')
+    const path = join(root, 'brainrot.db')
+    openDb(path).close() // creates schema, including operator_actions
+
+    const db = openDbActions(path)
+    db.prepare(
+      "INSERT INTO operator_actions (kind, lane, args, status, requested_by) VALUES ('topics.reject','fast','{}','pending','dashboard')",
+    ).run()
+    const rows = db.prepare('SELECT kind FROM operator_actions').all() as { kind: string }[]
+    expect(rows).toEqual([{ kind: 'topics.reject' }])
+    db.close()
   })
 })
 
