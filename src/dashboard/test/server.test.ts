@@ -543,6 +543,34 @@ describe('POST /actions', () => {
   })
 })
 
+describe('GET /actions/confirm', () => {
+  it('renders the interstitial for a confirmable action', async () => {
+    const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
+      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('cannot be undone')
+    expect(body).toContain('value="j1"')
+  })
+
+  it('refuses a kind that needs no confirmation', async () => {
+    // Otherwise the interstitial becomes a second, unguarded way to build a
+    // POST form for any action.
+    const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
+      '/actions/confirm?kind=topics.reject&ids=4',
+    )
+    expect(res.status).toBe(400)
+  })
+
+  it('refuses an unknown kind', async () => {
+    const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
+      '/actions/confirm?kind=topics.nuke',
+    )
+    expect(res.status).toBe(400)
+  })
+})
+
 describe('unbounded list truncation', () => {
   function configWithManyJobs(count: number): DashboardConfig {
     const config = seededConfig()

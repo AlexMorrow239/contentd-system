@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ActionRow } from '../../../actions/queue.js'
-import { actionForm, daemonBanner, renderActionsPage } from '../actions.js'
+import { actionForm, daemonBanner, renderActionsPage, renderConfirmPage } from '../actions.js'
 
 function action(overrides: Partial<ActionRow> = {}): ActionRow {
   return {
@@ -132,5 +132,35 @@ describe('actionForm', () => {
       disabled: true,
     }).value
     expect(out).toContain('disabled')
+  })
+})
+
+describe('renderConfirmPage', () => {
+  it('states the consequence and posts the prefilled args', () => {
+    const out = renderConfirmPage({
+      kind: 'publish.markDone',
+      csrfToken: 'tok',
+      from: '/publishes',
+      fields: { jobId: 'j1' },
+      missing: [],
+    }).value
+    expect(out).toContain('cannot be undone')
+    expect(out).toContain('name="jobId" value="j1"')
+    expect(out).toContain('name="csrf" value="tok"')
+    expect(out).toContain('method="post"')
+  })
+
+  it('renders a text input for an argument the caller could not supply', () => {
+    // publish.markDone needs a postId the operator reads off the platform, so
+    // the interstitial doubles as the input form.
+    const out = renderConfirmPage({
+      kind: 'publish.markDone',
+      csrfToken: 'tok',
+      from: '/publishes',
+      fields: { jobId: 'j1' },
+      missing: ['postId'],
+    }).value
+    expect(out).toContain('name="postId"')
+    expect(out).toContain('type="text"')
   })
 })

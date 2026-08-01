@@ -13,7 +13,7 @@ import { localDay } from '../publish/schedule.js'
 import { PUBLISH_PLATFORMS } from '../publish/types.js'
 import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { enqueueAction } from '../actions/queue.js'
-import { formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
+import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
 import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
 import type { DashboardConfig } from './config.js'
 import { html } from './html.js'
@@ -32,7 +32,7 @@ import { countTopics, topicChannels } from './queries/topics.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
 import { parseRange, resolveVideoPath } from './video.js'
-import { missingTableBanner, renderActionsPage } from './views/actions.js'
+import { missingTableBanner, renderActionsPage, renderConfirmPage } from './views/actions.js'
 import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
@@ -393,6 +393,42 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           channels: topicChannels(db),
           filter: { channel, status },
         }),
+      }),
+    )
+  })
+
+  app.get('/actions/confirm', (c) => {
+    const kind = c.req.query('kind') ?? ''
+    if (!isActionKind(kind) || !ACTIONS[kind].confirm) {
+      // A non-confirmable kind is refused rather than rendered: this route
+      // builds a POST form, so accepting any kind would make it a second,
+      // unguarded path to every action.
+      return c.html(
+        actionErrorPage(deps.config.paths.root, `no confirmation step for ${JSON.stringify(kind)}`),
+        400,
+      )
+    }
+    const rawFrom = c.req.query('from') ?? ''
+    const from = sameSitePath(rawFrom) ?? ''
+
+    // Whatever the calling page could supply arrives as query params; the rest
+    // becomes a text input. The catalog's schema is the authority on which
+    // fields exist, so a hand-edited url cannot smuggle an extra one.
+    const names = actionArgNames(kind)
+    const fields: Record<string, string> = {}
+    const missing: string[] = []
+    for (const name of names) {
+      const value = c.req.query(name)
+      if (value === undefined || value === '') missing.push(name)
+      else fields[name] = value
+    }
+
+    return c.html(
+      layout({
+        title: `confirm ${ACTIONS[kind].label}`,
+        root: deps.config.paths.root,
+        activeNav: 'actions',
+        body: renderConfirmPage({ kind, csrfToken, from, fields, missing }),
       }),
     )
   })

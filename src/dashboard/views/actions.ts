@@ -59,6 +59,46 @@ export function missingTableBanner(): SafeHtml {
   </p>`
 }
 
+/**
+ * The zero-JS confirmation step for a confirm:true action. It carries two
+ * jobs at once: it states the consequence in words before anything
+ * irreversible happens, and it collects any argument the calling page could
+ * not supply (publish.markDone's postId, which the operator reads off the
+ * platform).
+ */
+export function renderConfirmPage(opts: {
+  kind: ActionKind
+  csrfToken: string
+  from: string
+  fields: Record<string, string>
+  missing: string[]
+}): SafeHtml {
+  const desc = ACTIONS[opts.kind]
+  const hidden = Object.entries(opts.fields).map(
+    ([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`,
+  )
+  const inputs = opts.missing.map(
+    (name) => html`<label class="field">${name}
+      <input type="text" name="${name}" required autocomplete="off">
+    </label>`,
+  )
+  const known = Object.entries(opts.fields).map(
+    ([name, value]) => html`<li><span class="muted">${name}</span> <code>${value}</code></li>`,
+  )
+
+  return html`<h1>confirm: ${desc.label}</h1>
+    <p class="danger">${desc.danger ?? 'This action cannot be undone.'}</p>
+    <ul class="args">${known}</ul>
+    <form method="post" action="/actions">
+      <input type="hidden" name="kind" value="${opts.kind}">
+      <input type="hidden" name="csrf" value="${opts.csrfToken}">
+      <input type="hidden" name="from" value="${opts.from}">
+      ${hidden} ${inputs}
+      <button class="action-button danger" type="submit">${desc.label}</button>
+      <a class="action-link" href="${opts.from === '' ? '/actions' : opts.from}">cancel</a>
+    </form>`
+}
+
 export function renderActionsPage(
   data: ActionsPageData,
   opts: { highlightId?: number },
