@@ -46,3 +46,20 @@ export function openDbReadonly(dbPath: string): Database {
   db.pragma('busy_timeout = 5000')
   return db
 }
+
+/**
+ * The dashboard's ONE write handle. Deliberately not openDb: no mkdir, no
+ * schema.sql exec, no migrate — all three are writes a viewer must never
+ * perform, and creating the schema from an HTTP request would let a stray
+ * browser hit materialize a database at a typo'd root.
+ *
+ * Its only statement is `INSERT INTO operator_actions`. Every read route keeps
+ * openDbReadonly, which is what narrows the dashboard's read-only guarantee to
+ * "no read route can mutate, and the whole write path is one insert into one
+ * queue table" rather than dropping it.
+ */
+export function openDbActions(dbPath: string): Database {
+  const db = new BetterSqlite3(dbPath, { fileMustExist: true })
+  db.pragma('busy_timeout = 5000')
+  return db
+}

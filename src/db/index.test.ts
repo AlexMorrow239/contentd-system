@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { openDb, openDbReadonly } from './index.js'
+import { openDb, openDbActions, openDbReadonly } from './index.js'
 import { tmpDir } from '../testing/tmp.js'
-import { memDb } from '../testing/db.js'
+import { memDb, fileDb } from '../testing/db.js'
 
 function tempDbPath(): string {
   const dir = tmpDir('brainrot-db-')
@@ -97,6 +97,15 @@ describe('openDbReadonly', () => {
     const db = openDbReadonly(path)
     expect(db.pragma('busy_timeout', { simple: true })).toBe(5000)
     db.close()
+  })
+})
+
+describe('openDbActions', () => {
+  it('opens a writable actions handle without creating or migrating anything', () => {
+    const { root } = fileDb()
+    const missing = join(root, 'nope', 'brainrot.db')
+    // fileMustExist: a viewer pointed at the wrong root must report, not create.
+    expect(() => openDbActions(missing)).toThrow()
   })
 })
 
