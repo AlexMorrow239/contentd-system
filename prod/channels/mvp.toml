@@ -47,11 +47,15 @@ videos_per_day = 15
 # already-full backlog.
 backlog_days = 2
 
-# No [voice.premium]: the free kokoro -> edge-tts chain. That makes the
-# WhisperX sidecar mandatory for every job (it does the caption word
-# alignment ElevenLabs would otherwise return itself).
 [voice]
 volume = "af_heart"
+
+# ElevenLabs premium voice: tried first, falls back to the free kokoro ->
+# edge-tts chain on failure or absence. model defaults to
+# eleven_multilingual_v2 when omitted. Requires ELEVENLABS_API_KEY in .env.
+[voice.premium]
+provider = "elevenlabs"
+voice_id = "Gubgw9l4dtIoQA9YZHgx"
 
 [scout]
 # NO `subreddits` key. Adding one re-arms redditSource, which will fetch every
