@@ -3,6 +3,8 @@ import { tryLoadChannelsDir } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
 import { approveLibrary } from '../jobs/library.js'
 import { buildDigest } from '../loop/digest.js'
+import { produceNextTick } from '../loop/produce-next.js'
+import { publishNextTick } from '../loop/publish-next.js'
 import { ADAPTERS } from '../publish/platforms/index.js'
 import {
   interruptedPlatform,
@@ -48,7 +50,22 @@ export interface ActionContext {
   setNotice: (text: string) => void
 }
 
-type Handler<K extends ActionKind> = (ctx: ActionContext, args: ActionArgs<K>) => Promise<unknown>
+/**
+ * The optional third parameter is a test seam, mirroring the `opts.tick ??`
+ * shape `produceUnit`/`publishUnit` already use in src/loop/daemon.ts. It is
+ * never supplied in production — `runAction` calls handlers with two
+ * arguments — so a handler that needs no seam simply ignores it.
+ */
+type HandlerDeps = {
+  produceNextTick?: typeof produceNextTick
+  publishNextTick?: typeof publishNextTick
+}
+
+type Handler<K extends ActionKind> = (
+  ctx: ActionContext,
+  args: ActionArgs<K>,
+  deps?: HandlerDeps,
+) => Promise<unknown>
 
 export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'topics.reject': (ctx, args) =>
@@ -132,6 +149,31 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       text: buildDigest(ctx.db, loaded.channels, {}, { channelsError: loaded.error }),
     })
   },
+
+  // The tick result is recorded verbatim as the action's `result`, including
+  // a `{action:'noop',reason:'lease-held'}` — the tick ran and declined
+  // because the daemon's own worker holds the lease, which is a truthful
+  // outcome and exactly what the CLI reports (exit 0).
+  //
+  // A tick that lands `status: 'failed'` also records the action `done`, not
+  // `failed`. That is a deliberate departure from "mirror the CLI's exit
+  // code": `failAction` stores no `result`, so failing the action would throw
+  // away the very JobResult the operator needs to read. The page renders
+  // `status: failed` plainly.
+  'produce.next': (ctx, _args, deps) =>
+    (deps?.produceNextTick ?? produceNextTick)(ctx.db, {
+      channelsDir: ctx.channelsDir,
+      runsRoot: ctx.runsRoot,
+    }),
+
+  'publish.next': (ctx, _args, deps) =>
+    (deps?.publishNextTick ?? publishNextTick)(ctx.db, { channelsDir: ctx.channelsDir }),
+
+  'publish.nextDryRun': (ctx, _args, deps) =>
+    (deps?.publishNextTick ?? publishNextTick)(ctx.db, {
+      channelsDir: ctx.channelsDir,
+      dryRun: true,
+    }),
 }
 
 /**

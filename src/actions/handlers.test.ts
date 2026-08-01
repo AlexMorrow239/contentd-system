@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import {
@@ -156,5 +156,42 @@ describe('action handlers', () => {
     const result = (await runAction(ctx(db), 'digest.run', {})) as { text: string }
     expect(typeof result.text).toBe('string')
     expect(result.text.length).toBeGreaterThan(0)
+  })
+
+  it('produce.next runs one produce tick and records its result verbatim', async () => {
+    const db = memDb()
+    const tick = vi.fn().mockResolvedValue({ action: 'produced', jobId: 'j1', status: 'ready' })
+    const result = await ACTION_HANDLERS['produce.next'](
+      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+      {},
+      { produceNextTick: tick },
+    )
+    expect(tick).toHaveBeenCalledWith(db, { channelsDir: '/ch', runsRoot: '/runs' })
+    expect(result).toEqual({ action: 'produced', jobId: 'j1', status: 'ready' })
+  })
+
+  it('produce.next records a lease-held noop as a successful, truthful result', async () => {
+    const db = memDb()
+    const tick = vi.fn().mockResolvedValue({ action: 'noop', reason: 'lease-held' })
+    const result = await ACTION_HANDLERS['produce.next'](
+      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+      {},
+      { produceNextTick: tick },
+    )
+    // NOT a throw: the tick ran and declined because a render is in flight. This
+    // is exactly what the CLI does (exit 0, benign noop).
+    expect(result).toEqual({ action: 'noop', reason: 'lease-held' })
+  })
+
+  it('publish.next runs a real publish tick, publish.nextDryRun previews', async () => {
+    const db = memDb()
+    const tick = vi.fn().mockResolvedValue({ action: 'noop', reason: 'not-due' })
+    const ctx = { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} }
+
+    await ACTION_HANDLERS['publish.next'](ctx, {}, { publishNextTick: tick })
+    expect(tick).toHaveBeenLastCalledWith(db, { channelsDir: '/ch' })
+
+    await ACTION_HANDLERS['publish.nextDryRun'](ctx, {}, { publishNextTick: tick })
+    expect(tick).toHaveBeenLastCalledWith(db, { channelsDir: '/ch', dryRun: true })
   })
 })

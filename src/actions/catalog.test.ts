@@ -3,11 +3,14 @@ import { BrainrotError } from '../errors.js'
 import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from './catalog.js'
 
 describe('ACTIONS catalog', () => {
-  it('declares exactly the phase-1 fast actions', () => {
+  it('declares exactly the phase-1 fast actions plus the phase-2 slow ones', () => {
     expect(Object.keys(ACTIONS).sort()).toEqual([
       'digest.run',
       'library.approve',
+      'produce.next',
       'publish.markDone',
+      'publish.next',
+      'publish.nextDryRun',
       'publish.retry',
       'topics.reject',
       'topics.requeue',
@@ -124,5 +127,20 @@ describe('ACTIONS catalog', () => {
     ])
     expect(Object.getPrototypeOf(fields)).toBeNull()
     expect(parseActionArgs('topics.reject', fields)).toEqual({ ids: [4, 5] })
+  })
+
+  it('declares no lease for the two tick actions, which lease themselves', () => {
+    // produceNextTick / publishNextTick acquire `produce` / `publish` internally.
+    // A worker holding the lease first would deadlock the tick against itself
+    // and record its lease-held noop as a success.
+    expect(ACTIONS['produce.next'].lease).toBeUndefined()
+    expect(ACTIONS['publish.next'].lease).toBeUndefined()
+    expect(ACTIONS['publish.nextDryRun'].lease).toBeUndefined()
+  })
+
+  it('confirms before spending or publishing, but not for a dry run', () => {
+    expect(ACTIONS['produce.next'].confirm).toBe(true)
+    expect(ACTIONS['publish.next'].confirm).toBe(true)
+    expect(ACTIONS['publish.nextDryRun'].confirm).toBe(false)
   })
 })

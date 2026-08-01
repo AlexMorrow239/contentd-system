@@ -108,6 +108,39 @@ export const ACTIONS = {
     lease: undefined,
     args: z.object({}),
   },
+  'produce.next': {
+    lane: 'slow',
+    label: 'produce next',
+    confirm: true,
+    danger:
+      'Runs one produce tick: claims the highest-scoring topic and renders a video. ' +
+      'This spends real money on the script, the voice and the captions.',
+    // NOT a mistake: produceNextTick acquires the `produce` lease itself.
+    // Declaring it here would make the worker hold the lease the tick then
+    // fails to take, turning every click into a lease-held noop.
+    lease: undefined,
+    args: z.object({}),
+  },
+  'publish.next': {
+    lane: 'slow',
+    label: 'publish next',
+    confirm: true,
+    danger:
+      'Uploads the next due video to every platform its channel declares. ' +
+      'This posts publicly and cannot be undone.',
+    // publishNextTick acquires the `publish` lease itself — see produce.next.
+    lease: undefined,
+    args: z.object({}),
+  },
+  'publish.nextDryRun': {
+    lane: 'slow',
+    label: 'publish next (dry run)',
+    confirm: false,
+    danger: undefined,
+    // A dry run takes no lease at all, in the tick or here.
+    lease: undefined,
+    args: z.object({}),
+  },
 } as const satisfies Record<string, ActionDescriptor>
 
 export type ActionKind = keyof typeof ACTIONS
