@@ -181,9 +181,11 @@ video {
   font: inherit; cursor: pointer; padding: 0.15rem 0.5rem;
   border: 1px solid currentColor; border-radius: 3px; background: transparent; color: inherit;
 }
-.action-button[disabled] { opacity: 0.4; cursor: not-allowed; }
+.action-button[disabled],
+.action-button[aria-disabled='true'] { opacity: 0.4; cursor: not-allowed; }
 .action-button.danger { border-color: #b00; color: #b00; }
 .action-link { text-decoration: underline; }
+.action-link[aria-disabled='true'] { text-decoration: none; opacity: 0.4; cursor: not-allowed; }
 .page-actions { margin: 0.5rem 0 1rem; display: flex; gap: 0.5rem; align-items: center; }
 .banner { padding: 0.5rem 0.75rem; border: 1px solid currentColor; border-radius: 3px; }
 .banner.error { color: #b00; }
@@ -191,7 +193,6 @@ video {
   grid-template-columns: 6rem 12rem 4rem 1fr 14rem; align-items: baseline; }
 .actions-list .row.highlight { background: #ffd8; }
 .actions-list .detail { grid-column: 1 / -1; }
-.status-failed { color: #b00; }
-.status-running { font-weight: 600; }
+.actions-list .status-running { font-weight: 600; }
 .notice { font-style: italic; }
 .field { display: block; margin: 0.5rem 0; }

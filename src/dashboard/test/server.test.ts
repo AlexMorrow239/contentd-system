@@ -8,6 +8,7 @@ import { resolvePaths } from '../../config/paths.js'
 import type { DashboardConfig } from '../config.js'
 import { createApp } from '../server.js'
 import { tmpDir } from '../../testing/tmp.js'
+import { seedDaemonState } from '../../testing/db.js'
 
 /** A config whose root exists and whose db is present, absent, or corrupt. */
 function seededConfig(db: 'present' | 'absent' | 'corrupt' = 'present'): DashboardConfig {
@@ -552,6 +553,33 @@ describe('GET /actions/confirm', () => {
     const body = await res.text()
     expect(body).toContain('cannot be undone')
     expect(body).toContain('value="j1"')
+  })
+
+  it('shows the daemon banner and disables the submit when the daemon heartbeat is stale', async () => {
+    // publish.markDone is the only confirm:true action and the only one
+    // reached through this route — a stale daemon here must read the same
+    // way it does on every other page rather than staying silently live.
+    const config = seededConfig()
+    const now = new Date()
+    const db = openDb(config.paths.dbPath)
+    seedDaemonState(db, { lastSeenAt: new Date(now.getTime() - 5 * 60_000) })
+    db.close()
+    const res = await createApp({ config, csrfToken: 'tok', now: () => now }).request(
+      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('daemon not running')
+    expect(body).toMatch(/<button[^>]*disabled[^>]*>/)
+  })
+
+  it('shows the daemon banner when no daemon_state row exists at all', async () => {
+    const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
+      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+    )
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('daemon not running')
   })
 
   it('refuses a kind that needs no confirmation', async () => {

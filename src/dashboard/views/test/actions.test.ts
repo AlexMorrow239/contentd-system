@@ -133,6 +133,25 @@ describe('actionForm', () => {
     }).value
     expect(out).toContain('disabled')
   })
+
+  it('renders the confirm-type control as a non-navigable, disabled span when the daemon is down', () => {
+    // publish.markDone is the one confirm:true action and the only one
+    // reached through the confirm-link path — a stale-daemon guard that
+    // forgets this branch leaves the single irreversible action clickable
+    // while every other control on the page is disabled.
+    const out = actionForm({
+      kind: 'publish.markDone',
+      csrfToken: 'tok',
+      from: '/publishes',
+      fields: { jobId: 'j1' },
+      label: 'mark done',
+      disabled: true,
+    }).value
+    expect(out).not.toContain('<a ')
+    expect(out).not.toContain('/actions/confirm')
+    expect(out).toContain('<span')
+    expect(out).toContain('aria-disabled="true"')
+  })
 })
 
 describe('renderConfirmPage', () => {
@@ -143,6 +162,7 @@ describe('renderConfirmPage', () => {
       from: '/publishes',
       fields: { jobId: 'j1' },
       missing: [],
+      daemonStale: false,
     }).value
     expect(out).toContain('cannot be undone')
     expect(out).toContain('name="jobId" value="j1"')
@@ -159,6 +179,7 @@ describe('renderConfirmPage', () => {
       from: '/publishes',
       fields: { jobId: 'j1' },
       missing: ['postId'],
+      daemonStale: false,
     }).value
     expect(out).toContain('name="postId"')
     expect(out).toContain('type="text"')
@@ -175,10 +196,24 @@ describe('renderConfirmPage', () => {
       from: '/publishes',
       fields: { jobId: hostile },
       missing: [],
+      daemonStale: false,
     }).value
     expect(out).not.toContain(hostile)
     expect(out).toContain('&quot;')
     expect(out).toContain('&lt;')
     expect(out).toContain('&gt;')
+  })
+
+  it('shows the daemon banner and disables the submit button when the daemon is stale', () => {
+    const out = renderConfirmPage({
+      kind: 'publish.markDone',
+      csrfToken: 'tok',
+      from: '/publishes',
+      fields: { jobId: 'j1' },
+      missing: [],
+      daemonStale: true,
+    }).value
+    expect(out).toContain('daemon not running')
+    expect(out).toContain('disabled')
   })
 })

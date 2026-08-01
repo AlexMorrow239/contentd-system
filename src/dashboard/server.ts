@@ -450,6 +450,10 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   })
 
   app.get('/actions/confirm', (c) => {
+    const db = c.get('db')
+    const now = deps.now?.() ?? new Date()
+    const daemonStale = actionsTableExists(db) ? daemonIsStale(readDaemonState(db), now) : true
+
     const kind = c.req.query('kind') ?? ''
     if (!isActionKind(kind) || !ACTIONS[kind].confirm) {
       // A non-confirmable kind is refused rather than rendered: this route
@@ -480,7 +484,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         title: `confirm ${ACTIONS[kind].label}`,
         root: deps.config.paths.root,
         activeNav: 'actions',
-        body: renderConfirmPage({ kind, csrfToken, from, fields, missing }),
+        body: renderConfirmPage({ kind, csrfToken, from, fields, missing, daemonStale }),
       }),
     )
   })

@@ -27,6 +27,13 @@ export function actionForm(opts: ActionFormOptions): SafeHtml {
   const cls = opts.subtle === true ? 'action-link' : 'action-button'
 
   if (ACTIONS[opts.kind].confirm) {
+    if (opts.disabled === true) {
+      // Not an <a>: a disabled anchor is still focusable and navigable in
+      // most browsers, which would carry the operator to the confirm page
+      // for a stale daemon anyway. A non-navigable span reads as disabled
+      // and cannot be clicked through.
+      return html`<span class="${cls}" aria-disabled="true">${label}…</span>`
+    }
     const query: Record<string, string> = { kind: opts.kind, from: opts.from, ...opts.fields }
     return html`<a class="${cls}" href="${href('/actions/confirm', query)}">${label}…</a>`
   }
@@ -72,6 +79,7 @@ export function renderConfirmPage(opts: {
   from: string
   fields: Record<string, string>
   missing: string[]
+  daemonStale: boolean
 }): SafeHtml {
   const desc = ACTIONS[opts.kind]
   const hidden = Object.entries(opts.fields).map(
@@ -86,7 +94,8 @@ export function renderConfirmPage(opts: {
     ([name, value]) => html`<li><span class="muted">${name}</span> <code>${value}</code></li>`,
   )
 
-  return html`<h1>confirm: ${desc.label}</h1>
+  return html`${daemonBanner(opts.daemonStale)}
+    <h1>confirm: ${desc.label}</h1>
     <p class="danger">${desc.danger ?? 'This action cannot be undone.'}</p>
     <ul class="args">${known}</ul>
     <form method="post" action="/actions">
@@ -94,7 +103,11 @@ export function renderConfirmPage(opts: {
       <input type="hidden" name="csrf" value="${opts.csrfToken}">
       <input type="hidden" name="from" value="${opts.from}">
       ${hidden} ${inputs}
-      <button class="action-button danger" type="submit">${desc.label}</button>
+      <button
+        class="action-button danger"
+        type="submit"
+        ${opts.daemonStale ? new SafeHtml('disabled') : ''}
+      >${desc.label}</button>
       <a class="action-link" href="${opts.from === '' ? '/actions' : opts.from}">cancel</a>
     </form>`
 }

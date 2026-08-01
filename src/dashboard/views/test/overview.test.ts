@@ -18,10 +18,6 @@ function data(overrides: Partial<OverviewData> = {}): OverviewData {
   }
 }
 
-function overview(overrides: Partial<OverviewData> = {}) {
-  return data(overrides)
-}
-
 const OPTS = { csrfToken: 'tok', daemonStale: false }
 
 describe('renderOverviewPage', () => {
@@ -155,7 +151,7 @@ describe('renderOverviewPage', () => {
   })
 
   it('offers the digest action', () => {
-    const out = renderOverviewPage(overview(), undefined, {
+    const out = renderOverviewPage(data(), undefined, {
       csrfToken: 'tok',
       daemonStale: false,
     }).value
