@@ -240,4 +240,28 @@ describe('action handlers', () => {
     })
     expect(scout).not.toHaveBeenCalled()
   })
+
+  it('jobs.resume resumes without force and returns the job result', async () => {
+    const db = memDb()
+    const resume = vi.fn().mockResolvedValue({ jobId: 'j1', status: 'ready' })
+    const result = await ACTION_HANDLERS['jobs.resume'](
+      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+      { jobId: 'j1' },
+      { resumeJob: resume },
+    )
+    expect(resume).toHaveBeenCalledWith(db, 'j1', { runsRoot: '/runs', channelsDir: '/ch' })
+    expect(result).toEqual({ jobId: 'j1', status: 'ready' })
+  })
+
+  it('jobs.resume propagates a refusal', async () => {
+    const db = memDb()
+    const resume = vi.fn().mockRejectedValue(new Error('job j9 is already done'))
+    await expect(
+      ACTION_HANDLERS['jobs.resume'](
+        { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+        { jobId: 'j9' },
+        { resumeJob: resume },
+      ),
+    ).rejects.toThrow('already done')
+  })
 })

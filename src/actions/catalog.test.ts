@@ -6,6 +6,7 @@ describe('ACTIONS catalog', () => {
   it('declares exactly the phase-1 fast actions plus the phase-2 slow ones', () => {
     expect(Object.keys(ACTIONS).sort()).toEqual([
       'digest.run',
+      'jobs.resume',
       'library.approve',
       'produce.next',
       'publish.markDone',
@@ -143,5 +144,13 @@ describe('ACTIONS catalog', () => {
     expect(ACTIONS['produce.next'].confirm).toBe(true)
     expect(ACTIONS['publish.next'].confirm).toBe(true)
     expect(ACTIONS['publish.nextDryRun'].confirm).toBe(false)
+  })
+
+  it('jobs.resume takes the produce lease and offers no force escape hatch', () => {
+    expect(ACTIONS['jobs.resume'].lease).toBe('produce')
+    expect(ACTIONS['jobs.resume'].confirm).toBe(true)
+    // Taking over a job stuck in `running` asserts no live process holds it —
+    // something the dashboard cannot verify. Break-glass stays on the CLI.
+    expect(actionArgNames('jobs.resume')).toEqual(['jobId'])
   })
 })

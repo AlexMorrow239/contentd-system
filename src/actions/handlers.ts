@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
 import { approveLibrary } from '../jobs/library.js'
+import { resumeJob } from '../jobs/resume.js'
 import { buildDigest } from '../loop/digest.js'
 import { produceNextTick } from '../loop/produce-next.js'
 import { publishNextTick } from '../loop/publish-next.js'
@@ -57,6 +58,7 @@ type HandlerDeps = {
   produceNextTick?: typeof produceNextTick
   publishNextTick?: typeof publishNextTick
   scoutAll?: typeof scoutAll
+  resumeJob?: typeof resumeJob
 }
 
 type Handler<K extends ActionKind> = (
@@ -197,6 +199,16 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       channels: await (deps?.scoutAll ?? scoutAll)(ctx.db, loaded.channels, { force: true }),
     }
   },
+
+  // No `force`: see the catalog entry. No `heartbeat` either — the slow lane's
+  // worker refreshes the lease on its own interval (SLOW_ACTION_HEARTBEAT_MS),
+  // which covers every slow action rather than just the two that happen to
+  // accept a heartbeat callback.
+  'jobs.resume': (ctx, args, deps) =>
+    (deps?.resumeJob ?? resumeJob)(ctx.db, args.jobId, {
+      runsRoot: ctx.runsRoot,
+      channelsDir: ctx.channelsDir,
+    }),
 }
 
 /**

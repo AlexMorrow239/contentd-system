@@ -151,6 +151,19 @@ export const ACTIONS = {
     lease: 'scout',
     args: z.object({}),
   },
+  'jobs.resume': {
+    lane: 'slow',
+    label: 'resume',
+    confirm: true,
+    danger:
+      'Re-runs this job from its first unfinished stage. Completed stages are ' +
+      'skipped, but every stage that does run again spends real money.',
+    // resumeJob does not lease; the CLI's `resume` runs outside every lease on
+    // purpose. Here the worker takes `produce`, which is what makes the
+    // dashboard path race-free where the CLI path is not.
+    lease: 'produce',
+    args: z.object({ jobId }),
+  },
 } as const satisfies Record<string, ActionDescriptor>
 
 export type ActionKind = keyof typeof ACTIONS
