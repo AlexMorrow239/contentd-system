@@ -19,7 +19,7 @@ function entry(overrides: Partial<LibraryEntry> = {}): LibraryEntry {
     jobId: 'job-1',
     channel: 'chan-a',
     topic: 'a topic',
-    state: 'published',
+    state: 'ready',
     videoPath: '/runs/job-1/assemble/final.mp4',
     createdAt: '2026-07-26T00:00:00.000Z',
     qc: { kind: 'ok' },

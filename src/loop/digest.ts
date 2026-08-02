@@ -490,7 +490,6 @@ export function buildDigest(
     const inventory = pendingInventory(db, {
       channel: c.name,
       declared,
-      createdAfter: agedCutoff(now, c.backlogDays),
     })
     if (candidates !== 0 || inventory !== 0) continue
     // 0 candidates and 0 inventory can still mean supply is moving, not
@@ -714,7 +713,6 @@ export function buildDigest(
     const inventory = pendingInventory(db, {
       channel: channel.name,
       declared,
-      createdAfter: agedCutoff(now, channel.backlogDays),
     })
     const cap = backlogCap(channel)
     if (inventory < cap) continue

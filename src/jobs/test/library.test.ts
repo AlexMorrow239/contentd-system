@@ -15,13 +15,7 @@ import {
 import type { LibraryState } from '../library.js'
 import { runCli } from '../../testing/run-cli.js'
 import { tmpDir } from '../../testing/tmp.js'
-import {
-  memDb,
-  seedJob as seedJobRow,
-  seedLibraryObject,
-  seedPublish,
-} from '../../testing/db.js'
-import { MAX_PUBLISH_ATTEMPTS } from '../../publish/publishes.js'
+import { memDb, seedJob as seedJobRow, seedLibraryObject, seedPost } from '../../testing/db.js'
 
 // Raw-insert seed: the DAO only ever writes library.state, so tests control
 // every other column — the owning jobs row included — directly.
@@ -138,10 +132,8 @@ describe('approveLibrary', () => {
     seedLibrary(db, ready, { state: 'ready' })
     const blocked = seedJob(db, { id: 'blocked-job' })
     seedLibrary(db, blocked, { state: 'blocked' })
-    const published = seedJob(db, { id: 'published-job' })
-    seedLibrary(db, published, { state: 'published' })
 
-    expect(approveLibrary(db, ['ready-job', 'blocked-job', 'published-job'])).toEqual({
+    expect(approveLibrary(db, ['ready-job', 'blocked-job'])).toEqual({
       approved: 0,
       reclaimed: [],
     })
@@ -192,7 +184,7 @@ describe('reclaimedUnreviewedJobs', () => {
     // A reclaimed object on a REVIEWED row is the normal end state, not a
     // finding: the reclaim sweep only reaches it once every platform settled.
     const readyGone = seedJob(db, { id: 'ready-gone-job' })
-    seedLibrary(db, readyGone, { state: 'published' })
+    seedLibrary(db, readyGone, { state: 'ready' })
     seedLibraryObject(db, readyGone, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
 
     expect(reclaimedUnreviewedJobs(db)).toEqual([{ jobId: 'gone-job', channel: 'chan-a' }])
@@ -201,17 +193,15 @@ describe('reclaimedUnreviewedJobs', () => {
 })
 
 describe('rejectLibrary', () => {
-  it('flips needs-review, ready, and published rows to blocked; unknown ids are skipped', () => {
+  it('flips needs-review and ready rows to blocked; unknown ids are skipped', () => {
     const db = memDb()
     const a = seedJob(db, { id: 'a' })
     seedLibrary(db, a, { state: 'needs-review' })
     const b = seedJob(db, { id: 'b' })
     seedLibrary(db, b, { state: 'ready' })
-    const c = seedJob(db, { id: 'c' })
-    seedLibrary(db, c, { state: 'published' })
 
     // 'no-such-job' does not exist: skipped
-    expect(rejectLibrary(db, [a, b, c, 'no-such-job'])).toBe(3)
+    expect(rejectLibrary(db, [a, b, 'no-such-job'])).toBe(2)
     const states = db.prepare('SELECT job_id, state FROM library ORDER BY job_id').all() as {
       job_id: string
       state: string
@@ -219,25 +209,8 @@ describe('rejectLibrary', () => {
     expect(states).toEqual([
       { job_id: 'a', state: 'blocked' },
       { job_id: 'b', state: 'blocked' },
-      { job_id: 'c', state: 'blocked' },
     ])
     expect(rejectLibrary(db, [])).toBe(0)
-    db.close()
-  })
-
-  // Design spec decision 10: a video already published on one platform can
-  // be pulled out of another platform's queue after the fact — 'published'
-  // is no longer immutable history the way it was before cross-posting.
-  it('accepts a published row and flips it to blocked', () => {
-    const db = memDb()
-    const jobId = seedJob(db, { id: 'job-1' })
-    seedLibrary(db, jobId, { state: 'published' })
-
-    expect(rejectLibrary(db, [jobId])).toBe(1)
-    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get(jobId) as {
-      state: string
-    }
-    expect(row.state).toBe('blocked')
     db.close()
   })
 })
@@ -389,152 +362,77 @@ describe('deleteRejectedObjects', () => {
 })
 
 describe('pendingInventory', () => {
-  const CUTOFF = '2026-07-25T00:00:00.000Z'
-  const FRESH = '2026-07-26T00:00:00.000Z'
-  const AGED = '2026-07-20T00:00:00.000Z'
-  // Inside an AGED video's grace window: after it was produced, at or before
-  // the horizon. That is what contention has to be (publish/settled.ts).
-  const OUTRANKED_AT = '2026-07-23T00:00:00.000Z'
-
-  function seedVideo(db: Database, jobId: string, state: LibraryState, createdAt: string): void {
-    seedJobRow(db, jobId, { channel: 'chan-a' })
-    seedLibrary(db, jobId, { state, createdAt })
-  }
-
-  it('counts a ready video with no publishes rows', () => {
+  it('counts a ready video with no posts at all', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'ready', FRESH)
-    expect(
-      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
-    ).toBe(1)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube'] })).toBe(1)
   })
 
-  it('counts a needs-review video', () => {
+  it('stops counting once every declared platform has a post', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'needs-review', FRESH)
-    expect(
-      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
-    ).toBe(1)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedPost(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube', 'tiktok'] })).toBe(1)
+    seedPost(db, { jobId: 'j1', channel: 'alpha', platform: 'tiktok' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube', 'tiktok'] })).toBe(0)
   })
 
-  it('does not count a blocked video', () => {
+  // A post to a platform the channel does not declare must not satisfy the
+  // count — otherwise a stray row would retire a video from a checklist it
+  // never appeared on.
+  it('ignores posts to undeclared platforms', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'blocked', FRESH)
-    expect(
-      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
-    ).toBe(0)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedPost(db, { jobId: 'j1', channel: 'alpha', platform: 'tiktok' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube'] })).toBe(1)
   })
 
-  it('counts a video published on one of two declared platforms', () => {
+  it('counts needs-review videos', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'published', FRESH)
-    seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
-    expect(
-      pendingInventory(db, {
-        channel: 'chan-a',
-        declared: ['youtube', 'instagram'],
-        createdAfter: CUTOFF,
-      }),
-    ).toBe(1)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'needs-review' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube'] })).toBe(1)
   })
 
-  it('does not count a video published on every declared platform', () => {
+  it('does not count a discarded video', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'published', FRESH)
-    seedPublish(db, 'job-1', { platform: 'youtube', channel: 'chan-a', status: 'done', seq: 1 })
-    expect(
-      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
-    ).toBe(0)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'blocked' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube'] })).toBe(0)
   })
 
-  it('does not count an attempt-capped video — nothing can ever drain it', () => {
+  // Without this short-circuit the sub-select comparison reads `0 < 0` for
+  // every row, nothing counts as inventory, and the channel produces
+  // without bound.
+  it('counts every unconsumed video when no platforms are declared', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'ready', FRESH)
-    for (let i = 0; i < MAX_PUBLISH_ATTEMPTS; i++) {
-      seedPublish(db, 'job-1', {
-        platform: 'youtube',
-        channel: 'chan-a',
-        status: 'failed',
-        errorKind: 'rejected',
-        seq: i + 1,
-      })
-    }
-    expect(
-      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
-    ).toBe(0)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedJobRow(db, 'j2', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibrary(db, 'j2', { state: 'needs-review' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: [] })).toBe(2)
   })
 
-  it('does not count a passed-over video once it ages out behind a newer one', () => {
+  // There is deliberately no age clause. Under platform caps, ageing out
+  // existed because a passed-over video could never publish; here the same
+  // rule would resume production during any quiet stretch.
+  it('never ages a video out, however old', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'published', AGED)
-    seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 1 })
-    // The contention ageing out requires: another job really did take a slot
-    // while job-1 was waiting — a done row after job-1 was produced and no
-    // later than the horizon. Seeded with NO library row of its own, so the
-    // count below is job-1 alone and 0 proves job-1 actually left inventory.
-    seedJobRow(db, 'job-2', { channel: 'chan-a' })
-    seedPublish(db, 'job-2', {
-      platform: 'instagram',
-      channel: 'chan-a',
-      status: 'done',
-      seq: 2,
-      createdAt: OUTRANKED_AT,
-    })
-    expect(
-      pendingInventory(db, {
-        channel: 'chan-a',
-        declared: ['youtube', 'instagram'],
-        createdAfter: CUTOFF,
-      }),
-    ).toBe(0)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready', createdAt: '2020-01-01T00:00:00.000Z' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube'] })).toBe(1)
   })
 
-  it('still counts an old video whose only later publish landed past the horizon', () => {
-    // The recovering outage: one publish after the window closed must not age
-    // out the backlog that was stranded behind it. Counting it here is half of
-    // the lockstep — channelVideoCandidates must keep offering it too.
+  it('scopes to one channel', () => {
     const db = memDb()
-    seedVideo(db, 'job-1', 'ready', AGED)
-    seedJobRow(db, 'job-2', { channel: 'chan-a' })
-    seedPublish(db, 'job-2', {
-      platform: 'instagram',
-      channel: 'chan-a',
-      status: 'done',
-      seq: 1,
-      createdAt: '2026-07-27T00:00:00.000Z',
-    })
-    expect(
-      pendingInventory(db, {
-        channel: 'chan-a',
-        declared: ['youtube', 'instagram'],
-        createdAfter: CUTOFF,
-      }),
-    ).toBe(1)
-  })
-
-  it('still counts old videos when the channel has published nothing at all', () => {
-    // A publish outage longer than backlog_days. Nothing outranked these, so
-    // they are still publishable — and inventory that disappeared here while
-    // the candidate scan kept offering them would let production run away.
-    const db = memDb()
-    seedVideo(db, 'job-1', 'ready', AGED)
-    seedVideo(db, 'job-2', 'ready', AGED)
-    expect(
-      pendingInventory(db, {
-        channel: 'chan-a',
-        declared: ['youtube', 'instagram'],
-        createdAfter: CUTOFF,
-      }),
-    ).toBe(2)
-  })
-
-  it('ignores other channels', () => {
-    const db = memDb()
-    seedJobRow(db, 'job-b', { channel: 'chan-b' })
-    seedLibrary(db, 'job-b', { state: 'ready', createdAt: FRESH })
-    expect(
-      pendingInventory(db, { channel: 'chan-a', declared: ['youtube'], createdAfter: CUTOFF }),
-    ).toBe(0)
+    seedJobRow(db, 'j1', { channel: 'alpha' })
+    seedJobRow(db, 'j2', { channel: 'beta' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibrary(db, 'j2', { state: 'ready' })
+    expect(pendingInventory(db, { channel: 'alpha', declared: ['youtube'] })).toBe(1)
   })
 })
 

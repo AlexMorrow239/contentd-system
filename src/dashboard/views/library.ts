@@ -5,7 +5,7 @@ import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
 import { actionForm, daemonBanner } from './actions.js'
 
-const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
+const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'blocked']
 
 function option(value: string, selected: string | undefined): SafeHtml {
   return selected === value

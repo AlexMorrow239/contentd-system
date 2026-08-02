@@ -49,7 +49,7 @@ export interface DashboardDeps {
 const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url))
 
 const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
-const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
+const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'blocked']
 const TOPIC_STATUS_VALUES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {

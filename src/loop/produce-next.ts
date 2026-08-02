@@ -1,11 +1,12 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
-import { BrainrotError } from '../errors.js'
+import { BrainrotError, errorMessage } from '../errors.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef } from '../jobs/types.js'
+import { RECLAIM_BATCH_LIMIT, reclaimableObjects, reclaimObjects } from '../posts/reclaim.js'
 import { claimTopic, markTopicUsedByJob } from '../scout/topics.js'
 // ./config.js, not ./s3.js: validating configuration must not drag the AWS
 // SDK onto this tick's startup path.
@@ -119,6 +120,24 @@ export async function produceNextTick(
     db.prepare(
       "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
     ).run()
+    // The reclaim sweep moved here from the deleted publish tick: it needs a
+    // lease window and a channel list, and this is the only remaining worker
+    // with both. It is a sweep, not a gate — a storage failure must not stop
+    // the tick from producing, so it reports and moves on.
+    for (const channel of channels) {
+      const objects = reclaimableObjects(db, {
+        channel: channel.name,
+        declared: channel.platforms,
+        limit: RECLAIM_BATCH_LIMIT,
+      })
+      if (objects.length === 0) continue
+      try {
+        const store = (await import('../storage/s3.js')).storeFromEnv()
+        await reclaimObjects({ db, objects, store })
+      } catch (err) {
+        console.log(JSON.stringify({ event: 'reclaim-error', error: errorMessage(err) }))
+      }
+    }
     const plan = planTick(db, channels)
 
     if (plan.kind === 'noop') {

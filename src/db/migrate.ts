@@ -210,9 +210,9 @@ export function migrate(
   if (tableExists(db, 'topics') && !hasColumn(db, 'topics', 'target_url')) {
     db.exec('ALTER TABLE topics ADD COLUMN target_url TEXT')
   }
-  // Marks an object deliberately deleted after every declared platform
-  // settled (publish/reclaim.ts). NULL means the bytes are still in the
-  // bucket, which is the correct reading for every pre-existing row.
+  // Marks an object deliberately deleted after every declared platform was
+  // posted (posts/reclaim.ts). NULL means the bytes are still in the bucket,
+  // which is the correct reading for every pre-existing row.
   if (tableExists(db, 'library_objects') && !hasColumn(db, 'library_objects', 'reclaimed_at')) {
     db.exec('ALTER TABLE library_objects ADD COLUMN reclaimed_at TEXT')
   }

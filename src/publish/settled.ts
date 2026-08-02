@@ -2,6 +2,16 @@ import type { Database } from 'better-sqlite3'
 import { MAX_PUBLISH_ATTEMPTS } from './publishes.js'
 import type { Platform } from './types.js'
 
+// pendingInventory (jobs/library.ts) and reclaimableObjects (posts/reclaim.ts)
+// no longer use this module — under manual posting, "unconsumed" is a plain
+// row-existence count over `posts`, with no age clause. This file survives
+// only because src/loop/digest.ts's attempt-capped/aged-out reporting still
+// reads it, which in turn depends on the `publishes` table that a later task
+// migrates and drops. Its own test file (test/settled.test.ts) was deleted
+// with that task's reclaim/pendingInventory rewrite, since it pinned exactly
+// the behavior removed here — this module is intentionally uncovered until
+// digest.ts's dependency on it is retired too.
+
 /**
  * One (video, platform) leg's publish history, reduced to the three counts
  * the settled predicate needs. A leg with no history at all is represented by

@@ -7,7 +7,6 @@ import {
   jobSpentMicros,
 } from '../jobs/costs.js'
 import { pendingInventory } from '../jobs/library.js'
-import { agedCutoff } from '../publish/settled.js'
 import { eligibleTopic } from '../scout/topics.js'
 
 // Resuming under this headroom would only re-park the job 'blocked' at the
@@ -28,24 +27,21 @@ export type TickPlan =
   | { kind: 'produce'; channel: string; topicId: number; topic: string }
   | { kind: 'noop'; reason: 'no-eligible-work' | 'backlog-full' }
 
-// The inventory ceiling: how many finished, unconsumed videos a channel may
-// hold before it stops producing. Derived from videos_per_day rather than set
-// directly, so videos_per_day stays the cadence knob most of the system reads
-// from — the per-channel-day publish quota and the behind-schedule ordering
-// the cooldown-paced publish tick uses to pick a channel (both
-// src/publish/schedule.ts), and now this inventory cap.
+// The inventory ceiling: how many finished, unposted videos a channel may
+// hold before it stops producing. Derived from videos_per_day so that knob
+// stays the single cadence dial — it now means "how many I intend to post per
+// day".
 //
 // Exported for the digest, which reports channels sitting at this cap: a
-// halted channel is otherwise invisible (the digest's other sections are
-// windowed to the last 24h, so it simply disappears), and two definitions of
-// the ceiling would let the report and the gate disagree about who is halted.
+// halted channel is otherwise invisible, and two definitions of the ceiling
+// would let the report and the gate disagree about who is halted.
 export function backlogCap(channel: ChannelConfig): number {
   return Math.ceil(channel.videosPerDay * channel.backlogDays)
 }
 
 // Pure decision function: SELECTs only. produce-next executes the plan and
 // owns every write, so a crashed tick never leaves half a decision behind.
-export function planTick(db: Database, channels: ChannelConfig[], now = new Date()): TickPlan {
+export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
   const byName = new Map(channels.map((c) => [c.name, c]))
 
   // RESUME PASS: blocked jobs were healthy when parked — recovering their
@@ -82,24 +78,21 @@ export function planTick(db: Database, channels: ChannelConfig[], now = new Date
   const jobsToday = (name: string): number => (quotaStmt.get(name) as { n: number }).n
   // Depth gate, ahead of the daily rate gate: producing into a full backlog
   // is how object storage grows faster than videos are consumed. A channel
-  // with no [publish] table is gated the same way — nothing drains it, so it
-  // fills once and then waits for `library reject`.
+  // with no declared platforms is gated the same way — nothing drains it, so
+  // it fills once and then waits for the operator to post or discard videos
+  // by hand.
   let anyBacklogged = false
   const candidates = channels
     .map((channel) => {
       const today = jobsToday(channel.name)
       // Quota is cheaper to check and already excludes most channels most
-      // ticks — skip the inventory scan (3 queries) once quota alone closes it.
+      // ticks — skip the inventory query once quota alone closes it.
       const underQuota = today < channel.videosPerDay
       const backlogged =
         underQuota &&
         pendingInventory(db, {
           channel: channel.name,
-          // pendingInventory settles legs against the upload adapters' own
-          // Platform (youtube/instagram) — tiktok has no adapter and no
-          // publishes rows, so it is never part of "declared" here.
-          declared: channel.platforms.filter((p): p is 'youtube' | 'instagram' => p !== 'tiktok'),
-          createdAfter: agedCutoff(now, channel.backlogDays),
+          declared: channel.platforms,
         }) >= backlogCap(channel)
       if (backlogged) anyBacklogged = true
       return {

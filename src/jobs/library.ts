@@ -2,10 +2,9 @@ import type { StoreArtifact } from '../stages/store.js'
 import type { Database } from 'better-sqlite3'
 import { errorMessage } from '../errors.js'
 import type { ObjectStore } from '../storage/types.js'
-import { contentionFacts, isAged, isFullySettled, legFactsByJob } from '../publish/settled.js'
-import type { Platform } from '../publish/types.js'
+import type { Platform } from '../posts/types.js'
 
-export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
+export type LibraryState = 'ready' | 'needs-review' | 'blocked'
 
 /**
  * The library states a video can still be published FROM, as a SQL list ready
@@ -15,6 +14,12 @@ export type LibraryState = 'ready' | 'needs-review' | 'published' | 'blocked'
  * somewhere" must not remove it from the pool. Interpolated from one
  * definition rather than spelled out at each query, so adding a state cannot
  * update some call sites and miss others.
+ *
+ * Kept only for the still-live publish tree (src/publish/publishes.ts,
+ * src/loop/digest.ts), which a later task migrates off the `publishes` table
+ * and drops. LibraryState itself has already narrowed — 'published' no longer
+ * exists as a value this module writes or reads — so this stays a bare SQL
+ * string, not derived from the type.
  */
 export const PUBLISHABLE_LIBRARY_STATES = "'ready', 'published'"
 
@@ -95,11 +100,11 @@ export interface ApproveResult {
  * count is what actually changed, which the CLI reports against jobIds.length.
  *
  * A row whose stored object was reclaimed is refused. A needs-review video has
- * no `publishes` rows, so once it ages out the reclaim sweep frees its bytes
- * (the accepted behaviour — needs-review is deliberately NOT exempt). Promoting
- * such a row afterwards would put a video with nothing to upload into the
- * publish pool, where it can only be picked, fail, and be picked again. The
- * refusal is reported, never silent.
+ * no `posts` rows, so once every declared platform is posted the reclaim
+ * sweep frees its bytes (the accepted behaviour — needs-review is deliberately
+ * NOT exempt). Promoting such a row afterwards would put a video with nothing
+ * to upload into the publish pool, where the operator can only post it, find
+ * nothing there, and try again. The refusal is reported, never silent.
  */
 export function approveLibrary(db: Database, jobIds: string[]): ApproveResult {
   if (jobIds.length === 0) return { approved: 0, reclaimed: [] }
@@ -146,18 +151,17 @@ export function reclaimedUnreviewedJobs(db: Database): { jobId: string; channel:
     .all() as { jobId: string; channel: string }[]
 }
 
-// Reject retires a row from any of three states: needs-review (never
-// promoted), ready (pulled from the pool / an attempt-capped video), or
-// published (design spec decision 10) — a video already live on one
-// platform can be pulled out of another platform's queue after the fact,
-// since decision 1 keeps 'published' rows eligible everywhere until each
-// platform has its own done row.
+// Reject retires a row from either of two states: needs-review (never
+// promoted) or ready (pulled from the pool). There is no 'published' state
+// to pull back from any more — a video is either not yet fully posted
+// (still 'ready'/'needs-review') or it is, and posting is recorded in
+// `posts`, not in `library.state`.
 export function rejectLibrary(db: Database, jobIds: string[]): number {
   if (jobIds.length === 0) return 0
   const placeholders = jobIds.map(() => '?').join(', ')
   return db
     .prepare(
-      `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready', 'published')`,
+      `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready')`,
     )
     .run(...jobIds).changes
 }
@@ -197,57 +201,41 @@ export function unstoredLibraryJobs(db: Database): UnstoredLibraryJob[] {
 }
 
 /**
- * How many finished videos this channel is still holding — the depth the
- * production gate (loop/plan-tick.ts) reads.
+ * How many finished videos this channel is still holding — the number
+ * plan-tick compares against backlogCap.
  *
- * Counted: every 'needs-review' row (it becomes publishable the moment it is
- * approved, and it is bytes on hand either way) plus every 'ready'/'published'
- * row with at least one UNSETTLED leg. 'blocked' is excluded — a rejected
- * video is retired and its object already deleted.
+ * "Unconsumed" is now simply "not posted to every declared platform".
+ * 'needs-review' counts too: the video exists, it cost money, and it is
+ * waiting on the operator either way.
  *
- * The settled predicate (publish/settled.ts) is shared with the reclaim sweep
- * and, through its age clause, with the candidate scan. That sharing is
- * load-bearing rather than incidental tidiness: it is what stops the three
- * from ever disagreeing about whether a video is still wanted. Define
- * inventory independently and two videos wedge a channel's production
- * permanently — one attempt-capped on a platform after publishing to another,
- * and one passed over for a scarce platform's slots. Neither will ever be
- * consumed by anything, so nothing could ever drain them back below the cap.
+ * The zero-declared-platforms case needs its own branch, not a clever
+ * subquery: with `declared` empty the comparison below reads `0 < 0` for
+ * every row, nothing would ever count, and a channel that has not yet
+ * decided where its videos go would produce without bound.
  */
 export function pendingInventory(
   db: Database,
-  opts: { channel: string; declared: readonly Platform[]; createdAfter: string },
+  opts: { channel: string; declared: readonly Platform[] },
 ): number {
-  const rows = db
-    .prepare(
-      `SELECT l.job_id AS jobId, l.state AS state, l.created_at AS createdAt
-       FROM library l JOIN jobs j ON j.id = l.job_id
-       WHERE j.channel = ? AND l.state IN ('needs-review', ${PUBLISHABLE_LIBRARY_STATES})`,
-    )
-    .all(opts.channel) as { jobId: string; state: LibraryState; createdAt: string }[]
-  if (rows.length === 0) return 0
-
-  const legs = legFactsByJob(
-    db,
-    rows.map((r) => r.jobId),
-  )
-  // Same channel-wide contention read the reclaim sweep uses, so the two agree
-  // on which videos have aged out (./publish/settled.ts).
-  const contention = contentionFacts(db, opts.channel, opts.createdAfter)
-  let count = 0
-  for (const row of rows) {
-    if (row.state === 'needs-review') {
-      count += 1
-      continue
-    }
-    const settled = isFullySettled({
-      declared: opts.declared,
-      legs: legs.get(row.jobId) ?? [],
-      aged: isAged(contention, row),
-    })
-    if (!settled) count += 1
+  if (opts.declared.length === 0) {
+    const row = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM library l JOIN jobs j ON j.id = l.job_id
+         WHERE j.channel = ? AND l.state IN ('needs-review', 'ready')`,
+      )
+      .get(opts.channel) as { n: number }
+    return row.n
   }
-  return count
+  const placeholders = opts.declared.map(() => '?').join(', ')
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM library l JOIN jobs j ON j.id = l.job_id
+       WHERE j.channel = ? AND l.state IN ('needs-review', 'ready')
+         AND (SELECT COUNT(*) FROM posts p
+              WHERE p.job_id = l.job_id AND p.platform IN (${placeholders})) < ?`,
+    )
+    .get(opts.channel, ...opts.declared, opts.declared.length) as { n: number }
+  return row.n
 }
 
 /**
