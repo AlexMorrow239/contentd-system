@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { BrainrotError, errorMessage } from '../../errors.js'
 import { IG_CONTENT_PUBLISH_SCOPE } from '../oauth-flow.js'
-import { renderCaption } from '../platform-meta.js'
+import { renderCaption } from '../../posts/meta.js'
 import { loadToken, upsertToken } from '../tokens.js'
 import { networkError, PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { PublishAdapter } from '../types.js'

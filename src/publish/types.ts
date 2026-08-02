@@ -5,7 +5,7 @@ import {
   normalizeTitle,
   platformEntrySchema,
   type PlatformMeta,
-} from './platform-meta.js'
+} from '../posts/meta.js'
 import { BrainrotError, type ErrorInfo, errorMessage, isAbortLike } from '../errors.js'
 
 export type { PlatformMeta }

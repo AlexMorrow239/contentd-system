@@ -2,7 +2,7 @@ import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import type { ObjectStore } from '../storage/types.js'
 import { IG_PRESIGN_TTL_SECONDS } from './platforms/instagram.js'
-import { renderCaption } from './platform-meta.js'
+import { renderCaption } from '../posts/meta.js'
 import { resolvePlatformMeta, type Platform } from './types.js'
 
 export interface PreflightCheck {

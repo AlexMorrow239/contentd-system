@@ -6,7 +6,7 @@ import {
   resolvePlatformMeta,
 } from '../types.js'
 import type { PublishErrorKind } from '../types.js'
-import { renderCaption, renderTags, TAGS_MAX_CHARS, tagsPayloadLength } from '../platform-meta.js'
+import { renderCaption, renderTags, TAGS_MAX_CHARS, tagsPayloadLength } from '../../posts/meta.js'
 import { BrainrotError, classify } from '../../errors.js'
 import { toPublishFailureKind } from '../types.js'
 

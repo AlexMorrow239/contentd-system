@@ -33,6 +33,11 @@ export const TAGS_MAX_CHARS = 500
 export const INSTAGRAM_CAPTION_MAX_CHARS = 2200
 export const INSTAGRAM_MAX_HASHTAGS = 30
 
+// TikTok's caption budget. Same composed shape as Instagram (one caption, no
+// separate title field) but it bounds CHARACTERS only — there is no
+// hashtag-count cap to mirror INSTAGRAM_MAX_HASHTAGS.
+export const TIKTOK_CAPTION_MAX_CHARS = 2200
+
 export function normalizeTitle(title: string): string {
   return title.replace(/[<>]/g, '').trim().slice(0, TITLE_MAX_CHARS)
 }
@@ -96,29 +101,54 @@ function normalizeForYoutube(meta: PlatformMeta): PlatformMeta {
   }
 }
 
-function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
+/**
+ * The composed-caption shape: one caption carrying title, description and
+ * hashtags, bounded by a character budget. Instagram and TikTok differ only
+ * in that budget and in whether the platform caps hashtag COUNT — TikTok
+ * does not, so `maxHashtags` is optional rather than a sentinel number.
+ *
+ * YouTube deliberately does not go through here: it has a real title field,
+ * a separate tags array, and its own tighter tags budget.
+ */
+function normalizeComposedCaption(
+  meta: PlatformMeta,
+  bounds: { maxChars: number; maxHashtags?: number },
+): PlatformMeta {
   // Normalize the title BEFORE the trim loop below: normalizeTitle only ever
   // shrinks, so trimming hashtags against the raw (longer) title would
   // overestimate the composed length and drop hashtags that fit once the
   // title is actually normalized.
   const title = normalizeTitle(meta.title)
-  const hashtags = sanitizeHashtags(meta.hashtags).slice(0, INSTAGRAM_MAX_HASHTAGS)
-  // Mirror the YouTube trim order: the description is the least load-bearing
-  // part and gets trimmed first (below, via `room`), not the hashtags. This
-  // loop only pops hashtags from the tail when the hashtag block ALONE —
-  // title + hashtags, description entirely absent — still can't fit; it must
-  // not measure against the untruncated meta.description, or a long
-  // description would eat every hashtag before the description itself is
-  // ever trimmed.
+  const sanitized = sanitizeHashtags(meta.hashtags)
+  const hashtags =
+    bounds.maxHashtags === undefined ? sanitized : sanitized.slice(0, bounds.maxHashtags)
+  // The description is the least load-bearing part and gets trimmed first
+  // (below, via `room`), not the hashtags. This loop only pops hashtags from
+  // the tail when the hashtag block ALONE — title + hashtags, description
+  // entirely absent — still can't fit; it must not measure against the
+  // untruncated meta.description, or a long description would eat every
+  // hashtag before the description itself is ever trimmed.
   while (
     hashtags.length > 0 &&
-    renderCaption({ title, description: '', hashtags }).length > INSTAGRAM_CAPTION_MAX_CHARS
+    renderCaption({ title, description: '', hashtags }).length > bounds.maxChars
   ) {
     hashtags.pop()
   }
   const fixedLength = renderCaption({ title, description: '', hashtags }).length
-  const room = Math.max(0, INSTAGRAM_CAPTION_MAX_CHARS - fixedLength)
+  const room = Math.max(0, bounds.maxChars - fixedLength)
   return { title, description: meta.description.slice(0, room), hashtags }
+}
+
+function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
+  return normalizeComposedCaption(meta, {
+    maxChars: INSTAGRAM_CAPTION_MAX_CHARS,
+    maxHashtags: INSTAGRAM_MAX_HASHTAGS,
+  })
+}
+
+// No hashtag-count cap: TikTok bounds characters only.
+function normalizeForTiktok(meta: PlatformMeta): PlatformMeta {
+  return normalizeComposedCaption(meta, { maxChars: TIKTOK_CAPTION_MAX_CHARS })
 }
 
 /**
@@ -133,6 +163,7 @@ function normalizeForInstagram(meta: PlatformMeta): PlatformMeta {
 const NORMALIZERS: Record<Platform, (meta: PlatformMeta) => PlatformMeta> = {
   youtube: normalizeForYoutube,
   instagram: normalizeForInstagram,
+  tiktok: normalizeForTiktok,
 }
 
 export function normalizePlatformMeta(meta: PlatformMeta, platform: Platform): PlatformMeta {

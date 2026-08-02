@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { renderDescription, renderTags } from '../platform-meta.js'
+import { renderDescription, renderTags } from '../../posts/meta.js'
 import { loadToken } from '../tokens.js'
 import { networkError, PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { PublishAdapter } from '../types.js'
