@@ -43,4 +43,26 @@ describe('the slow action lane', () => {
     // And the lease it borrowed is handed back.
     expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
   })
+
+  it('records a failed-status JobResult as done, with the result preserved verbatim', async () => {
+    // executeOne passes `await deps.run(...)` straight into completeAction —
+    // a JobResult carrying `status: 'failed'` is not itself a thrown error,
+    // so the row still lands 'done' with the tick's own result intact. No
+    // test anywhere else covers this, and it's the property CLAUDE.md's
+    // "Two slow-handler behaviours" paragraph calls load-bearing.
+    const { db } = fileDb()
+    const id = enqueueAction(db, {
+      kind: 'jobs.resume',
+      args: { jobId: 'j1' },
+      requestedBy: 'dashboard',
+    })
+    const run = vi.fn().mockResolvedValue({ jobId: 'j1', status: 'failed' })
+    const unit = actionsUnit(db, 'slow', { channelsDir: '/ch', runsRoot: '/runs', run })
+
+    const worked = await unit()
+    expect(worked.worked).toBe(true)
+    const settled = getAction(db, id)
+    expect(settled?.status).toBe('done')
+    expect(settled?.result).toBe(JSON.stringify({ jobId: 'j1', status: 'failed' }))
+  })
 })

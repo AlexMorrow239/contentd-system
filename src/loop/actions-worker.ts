@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import pino from 'pino'
 import { ACTIONS, isActionKind, type ActionLane, type ActionLease } from '../actions/catalog.js'
 import { runAction, type ActionContext } from '../actions/handlers.js'
 import {
@@ -14,6 +15,11 @@ import { BrainrotError } from '../errors.js'
 import type { UnitResult } from './daemon.js'
 import { DAEMON_HEARTBEAT_MS, stampDaemonSeen } from './daemon-state.js'
 import { acquireLease, extendLease, releaseLease } from './lease.js'
+
+// Same construction as src/jobs/runner.ts:62 — inert by default (LOG_LEVEL
+// unset means 'silent'), so this stays a no-op for every deployment that
+// hasn't opted in.
+const log = pino({ level: process.env.LOG_LEVEL ?? 'silent' })
 
 /** The fast lane's poll. A row mutation must feel immediate, not 30s away. */
 export const FAST_IDLE_SLEEP_MS = 1_000
@@ -36,7 +42,7 @@ export const MAX_FAST_DRAIN = 50
  * the fast lane's own budget already equals this window, so reusing it there
  * costs nothing, and it caps how much work one poll does either way.
  *
- * The skip set above removes the redundant ACQUIRES, not this bound: 50 rows
+ * The skip set below removes the redundant ACQUIRES, not this bound: 50 rows
  * all blocked on `produce` still means row 51 was never in the query's result
  * set and does not run this poll. That is left in place deliberately — it
  * self-heals on the next poll, and a queue 50 deep on one lease is not a shape
@@ -216,12 +222,20 @@ async function executeOne(
       // sees `string`, not `string | undefined`.
       const activeHolder = holder
       beat = setInterval(() => {
-        // The return value is deliberately ignored. `false` means this holder
-        // was already evicted — which can only happen after five consecutive
-        // missed beats — and the handler is mid-flight by then, so there is
-        // nothing to abort. `produce-next`'s own heartbeat ignores it for the
-        // same reason.
-        extendLease(db, lease, activeHolder, SLOW_ACTION_LEASE_TTL_MS)
+        // `false` is not acted on by re-acquiring: there is no abort channel
+        // on ActionContext to stop the handler mid-flight, and re-acquiring
+        // here would hand this lease to two live processes. It requires BOTH
+        // five consecutive missed beats (so the row has actually passed its
+        // expiry) AND another process calling acquireLease in that gap —
+        // extendLease matches on holder only and never re-checks expires_at,
+        // so a merely-late beat on an otherwise-unclaimed lease still
+        // succeeds. `produce-next`'s own heartbeat ignores it for the same
+        // no-abort-channel reason. It is still worth a log line: this is the
+        // daemon's own mutual exclusion silently failing, and until now
+        // nothing recorded that it happened.
+        if (!extendLease(db, lease, activeHolder, SLOW_ACTION_LEASE_TTL_MS)) {
+          log.warn({ lease, actionId: row.id }, 'lease heartbeat failed')
+        }
       }, SLOW_ACTION_HEARTBEAT_MS)
       // Never hold the process open: on SIGTERM the daemon must be able to
       // exit once the in-flight action settles.

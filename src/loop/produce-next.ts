@@ -88,6 +88,15 @@ export async function produceNextTick(
   // cron firing is still running — benign no-op, exit 0 at the CLI. The
   // pid-tagged holder means an expiry takeover can never be released by the
   // evicted process (releaseLease matches on holder).
+  //
+  // KNOWN GAP: `actions-worker.ts`'s slow lane also calls this tick
+  // in-process now, as a second caller sharing this same pid — until this
+  // branch, `holder` uniquely identified one caller and lease.ts:43-44's
+  // evicted-holder guarantee held exactly. It no longer does: a stalled
+  // in-process caller's `finally`-release can now delete a live caller's
+  // lease. Not fixed here (needs an optional holder suffix threaded through
+  // both ticks) — currently bounded because topic claiming is transactional,
+  // so this collision cannot double-claim a topic.
   const holder = `pid:${process.pid}`
   if (!acquireLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)) {
     return { action: 'noop', reason: 'lease-held' }

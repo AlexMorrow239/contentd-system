@@ -238,6 +238,12 @@ export async function publishNextTick(
   // A held lease is the NORMAL case while a previous firing's upload is still
   // in flight — benign no-op, exit 0 at the CLI. Dry-run never touches the
   // lease: it is a pure read-only preview, never a competing writer.
+  //
+  // KNOWN GAP: same in-process holder collision as produce-next.ts:91 — the
+  // slow lane now calls this tick in-process too, sharing this pid as a
+  // second caller. Not fixed here; currently bounded because
+  // `ux_publishes_live` still enforces one live `publishes` row per (job,
+  // platform) even if a stalled caller's release frees this lease early.
   const holder = `pid:${process.pid}`
   if (!dryRun && !acquireLease(db, 'publish', holder, PUBLISH_LEASE_TTL_MS)) {
     return { action: 'noop', reason: 'lease-held' }

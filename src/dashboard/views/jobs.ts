@@ -49,7 +49,7 @@ export interface JobsPageData {
  * `done`/`queued` have nothing to resume.
  */
 function jobActions(
-  row: { id: string; status: string },
+  row: { id: string; status: JobStatus },
   csrfToken: string,
   daemonStale: boolean,
 ): SafeHtml {
