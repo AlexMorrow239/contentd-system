@@ -7,7 +7,7 @@ import { resolveBrainrotPaths } from '../../../config/paths.js'
 import { parseTokenKey } from '../../crypto.js'
 import { publishMedia } from '../../media.js'
 import { loadToken } from '../../tokens.js'
-import type { PublishChannelConfig } from '../../types.js'
+import type { PublishTargetConfig } from '../../types.js'
 import { mintAccessToken, youtubeTarget } from '../youtube.js'
 
 // Runs only via `pnpm test:contract` (CONTRACT=1; excluded from default
@@ -53,23 +53,13 @@ describe('youtube adapter (contract)', () => {
         clientSecret: process.env.YT_CLIENT_SECRET!,
       })
 
-      // PublishChannelConfig moved from a flat per-channel shape to a list of
-      // per-platform targets (Task 2/5) — this fixture constructs a single
-      // youtube target carrying the same placeholder values the old flat
-      // fixture intended (private/category 24/not made for kids), then
-      // narrows it back to its youtube variant to read a properly-typed
-      // YoutubeOptions for youtubeTarget().upload() below.
-      const publish: PublishChannelConfig = {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'private', categoryId: 24, madeForKids: false },
-          },
-        ],
-      }
-      const target = publish.targets[0]
-      if (target.platform !== 'youtube') {
-        throw new Error('unreachable: fixture only declares a youtube target')
+      // Channel config no longer carries per-platform upload options (Task
+      // 3) — this fixture constructs a single youtube target directly,
+      // carrying the same placeholder values the old flat fixture intended
+      // (private/category 24/not made for kids).
+      const target: PublishTargetConfig = {
+        platform: 'youtube',
+        options: { privacy: 'private', categoryId: 24, madeForKids: false },
       }
       const { postId, url } = await youtubeTarget().upload(
         {

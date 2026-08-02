@@ -130,7 +130,7 @@ function renderQuota(q: PlatformQuotaView): SafeHtml {
     </p>`
   }
   if (q.perChannel.length === 0) {
-    return html`<p>${q.platform}: no channel has a [publish.${q.platform}] target configured</p>`
+    return html`<p>${q.platform}: no channel declares ${q.platform} in platforms</p>`
   }
   const rows = q.perChannel.map(
     (c) =>
@@ -180,7 +180,7 @@ export function renderPublishesPage(data: PublishesPageData): SafeHtml {
       <h1>publishes</h1>
       ${controls}
       ${warning} ${interrupted} ${quota}
-      <p class="empty">no channel has a [publish] schedule</p>`
+      <p class="empty">no channel declares any platforms</p>`
   }
 
   return html`${daemonBanner(data.daemonStale)}

@@ -1,5 +1,4 @@
 import type { Database } from 'better-sqlite3'
-import type { InstagramOptions, YoutubeOptions } from './platforms/options.js'
 import {
   normalizePlatformMeta,
   normalizeTitle,
@@ -113,17 +112,50 @@ export interface PublishAdapter<O = unknown> {
   ): Promise<{ postId: string; url: string }>
 }
 
-// Parsed [publish.<platform>] TOML sub-table for one channel
-// (src/config/channel.ts). No schedule of its own: cadence comes from the
-// channel's videos_per_day, and the window/gap are derived in schedule.ts.
-export type PublishTargetConfig =
-  | { platform: 'youtube'; options: YoutubeOptions }
-  | { platform: 'instagram'; options: InstagramOptions }
+// Per-platform upload options this doomed tree's own adapters read. Channel
+// config no longer carries these (src/config/channel.ts now declares only a
+// flat `platforms = [...]` checklist) — synthesized locally by
+// src/loop/publish-next.ts, which is deleted alongside this file in a later
+// task. Shapes are declared here (not imported from platforms/options.ts,
+// which is deleted this task) and duplicated in youtube.ts/instagram.ts's own
+// local interfaces rather than shared, for the same reason.
+interface YoutubeTargetOptions {
+  privacy: 'public' | 'unlisted' | 'private'
+  categoryId: number
+  madeForKids: boolean
+}
+interface InstagramTargetOptions {
+  igUserId: string
+  shareToFeed: boolean
+}
 
-// Parsed [publish] TOML table for a channel. A channel with no [publish]
-// table at all is `null` on ChannelConfig and never enters the publish pool.
-export interface PublishChannelConfig {
-  targets: PublishTargetConfig[]
+export type PublishTargetConfig =
+  | { platform: 'youtube'; options: YoutubeTargetOptions }
+  | { platform: 'instagram'; options: InstagramTargetOptions }
+
+// Schema-default options for each platform (the same defaults
+// youtubeOptionsSchema/instagramOptionsSchema used to apply), keyed generically
+// so callers never need a platform string literal of their own.
+const DEFAULT_TARGETS: Record<Platform, PublishTargetConfig> = {
+  youtube: {
+    platform: 'youtube',
+    options: { privacy: 'public', categoryId: 24, madeForKids: false },
+  },
+  instagram: { platform: 'instagram', options: { igUserId: '', shareToFeed: true } },
+}
+
+/**
+ * Synthesizes real PublishTargetConfig objects (schema-default options) from
+ * a bare Platform list. Channel config no longer carries per-platform upload
+ * options (Task 3 removed [publish.<platform>] entirely in favor of a flat
+ * `platforms = [...]` checklist) — this is what lets src/loop/publish-next.ts
+ * stay platform-agnostic in its own source (the "publish-next platform
+ * agnosticism" arch test in src/arch.test.ts) while still driving the real
+ * adapters. Sorted by platform, so the fan-out order is independent of the
+ * channel's declared order — matching the old buildTargets' own sort.
+ */
+export function defaultTargetsFor(platforms: readonly Platform[]): PublishTargetConfig[] {
+  return platforms.map((p) => DEFAULT_TARGETS[p]).sort((a, b) => (a.platform < b.platform ? -1 : 1))
 }
 
 // library.metadata_json is the per-platform map the script stage writes

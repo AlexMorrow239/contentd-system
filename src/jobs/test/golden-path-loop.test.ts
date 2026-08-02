@@ -127,7 +127,7 @@ describe('golden-path loop e2e', () => {
     mkdirSync(channelsDir, { recursive: true })
     mkdirSync(runsRoot, { recursive: true })
 
-    // Real channel TOML incl. [scout] and [publish] — the same file
+    // Real channel TOML incl. [scout] and platforms — the same file
     // scoutChannel (loaded via loadChannelsDir here), produceNextTick, and
     // publishNextTick (via opts.channelsDir) all read. bg/bgm dirs are
     // schema-required strings; fake stages never read them. The publish
@@ -143,6 +143,7 @@ describe('golden-path loop e2e', () => {
         'bg_dir = "assets/bg"',
         'bgm_dir = "assets/bgm"',
         'videos_per_day = 2',
+        'platforms = ["youtube"]',
         '',
         '[voice]',
         'volume = "af_heart"',
@@ -160,10 +161,6 @@ describe('golden-path loop e2e', () => {
         '',
         '[scout]',
         'subreddits = ["space"]',
-        '',
-        '[publish]',
-        '',
-        '[publish.youtube]',
         '',
       ].join('\n'),
     )

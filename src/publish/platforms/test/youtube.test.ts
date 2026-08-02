@@ -5,7 +5,7 @@ import { publishMedia } from '../../media.js'
 import { upsertToken } from '../../tokens.js'
 import type { PlatformMeta, PublishMedia } from '../../types.js'
 import { PublishError, PublishOutcomeUnknownError } from '../../types.js'
-import type { YoutubeOptions } from '../options.js'
+import type { YoutubeOptions } from '../youtube.js'
 import {
   UPLOAD_TIMEOUT_MS,
   YT_UPLOAD_SCOPE,

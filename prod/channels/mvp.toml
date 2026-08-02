@@ -47,6 +47,13 @@ videos_per_day = 15
 # already-full backlog.
 backlog_days = 2
 
+# The /post checklist for this channel — a flat list, not a schedule and not
+# a credential. Posting itself is manual now (the dashboard renders this as a
+# per-video checklist); cadence still comes from videos_per_day above.
+# Declaring both platforms means every finished video is posted to each by
+# hand.
+platforms = ["youtube", "instagram"]
+
 [voice]
 volume = "af_heart"
 
@@ -127,27 +134,3 @@ stroke_px = 8
 [budget]
 per_video_usd = 0.5
 per_day_usd = 25.0
-
-# Cadence comes from videos_per_day above: the publish worker fires whenever a
-# video is ready, gated only by that per-local-day count and a fixed 10-minute
-# cooldown between attempts (PUBLISH_COOLDOWN_MS, an anti-burst guard, not a
-# schedule). There is no posting window. Declaring both platforms cross-posts
-# the same rendered video to each.
-[publish]
-
-[publish.youtube]
-# Start `private` for the first live day so a misfire is not public, then flip
-# to "public" once a real upload has been eyeballed. category_id 24 =
-# Entertainment.
-privacy = "private"
-category_id = 24
-made_for_kids = false
-
-[publish.instagram]
-# The IG User ID from the Meta Graph API (not the @handle, not the Facebook
-# Page id). This is the same Instagram Business account the `test` channel
-# published as — its consent grant was migrated to channel `mvp` in
-# oauth_tokens, so this id and those tokens belong together. Changing the
-# account means a fresh `brainrot auth instagram --channel mvp --headless`.
-ig_user_id = "17841447490773376"
-share_to_feed = false

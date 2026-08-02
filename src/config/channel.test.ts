@@ -1,11 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir } from './channel.js'
+import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, parseChannelToml } from './channel.js'
 import {
   channelToml,
   channelTomlLines,
-  testChannel,
   writeChannelsDir as writeChannels,
 } from '../testing/channel.js'
 import { tmpDir } from '../testing/tmp.js'
@@ -282,159 +281,40 @@ describe('loadChannelsDir', () => {
   it('throws when the directory does not exist', () => {
     expect(() => loadChannelsDir('/nope/definitely/missing')).toThrow()
   })
-})
 
-describe('[publish] — per-platform targets', () => {
-  it('is null when [publish] is absent', () => {
-    const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
-    expect(cfg.publish).toBeNull()
-  })
-
-  it('parses a single youtube target with no slots field anywhere', () => {
-    const cfg = loadChannelConfig(
-      writeToml([...PLAN1_LINES, '[publish]', '', '[publish.youtube]', 'privacy = "private"', '']),
+  it('parses a platforms list', () => {
+    const config = parseChannelToml(
+      channelToml({ name: 'alpha', platforms: ['youtube', 'tiktok'] }),
+      'alpha.toml',
     )
-    expect(cfg.publish?.targets).toEqual([
-      { platform: 'youtube', options: expect.objectContaining({ privacy: 'private' }) },
-    ])
+    expect(config.platforms).toEqual(['youtube', 'tiktok'])
   })
 
-  it('rejects a stale shared slots key with a message naming the replacement', () => {
+  it('defaults platforms to an empty list', () => {
+    expect(parseChannelToml(channelToml({ name: 'alpha' }), 'alpha.toml').platforms).toEqual([])
+  })
+
+  it('rejects an unknown platform', () => {
     expect(() =>
-      loadChannelConfig(
-        writeToml([...PLAN1_LINES, '[publish]', 'slots = ["10:00"]', '', '[publish.youtube]', '']),
+      parseChannelToml(channelToml({ name: 'alpha', platforms: ['myspace'] }), 'alpha.toml'),
+    ).toThrow(/myspace/)
+  })
+
+  it('rejects a duplicate platform', () => {
+    expect(() =>
+      parseChannelToml(
+        channelToml({ name: 'alpha', platforms: ['youtube', 'youtube'] }),
+        'alpha.toml',
       ),
-    ).toThrow(/slots were removed; daily volume now comes from videos_per_day/)
+    ).toThrow(/duplicate/i)
   })
 
-  it('rejects a stale per-platform slots key with the same message', () => {
-    expect(() =>
-      loadChannelConfig(
-        writeToml([...PLAN1_LINES, '[publish]', '', '[publish.youtube]', 'slots = ["10:00"]', '']),
-      ),
-    ).toThrow(/slots were removed; daily volume now comes from videos_per_day/)
-  })
-
-  it('rejects a stale scout min_score key naming the replacement', () => {
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'min_score = 60'])),
-    ).toThrow(/min_score was removed; the scout stores only topics scoring >= 80/)
-  })
-
-  it('still requires at least one platform sub-table', () => {
-    expect(() => loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', '']))).toThrow(
-      /must declare at least one platform sub-table/,
-    )
-  })
-
-  it('parses youtube and instagram targets together, sorted by platform', () => {
-    const cfg = loadChannelConfig(
-      writeToml([
-        ...PLAN1_LINES,
-        '[publish]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "17841400000000000"',
-        '',
-        '[publish.youtube]',
-        'privacy = "public"',
-        '',
-      ]),
-    )
-    expect(cfg.publish?.targets.map((t) => t.platform)).toEqual(['instagram', 'youtube'])
-  })
-
-  it('defaults instagram share_to_feed to true', () => {
-    const cfg = loadChannelConfig(
-      writeToml([...PLAN1_LINES, '[publish]', '', '[publish.instagram]', 'ig_user_id = "1"', '']),
-    )
-    expect(cfg.publish?.targets[0]).toMatchObject({ options: { shareToFeed: true } })
-  })
-
-  it('throws on the removed legacy platforms array', () => {
-    expect(() =>
-      loadChannelConfig(
-        writeToml([
-          ...PLAN1_LINES,
-          '[publish]',
-          'platforms = ["youtube"]',
-          '',
-          '[publish.youtube]',
-          '',
-        ]),
-      ),
-    ).toThrow()
-  })
-
-  it('throws on an unknown platform sub-table', () => {
-    expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[publish]', '', '[publish.tiktok]', ''])),
-    ).toThrow()
-  })
-
-  it('throws on an unknown key inside a platform sub-table', () => {
-    expect(() =>
-      loadChannelConfig(
-        writeToml([
-          ...PLAN1_LINES,
-          '[publish]',
-          '',
-          '[publish.instagram]',
-          'ig_user_id = "1"',
-          'category_id = 24',
-          '',
-        ]),
-      ),
-    ).toThrow()
-  })
-
-  // Regression (M2): [publish] freezing used to stop at the outer `publish`
-  // object and `publish.targets` array — each target object and its options
-  // object were silently mutable, e.g.
-  // `cfg.publish.targets[0].options.privacy = ...` succeeded. Assert every
-  // layer.
-  it('deep-freezes publish, targets, each target, and its options', () => {
-    const cfg = loadChannelConfig(
-      writeToml([...PLAN1_LINES, '[publish]', '', '[publish.youtube]', '']),
-    )
-    const publish = cfg.publish!
-    expect(Object.isFrozen(publish)).toBe(true)
-    expect(Object.isFrozen(publish.targets)).toBe(true)
-    const first = publish.targets[0]
-    expect(Object.isFrozen(first)).toBe(true)
-    expect(Object.isFrozen(first.options)).toBe(true)
-    // The regression itself: mutation used to succeed SILENTLY (no throw, the
-    // write simply had no effect under sloppy freezing) rather than being
-    // rejected outright. Strict mode (this file is ESM, always strict) turns
-    // an assignment to a frozen object's property into a thrown TypeError, so
-    // asserting the throw is what actually guards against silent mutation.
-    expect(() => {
-      ;(first.options as unknown as Record<string, unknown>).someKey = 'x'
-    }).toThrow(TypeError)
-  })
-})
-
-describe('testChannel() publish default', () => {
-  it('defaults publish to null and allows overriding it', () => {
-    expect(testChannel().publish).toBeNull()
-    const withPublish = testChannel({
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
-    })
-    expect(withPublish.publish).toEqual({
-      targets: [
-        {
-          platform: 'youtube',
-          options: { privacy: 'public', categoryId: 24, madeForKids: false },
-        },
-      ],
-    })
+  // Same treatment `slots` and `[scout] min_score` already get: the error must
+  // name the replacement, or an operator upgrading reads "unrecognized key"
+  // and has to go find the commit.
+  it('rejects a stale [publish] table, naming the replacement', () => {
+    const toml = `${channelToml({ name: 'alpha' })}\n[publish.youtube]\nprivacy_status = "public"\n`
+    expect(() => parseChannelToml(toml, 'alpha.toml')).toThrow(/platforms = \[/)
   })
 })
 

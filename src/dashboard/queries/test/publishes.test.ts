@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../../config/channel.js'
-import type { PublishTargetConfig } from '../../../publish/types.js'
+import type { Platform } from '../../../posts/types.js'
 import { testChannel } from '../../../testing/channel.js'
 import { memDb, seedJob, seedPublish } from '../../../testing/db.js'
 import { buildPublishGrids, cellKey, interruptedPublishes } from '../publishes.js'
@@ -9,18 +9,13 @@ import { buildPublishGrids, cellKey, interruptedPublishes } from '../publishes.j
 function channelWithTargets(
   name: string,
   videosPerDay: number,
-  targets: PublishTargetConfig[],
+  platforms: Platform[],
 ): ChannelConfig {
-  return testChannel({ name, videosPerDay, publish: { targets } })
+  return testChannel({ name, videosPerDay, platforms })
 }
 
 function channel(name: string, videosPerDay: number): ChannelConfig {
-  return channelWithTargets(name, videosPerDay, [
-    {
-      platform: 'youtube',
-      options: { privacy: 'public', categoryId: 27, madeForKids: false },
-    },
-  ])
+  return channelWithTargets(name, videosPerDay, ['youtube'])
 }
 
 function seed(): Database {
@@ -34,9 +29,9 @@ function seed(): Database {
 describe('buildPublishGrids', () => {
   const now = new Date('2026-07-25T12:00:00')
 
-  it('skips channels with no [publish] table — they never enter the pool', () => {
+  it('skips channels with no declared platforms — they never enter the pool', () => {
     const db = seed()
-    const noPublish = { ...channel('space', 1), publish: null }
+    const noPublish = { ...channel('space', 1), platforms: [] }
     expect(buildPublishGrids(db, [noPublish], 3, now)).toEqual([])
     db.close()
   })
@@ -88,16 +83,7 @@ describe('buildPublishGrids', () => {
 
   it('gives every platform its own row at every ordinal, sorted by ordinal then platform', () => {
     const db = seed()
-    const multi = channelWithTargets('space', 3, [
-      {
-        platform: 'youtube',
-        options: { privacy: 'public', categoryId: 27, madeForKids: false },
-      },
-      {
-        platform: 'instagram',
-        options: { igUserId: 'ig1', shareToFeed: true },
-      },
-    ])
+    const multi = channelWithTargets('space', 3, ['youtube', 'instagram'])
     const [grid] = buildPublishGrids(db, [multi], 1, now)
     expect(grid?.rows).toEqual([
       { platform: 'instagram', seq: 1 },
@@ -166,16 +152,7 @@ describe('buildPublishGrids', () => {
         "VALUES ('j1','instagram','space','2026-07-25',1,'failed','boom','transient',1)",
     ).run()
 
-    const crossPosting = channelWithTargets('space', 1, [
-      {
-        platform: 'youtube',
-        options: { privacy: 'public', categoryId: 27, madeForKids: false },
-      },
-      {
-        platform: 'instagram',
-        options: { igUserId: 'ig1', shareToFeed: true },
-      },
-    ])
+    const crossPosting = channelWithTargets('space', 1, ['youtube', 'instagram'])
     const [grid] = buildPublishGrids(db, [crossPosting], 1, now)
 
     expect(grid?.rows).toEqual([

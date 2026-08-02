@@ -509,16 +509,9 @@ describe('buildDigest — ready-backlog in the Publishing section', () => {
     const db = memDb()
     const chA = testChannel({
       name: 'chan-a',
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['youtube'],
     })
-    const chB = testChannel({ name: 'chan-b', publish: null })
+    const chB = testChannel({ name: 'chan-b', platforms: [] })
     seedJob(db, { id: 'j-old', channel: 'chan-a' })
     seedLibrary(db, 'j-old', 'ready', isoAgo(5 * HOUR_MS))
     seedJob(db, { id: 'j-new', channel: 'chan-a' })
@@ -558,17 +551,9 @@ describe('buildDigest — volume-shortfall action item', () => {
     const chA = testChannel({
       name: 'chan-a',
       videosPerDay: 3,
-      // Declared instagram-first because that is the order buildTargets
-      // emits (sorted by platform), and the per-platform split follows it.
-      publish: {
-        targets: [
-          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      // Declared instagram-first: the per-platform split follows declaration
+      // order.
+      platforms: ['instagram', 'youtube'],
     })
     seedJob(db, { id: 'j-yday', channel: 'chan-a' })
     seedPublish(db, {
@@ -606,7 +591,7 @@ describe('buildDigest — volume-shortfall action item', () => {
 
   it('does not report a shortfall for a channel with no publish config', () => {
     const db = memDb()
-    const chB = testChannel({ name: 'chan-b', publish: null })
+    const chB = testChannel({ name: 'chan-b', platforms: [] })
     const digest = buildDigest(db, [chB])
     expect(digest).not.toContain('videos yesterday')
     db.close()
@@ -625,15 +610,7 @@ describe('buildDigest — volume-shortfall action item', () => {
     const chA = testChannel({
       name: 'chan-a',
       videosPerDay: 1,
-      publish: {
-        targets: [
-          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['instagram', 'youtube'],
     })
     seedJob(db, { id: 'j-yday', channel: 'chan-a' })
     // Only instagram published; the channel count (1 of 1) is met purely on
@@ -667,15 +644,7 @@ describe('buildDigest — volume-shortfall action item', () => {
     const chA = testChannel({
       name: 'chan-a',
       videosPerDay: 1,
-      publish: {
-        targets: [
-          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['instagram', 'youtube'],
     })
     seedJob(db, { id: 'j-yday', channel: 'chan-a' })
     seedPublish(db, {
@@ -713,15 +682,7 @@ describe('buildDigest — volume-shortfall action item', () => {
     const chA = testChannel({
       name: 'chan-a',
       videosPerDay: 1,
-      publish: {
-        targets: [
-          { platform: 'instagram', options: { igUserId: 'ig-1', shareToFeed: true } },
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['instagram', 'youtube'],
     })
     seedJob(db, { id: 'j-yday', channel: 'chan-a' })
     seedPublish(db, {
@@ -809,7 +770,7 @@ describe('buildDigest — publish token health', () => {
 
   it('checks no tokens for a channel without a publish config', () => {
     const db = memDb()
-    const digest = buildDigest(db, [testChannel({ name: 'chan-b', publish: null })], ENV_OK)
+    const digest = buildDigest(db, [testChannel({ name: 'chan-b', platforms: [] })], ENV_OK)
     expect(digest).not.toContain('no stored token')
     expect(digest).not.toContain('publishing is not configured')
     db.close()
@@ -822,14 +783,7 @@ describe('buildDigest — token expiry warning', () => {
   function instagramChannel(name: string) {
     return testChannel({
       name,
-      publish: {
-        targets: [
-          {
-            platform: 'instagram',
-            options: { igUserId: 'ig-1', shareToFeed: true },
-          },
-        ],
-      },
+      platforms: ['instagram'],
     })
   }
 
@@ -941,14 +895,7 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     const channel = testChannel({
       name: 'chan-a',
       backlogDays: 2,
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['youtube'],
     })
     seedJob(db, { id: 'job-1', channel: 'chan-a' })
     db.prepare(
@@ -987,14 +934,7 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     const channel = testChannel({
       name: 'chan-a',
       backlogDays: 2,
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['youtube'],
     })
     seedJob(db, { id: 'job-1', channel: 'chan-a' })
     seedLibrary(db, 'job-1', 'ready', isoAgo(72 * HOUR_MS))
@@ -1011,14 +951,7 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     const channel = testChannel({
       name: 'chan-a',
       backlogDays: 2,
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['youtube'],
     })
     seedJob(db, { id: 'job-1', channel: 'chan-a' })
     seedLibrary(db, 'job-1', 'ready', isoAgo(72 * HOUR_MS))
@@ -1044,14 +977,7 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     const channel = testChannel({
       name: 'chan-a',
       backlogDays: 10,
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['youtube'],
     })
     seedJob(db, { id: 'job-1', channel: 'chan-a' })
     db.prepare(
@@ -1087,14 +1013,7 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     const channel = testChannel({
       name: 'chan-a',
       backlogDays: 2,
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['youtube'],
     })
     seedJob(db, { id: 'job-1', channel: 'chan-a' })
     db.prepare(
@@ -1117,14 +1036,7 @@ describe('buildDigest — aged-out videos in the Publishing section', () => {
     const channel = testChannel({
       name: 'chan-a',
       backlogDays: 2,
-      publish: {
-        targets: [
-          {
-            platform: 'youtube',
-            options: { privacy: 'public', categoryId: 24, madeForKids: false },
-          },
-        ],
-      },
+      platforms: ['youtube'],
     })
     seedJob(db, { id: 'job-1', channel: 'chan-a' })
     seedLibrary(db, 'job-1', 'ready', isoAgo(HOUR_MS))

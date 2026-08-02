@@ -169,7 +169,7 @@ describe('renderPublishesPage', () => {
       csrfToken: 'tok',
       daemonStale: false,
     }).value
-    expect(out).toContain('no channel has a [publish] schedule')
+    expect(out).toContain('no channel declares any platforms')
   })
 
   it('reports a channel-scoped quota as a per-channel breakdown, not a summed total', () => {
@@ -206,7 +206,7 @@ describe('renderPublishesPage', () => {
       ] as PlatformQuotaView[],
     }
     const out = renderPublishesPage(data).value
-    expect(out).toContain('instagram: no channel has a [publish.instagram] target configured')
+    expect(out).toContain('instagram: no channel declares instagram in platforms')
   })
 
   it('lists interrupted uploads with both resolution controls', () => {

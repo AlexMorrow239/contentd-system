@@ -601,7 +601,7 @@ function buildPlatformQuotas(
       }
     }
     const perChannel = channels
-      .filter((channel) => channel.publish?.targets.some((t) => t.platform === platform) === true)
+      .filter((channel) => channel.platforms.includes(platform))
       .map((channel) => ({
         channel: channel.name,
         used: uploadsUsedToday(db, platform, day, channel.name),

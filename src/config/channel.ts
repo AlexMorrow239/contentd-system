@@ -3,14 +3,7 @@ import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
 import { BrainrotError, errorMessage } from '../errors.js'
-import {
-  instagramOptionsSchema,
-  normalizeInstagramOptions,
-  normalizeYoutubeOptions,
-  youtubeOptionsSchema,
-} from '../publish/platforms/options.js'
-import { PUBLISH_PLATFORMS } from '../publish/types.js'
-import type { PublishChannelConfig, PublishTargetConfig } from '../publish/types.js'
+import { PLATFORMS, type Platform } from '../posts/types.js'
 
 function configInvalid(message: string): BrainrotError {
   return new BrainrotError(message, { domain: 'config', kind: 'invalid' })
@@ -54,10 +47,7 @@ export interface ChannelConfig {
   videosPerDay: number
   /**
    * How many days of finished, unconsumed video this channel may hold before
-   * production stops (plan-tick.ts), and — the same number — how long a video
-   * gets to find a publish slot before it is considered passed over
-   * (publish/settled.ts). One knob, because "hold more inventory" and "give
-   * each video longer to find a slot" are the same statement about depth.
+   * production stops (plan-tick.ts). The one knob for inventory depth.
    */
   backlogDays: number
   voice: { volume: string; premium?: PremiumVoiceConfig; dev?: boolean }
@@ -70,10 +60,15 @@ export interface ChannelConfig {
   /**
    * Non-null iff the channel declares a [story] table: it narrates reddit
    * self-posts verbatim rather than scripting niche topics. Presence gates the
-   * behavior, matching [publish] and [scout].
+   * behavior, matching [scout].
    */
   story: StoryConfig | null
-  publish: PublishChannelConfig | null
+  /**
+   * The platforms this channel is posted to by hand. Empty means "not decided
+   * yet": the channel still produces, but has no /post checklist, and
+   * pendingInventory counts every unconsumed video (see jobs/library.ts).
+   */
+  platforms: Platform[]
 }
 
 /**
@@ -108,68 +103,41 @@ export interface StoryConfig {
 
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
 
-// A now-removed key that used to be load-bearing. zod's own strict-object
-// error ("Unrecognized key: slots") tells the operator nothing about where the
-// setting went, and a live channel TOML that silently stops controlling
-// cadence is the worst possible outcome — so it is named explicitly, at every
-// level it used to be allowed. The field is declared purely so that .strict()
-// lets it through to this check; nothing ever reads it.
-const REMOVED_SLOTS_MESSAGE = 'slots were removed; daily volume now comes from videos_per_day'
-
-function rejectStaleSlots(slots: unknown, ctx: z.RefinementCtx): void {
-  if (slots !== undefined) {
-    ctx.addIssue({ code: 'custom', message: REMOVED_SLOTS_MESSAGE, path: ['slots'] })
-  }
-}
-
-// Same pattern as REMOVED_SLOTS_MESSAGE: min_score used to gate which scored
-// topics got stored. It is now a constant in code (SCOUT_MIN_SCORE, in
-// src/scout/scout.ts) rather than a per-channel dial, so a channel TOML that
-// still sets it is a load error naming the replacement rather than a silently
-// ignored key.
+// min_score used to gate which scored topics got stored. It is now a
+// constant in code (SCOUT_MIN_SCORE, in src/scout/scout.ts) rather than a
+// per-channel dial, so a channel TOML that still sets it is a load error
+// naming the replacement rather than a silently ignored key.
 const REMOVED_MIN_SCORE_MESSAGE =
   'min_score was removed; the scout stores only topics scoring >= 80 (SCOUT_MIN_SCORE)'
 
-// .strict() is applied AFTER .extend() (not on the base options schema): a
-// non-strict base can be extended freely, and strictness on the final,
-// per-platform shape is what makes an unknown key (e.g. category_id under
-// [publish.instagram]) a load error naming that platform's own field set.
-// superRefine comes last so it sees the parsed shape.
-const youtubeTargetSchema = youtubeOptionsSchema
-  .extend({ slots: z.unknown().optional() })
-  .strict()
-  .superRefine((val, ctx) => rejectStaleSlots(val.slots, ctx))
-const instagramTargetSchema = instagramOptionsSchema
-  .extend({ slots: z.unknown().optional() })
-  .strict()
-  .superRefine((val, ctx) => rejectStaleSlots(val.slots, ctx))
-
-// .strict() at this level rejects any undeclared platform sub-table (e.g.
-// [publish.tiktok]) and the removed `platforms = [...]` key — zod's default
-// unknown-key behavior on a strict object covers them without extra code.
-// superRefine enforces the two rules the static shape cannot express: a stale
-// `slots` key gets a message naming its replacement, and at least one platform
-// must be declared.
-const publishSchema = z
-  .object({
-    slots: z.unknown().optional(),
-    youtube: youtubeTargetSchema.optional(),
-    instagram: instagramTargetSchema.optional(),
-  })
-  .strict()
+// The platforms this channel is posted to BY HAND. Not a schedule and not a
+// credential — just the checklist the /post page renders and the set
+// pendingInventory measures "fully posted" against.
+//
+// z.array(z.string()) rather than z.array(z.enum(PLATFORMS)): zod's own
+// invalid_value message for an enum lists the valid options but never the
+// offending value, which reads as "unrecognized key" and sends an operator
+// hunting for what they actually typed. superRefine names it. The cast at the
+// call site below is safe because superRefine has already rejected anything
+// not in PLATFORMS.
+const platformsSchema = z
+  .array(z.string())
+  .default([])
   .superRefine((val, ctx) => {
-    rejectStaleSlots(val.slots, ctx)
-    const declared = PUBLISH_PLATFORMS.filter((p) => val[p] !== undefined)
-    if (declared.length === 0) {
-      ctx.addIssue({
-        code: 'custom',
-        message:
-          'a [publish] table must declare at least one platform sub-table (e.g. [publish.youtube])',
-      })
+    const seen = new Set<string>()
+    for (const p of val) {
+      if (!(PLATFORMS as readonly string[]).includes(p)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: `unknown platform "${p}" — expected one of ${PLATFORMS.join(', ')}`,
+        })
+      }
+      if (seen.has(p)) {
+        ctx.addIssue({ code: 'custom', message: `duplicate platform in platforms: ${p}` })
+      }
+      seen.add(p)
     }
   })
-  .optional()
-type RawPublish = z.infer<typeof publishSchema>
 
 const rawSchema = z.object({
   name: z.string(),
@@ -229,7 +197,8 @@ const rawSchema = z.object({
     })
     .strict()
     .optional(),
-  publish: publishSchema,
+  platforms: platformsSchema,
+  publish: z.unknown().optional(),
   caption_style: z.object({
     font: z.string(),
     font_size_px: z.number(),
@@ -261,6 +230,15 @@ const rawSchema = z.object({
 //    ages out mid-series (publish/settled.ts) and viewers are stranded on part
 //    2 forever. Caught here rather than at 3am.
 const channelSchema = rawSchema.superRefine((cfg, ctx) => {
+  if (cfg.publish !== undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['publish'],
+      message:
+        'the [publish] table was removed — declare targets as a top-level ' +
+        'platforms = ["youtube", "instagram", "tiktok"] instead',
+    })
+  }
   if (cfg.story === undefined) return
   if ((cfg.scout?.rss.length ?? 0) > 0) {
     ctx.addIssue({
@@ -294,34 +272,15 @@ function usdToMicros(usd: number): number {
   return Math.round(usd * 1_000_000)
 }
 
-// Each target — and its options object — is frozen individually, not just the
-// outer targets array (loadChannelConfig also freezes `publish` and
-// `publish.targets`). Defense against accidental mutation of shared config
-// state across jobs/ticks: `channel.publish.targets[0].options.privacy = ...`
-// must fail loudly, not silently corrupt config every subsequent tick reads.
-function buildTargets(raw: NonNullable<RawPublish>): PublishTargetConfig[] {
-  const targets: PublishTargetConfig[] = []
-  if (raw.youtube) {
-    targets.push(
-      Object.freeze({
-        platform: 'youtube',
-        options: Object.freeze(normalizeYoutubeOptions(raw.youtube)),
-      }),
-    )
-  }
-  if (raw.instagram) {
-    targets.push(
-      Object.freeze({
-        platform: 'instagram',
-        options: Object.freeze(normalizeInstagramOptions(raw.instagram)),
-      }),
-    )
-  }
-  return targets.sort((a, b) => (a.platform < b.platform ? -1 : 1))
-}
-
-export function loadChannelConfig(path: string): ChannelConfig {
-  const text = readFileSync(path, 'utf8')
+/**
+ * Parses a channel TOML's already-read text into a `ChannelConfig`.
+ * `filename` carries no weight here — the filename==name invariant is
+ * enforced by `loadChannelsDir`, which is the only caller that knows the
+ * file's actual basename — but the parameter documents what the caller has
+ * in hand, and lets error messages that want it add it later.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- filename carries no weight yet, see doc comment above
+export function parseChannelToml(text: string, filename: string): ChannelConfig {
   const raw = channelSchema.parse(parseToml(text))
   return {
     name: raw.name,
@@ -363,12 +322,15 @@ export function loadChannelConfig(path: string): ChannelConfig {
         }
       : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
     story: raw.story ? { maxParts: raw.story.max_parts } : null,
-    publish: raw.publish
-      ? (Object.freeze({
-          targets: Object.freeze(buildTargets(raw.publish)),
-        }) as PublishChannelConfig)
-      : null,
+    // Safe: platformsSchema's superRefine already rejected any value not in
+    // PLATFORMS, and parse() would have thrown before reaching here.
+    platforms: raw.platforms as Platform[],
   }
+}
+
+export function loadChannelConfig(path: string): ChannelConfig {
+  const text = readFileSync(path, 'utf8')
+  return parseChannelToml(text, path)
 }
 
 /**

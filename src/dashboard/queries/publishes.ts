@@ -103,12 +103,13 @@ export function buildPublishGrids(
       'WHERE channel = ? AND day >= ? AND day <= ? ORDER BY id ASC',
   )
 
-  // flatMap rather than filter-then-map: it drops the unpublished channels
-  // AND narrows `publish` away from null in one step, so the targets below
-  // need no second null check the filter already ruled out.
+  // flatMap rather than filter-then-map: it drops channels with no declared
+  // platforms in one step. `tiktok` is filtered out here — this grid is keyed
+  // by the upload adapters' Platform (youtube/instagram only), and a
+  // declared-but-not-yet-adapted platform has no publishes rows to show.
   return channels.flatMap((channel): ChannelGrid[] => {
-    const publish = channel.publish
-    if (publish === null) return []
+    const targetPlatforms = channel.platforms.filter((p): p is Platform => p !== 'tiktok')
+    if (targetPlatforms.length === 0) return []
     const dbRows = statement.all(channel.name, oldest, dayList[0]) as DbPublishRow[]
     const cells = new Map<string, PublishRow>()
     // ORDER BY id ASC plus overwrite means the newest attempt for a cell
@@ -136,10 +137,10 @@ export function buildPublishGrids(
     // rows alone would hide exactly those gaps. Two platforms never collapse
     // into one row, so a publish on one platform can't hide or overwrite the
     // other's.
-    const rows: GridRow[] = publish.targets.flatMap((target) => {
-      const rowCount = Math.max(channel.videosPerDay, maxSeqByPlatform.get(target.platform) ?? 0)
+    const rows: GridRow[] = targetPlatforms.flatMap((platform) => {
+      const rowCount = Math.max(channel.videosPerDay, maxSeqByPlatform.get(platform) ?? 0)
       return Array.from({ length: rowCount }, (_unused, i) => ({
-        platform: target.platform,
+        platform,
         seq: i + 1,
       }))
     })

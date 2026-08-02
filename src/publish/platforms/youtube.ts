@@ -3,8 +3,16 @@ import { renderDescription, renderTags } from '../../posts/meta.js'
 import { loadToken } from '../tokens.js'
 import { networkError, PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { PublishAdapter } from '../types.js'
-import type { YoutubeOptions } from './options.js'
 import { PLATFORM_QUOTAS } from './quota.js'
+
+// Declared locally rather than imported: this adapter (and its former
+// options.ts home) is deleted in a later task once channel config no longer
+// drives real uploads.
+export interface YoutubeOptions {
+  privacy: 'public' | 'unlisted' | 'private'
+  categoryId: number
+  madeForKids: boolean
+}
 
 // Least-privilege scope: upload-only, no read/manage access to the channel
 // (design spec §4.2).

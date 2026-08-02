@@ -160,7 +160,7 @@ describe('/publishes', () => {
     const res = await createApp({ config }).request('/publishes')
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('instagram: no channel has a [publish.instagram] target configured')
+    expect(body).toContain('instagram: no channel declares instagram in platforms')
   })
 
   it('reports instagram quota per channel — independent usage, not one summed figure', async () => {
@@ -178,6 +178,7 @@ describe('/publishes', () => {
         'bg_dir = "assets/bg"',
         'bgm_dir = "assets/bgm"',
         'videos_per_day = 1',
+        'platforms = ["instagram"]',
         '',
         '[voice]',
         'volume = "af_heart"',
@@ -192,11 +193,6 @@ describe('/publishes', () => {
         '[budget]',
         'per_video_usd = 8.0',
         'per_day_usd = 20.0',
-        '',
-        '[publish]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "1"',
         '',
       ].join('\n'),
     )
@@ -234,6 +230,7 @@ describe('/publishes', () => {
         'bg_dir = "assets/bg"',
         'bgm_dir = "assets/bgm"',
         'videos_per_day = 1',
+        'platforms = ["instagram"]',
         '',
         '[voice]',
         'volume = "af_heart"',
@@ -248,11 +245,6 @@ describe('/publishes', () => {
         '[budget]',
         'per_video_usd = 8.0',
         'per_day_usd = 20.0',
-        '',
-        '[publish]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "1"',
         '',
       ].join('\n')
     writeFileSync(join(config.paths.channelsDir, 'space.toml'), channelToml('space'))

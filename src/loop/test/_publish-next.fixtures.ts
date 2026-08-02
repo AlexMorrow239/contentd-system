@@ -61,7 +61,6 @@ export function channelToml(opts: {
     niche: ['space facts'],
     videosPerDay: opts.videosPerDay ?? 2,
     platforms,
-    platformOptions: { instagram: ['ig_user_id = "ig-test"'] },
   })
 }
 

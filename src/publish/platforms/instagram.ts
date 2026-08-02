@@ -5,8 +5,15 @@ import { renderCaption } from '../../posts/meta.js'
 import { loadToken, upsertToken } from '../tokens.js'
 import { networkError, PublishError, PublishOutcomeUnknownError } from '../types.js'
 import type { PublishAdapter } from '../types.js'
-import type { InstagramOptions } from './options.js'
 import { PLATFORM_QUOTAS } from './quota.js'
+
+// Declared locally rather than imported: this adapter (and its former
+// options.ts home) is deleted in a later task once channel config no longer
+// drives real uploads.
+interface InstagramOptions {
+  igUserId: string
+  shareToFeed: boolean
+}
 
 export const IG_GRAPH_VERSION = 'v21.0'
 export const IG_UPLOAD_TIMEOUT_MS = 300_000 // 5 min, per HTTP call

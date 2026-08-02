@@ -95,7 +95,10 @@ export function planTick(db: Database, channels: ChannelConfig[], now = new Date
         underQuota &&
         pendingInventory(db, {
           channel: channel.name,
-          declared: channel.publish?.targets.map((t) => t.platform) ?? [],
+          // pendingInventory settles legs against the upload adapters' own
+          // Platform (youtube/instagram) — tiktok has no adapter and no
+          // publishes rows, so it is never part of "declared" here.
+          declared: channel.platforms.filter((p): p is 'youtube' | 'instagram' => p !== 'tiktok'),
           createdAfter: agedCutoff(now, channel.backlogDays),
         }) >= backlogCap(channel)
       if (backlogged) anyBacklogged = true

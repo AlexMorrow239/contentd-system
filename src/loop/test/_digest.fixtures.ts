@@ -153,7 +153,7 @@ export function seedCost(db: Database, jobId: string, usdMicros: number): void {
   kit.seedCost(db, jobId, { provider: 'fal', operation: 'video', usdMicros })
 }
 
-/** A channel that declares a youtube publish target, which most sections need. */
+/** A channel that declares youtube as a target platform, which most sections need. */
 export function publishChannel(
   name: string,
   overrides: { videosPerDay?: number } = {},
@@ -161,14 +161,7 @@ export function publishChannel(
   return testChannel({
     name,
     videosPerDay: overrides.videosPerDay ?? 2,
-    publish: {
-      targets: [
-        {
-          platform: 'youtube',
-          options: { privacy: 'public', categoryId: 24, madeForKids: false },
-        },
-      ],
-    },
+    platforms: ['youtube'],
   })
 }
 

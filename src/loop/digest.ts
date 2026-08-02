@@ -27,6 +27,15 @@ import { loadToken } from '../publish/tokens.js'
 import { resolvePlatformMeta } from '../publish/types.js'
 import type { Platform } from '../publish/types.js'
 
+// channel.platforms (src/posts/types.js) is the three-valued checklist —
+// youtube/instagram/tiktok. Everything below this line still speaks the
+// upload adapters' own two-valued Platform (no tiktok adapter exists), so
+// every read of channel.platforms in this file goes through this filter
+// rather than widening PUBLISH_PLATFORMS itself.
+function publishPlatforms(channel: ChannelConfig): Platform[] {
+  return channel.platforms.filter((p): p is Platform => p !== 'tiktok')
+}
+
 // A job 'running' longer than this has almost certainly lost its process —
 // real runs finish in minutes. Digest-only visibility: auto-resume never
 // touches running jobs; the operator resumes with --force.
@@ -247,7 +256,9 @@ export function buildDigest(
        GROUP BY j.channel`,
     )
     .all() as { channel: string; n: number; oldest: string }[]
-  const publishingChannels = new Set(channels.filter((c) => c.publish !== null).map((c) => c.name))
+  const publishingChannels = new Set(
+    channels.filter((c) => c.platforms.length > 0).map((c) => c.name),
+  )
   lines.push('  Backlog:')
   const backlogStart = lines.length
   for (const r of readyBacklog) {
@@ -265,7 +276,7 @@ export function buildDigest(
   lines.push('  Aged out:')
   const agedStart = lines.length
   for (const channel of channels) {
-    if (channel.publish === null) continue
+    if (channel.platforms.length === 0) continue
     const cutoff = agedCutoff(now, channel.backlogDays)
     const windowStart = agedCutoff(now, channel.backlogDays + AGED_OUT_WINDOW_DAYS)
     const windowed = db
@@ -289,8 +300,7 @@ export function buildDigest(
       db,
       rows.map((r) => r.jobId),
     )
-    for (const target of channel.publish.targets) {
-      const platform = target.platform
+    for (const platform of publishPlatforms(channel)) {
       // Aged AND settled-without-a-done-row is exactly "passed over": the leg
       // is closed, and nothing published it.
       const n = rows.filter((r) => {
@@ -474,8 +484,8 @@ export function buildDigest(
   for (const c of channels) {
     const scoutsAnything =
       c.scout.subreddits.length + c.scout.rss.length + c.scout.generateTopics > 0
-    if (!scoutsAnything || c.publish === null) continue
-    const declared = c.publish.targets.map((t) => t.platform)
+    if (!scoutsAnything || c.platforms.length === 0) continue
+    const declared = publishPlatforms(c)
     const candidates = candidateTopicCount(db, c.name)
     const inventory = pendingInventory(db, {
       channel: c.name,
@@ -512,7 +522,7 @@ export function buildDigest(
   // (design spec decision 5) is the digest's own signal that resolveCredential
   // has been failing tick after tick, not a one-off blip.
   const TOKEN_EXPIRY_WARNING_MS = 3 * 24 * 60 * 60 * 1000 // 3 days
-  if (channels.some((c) => c.publish !== null)) {
+  if (channels.some((c) => c.platforms.length > 0)) {
     const unsetVars: string[] = []
     if (!digestEnv.ytClientIdPresent) unsetVars.push('YT_CLIENT_ID')
     if (!digestEnv.ytClientSecretPresent) unsetVars.push('YT_CLIENT_SECRET')
@@ -539,9 +549,8 @@ export function buildDigest(
       'SELECT 1 AS present FROM oauth_tokens WHERE platform = ? AND channel = ?',
     )
     for (const channel of channels) {
-      if (channel.publish === null) continue
-      for (const target of channel.publish.targets) {
-        const platform = target.platform
+      if (channel.platforms.length === 0) continue
+      for (const platform of publishPlatforms(channel)) {
         const remedy = `run brainrot auth ${platform} --channel ${channel.name}`
         if (tokenRow.get(platform, channel.name) === undefined) {
           lines.push(`  ${channel.name} ${platform}: no stored token — ${remedy}`)
@@ -657,11 +666,11 @@ export function buildDigest(
     "SELECT COUNT(DISTINCT job_id) AS n FROM publishes WHERE channel = ? AND platform = ? AND day = ? AND status = 'done'",
   )
   for (const channel of channels) {
-    if (channel.publish === null) continue
+    if (channel.platforms.length === 0) continue
     const published = videosPublishedToday(db, channel.name, yesterday)
-    const perPlatformCounts = channel.publish.targets.map((t) => {
-      const { n } = perPlatform.get(channel.name, t.platform, yesterday) as { n: number }
-      return { platform: t.platform, n }
+    const perPlatformCounts = publishPlatforms(channel).map((platform) => {
+      const { n } = perPlatform.get(channel.name, platform, yesterday) as { n: number }
+      return { platform, n }
     })
     if (published < channel.videosPerDay) {
       const split = perPlatformCounts.map((p) => `${p.platform} ${p.n}`).join(', ')
@@ -678,11 +687,11 @@ export function buildDigest(
     // perPlatformCounts above — an attempted-but-rejected platform is not the
     // same claim as an untouched one.
     if (published > 0) {
-      for (const t of channel.publish.targets) {
-        const { n } = perPlatformDone.get(channel.name, t.platform, yesterday) as { n: number }
+      for (const platform of publishPlatforms(channel)) {
+        const { n } = perPlatformDone.get(channel.name, platform, yesterday) as { n: number }
         if (n === 0) {
           lines.push(
-            `  ${channel.name} ${t.platform}: 0 uploads yesterday while the channel published ${published} — platform may be dead (auth/quota), not merely oversubscribed`,
+            `  ${channel.name} ${platform}: 0 uploads yesterday while the channel published ${published} — platform may be dead (auth/quota), not merely oversubscribed`,
           )
         }
       }
@@ -694,21 +703,22 @@ export function buildDigest(
   // section is windowed to the last 24h — so a halted channel simply stops
   // appearing, which reads identically to a healthy quiet one.
   //
-  // Channels with NO [publish] table are included deliberately. That is the
-  // spec's accepted consequence #2: nothing drains such a channel, so it fills
-  // to its cap once and stops for good, waiting on `library reject`. Same
-  // pendingInventory and same backlogCap the gate itself uses, so the report
-  // can never name a different set of channels than the one being gated.
+  // Channels with NO declared platforms are included deliberately. That is
+  // the spec's accepted consequence #2: nothing drains such a channel, so it
+  // fills to its cap once and stops for good, waiting on `library reject`.
+  // Same pendingInventory and same backlogCap the gate itself uses, so the
+  // report can never name a different set of channels than the one being
+  // gated.
   for (const channel of channels) {
     const inventory = pendingInventory(db, {
       channel: channel.name,
-      declared: channel.publish?.targets.map((t) => t.platform) ?? [],
+      declared: publishPlatforms(channel),
       createdAfter: agedCutoff(now, channel.backlogDays),
     })
     const cap = backlogCap(channel)
     if (inventory < cap) continue
     const drain =
-      channel.publish === null
+      channel.platforms.length === 0
         ? 'nothing publishes this channel — retire videos with brainrot library approve/reject'
         : 'production is paused until these publish or are rejected'
     lines.push(

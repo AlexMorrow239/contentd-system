@@ -21,7 +21,12 @@ import { reclaimableObjects, reclaimObjects } from '../publish/reclaim.js'
 import { channelNotDueReason, localDay, orderChannels } from '../publish/schedule.js'
 import type { ChannelCandidate, NotDueReason } from '../publish/schedule.js'
 import { agedCutoff } from '../publish/settled.js'
-import { PUBLISH_PLATFORMS, resolvePlatformMeta, toPublishFailureKind } from '../publish/types.js'
+import {
+  defaultTargetsFor,
+  PUBLISH_PLATFORMS,
+  resolvePlatformMeta,
+  toPublishFailureKind,
+} from '../publish/types.js'
 import type { Platform, PublishAdapter, PublishTargetConfig } from '../publish/types.js'
 import type { ObjectStore } from '../storage/types.js'
 import { acquireLease, extendLease, PUBLISH_LEASE_TTL_MS, releaseLease } from './lease.js'
@@ -138,13 +143,13 @@ async function sweepReclaimable(
   let count = 0
   let bytes = 0
   for (const channel of channels) {
-    if (channel.publish === null) continue
+    if (channel.platforms.length === 0) continue
     const remaining = MAX_RECLAIM_PER_TICK - count
     if (remaining <= 0) break
     const warn = (message: string): void => console.error(`publish-next: reclaim: ${message}`)
     const objects = reclaimableObjects(db, {
       channel: channel.name,
-      declared: channel.publish.targets.map((t) => t.platform),
+      declared: channel.platforms.filter((p): p is Platform => p !== 'tiktok'),
       createdAfter: agedCutoff(now, channel.backlogDays),
       limit: remaining,
       warn,
@@ -276,7 +281,7 @@ export async function publishNextTick(
     // reason at all.
     let anyChannelConsidered = false
     for (const channel of channels) {
-      if (channel.publish === null) continue
+      if (channel.platforms.length === 0) continue
       anyChannelConsidered = true
       const publishedToday = videosPublishedToday(db, channel.name, day)
       // --force is the local-testing bypass: it skips the cooldown gap and
@@ -362,8 +367,10 @@ export async function publishNextTick(
 
     for (const candidate of ordered) {
       const channel = channels.find((c) => c.name === candidate.channel)
-      if (channel === undefined || channel.publish === null) continue
-      const declared = channel.publish.targets
+      if (channel === undefined || channel.platforms.length === 0) continue
+      const declared = defaultTargetsFor(
+        channel.platforms.filter((p): p is Platform => p !== 'tiktok'),
+      )
       // The declared platform list goes to the DAO as plain data: it is what
       // makes "every platform blocked" mean every platform THIS channel targets,
       // so a single-platform channel's finished videos stop consuming the
