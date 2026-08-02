@@ -24,7 +24,9 @@ export interface ObjectStore {
 // vocabulary is the shared one in src/errors.ts, narrowed to the three
 // outcomes an object store can actually produce.
 export class StorageError extends BrainrotError {
-  // See PublishError: `declare` is mandatory under useDefineForClassFields.
+  // `declare` is mandatory under useDefineForClassFields — without it, the
+  // base class's field initializer runs after this one and overwrites it
+  // with `undefined`.
   declare readonly kind: 'not-found' | 'auth' | 'transient'
 
   constructor(message: string, kind: 'not-found' | 'auth' | 'transient') {

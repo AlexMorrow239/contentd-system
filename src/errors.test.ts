@@ -12,10 +12,10 @@ import {
 describe('errors', () => {
   describe('BrainrotError', () => {
     it('carries its domain, kind and derived code', () => {
-      const err = new BrainrotError('nope', { domain: 'publish', kind: 'auth' })
-      expect(err.domain).toBe('publish')
+      const err = new BrainrotError('nope', { domain: 'storage', kind: 'auth' })
+      expect(err.domain).toBe('storage')
       expect(err.kind).toBe('auth')
-      expect(err.code).toBe('publish/auth')
+      expect(err.code).toBe('storage/auth')
       expect(err.message).toBe('nope')
       expect(err).toBeInstanceOf(Error)
     })
@@ -67,14 +67,14 @@ describe('errors', () => {
   describe('classify', () => {
     it('reads a BrainrotError own fields', () => {
       const err = new BrainrotError('nope', {
-        domain: 'publish',
+        domain: 'storage',
         kind: 'quota',
         context: { platform: 'youtube' },
       })
       expect(classify(err)).toEqual({
-        domain: 'publish',
+        domain: 'storage',
         kind: 'quota',
-        code: 'publish/quota',
+        code: 'storage/quota',
         message: 'nope',
         context: { platform: 'youtube' },
       })
@@ -140,7 +140,7 @@ describe('errors', () => {
       })
       // A tag with a completely different domain/kind must not leak through —
       // only its context may enrich the classification.
-      tagError(err, { domain: 'publish', kind: 'auth', context: { b: 2 } })
+      tagError(err, { domain: 'storage', kind: 'auth', context: { b: 2 } })
       const info = classify(err)
       expect(info.domain).toBe('job')
       expect(info.kind).toBe('budget')

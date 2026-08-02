@@ -5,7 +5,7 @@ import { Command } from 'commander'
 import { errorMessage } from './errors.js'
 import { createJob, runJob } from './jobs/runner.js'
 import { resumeJob } from './jobs/resume.js'
-import { loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './config/channel.js'
+import { loadChannelConfig, tryLoadChannelsDir } from './config/channel.js'
 import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from './scout/scout.js'
 import { acquireLease, releaseLease } from './loop/lease.js'
 import { produceNextTick } from './loop/produce-next.js'
@@ -25,16 +25,6 @@ import {
 } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
 import { backfillStore } from './jobs/backfill-store.js'
-import {
-  authFlowTransport,
-  IG_AUTH_DEFAULT_PORT,
-  runInstagramAuthFlow,
-  runYoutubeAuthFlow,
-  YT_AUTH_DEFAULT_PORT,
-} from './publish/oauth-flow.js'
-import { parseTokenKey } from './publish/crypto.js'
-import { upsertToken } from './publish/tokens.js'
-import type { Platform } from './publish/types.js'
 // storage/s3.js is imported dynamically at the three commands that need it —
 // a static import puts the AWS SDK on the startup path of every command.
 // storage/config.js carries no SDK import, so this one is free.
@@ -72,16 +62,6 @@ export function parseLibraryJobIds(raw: string[]): string[] {
     }
     return token
   })
-}
-
-// `auth <platform> --port` must be a real TCP port: an unvalidated
-// Number.parseInt would silently turn a typo into NaN and fail later inside
-// server.listen() with a cryptic Node error instead of here.
-function parseAuthPort(raw: string): number {
-  if (!/^[1-9]\d*$/.test(raw) || Number(raw) > 65535) {
-    throw new Error(`invalid --port "${raw}": must be a positive integer up to 65535`)
-  }
-  return Number(raw)
 }
 
 // One flag, not three. The container/host split is built on this single value:
@@ -545,116 +525,6 @@ library
       console.log(`  skipped ${jobId}: local video file is gone, nothing to upload`)
     }
   })
-
-// Interactive per-channel OAuth grant (design spec §4.2). Thin glue: all flow
-// logic and error taxonomy live in the run*AuthFlow functions; this action
-// only resolves the channel/env inputs around one and persists the result.
-const auth = program.command('auth')
-
-/**
- * Registers `auth <platform>`. Every platform's grant has the same shape —
- * resolve the channel, require its credential env vars, run the flow, store
- * the token encrypted — so only the flow itself and which env vars it needs
- * vary. `run` receives the env values in `envVars` order.
- */
-function registerAuthCommand(spec: {
-  platform: Platform
-  envVars: string[]
-  // The fixed port Compose publishes for this platform, used only by
-  // --headless (see authFlowTransport).
-  headlessDefaultPort: number
-  run(
-    values: string[],
-    transport: ReturnType<typeof authFlowTransport>,
-  ): Promise<{ token: string; scopes: string; expiresAt: string | null }>
-}): void {
-  auth
-    .command(spec.platform)
-    .requiredOption('--channel <name>', 'channel name to authorize')
-    .option('--root <path>', ROOT_OPTION_DESC)
-    .option(
-      '--headless',
-      'run where no browser exists (inside the container): print the consent url instead of launching a browser, and bind the callback on all interfaces so a published port reaches it',
-    )
-    .option(
-      '--port <port>',
-      'fixed callback port (default: an ephemeral port, or the platform default under --headless)',
-      parseAuthPort,
-    )
-    .action(
-      async (opts: {
-        channel: string
-        root?: string
-        headless?: boolean
-        port?: number
-      }) => {
-        // Channel + env checks precede any db handle or browser launch, so a
-        // typo or missing credential fails clean before Alex is asked to click
-        // through a consent screen.
-        const paths = resolveBrainrotPaths(opts.root)
-        const channels = loadChannelsDir(paths.channelsDir)
-        const channel = channels.find((c) => c.name === opts.channel)
-        if (!channel) {
-          throw new Error(
-            `auth ${spec.platform}: unknown channel "${opts.channel}" (checked ${paths.channelsDir})`,
-          )
-        }
-        const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
-        const values = spec.envVars.map((name) => {
-          const value = process.env[name]
-          if (!value) {
-            throw new Error(`auth ${spec.platform}: ${name} is not set (add it to .env)`)
-          }
-          return value
-        })
-        const granted = await spec.run(
-          values,
-          authFlowTransport(
-            { headless: opts.headless, port: opts.port },
-            spec.headlessDefaultPort,
-          ),
-        )
-        const db = openDb(paths.dbPath)
-        try {
-          upsertToken(
-            db,
-            spec.platform,
-            channel.name,
-            granted.token,
-            granted.scopes,
-            key,
-            granted.expiresAt,
-          )
-        } finally {
-          db.close()
-        }
-        // Confirmation only — never the token itself (house rule: token
-        // material never touches logs or stdout).
-        const expiry = granted.expiresAt === null ? '' : `, expires ${granted.expiresAt}`
-        console.log(
-          `authorized ${spec.platform} for channel "${channel.name}" — scopes: ${granted.scopes}${expiry}`,
-        )
-      },
-    )
-}
-
-registerAuthCommand({
-  platform: 'youtube',
-  envVars: ['YT_CLIENT_ID', 'YT_CLIENT_SECRET'],
-  headlessDefaultPort: YT_AUTH_DEFAULT_PORT,
-  // A refresh token does not expire, hence the null expiry.
-  run: async ([clientId, clientSecret], transport) => {
-    const granted = await runYoutubeAuthFlow({ clientId, clientSecret, ...transport })
-    return { token: granted.refreshToken, scopes: granted.scopes, expiresAt: null }
-  },
-})
-
-registerAuthCommand({
-  platform: 'instagram',
-  envVars: ['IG_APP_ID', 'IG_APP_SECRET'],
-  headlessDefaultPort: IG_AUTH_DEFAULT_PORT,
-  run: ([appId, appSecret], transport) => runInstagramAuthFlow({ appId, appSecret, ...transport }),
-})
 
 program
   .command('digest')

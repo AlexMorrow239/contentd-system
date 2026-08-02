@@ -7,7 +7,6 @@ import { classify } from './errors.js'
 import { BudgetExceededError } from './jobs/costs.js'
 import { pipelineStages } from './jobs/pipeline.js'
 import { ResumeError } from './jobs/resume.js'
-import { PublishError, PublishOutcomeUnknownError } from './publish/types.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
@@ -213,14 +212,9 @@ describe('error handling conventions', () => {
 
   it('classifies every domain class to its declared domain and kind', () => {
     // The anti-drift guard for the taxonomy itself. It lives here rather than
-    // in errors.test.ts because it drags publish, storage, jobs and scout into
+    // in errors.test.ts because it drags storage, jobs and scout into
     // whatever file holds it — exactly what this file exists to absorb.
     const cases: [Error, string][] = [
-      [new PublishError('x', 'auth'), 'publish/auth'],
-      [new PublishError('x', 'quota'), 'publish/quota'],
-      [new PublishError('x', 'rejected'), 'publish/rejected'],
-      [new PublishError('x', 'transient'), 'publish/transient'],
-      [new PublishOutcomeUnknownError('x'), 'publish/unknown-outcome'],
       [new StorageError('x', 'not-found'), 'storage/not-found'],
       [new StorageError('x', 'auth'), 'storage/auth'],
       [new StorageError('x', 'transient'), 'storage/transient'],

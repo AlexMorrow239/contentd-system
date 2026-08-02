@@ -76,16 +76,15 @@ services:
       whisperx:
         condition: service_healthy
     # Forwards EVERY key in the host's (dev-pointing) .env — provider keys,
-    # BRAINROT_TOKEN_KEY, the dev-facing BRAINROT_S3_* (MinIO), etc. — into
+    # the dev-facing BRAINROT_S3_* (MinIO), etc. — into
     # this container. The `environment:` block below overrides the keys that
     # must hold a different value in production; every other .env key passes
-    # through unmodified (intended for provider keys, IG app credentials,
-    # BRAINROT_TOKEN_KEY).
+    # through unmodified (intended for provider keys).
     env_file:
       - .env
     environment:
       # env_file above forwards EVERY key in the host's (dev-pointing) .env —
-      # provider keys, BRAINROT_TOKEN_KEY, etc — straight into this container.
+      # provider keys, etc — straight into this container.
       # Compose applies `environment` after `env_file`, so only the keys
       # listed below are guaranteed to hold their production value regardless
       # of what the host .env says; every other .env key passes through
@@ -142,22 +141,6 @@ services:
       # Never set for production: presigning must sign against the real R2
       # endpoint. This exists only so a dev .env's MinIO value cannot leak in.
       BRAINROT_S3_PUBLIC_ENDPOINT: ''
-    # The two OAuth callback ports, for `auth <platform> --headless` run via
-    # `docker compose exec` against this container. Nothing listens on them
-    # except during a 5-minute consent flow — they are published so the
-    # operator's browser, which is on the host, can reach a callback listener
-    # that lives in here.
-    #
-    # Bound to 127.0.0.1 on the HOST deliberately: the flow binds 0.0.0.0
-    # INSIDE the container (a container-loopback listener is unreachable
-    # through a published port), and this is what keeps that from being
-    # reachable off-machine. The ports must match src/publish/oauth-flow.ts's
-    # IG_AUTH_DEFAULT_PORT / YT_AUTH_DEFAULT_PORT, and Instagram's is
-    # additionally pre-registered with Meta, so it cannot be renumbered here
-    # alone.
-    ports:
-      - '127.0.0.1:51834:51834' # instagram consent callback (https, self-signed)
-      - '127.0.0.1:51835:51835' # youtube consent callback (http)
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
@@ -211,9 +194,8 @@ services:
     # would use to diagnose an unhealthy sidecar.
     # Deliberately NO env_file here, unlike `brainrot`. This is the one
     # process that terminates unauthenticated HTTP, and env_file would inject
-    # every key in the host .env — ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, and
-    # BRAINROT_TOKEN_KEY (the AES key that decrypts YouTube refresh tokens) —
-    # into it for no reason: every variable the dashboard actually reads is
+    # every key in the host .env — ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, etc
+    # — into it for no reason: every variable the dashboard actually reads is
     # already pinned below.
     environment:
       BRAINROT_ROOT: /app/state
@@ -258,7 +240,8 @@ volumes:
   whisperx-cache:
   minio-data:
   # All persistent state: jobs, library, topics, costs, leases, publishes and
-  # the encrypted oauth_tokens. Not a bind mount — see the brainrot service's
-  # mount comment for why, and treat `docker volume rm brainrot-data` as
-  # destroying every OAuth grant along with the run history.
+  # stored platform credential tokens. Not a bind mount — see the brainrot
+  # service's mount comment for why, and treat `docker volume rm
+  # brainrot-data` as destroying every stored credential along with the run
+  # history.
   brainrot-data:
