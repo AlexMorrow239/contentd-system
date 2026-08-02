@@ -517,8 +517,9 @@ there is any, and re-checks immediately; an idle worker sleeps 30 seconds
 sleeps 60 seconds (`ERROR_SLEEP_MS`) instead. `scout` layers a per-channel
 clock on top of that poll, `SCOUT_RECHECK_MS` (20 minutes), so a channel
 isn't refetched on every 30-second idle poll even when nothing about it
-changed — the clock is in-memory, so a daemon restart resets it and
-re-scouts immediately, which is harmless. `digest` is the one pipeline
+changed — the clock is persisted per channel in `scout_state`, so a daemon
+restart does not reset it and does not force an immediate re-scout.
+`digest` is the one pipeline
 worker still on a real clock: it fires once per local day at or after 08:00
 (`DIGEST_HOUR`), printed to the log stream only — nothing else delivers it —
 and a restart later the same day can re-fire it once. The other two workers,
@@ -592,7 +593,7 @@ Three of the wired actions **spend real provider money** on a click:
 ElevenLabs if the channel configures `[voice.premium]`, and a full Remotion
 render — `resume` re-runs whichever of those stages the job has not finished,
 and `scout now` pays for topic scoring plus, where `generate_topics` is set,
-topic generation. Two of them **post publicly**:
+topic generation. Three of them **post publicly**:
 `publish next` uploads the next due video to every platform its channel
 declares, and `publish retry`/`library approve` feed the daemon's normal
 publish worker, so the result is a real upload to YouTube/Instagram rather than
@@ -602,9 +603,13 @@ would do.
 Four of them (`produce next`, `resume`, `publish next`, `publish mark-done`)
 route through a confirmation interstitial naming the consequence. The rest fire
 on one click, `scout now` included — so a click can spend without a prompt.
-Spend still lands under the ordinary per-video, per-channel-day and global-day
-budget caps, but those are enforced in the pipeline rather than at this
-endpoint: the cap is the backstop, not the gate.
+Spend still lands under a budget cap, but which one depends on the action.
+`produce next` and `resume` each have a job to meter against, so they clear
+the full chain — per-video, channel-day, and global-day. `scout now` has no
+job row: its cost is ledgered under a sentinel `scout:<channel>` id that the
+channel-day query can't see and there's no video to hang a per-video cap on,
+so only the global-day cap backs it. Either way the cap is enforced in the
+pipeline rather than at this endpoint: it's the backstop, not the gate.
 
 **Do not put the dashboard behind a tunnel, reverse proxy, or `0.0.0.0`
 binding.** Doing so turns it into remote code execution against your channels,

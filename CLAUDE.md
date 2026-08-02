@@ -412,7 +412,9 @@ takes no lease anywhere.
 
 Two slow-handler behaviours are worth knowing before reading a result row.
 The three tick actions record the tick's own result **verbatim**, including a
-`lease-held` noop and including a `status: 'failed'` JobResult — `failAction`
+`status: 'failed'` JobResult and, for `produce.next`/`publish.next` (the two
+that actually acquire a lease — `publish.nextDryRun` skips the acquire
+entirely), a `lease-held` noop — `failAction`
 stores no `result`, so failing the action would throw away the very JobResult
 the operator queued it to read. And `scout.run` treats a broken channels
 directory as a `{action:'noop',reason:'config-error'}` recorded `done`, not a
@@ -791,8 +793,12 @@ credentials that mutation needs live only in the daemon. Queueing a *render* is
 no longer prospective: `produce.next` and `jobs.resume` both end in a real
 Remotion render and real provider spend, `publish.next` in a real public
 upload, and `scout.run` in real provider calls — all from an unauthenticated
-POST, which is why the loopback binding, the two CSRF layers below and the 409
-liveness gate are the whole of the boundary. What is still CLI-only is a
+POST, which is why the loopback binding and the two CSRF layers below are the
+whole of the boundary. The 409 liveness gate is not a third layer: it refuses
+only when the daemon looks stale (`src/dashboard/server.ts:171-179`), so a
+cross-origin POST that already cleared CSRF still succeeds whenever the daemon
+is up — it protects the operator from queueing into the void, not the pipeline
+from an attacker. What is still CLI-only is a
 *named* topic
 (`brainrot produce --topic`), `library reject`, `topics prune-media`,
 `library backfill-store`, `publish preflight` and `auth` — a scope boundary,

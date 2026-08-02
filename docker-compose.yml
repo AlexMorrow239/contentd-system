@@ -228,11 +228,12 @@ services:
       #
       # Since the dashboard gained POST /actions this binding is load-bearing
       # for more than privacy: a reachable dashboard can already approve and
-      # publish videos for real today, and will be able to spend provider
-      # budget and queue renders once a later phase wires produce/resume/scout
-      # into the same queue. Do not change this to 0.0.0.0 or front it with a
-      # reverse proxy. See README, "The dashboard can now publish — and will
-      # soon spend money too".
+      # publish videos for real today, AND spend provider budget and queue
+      # renders — produce/resume/scout are wired into the same queue as of
+      # this phase (src/actions/catalog.ts:111,144,154;
+      # src/actions/handlers.ts:165,180,208), not a later one. Do not change
+      # this to 0.0.0.0 or front it with a reverse proxy. See README, "The
+      # dashboard publishes and spends money".
       - '127.0.0.1:8787:8787'
     volumes:
       # READ-WRITE mount. SQLite must create the -shm file to read a WAL
