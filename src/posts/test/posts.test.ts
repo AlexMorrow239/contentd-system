@@ -1,0 +1,83 @@
+import { describe, expect, it } from 'vitest'
+import { memDb, seedJob } from '../../testing/db.js'
+import { markPosted, postedPlatforms, postsForJob, unmarkPosted } from '../posts.js'
+
+describe('posts', () => {
+  it('records a post and reads it back', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube', url: 'https://y/1' })
+    const rows = postsForJob(db, 'j1')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      jobId: 'j1',
+      channel: 'alpha',
+      platform: 'youtube',
+      url: 'https://y/1',
+    })
+    expect(rows[0]?.postedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/)
+  })
+
+  it('accepts a post with no url', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'tiktok' })
+    expect(postsForJob(db, 'j1')[0]?.url).toBeNull()
+  })
+
+  // The composite primary key IS the idempotence guarantee: a double-clicked
+  // button must not produce two rows.
+  it('is idempotent on (job, platform), keeping the newer url', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube', url: 'https://y/1' })
+    const rows = postsForJob(db, 'j1')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.url).toBe('https://y/1')
+  })
+
+  it('unmarks, and reports whether anything was there', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube' })
+    expect(unmarkPosted(db, 'j1', 'youtube')).toBe(true)
+    expect(unmarkPosted(db, 'j1', 'youtube')).toBe(false)
+    expect(postsForJob(db, 'j1')).toEqual([])
+  })
+
+  it('groups posted platforms and their urls by job in one read', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedJob(db, 'j2', { channel: 'alpha' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube', url: 'https://y/1' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'tiktok' })
+    markPosted(db, { jobId: 'j2', channel: 'alpha', platform: 'youtube' })
+    const byJob = postedPlatforms(db, ['j1', 'j2', 'j3'])
+    expect(byJob.get('j1')).toEqual(
+      new Map([
+        ['youtube', 'https://y/1'],
+        ['tiktok', null],
+      ]),
+    )
+    expect(byJob.get('j2')).toEqual(new Map([['youtube', null]]))
+    // Absent, not present-and-empty: "never posted" and "posted to nothing"
+    // are the same state, and the absence is what callers branch on.
+    expect(byJob.has('j3')).toBe(false)
+  })
+
+  it('returns an empty map for no job ids rather than building an empty IN ()', () => {
+    expect(postedPlatforms(memDb(), []).size).toBe(0)
+  })
+
+  // posted_at records when the video went out. A second click correcting a
+  // typo'd url must not restamp it.
+  it('does not restamp posted_at on a correcting write', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube' })
+    const first = postsForJob(db, 'j1')[0]?.postedAt
+    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube', url: 'https://y/1' })
+    expect(postsForJob(db, 'j1')[0]?.postedAt).toBe(first)
+  })
+})

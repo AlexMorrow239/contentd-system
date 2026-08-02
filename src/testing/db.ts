@@ -287,6 +287,29 @@ export function seedPublish(
   return Number(res.lastInsertRowid)
 }
 
+export function seedPost(
+  db: Database,
+  overrides: Partial<{
+    jobId: string
+    channel: string
+    platform: string
+    url: string | null
+    postedAt: string
+  }> = {},
+): void {
+  const row = {
+    jobId: 'job-1',
+    channel: 'alpha',
+    platform: 'youtube',
+    url: null as string | null,
+    postedAt: new Date().toISOString(),
+    ...overrides,
+  }
+  db.prepare(
+    'INSERT INTO posts (job_id, channel, platform, url, posted_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(row.jobId, row.channel, row.platform, row.url, row.postedAt)
+}
+
 export function seedCost(
   db: Database,
   jobId: string,

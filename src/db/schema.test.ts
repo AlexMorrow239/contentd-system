@@ -11,6 +11,7 @@ describe('publishes and oauth_tokens tables', () => {
     ).map((r) => r.name)
     expect(names).toContain('publishes')
     expect(names).toContain('oauth_tokens')
+    expect(names).toContain('posts')
     db.close()
   })
 })

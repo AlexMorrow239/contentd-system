@@ -102,6 +102,22 @@ CREATE TABLE IF NOT EXISTS publishes (
 -- instead. See ensureLivePublishIndex there for the full rationale.
 --   CREATE UNIQUE INDEX ux_publishes_live ON publishes (job_id, platform)
 --     WHERE status IN ('claimed','done','interrupted');
+-- One row per (video, platform) the operator actually posted. There is no
+-- status column on purpose: the row's EXISTENCE is the fact. Correcting a
+-- mistake is a DELETE, not a transition. `url` is nullable because pasting
+-- the link back is optional record-keeping, not a precondition.
+--
+-- `channel` is denormalized off `jobs` because every read here is
+-- channel-scoped and the join is pure overhead — the same call the deleted
+-- `publishes` table made.
+CREATE TABLE IF NOT EXISTS posts (
+  job_id    TEXT NOT NULL,
+  channel   TEXT NOT NULL,
+  platform  TEXT NOT NULL,
+  url       TEXT,
+  posted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (job_id, platform)
+);
 -- Per-channel scout attempt cadence: channels are config-file entities, not DB
 -- rows, so this is the one small table keyed on channel name (mirrors
 -- `leases`' PK-keyed shape) recording when a channel was last actually
