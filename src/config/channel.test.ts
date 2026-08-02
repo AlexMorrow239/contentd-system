@@ -281,7 +281,9 @@ describe('loadChannelsDir', () => {
   it('throws when the directory does not exist', () => {
     expect(() => loadChannelsDir('/nope/definitely/missing')).toThrow()
   })
+})
 
+describe('parseChannelToml — platforms', () => {
   it('parses a platforms list', () => {
     const config = parseChannelToml(
       channelToml({ name: 'alpha', platforms: ['youtube', 'tiktok'] }),

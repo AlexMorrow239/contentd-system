@@ -1116,6 +1116,31 @@ describe('buildDigest — channels at their backlog cap', () => {
     )
     db.close()
   })
+
+  it('names a channel declaring only tiktok as "nothing publishes this channel", not "paused until these publish"', () => {
+    // platforms = ['tiktok'] is a legal declaration, but there is no tiktok
+    // adapter, so publishPlatforms() filters it out and returns []. Inventory
+    // is computed against that filtered (empty) list, so the message must
+    // branch on the same filtered list — not on the raw, unfiltered
+    // channel.platforms, which still contains 'tiktok' and would pick the
+    // wrong branch.
+    const db = memDb()
+    for (let i = 1; i <= 4; i++) {
+      seedJob(db, { id: `job-${i}`, channel: 'chan-a' })
+      seedLibrary(db, `job-${i}`, 'ready', isoAgo(HOUR_MS))
+    }
+
+    const digest = buildDigest(
+      db,
+      [testChannel({ name: 'chan-a', platforms: ['tiktok'] })],
+      ENV_OK,
+    )
+    expect(digest).toContain(
+      'chan-a: holding 4 of 4 finished videos (backlog_days 2 x videos_per_day 2) — nothing publishes this channel',
+    )
+    expect(digest).not.toContain('production is paused until these publish or are rejected')
+    db.close()
+  })
 })
 
 describe('buildDigest — topic starvation action item', () => {

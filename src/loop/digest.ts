@@ -710,15 +710,16 @@ export function buildDigest(
   // report can never name a different set of channels than the one being
   // gated.
   for (const channel of channels) {
+    const declared = publishPlatforms(channel)
     const inventory = pendingInventory(db, {
       channel: channel.name,
-      declared: publishPlatforms(channel),
+      declared,
       createdAfter: agedCutoff(now, channel.backlogDays),
     })
     const cap = backlogCap(channel)
     if (inventory < cap) continue
     const drain =
-      channel.platforms.length === 0
+      declared.length === 0
         ? 'nothing publishes this channel — retire videos with brainrot library approve/reject'
         : 'production is paused until these publish or are rejected'
     lines.push(
