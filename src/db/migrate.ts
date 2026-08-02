@@ -92,27 +92,8 @@ function addTopicStoryColumns(db: Database): void {
  * declarative form. Every step inspects state before acting, so re-running is
  * a no-op. Called by openDb only — never by openDbReadonly, which must stay
  * write-free.
- *
- * `schemaSql` predates this codebase's last table rebuild (the publishes
- * slot->seq migration) and no current step reads it — that rebuild is gone
- * along with the publishing pipeline. Left optional, and still threaded
- * through by openDb and most callers, so a future step needing to replay
- * schema.sql (as that rebuild did) has it without touching every call site.
- *
- * `onWarn` is where a step that declined to apply itself reports why. It goes
- * to stderr (console.warn), never stdout: every loop tick and CLI command
- * prints a single JSON line, and a warning must not land in it. No current
- * step uses it either, for the same reason — the last one that did was the
- * publishes double-publish index — but it stays for the same reason.
  */
-export function migrate(
-  db: Database,
-  schemaSql?: string,
-  onWarn: (message: string) => void = (m) => console.warn(m),
-): void {
-  // Neither parameter is read by any step below — see the doc comment above.
-  void schemaSql
-  void onWarn
+export function migrate(db: Database): void {
   // The submission target behind a scouted topic. Backfilled for existing rows
   // by `brainrot topics prune-media`, which is the only thing that can recover
   // it — topics.url is the comments permalink, not the target.

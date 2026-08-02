@@ -62,7 +62,7 @@ describe('migrate', () => {
       uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     )`)
 
-    migrate(db, SCHEMA_SQL, () => {})
+    migrate(db)
 
     const cols = (db.prepare('PRAGMA table_info(library_objects)').all() as { name: string }[]).map(
       (c) => c.name,
@@ -76,7 +76,7 @@ describe('migrate', () => {
       'INSERT INTO library_objects (job_id, object_key, bytes, etag, reclaimed_at) VALUES (?, ?, ?, ?, ?)',
     ).run('job-1', 'videos/a.mp4', 10, 'etag', '2026-07-01T00:00:00.000Z')
 
-    migrate(db, SCHEMA_SQL, () => {})
+    migrate(db)
 
     const row = db.prepare('SELECT reclaimed_at AS at FROM library_objects WHERE job_id = ?').get('job-1') as
       { at: string | null }
@@ -101,7 +101,7 @@ describe('migrate — topics.target_url', () => {
     const db = topicsDb(OLD_TOPICS)
     expect(colNames(db, 'topics')).not.toContain('target_url')
 
-    migrate(db, SCHEMA_SQL)
+    migrate(db)
 
     expect(colNames(db, 'topics')).toContain('target_url')
   })
@@ -113,7 +113,7 @@ describe('migrate — topics.target_url', () => {
         "VALUES ('chan-a', 'A topic', 'A topic', 'reddit:r/space', 'https://e.invalid/x', 'h1', 80, 'seeded')",
     )
 
-    migrate(db, SCHEMA_SQL)
+    migrate(db)
 
     expect(db.prepare('SELECT title, target_url FROM topics').all()).toEqual([
       { title: 'A topic', target_url: null },
@@ -122,8 +122,8 @@ describe('migrate — topics.target_url', () => {
 
   it('is idempotent: a second run adds no duplicate column', () => {
     const db = topicsDb(OLD_TOPICS)
-    migrate(db, SCHEMA_SQL)
-    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+    migrate(db)
+    expect(() => migrate(db)).not.toThrow()
     expect(colNames(db, 'topics').filter((n) => n === 'target_url')).toHaveLength(1)
   })
 
@@ -132,7 +132,7 @@ describe('migrate — topics.target_url', () => {
     // in production. The probe is what keeps a caller holding a bare handle —
     // every fixture above — from hitting "no such table".
     const db = topicsDb(OLD_JOBS)
-    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+    expect(() => migrate(db)).not.toThrow()
   })
 })
 
@@ -165,7 +165,7 @@ describe('addTopicStoryColumns', () => {
         "VALUES ('space','t','t','reddit:r/space','u','h',90,'r')",
     ).run()
 
-    migrate(db, SCHEMA_SQL)
+    migrate(db)
 
     const cols = (db.prepare('PRAGMA table_info(topics)').all() as { name: string }[]).map(
       (c) => c.name,
@@ -272,8 +272,8 @@ describe('addTopicStoryColumns', () => {
   it('is a no-op on a database that already has them', () => {
     const db = new BetterSqlite3(':memory:')
     db.exec(SCHEMA_SQL)
-    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
-    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
+    expect(() => migrate(db)).not.toThrow()
+    expect(() => migrate(db)).not.toThrow()
     db.close()
   })
 })
@@ -325,16 +325,27 @@ describe('publishes -> posts', () => {
     expect(names.map((n) => n.name)).not.toContain('oauth_tokens')
   })
 
-  it("rewrites the retired 'published' library state to 'ready'", () => {
+  it("rewrites the retired 'published' library state to 'ready', and only that state", () => {
     const db = memDb()
     seedJob(db, 'j1', { channel: 'alpha' })
     seedLibrary(db, 'j1', { state: 'ready' })
     db.prepare("UPDATE library SET state = 'published' WHERE job_id = 'j1'").run()
+    // Control rows: neither should be touched by the UPDATE's WHERE clause.
+    // 'ready' is deliberately excluded as a control — a row already 'ready'
+    // is indistinguishable from one wrongly rewritten to it.
+    seedJob(db, 'j2', { channel: 'alpha' })
+    seedLibrary(db, 'j2', { state: 'needs-review' })
+    seedJob(db, 'j3', { channel: 'alpha' })
+    seedLibrary(db, 'j3', { state: 'blocked' })
     migrate(db)
-    expect(
-      (db.prepare("SELECT state FROM library WHERE job_id = 'j1'").get() as { state: string })
-        .state,
-    ).toBe('ready')
+    const states = db
+      .prepare('SELECT job_id, state FROM library ORDER BY job_id')
+      .all() as { job_id: string; state: string }[]
+    expect(states).toEqual([
+      { job_id: 'j1', state: 'ready' },
+      { job_id: 'j2', state: 'needs-review' },
+      { job_id: 'j3', state: 'blocked' },
+    ])
   })
 
   // Dropping the source table is what makes the step self-disabling, so
@@ -342,9 +353,15 @@ describe('publishes -> posts', () => {
   it('is a no-op on a database that has already migrated', () => {
     const db = memDb()
     seedLegacy(db)
+    db.prepare(
+      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at) VALUES " +
+        "('j1','alpha','youtube','done','https://y/1','2026-01-01T00:00:00.000Z')",
+    ).run()
     migrate(db)
     expect(() => migrate(db)).not.toThrow()
-    expect(db.prepare('SELECT COUNT(*) AS n FROM posts').get()).toEqual({ n: 0 })
+    // Proves the second run neither re-backfills from a table that no longer
+    // exists nor double-inserts the row the first run already carried over.
+    expect(db.prepare('SELECT COUNT(*) AS n FROM posts').get()).toEqual({ n: 1 })
   })
 
   it('is a no-op on a fresh database', () => {
