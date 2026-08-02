@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { countLibraryEntries, libraryChannels, listLibraryEntries } from '../library.js'
-import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPublish } from '../../../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPost } from '../../../testing/db.js'
 import { tmpDir } from '../../../testing/tmp.js'
 
 function seed(): Database {
@@ -130,22 +130,20 @@ describe('listLibraryEntries', () => {
     expect(listLibraryEntries(db)[0].bytes).toBe('local')
   })
 
-  it('lists one link per platform that published, ordered by job id then platform', () => {
+  it('lists one link per platform that posted, ordered by job id then platform', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-a' })
-    seedLibrary(db, 'job-1', { state: 'published' })
-    seedPublish(db, 'job-1', {
+    seedLibrary(db, 'job-1', { state: 'ready' })
+    seedPost(db, {
+      jobId: 'job-1',
       platform: 'youtube',
       channel: 'chan-a',
-      status: 'done',
-      seq: 1,
       url: 'https://youtu.be/abc',
     })
-    seedPublish(db, 'job-1', {
+    seedPost(db, {
+      jobId: 'job-1',
       platform: 'instagram',
       channel: 'chan-a',
-      status: 'done',
-      seq: 2,
       url: 'https://instagram.com/reel/xyz',
     })
 
@@ -155,12 +153,11 @@ describe('listLibraryEntries', () => {
     ])
   })
 
-  it('omits a failed publish and a done row with no url', () => {
+  it('omits a post with no url', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-a' })
     seedLibrary(db, 'job-1', { state: 'ready' })
-    seedPublish(db, 'job-1', { platform: 'youtube', channel: 'chan-a', status: 'failed', errorKind: 'transient', seq: 1 })
-    seedPublish(db, 'job-1', { platform: 'instagram', channel: 'chan-a', status: 'done', seq: 2, url: null })
+    seedPost(db, { jobId: 'job-1', platform: 'instagram', channel: 'chan-a', url: null })
 
     expect(listLibraryEntries(db)[0].links).toEqual([])
   })

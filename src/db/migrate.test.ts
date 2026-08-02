@@ -2,15 +2,15 @@ import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Database } from 'better-sqlite3'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { openDb } from './index.js'
 import { migrate } from './migrate.js'
-import { memDb } from '../testing/db.js'
+import { memDb, seedJob, seedLibrary } from '../testing/db.js'
 import { tmpDir } from '../testing/tmp.js'
 
 // The CURRENT canonical schema — the same text openDb hands migrate(). Read
-// from disk rather than copied so the rebuild is exercised against whatever
-// shape schema.sql actually declares today.
+// from disk rather than copied so it never drifts from what schema.sql
+// actually declares today.
 const SCHEMA_SQL = readFileSync(new URL('./schema.sql', import.meta.url), 'utf8')
 
 const OLD_JOBS = `
@@ -21,78 +21,6 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   finished_at TEXT
 );
-`
-
-// The publishes shape as of the clock-time-slot era: `slot TEXT NOT NULL` and
-// UNIQUE (channel, platform, day, slot), platform CHECK already widened. This
-// is what a database that has run the previous migration looks like. Do not
-// import schema.sql here: these fixtures must stay frozen to the OLD shapes
-// even as schema.sql moves on.
-const OLD_SCHEMA_WITH_SLOT = `${OLD_JOBS}
-CREATE TABLE IF NOT EXISTS publishes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_id TEXT NOT NULL REFERENCES jobs(id),
-  platform TEXT NOT NULL,
-  channel TEXT NOT NULL,
-  day TEXT NOT NULL,
-  slot TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
-  post_id TEXT, url TEXT, error TEXT,
-  error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),
-  attempt INTEGER NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  finished_at TEXT,
-  UNIQUE (channel, platform, day, slot)
-);
-`
-
-// The even older shape: the narrow platform CHECK, and no oauth_tokens
-// expires_at. Every database carrying that CHECK also has `slot`, which is why
-// the two rebuilds fold into one step — this fixture is what proves the fold
-// still fixes the CHECK.
-const OLD_SCHEMA = `${OLD_JOBS}
-CREATE TABLE IF NOT EXISTS publishes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_id TEXT NOT NULL REFERENCES jobs(id),
-  platform TEXT NOT NULL CHECK (platform IN ('youtube')),
-  channel TEXT NOT NULL,
-  day TEXT NOT NULL, slot TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
-  post_id TEXT, url TEXT, error TEXT,
-  error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),
-  attempt INTEGER NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  finished_at TEXT,
-  UNIQUE (channel, platform, day, slot)
-);
-CREATE TABLE IF NOT EXISTS oauth_tokens (
-  platform TEXT NOT NULL, channel TEXT NOT NULL,
-  token_ciphertext BLOB NOT NULL, scopes TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  PRIMARY KEY (platform, channel)
-);
-`
-
-// The shape a database that has already run every table migration has, but
-// WITHOUT the partial unique index — i.e. any database opened before the index
-// step existed. Frozen here for the same reason as the fixtures above.
-const CURRENT_SHAPE_NO_INDEX = `
-  CREATE TABLE publishes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, platform TEXT NOT NULL,
-    channel TEXT NOT NULL, day TEXT NOT NULL, seq INTEGER NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
-    post_id TEXT, url TEXT, error TEXT,
-    error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),
-    attempt INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), finished_at TEXT,
-    UNIQUE (channel, platform, day, seq)
-  );
-  CREATE TABLE oauth_tokens (
-    platform TEXT NOT NULL, channel TEXT NOT NULL, token_ciphertext BLOB NOT NULL,
-    scopes TEXT NOT NULL, expires_at TEXT,
-    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-    PRIMARY KEY (platform, channel)
-  );
 `
 
 // The topics shape before target_url existed. Frozen here for the same reason
@@ -117,124 +45,12 @@ function colNames(db: Database, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name)
 }
 
-function oldShapeDb(): { db: Database; dir: string } {
-  const dir = tmpDir('brainrot-migrate-')
-  const db = new BetterSqlite3(join(dir, 'test.db'))
-  db.pragma('foreign_keys = OFF')
-  db.exec(OLD_SCHEMA)
-  return { db, dir }
-}
-
-/**
- * An old-shape database on disk, seeded and CLOSED, for the tests that drive
- * the real openDb path (schema.sql exec, then migrate) rather than calling
- * migrate on a handle they already hold. Returns the path so the test can
- * reopen it — a second open is exactly how idempotence is observed in
- * production. Seed rows are inserted on this handle because it is the one with
- * foreign_keys OFF, matching openDb (these fixtures skip the jobs rows the
- * publishes FK names).
- */
-function oldShapeFile(ddl: string, seed?: string): string {
-  const dir = tmpDir('brainrot-migrate-')
-  cleanupDirs.push(dir)
-  const dbPath = join(dir, 'test.db')
-  const raw = new BetterSqlite3(dbPath)
-  raw.pragma('foreign_keys = OFF')
-  raw.exec(ddl)
-  if (seed !== undefined) raw.exec(seed)
-  raw.close()
-  return dbPath
-}
-
 const cleanupDirs: string[] = []
 afterEach(() => {
   for (const d of cleanupDirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
 describe('migrate', () => {
-  it('adds oauth_tokens.expires_at when absent', () => {
-    const { db, dir } = oldShapeDb()
-    cleanupDirs.push(dir)
-    migrate(db, SCHEMA_SQL)
-    const cols = db.prepare('PRAGMA table_info(oauth_tokens)').all() as { name: string }[]
-    expect(cols.map((c) => c.name)).toContain('expires_at')
-  })
-
-  it('drops the platform CHECK on publishes while preserving existing rows', () => {
-    const { db, dir } = oldShapeDb()
-    cleanupDirs.push(dir)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-1', 'test', 'volume', 'topic', 'done')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
-        "VALUES ('job-1', 'youtube', 'test', '2026-07-25', '10:00', 'done', 1)",
-    ).run()
-
-    migrate(db, SCHEMA_SQL)
-
-    // The CHECK is gone: an 'instagram' row now inserts without throwing.
-    expect(() =>
-      db
-        .prepare(
-          'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
-            "VALUES ('job-1', 'instagram', 'test', '2026-07-25', 1, 'done', 1)",
-        )
-        .run(),
-    ).not.toThrow()
-
-    const rows = db.prepare('SELECT job_id, platform, status FROM publishes ORDER BY id').all()
-    expect(rows).toEqual([
-      { job_id: 'job-1', platform: 'youtube', status: 'done' },
-      { job_id: 'job-1', platform: 'instagram', status: 'done' },
-    ])
-  })
-
-  it('never reuses an id after the table rebuild', () => {
-    const { db, dir } = oldShapeDb()
-    cleanupDirs.push(dir)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('job-1', 'test', 'volume', 'topic', 'done')",
-    ).run()
-    const info = db
-      .prepare(
-        'INSERT INTO publishes (job_id, platform, channel, day, slot, status, attempt) ' +
-          "VALUES ('job-1', 'youtube', 'test', '2026-07-25', '10:00', 'done', 1)",
-      )
-      .run()
-    const oldId = Number(info.lastInsertRowid)
-
-    migrate(db, SCHEMA_SQL)
-
-    const newInfo = db
-      .prepare(
-        'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
-          "VALUES ('job-1', 'instagram', 'test', '2026-07-25', 1, 'done', 1)",
-      )
-      .run()
-    expect(Number(newInfo.lastInsertRowid)).toBeGreaterThan(oldId)
-  })
-
-  it('is idempotent: running twice does nothing the second time', () => {
-    const { db, dir } = oldShapeDb()
-    cleanupDirs.push(dir)
-    migrate(db, SCHEMA_SQL)
-    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
-    const cols = db.prepare('PRAGMA table_info(oauth_tokens)').all() as { name: string }[]
-    expect(cols.filter((c) => c.name === 'expires_at')).toHaveLength(1)
-  })
-
-  it('is a no-op against a database already on the new shape', () => {
-    // A DB created fresh via the current schema.sql already has no CHECK, no
-    // `slot` column, and an expires_at — migrate() must not touch it.
-    const dir = tmpDir('brainrot-migrate-')
-    cleanupDirs.push(dir)
-    const db = new BetterSqlite3(join(dir, 'test.db'))
-    db.pragma('foreign_keys = OFF')
-    db.exec(CURRENT_SHAPE_NO_INDEX)
-    expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
-  })
-
   it('adds library_objects.reclaimed_at to a database that predates it', () => {
     const db = memDb()
     db.exec('DROP TABLE library_objects')
@@ -269,15 +85,15 @@ describe('migrate', () => {
 })
 
 describe('migrate — topics.target_url', () => {
-  // CURRENT_SHAPE_NO_INDEX carries the publishes and oauth_tokens tables
-  // migrate's *other* steps read, so these tests exercise the topics step
-  // against a database that is otherwise already current.
+  // A bare handle carrying only what these tests exercise: none of migrate's
+  // OTHER steps depend on any table besides the one they name, and each is
+  // its own tableExists-guarded no-op when that table is absent.
   function topicsDb(ddl: string): Database {
     const dir = tmpDir('brainrot-migrate-')
     cleanupDirs.push(dir)
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
-    db.exec(CURRENT_SHAPE_NO_INDEX + ddl)
+    db.exec(ddl)
     return db
   }
 
@@ -320,195 +136,8 @@ describe('migrate — topics.target_url', () => {
   })
 })
 
-describe('migrate — slot to seq', () => {
-  it('maps slot to a 1-based seq per (channel, platform, day), ordered by slot', () => {
-    const dbPath = oldShapeFile(
-      OLD_SCHEMA_WITH_SLOT,
-      'INSERT INTO publishes (id, job_id, platform, channel, day, slot, status, attempt, created_at) VALUES ' +
-        "(1,'job-c','youtube','chan-a','2026-07-22','19:00','done',1,'2026-07-22T19:00:00.000Z')," +
-        "(2,'job-a','youtube','chan-a','2026-07-22','10:00','done',1,'2026-07-22T10:00:00.000Z')," +
-        "(3,'job-b','youtube','chan-a','2026-07-22','14:00','failed',1,'2026-07-22T14:00:00.000Z')," +
-        "(4,'job-a','instagram','chan-a','2026-07-22','10:00','done',1,'2026-07-22T10:05:00.000Z')," +
-        "(5,'job-z','youtube','chan-b','2026-07-21','10:00','done',1,'2026-07-21T10:00:00.000Z')",
-    )
-
-    const db = openDb(dbPath)
-    const rows = db
-      .prepare('SELECT id, channel, platform, day, seq FROM publishes ORDER BY id')
-      .all() as { id: number; channel: string; platform: string; day: string; seq: number }[]
-    // chan-a/youtube/2026-07-22 ranked by slot: 10:00 -> 1, 14:00 -> 2, 19:00 -> 3.
-    expect(rows.find((r) => r.id === 2)?.seq).toBe(1)
-    expect(rows.find((r) => r.id === 3)?.seq).toBe(2)
-    expect(rows.find((r) => r.id === 1)?.seq).toBe(3)
-    // A different platform is its own partition, so it restarts at 1.
-    expect(rows.find((r) => r.id === 4)?.seq).toBe(1)
-    // As is a different channel and day.
-    expect(rows.find((r) => r.id === 5)?.seq).toBe(1)
-    db.close()
-  })
-
-  it('is a no-op on a second open (idempotent)', () => {
-    const dbPath = oldShapeFile(
-      OLD_SCHEMA_WITH_SLOT,
-      'INSERT INTO publishes (id, job_id, platform, channel, day, slot, status, attempt) VALUES ' +
-        "(1,'job-a','youtube','chan-a','2026-07-22','10:00','done',1)",
-    )
-
-    const first = openDb(dbPath)
-    first.close()
-    const second = openDb(dbPath)
-    const rows = second.prepare('SELECT id, seq FROM publishes ORDER BY id').all()
-    expect(rows).toEqual([{ id: 1, seq: 1 }])
-    second.close()
-  })
-
-  it('leaves a fresh database untouched', () => {
-    const dir = tmpDir('brainrot-migrate-')
-    cleanupDirs.push(dir)
-    const db = openDb(join(dir, 'fresh.db'))
-    expect(() => db.prepare('SELECT seq FROM publishes').all()).not.toThrow()
-    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 0 })
-    db.close()
-  })
-
-  it('drops publishes_old after a successful rebuild', () => {
-    const dbPath = oldShapeFile(OLD_SCHEMA_WITH_SLOT)
-    const db = openDb(dbPath)
-    const found = db
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='publishes_old'")
-      .get()
-    expect(found).toBeUndefined()
-    db.close()
-  })
-})
-
-function hasLiveIndex(db: Database): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='ux_publishes_live'")
-    .get()
-  return row !== undefined
-}
-
-function insertPublish(db: Database, jobId: string, seq: number, status: string): void {
-  db.prepare(
-    'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
-      "VALUES (?, 'youtube', 'chan-a', '2026-07-22', ?, ?, 1)",
-  ).run(jobId, seq, status)
-}
-
-describe('migrate — one live publish row per (job, platform)', () => {
-  it('creates the index on a fresh database', () => {
-    const db = openDb(':memory:')
-    expect(hasLiveIndex(db)).toBe(true)
-    db.close()
-  })
-
-  it('rejects a second live row for the same (job, platform)', () => {
-    const db = openDb(':memory:')
-    insertPublish(db, 'job-1', 1, 'done')
-    expect(() => insertPublish(db, 'job-1', 2, 'claimed')).toThrow(/UNIQUE/)
-    db.close()
-  })
-
-  it('still admits a claim once the prior attempt has failed', () => {
-    const db = openDb(':memory:')
-    insertPublish(db, 'job-1', 1, 'failed')
-    expect(() => insertPublish(db, 'job-1', 2, 'claimed')).not.toThrow()
-    db.close()
-  })
-
-  it('adds the index to an existing database with no violating rows', () => {
-    const dbPath = oldShapeFile(
-      CURRENT_SHAPE_NO_INDEX,
-      'INSERT INTO publishes (id, job_id, platform, channel, day, seq, status, attempt) VALUES ' +
-        "(1,'job-a','youtube','chan-a','2026-07-22',1,'done',1)," +
-        "(2,'job-a','instagram','chan-a','2026-07-22',1,'done',1)," +
-        "(3,'job-b','youtube','chan-a','2026-07-22',2,'failed',1)," +
-        "(4,'job-b','youtube','chan-a','2026-07-22',3,'claimed',2)",
-    )
-    const db = openDb(dbPath)
-    expect(hasLiveIndex(db)).toBe(true)
-    expect(db.prepare('SELECT COUNT(*) AS n FROM publishes').get()).toEqual({ n: 4 })
-    db.close()
-  })
-
-  it('skips the index and warns when a violating row already exists', () => {
-    const dbPath = oldShapeFile(
-      CURRENT_SHAPE_NO_INDEX,
-      'INSERT INTO publishes (id, job_id, platform, channel, day, seq, status, attempt) VALUES ' +
-        "(1,'job-a','youtube','chan-a','2026-07-22',1,'interrupted',1)," +
-        "(2,'job-a','youtube','chan-a','2026-07-23',1,'done',2)",
-    )
-    const raw = new BetterSqlite3(dbPath)
-    raw.pragma('foreign_keys = OFF')
-    raw.exec(SCHEMA_SQL)
-    const warnings: string[] = []
-
-    expect(() => migrate(raw, SCHEMA_SQL, (m) => warnings.push(m))).not.toThrow()
-
-    expect(hasLiveIndex(raw)).toBe(false)
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('job-a')
-    expect(warnings[0]).toContain('youtube')
-    // Names the command an operator resolves it with, not just the symptom.
-    expect(warnings[0]).toContain('publish mark-done')
-    raw.close()
-  })
-
-  it('creates the index on a later open once the violation is resolved', () => {
-    const dbPath = oldShapeFile(
-      CURRENT_SHAPE_NO_INDEX,
-      'INSERT INTO publishes (id, job_id, platform, channel, day, seq, status, attempt) VALUES ' +
-        "(1,'job-a','youtube','chan-a','2026-07-22',1,'interrupted',1)," +
-        "(2,'job-a','youtube','chan-a','2026-07-23',1,'done',2)",
-    )
-    // openDb's own warn sink, silenced here: the point of this test is that a
-    // violating database still OPENS, and openDb is the path that proves it.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const first = openDb(dbPath)
-    expect(hasLiveIndex(first)).toBe(false)
-    expect(warn).toHaveBeenCalledOnce()
-    first.prepare("UPDATE publishes SET status = 'failed' WHERE id = 1").run()
-    first.close()
-    warn.mockRestore()
-
-    const second = openDb(dbPath)
-    expect(hasLiveIndex(second)).toBe(true)
-    second.close()
-  })
-
-  it('creates the index after a slot-era table rebuild', () => {
-    // The rebuild replaces `publishes` with a new table, and a new table
-    // carries no indexes — so the index step has to run after it, not before.
-    const dbPath = oldShapeFile(
-      OLD_SCHEMA_WITH_SLOT,
-      'INSERT INTO publishes (id, job_id, platform, channel, day, slot, status, attempt) VALUES ' +
-        "(1,'job-a','youtube','chan-a','2026-07-22','10:00','done',1)",
-    )
-    const db = openDb(dbPath)
-    expect(hasLiveIndex(db)).toBe(true)
-    db.close()
-  })
-
-  it('is a no-op on a second open', () => {
-    const dbPath = oldShapeFile(CURRENT_SHAPE_NO_INDEX)
-    const first = openDb(dbPath)
-    first.close()
-    const warnings: string[] = []
-    const second = new BetterSqlite3(dbPath)
-    second.exec(SCHEMA_SQL)
-    expect(() => migrate(second, SCHEMA_SQL, (m) => warnings.push(m))).not.toThrow()
-    expect(warnings).toEqual([])
-    expect(hasLiveIndex(second)).toBe(true)
-    second.close()
-  })
-})
-
 // The topics shape after target_url exists but before the story columns did
-// — the actual predecessor state this step migrates from. A bare topics-only
-// table (as opposed to topicsDb's CURRENT_SHAPE_NO_INDEX + ddl) would make
-// migrate's OTHER steps (oauth_tokens.expires_at, publishes) throw on missing
-// tables before this step ever runs.
+// — the actual predecessor state this step migrates from.
 const TOPICS_PRE_STORY = `
 CREATE TABLE topics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -526,16 +155,11 @@ CREATE TABLE topics (
 
 describe('addTopicStoryColumns', () => {
   it('adds the story columns to a topics table that predates them', () => {
-    // CURRENT_SHAPE_NO_INDEX carries the publishes and oauth_tokens tables
-    // migrate's other steps read, so this test exercises only the story-columns
-    // step against a database that is otherwise already current — the same
-    // shape the 'migrate — topics.target_url' describe block above uses via
-    // its own topicsDb() helper.
     const dir = tmpDir('brainrot-migrate-')
     cleanupDirs.push(dir)
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
-    db.exec(CURRENT_SHAPE_NO_INDEX + TOPICS_PRE_STORY)
+    db.exec(TOPICS_PRE_STORY)
     db.prepare(
       'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) ' +
         "VALUES ('space','t','t','reddit:r/space','u','h',90,'r')",
@@ -582,7 +206,7 @@ describe('addTopicStoryColumns', () => {
     const raw = new BetterSqlite3(dbPath)
     raw.pragma('foreign_keys = OFF')
     // Start with TOPICS_PRE_STORY and manually add TWO of the five columns.
-    raw.exec(CURRENT_SHAPE_NO_INDEX + TOPICS_PRE_STORY)
+    raw.exec(TOPICS_PRE_STORY)
     raw.exec('ALTER TABLE topics ADD COLUMN body_text TEXT')
     raw.exec('ALTER TABLE topics ADD COLUMN part_count INTEGER')
     raw.prepare(
@@ -651,5 +275,80 @@ describe('addTopicStoryColumns', () => {
     expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
     expect(() => migrate(db, SCHEMA_SQL)).not.toThrow()
     db.close()
+  })
+})
+
+describe('publishes -> posts', () => {
+  // A database as it existed before this change: schema.sql no longer
+  // declares these tables, so the test creates them by hand, which is
+  // exactly what an upgrading production database looks like.
+  function seedLegacy(db: Database): void {
+    db.exec(`
+      CREATE TABLE publishes (
+        id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, channel TEXT NOT NULL,
+        platform TEXT NOT NULL, status TEXT NOT NULL, url TEXT,
+        error_kind TEXT, created_at TEXT NOT NULL
+      );
+      CREATE TABLE oauth_tokens (channel TEXT NOT NULL, platform TEXT NOT NULL);
+    `)
+  }
+
+  it('carries done rows over and discards the rest', () => {
+    const db = memDb()
+    seedLegacy(db)
+    db.prepare(
+      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at) VALUES " +
+        "('j1','alpha','youtube','done','https://y/1','2026-01-01T00:00:00.000Z')," +
+        "('j2','alpha','instagram','failed',NULL,'2026-01-02T00:00:00.000Z')," +
+        "('j3','alpha','youtube','claimed',NULL,'2026-01-03T00:00:00.000Z')",
+    ).run()
+    migrate(db)
+    const rows = db.prepare('SELECT * FROM posts ORDER BY job_id').all()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      job_id: 'j1',
+      channel: 'alpha',
+      platform: 'youtube',
+      url: 'https://y/1',
+      posted_at: '2026-01-01T00:00:00.000Z',
+    })
+  })
+
+  it('drops both legacy tables', () => {
+    const db = memDb()
+    seedLegacy(db)
+    migrate(db)
+    const names = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+      .all() as { name: string }[]
+    expect(names.map((n) => n.name)).not.toContain('publishes')
+    expect(names.map((n) => n.name)).not.toContain('oauth_tokens')
+  })
+
+  it("rewrites the retired 'published' library state to 'ready'", () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    db.prepare("UPDATE library SET state = 'published' WHERE job_id = 'j1'").run()
+    migrate(db)
+    expect(
+      (db.prepare("SELECT state FROM library WHERE job_id = 'j1'").get() as { state: string })
+        .state,
+    ).toBe('ready')
+  })
+
+  // Dropping the source table is what makes the step self-disabling, so
+  // idempotence is free — but it has to be proven, not assumed.
+  it('is a no-op on a database that has already migrated', () => {
+    const db = memDb()
+    seedLegacy(db)
+    migrate(db)
+    expect(() => migrate(db)).not.toThrow()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM posts').get()).toEqual({ n: 0 })
+  })
+
+  it('is a no-op on a fresh database', () => {
+    const db = memDb()
+    expect(() => migrate(db)).not.toThrow()
   })
 })

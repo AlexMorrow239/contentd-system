@@ -66,42 +66,15 @@ CREATE TABLE IF NOT EXISTS topics (
 -- this file BEFORE calling migrate, so an index over the series_key/part_index
 -- columns would throw on every existing database—those columns arrive via
 -- migrate's ALTER TABLE. A failure during schema.sql wedges the whole CLI, so
--- this follows the same rule as ux_publishes_live below. Both are kept in
--- migrate.ts for cohesion even though ix_topics_job could safely live here
--- (job_id exists in all databases). They are named here so the shape reads
--- complete and migrate.ts can stay the single source of truth for column
--- creation:
+-- both are kept in migrate.ts for cohesion even though ix_topics_job could
+-- safely live here (job_id exists in all databases). They are named here so
+-- the shape reads complete and migrate.ts can stay the single source of truth
+-- for column creation:
 --   CREATE INDEX IF NOT EXISTS ix_topics_job    ON topics (job_id);
 --   CREATE INDEX IF NOT EXISTS ix_topics_series ON topics (series_key, part_index);
 CREATE TABLE IF NOT EXISTS leases (
   name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS publishes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_id TEXT NOT NULL REFERENCES jobs(id),
-  platform TEXT NOT NULL,
-  channel TEXT NOT NULL,
-  day TEXT NOT NULL,      -- local YYYY-MM-DD the attempt was made on
-  seq INTEGER NOT NULL,   -- 1-based ordinal within (channel, platform, day)
-  status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
-  post_id TEXT, url TEXT, error TEXT,
-  error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),  -- null unless failed
-  attempt INTEGER NOT NULL,   -- 1-based ordinal per (job_id, platform)
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  finished_at TEXT,
-  -- Bookkeeping only: seq is derived from existing rows, so two racing claims
-  -- get distinct ordinals rather than colliding. The double-publish backstop is
-  -- the partial index below.
-  UNIQUE (channel, platform, day, seq)
-);
--- At most one live (claimed/done/interrupted) row per (job_id, platform) — the
--- database-level double-publish guard. Created by migrate.ts, NOT here, and
--- that placement is load-bearing: openDb execs this file on every command, so a
--- CREATE UNIQUE INDEX here would throw on any database holding a pre-existing
--- violation and wedge the whole CLI. migrate.ts probes first and reports
--- instead. See ensureLivePublishIndex there for the full rationale.
---   CREATE UNIQUE INDEX ux_publishes_live ON publishes (job_id, platform)
---     WHERE status IN ('claimed','done','interrupted');
 -- One row per (video, platform) the operator actually posted. There is no
 -- status column on purpose: the row's EXISTENCE is the fact. Correcting a
 -- mistake is a DELETE, not a transition. `url` is nullable because pasting
@@ -126,15 +99,6 @@ CREATE TABLE IF NOT EXISTS posts (
 -- and a manual `brainrot scout` run.
 CREATE TABLE IF NOT EXISTS scout_state (
   channel TEXT PRIMARY KEY, last_attempt_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS oauth_tokens (
-  platform TEXT NOT NULL,
-  channel TEXT NOT NULL,
-  token_ciphertext BLOB NOT NULL,   -- iv (12B) || gcm tag (16B) || ciphertext
-  scopes TEXT NOT NULL,
-  expires_at TEXT,                  -- NULL = no expiry (YouTube's refresh token)
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  PRIMARY KEY (platform, channel)
 );
 
 -- The operator-action queue. The dashboard's ONLY write is an INSERT here;

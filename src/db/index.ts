@@ -23,8 +23,9 @@ export function openDb(dbPath: string): Database {
   db.pragma('foreign_keys = OFF')
   const schemaSql = readFileSync(schemaPath, 'utf8')
   db.exec(schemaSql)
-  // Passed the schema text rather than re-reading it: migrate's table rebuild
-  // replays schema.sql so the canonical DDL is never hand-copied.
+  // migrate's schemaSql parameter is currently unused by every step (see its
+  // doc comment) but is still threaded through here rather than dropped, so a
+  // future step needing to replay schema.sql has it without a signature change.
   migrate(db, schemaSql)
   return db
 }
