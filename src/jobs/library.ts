@@ -6,23 +6,6 @@ import type { Platform } from '../posts/types.js'
 
 export type LibraryState = 'ready' | 'needs-review' | 'blocked'
 
-/**
- * The library states a video can still be published FROM, as a SQL list ready
- * to interpolate into an `IN (...)`. 'published' belongs here because a row
- * flips to it on the FIRST platform that takes the video, while the channel's
- * other declared platforms have yet to publish it — so "already published
- * somewhere" must not remove it from the pool. Interpolated from one
- * definition rather than spelled out at each query, so adding a state cannot
- * update some call sites and miss others.
- *
- * Kept only for the still-live publish tree (src/publish/publishes.ts,
- * src/loop/digest.ts), which a later task migrates off the `publishes` table
- * and drops. LibraryState itself has already narrowed — 'published' no longer
- * exists as a value this module writes or reads — so this stays a bare SQL
- * string, not derived from the type.
- */
-export const PUBLISHABLE_LIBRARY_STATES = "'ready', 'published'"
-
 export interface LibraryRow {
   jobId: string
   channel: string

@@ -1,7 +1,16 @@
 import type { Database } from 'better-sqlite3'
 import BetterSqlite3 from 'better-sqlite3'
 import type { Platform, PublishErrorKind } from './types.js'
-import { PUBLISHABLE_LIBRARY_STATES } from '../jobs/library.js'
+
+// The library states a video can still be published FROM. 'published' belongs
+// here because a row flips to it on the FIRST platform that takes the video,
+// while the channel's other declared platforms have yet to publish it — so
+// "already published somewhere" must not remove it from the pool. Formerly a
+// shared export in jobs/library.ts (PUBLISHABLE_LIBRARY_STATES); inlined here
+// once this module became its last reader — this whole tree has one task left
+// to live (src/publish/ is deleted in the next task), so a shared export with
+// a single remaining consumer stopped paying for itself.
+const PUBLISHABLE_LIBRARY_STATES = "'ready', 'published'"
 
 export type PublishStatus = 'claimed' | 'done' | 'failed' | 'interrupted'
 

@@ -183,7 +183,7 @@ export function digestUnit(
     const now = opts.now?.() ?? new Date()
     if (now.getHours() < DIGEST_HOUR || lastDay === localDay(now)) return { worked: false }
     const loaded = tryLoadChannelsDir(opts.channelsDir)
-    const text = buildDigest(db, loaded.channels, {}, { channelsError: loaded.error })
+    const text = buildDigest(db, loaded.channels, { channelsError: loaded.error })
     lastDay = localDay(now)
     return { worked: true, line: { action: 'digest', text } }
   }

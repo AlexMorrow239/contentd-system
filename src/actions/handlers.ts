@@ -114,7 +114,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'digest.run': (ctx) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
     return Promise.resolve({
-      text: buildDigest(ctx.db, loaded.channels, {}, { channelsError: loaded.error }),
+      text: buildDigest(ctx.db, loaded.channels, { channelsError: loaded.error }),
     })
   },
 

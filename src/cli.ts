@@ -674,7 +674,7 @@ program
       const db = openDb(paths.dbPath)
       try {
         process.stdout.write(
-          buildDigest(db, loaded.channels, {}, { channelsError: loaded.error }) + '\n',
+          buildDigest(db, loaded.channels, { channelsError: loaded.error }) + '\n',
         )
       } finally {
         db.close()
