@@ -160,6 +160,9 @@ describe('renderTopicsPage', () => {
   })
 
   it('offers nothing on a terminal topic', () => {
+    // The page itself now carries a scout-now control, so this checks the
+    // row-level actions specifically rather than every "name=kind" on the
+    // page.
     const out = renderTopicsPage({
       topics: [topic({ id: 1, status: 'rejected' })],
       channels: [],
@@ -167,7 +170,8 @@ describe('renderTopicsPage', () => {
       csrfToken: 'tok',
       daemonStale: false,
     }).value
-    expect(out).not.toContain('name="kind"')
+    expect(out).not.toContain('value="topics.reject"')
+    expect(out).not.toContain('value="topics.requeue"')
   })
 
   it('disables the controls and warns when the daemon is down', () => {
@@ -180,5 +184,28 @@ describe('renderTopicsPage', () => {
     }).value
     expect(out).toContain('daemon not running')
     expect(out).toContain('disabled')
+  })
+
+  it('offers a scout-now control that posts to the queue', () => {
+    const out = renderTopicsPage({
+      topics: [],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('value="scout.run"')
+    expect(out).toContain('scout now')
+  })
+
+  it('disables the scout-now control while the daemon is stale', () => {
+    const out = renderTopicsPage({
+      topics: [],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: true,
+    }).value
+    expect(out).toMatch(/<button[^>]*disabled/)
   })
 })

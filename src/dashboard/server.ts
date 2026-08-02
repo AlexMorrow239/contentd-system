@@ -277,16 +277,22 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const rawChannel = c.req.query('channel')
     const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
 
+    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+    const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
+
     return c.html(
       layout({
         title: 'jobs',
         root: deps.config.paths.root,
         activeNav: 'jobs',
+        refreshSeconds,
         body: renderJobsPage({
           jobs: listJobs(db, { channel, status }),
           total: countJobs(db, { channel, status }),
           channels: jobChannels(db),
           filter: { channel, status },
+          csrfToken,
+          daemonStale,
         }),
       }),
     )

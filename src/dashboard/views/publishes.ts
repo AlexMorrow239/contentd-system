@@ -4,7 +4,7 @@ import type { Platform } from '../../publish/types.js'
 import type { ChannelGrid, InterruptedPublish } from '../queries/publishes.js'
 import { cellKey } from '../queries/publishes.js'
 import { href } from './layout.js'
-import { actionForm, daemonBanner } from './actions.js'
+import { actionForm, daemonBanner, pageActions } from './actions.js'
 
 // One platform's quota, shaped for display rather than for the enforcement
 // check itself (PlatformQuota in publish/types.ts). A 'global' quota
@@ -157,15 +157,35 @@ export function renderPublishesPage(data: PublishesPageData): SafeHtml {
 
   const interrupted = interruptedSection(data.interrupted, data.csrfToken, data.daemonStale)
 
+  const controls = pageActions([
+    actionForm({
+      kind: 'publish.next',
+      csrfToken: data.csrfToken,
+      from: '/publishes',
+      fields: {},
+      disabled: data.daemonStale,
+    }),
+    actionForm({
+      kind: 'publish.nextDryRun',
+      csrfToken: data.csrfToken,
+      from: '/publishes',
+      fields: {},
+      disabled: data.daemonStale,
+      subtle: true,
+    }),
+  ])
+
   if (data.grids.length === 0) {
     return html`${daemonBanner(data.daemonStale)}
       <h1>publishes</h1>
+      ${controls}
       ${warning} ${interrupted} ${quota}
       <p class="empty">no channel has a [publish] schedule</p>`
   }
 
   return html`${daemonBanner(data.daemonStale)}
     <h1>publishes · last ${String(data.days)} days</h1>
+    ${controls}
     ${warning} ${interrupted} ${quota}
     ${data.grids.map((grid) => renderGrid(grid))}`
 }

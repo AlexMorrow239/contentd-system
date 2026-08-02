@@ -2,7 +2,7 @@ import type { TopicRow, TopicStatus } from '../../scout/topics.js'
 import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
-import { actionForm, daemonBanner } from './actions.js'
+import { actionForm, daemonBanner, pageActions } from './actions.js'
 
 const TOPIC_STATUSES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
 
@@ -62,10 +62,21 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
     <button type="submit">filter</button>
   </form>`
 
+  const controls = pageActions([
+    actionForm({
+      kind: 'scout.run',
+      csrfToken: data.csrfToken,
+      from: '/topics',
+      fields: {},
+      disabled: data.daemonStale,
+    }),
+  ])
+
   if (data.topics.length === 0) {
     return html`${daemonBanner(data.daemonStale)}
       <h1>topics</h1>
       ${filters}
+      ${controls}
       <p class="empty">no topics match these filters</p>`
   }
 
@@ -102,6 +113,7 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
   return html`${daemonBanner(data.daemonStale)}
     <h1>topics</h1>
     ${filters}
+    ${controls}
     ${truncationNotice(data.topics.length, data.total)}
     <table>
       <thead>

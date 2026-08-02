@@ -186,7 +186,9 @@ video {
 .action-button.danger { border-color: #b00; color: #b00; }
 .action-link { text-decoration: underline; }
 .action-link[aria-disabled='true'] { text-decoration: none; opacity: 0.4; cursor: not-allowed; }
-.page-actions { margin: 0.5rem 0 1rem; display: flex; gap: 0.5rem; align-items: center; }
+.page-actions {
+  margin: 0.5rem 0 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+}
 .banner { padding: 0.5rem 0.75rem; border: 1px solid currentColor; border-radius: 3px; }
 .banner.error { color: #b00; }
 .actions-list .row { display: grid; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #8883;

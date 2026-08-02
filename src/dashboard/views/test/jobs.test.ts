@@ -29,6 +29,8 @@ describe('renderJobsPage', () => {
       jobs: [job],
       channels: ['space'],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('href="/jobs/j1"')
     expect(out).toContain('Why Venus is hot')
@@ -41,13 +43,21 @@ describe('renderJobsPage', () => {
       jobs: [{ ...job, topic: '<script>alert(1)</script>' }],
       channels: ['space'],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('<script>alert(1)</script>')
     expect(out).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
 
   it('says so when nothing matches instead of rendering an empty table', () => {
-    const out = renderJobsPage({ jobs: [], channels: [], filter: {} }).value
+    const out = renderJobsPage({
+      jobs: [],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
     expect(out).toContain('no jobs match')
   })
 
@@ -56,6 +66,8 @@ describe('renderJobsPage', () => {
       jobs: [],
       channels: ['space', 'ocean'],
       filter: { channel: 'ocean', status: 'failed' },
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('<option value="ocean" selected>ocean</option>')
     expect(out).toContain('<option value="failed" selected>failed</option>')
@@ -67,6 +79,8 @@ describe('renderJobsPage', () => {
       total: 1432,
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).toContain('showing 1 of 1,432')
   })
@@ -77,8 +91,37 @@ describe('renderJobsPage', () => {
       total: 1,
       channels: [],
       filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
     }).value
     expect(out).not.toContain('showing')
+  })
+
+  it('offers resume on a failed job and nothing on a done one', () => {
+    const out = renderJobsPage({
+      jobs: [
+        { ...job, id: 'j1', status: 'failed' },
+        { ...job, id: 'j2', status: 'done' },
+      ],
+      channels: ['space'],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    const links = out.match(/\/actions\/confirm\?kind=jobs\.resume[^"]*/g) ?? []
+    expect(links).toHaveLength(1)
+    expect(links[0]).toContain('jobId=j1')
+  })
+
+  it('offers a produce-next page control', () => {
+    const out = renderJobsPage({
+      jobs: [],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('/actions/confirm?kind=produce.next')
   })
 })
 

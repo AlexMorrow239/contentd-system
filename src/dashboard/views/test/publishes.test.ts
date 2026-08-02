@@ -237,4 +237,12 @@ describe('renderPublishesPage', () => {
     }).value
     expect(out).not.toContain('interrupted uploads')
   })
+
+  it('offers publish-next behind a confirm link and the dry run as a plain form', () => {
+    const out = renderPublishesPage(pageData(new Map())).value
+    // confirm:true renders a GET link to the interstitial, never a POST form.
+    expect(out).toContain('/actions/confirm?kind=publish.next')
+    // confirm:false renders the form directly.
+    expect(out).toContain('value="publish.nextDryRun"')
+  })
 })

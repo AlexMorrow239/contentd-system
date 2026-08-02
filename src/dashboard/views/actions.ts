@@ -52,6 +52,14 @@ export function actionForm(opts: ActionFormOptions): SafeHtml {
   </form>`
 }
 
+/**
+ * The toolbar every page uses for its non-row controls. A plain wrapper so the
+ * three pages agree on placement and spacing without each re-deriving it.
+ */
+export function pageActions(controls: SafeHtml[]): SafeHtml {
+  return html`<div class="page-actions">${controls}</div>`
+}
+
 export function daemonBanner(stale: boolean): SafeHtml {
   if (!stale) return html``
   return html`<p class="banner error">

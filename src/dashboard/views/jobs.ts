@@ -2,6 +2,7 @@ import { html, SafeHtml } from '../html.js'
 import type { JobDetail, JobListRow, JobStatus, StageRow } from '../queries/jobs.js'
 import { href } from './layout.js'
 import { renderLinks } from './library.js'
+import { actionForm, daemonBanner, pageActions } from './actions.js'
 
 export function formatUsd(usdMicros: number): string {
   return `$${(usdMicros / 1_000_000).toFixed(2)}`
@@ -38,6 +39,28 @@ export interface JobsPageData {
   total?: number
   channels: string[]
   filter: { channel?: string; status?: JobStatus }
+  csrfToken: string
+  daemonStale: boolean
+}
+
+/**
+ * Resume is offered only where `resumeJob` would accept the job: `failed` and
+ * `blocked`. A `running` job needs --force, which is CLI-only by design, and
+ * `done`/`queued` have nothing to resume.
+ */
+function jobActions(
+  row: { id: string; status: string },
+  csrfToken: string,
+  daemonStale: boolean,
+): SafeHtml {
+  if (row.status !== 'failed' && row.status !== 'blocked') return html``
+  return actionForm({
+    kind: 'jobs.resume',
+    csrfToken,
+    from: '/jobs',
+    fields: { jobId: row.id },
+    disabled: daemonStale,
+  })
 }
 
 /**
@@ -63,8 +86,20 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
     <button type="submit">filter</button>
   </form>`
 
+  const controls = pageActions([
+    actionForm({
+      kind: 'produce.next',
+      csrfToken: data.csrfToken,
+      from: '/jobs',
+      fields: {},
+      disabled: data.daemonStale,
+    }),
+  ])
+
   if (data.jobs.length === 0) {
-    return html`<h1>jobs</h1>
+    return html`${daemonBanner(data.daemonStale)}
+      <h1>jobs</h1>
+      ${controls}
       ${filters}
       <p class="empty">no jobs match these filters</p>`
   }
@@ -79,17 +114,20 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
       <td>${formatTime(job.createdAt)}</td>
       <td>${formatDuration(job.createdAt, job.finishedAt)}</td>
       <td>${formatUsd(job.costUsdMicros)}</td>
+      <td>${jobActions(job, data.csrfToken, data.daemonStale)}</td>
     </tr>`,
   )
 
-  return html`<h1>jobs</h1>
+  return html`${daemonBanner(data.daemonStale)}
+    <h1>jobs</h1>
+    ${controls}
     ${filters}
     ${truncationNotice(data.jobs.length, data.total)}
     <table>
       <thead>
         <tr>
           <th>id</th><th>channel</th><th>tier</th><th>topic</th>
-          <th>status</th><th>created</th><th>elapsed</th><th>cost</th>
+          <th>status</th><th>created</th><th>elapsed</th><th>cost</th><th></th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
