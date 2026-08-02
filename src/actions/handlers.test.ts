@@ -210,20 +210,34 @@ describe('action handlers', () => {
     )
     // force:true is the whole point — SCOUT_RECHECK_MS is 20 minutes, so an
     // unforced "scout now" button would silently no-op most times it is clicked.
-    expect(scout).toHaveBeenCalledWith(db, expect.any(Array), { force: true })
+    expect(scout).toHaveBeenCalledWith(
+      db,
+      expect.arrayContaining([expect.objectContaining({ name: 'a' })]),
+      { force: true },
+    )
     expect(result).toEqual({ channels: [{ channel: 'a', inserted: 2 }] })
   })
 
-  it('scout.run fails loudly on a broken channels directory', async () => {
+  it('scout.run reports a broken channels directory as a noop, not a failure', async () => {
     const db = memDb()
     const dir = tmpDir('scout-action-broken')
     writeFileSync(join(dir, 'bad.toml'), 'name = ')
-    await expect(
-      ACTION_HANDLERS['scout.run'](
-        { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
-        {},
-        {},
-      ),
-    ).rejects.toThrow(/bad\.toml/)
+    const scout = vi.fn()
+    const result = await ACTION_HANDLERS['scout.run'](
+      { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+      {},
+      { scoutAll: scout },
+    )
+    // Every sibling hitting this same tryLoadChannelsDir condition records
+    // `done` with the reason visible: digest.run folds loaded.error into its
+    // result, produce.next/publish.next pass through the tick's
+    // {action:'noop',reason:'config-error'}, and the CLI's own `scout` exits 0.
+    // A lone `failed` here would be an inconsistency with no reason behind it.
+    expect(result).toEqual({
+      action: 'noop',
+      reason: 'config-error',
+      error: expect.stringContaining('bad.toml'),
+    })
+    expect(scout).not.toHaveBeenCalled()
   })
 })

@@ -177,7 +177,14 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'scout.run': async (ctx, _args, deps) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
     if (loaded.error !== undefined) {
-      throw new BrainrotError(`scout: ${loaded.error}`, { domain: 'config', kind: 'invalid' })
+      // A benign noop recorded `done`, NOT a throw. Three siblings hit this
+      // exact condition and all report it this way — digest.run folds
+      // loaded.error into its result, produce.next/publish.next pass through
+      // the tick's own {action:'noop',reason:'config-error'} — and the CLI's
+      // `scout` exits 0 on it, reserving exit 1 for a ScoutRunFailedError
+      // thrown by scoutAll itself. The operator sees the cause either way;
+      // what a lone `failed` would add is inconsistency, not information.
+      return { action: 'noop', reason: 'config-error', error: loaded.error }
     }
     // force:true unconditionally — an operator clicking "scout now" means now,
     // and SCOUT_RECHECK_MS (20 min) would otherwise swallow the click.
