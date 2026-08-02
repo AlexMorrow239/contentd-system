@@ -129,11 +129,11 @@ beforeEach(() => {
   // Deterministic regardless of the developer's shell or .env: the default
   // $25 global cap.
   vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '')
-  // Object storage is required to produce (design spec §3.5), and the tick
-  // refuses before the lease when it is unset. These tests inject their own
-  // stages and never reach a real store, but they must clear the gate — and
-  // they must clear it from stubs rather than the developer's .env, so the
-  // suite behaves the same on a machine with R2 configured and one without.
+  // Object storage is optional now (src/stages/store.ts), so the tick no
+  // longer gates on it. Tests still clear it from stubs rather than the
+  // developer's .env so the reclaim sweep's storeFromEnv() call — reached
+  // only when there is something to reclaim — behaves the same on a machine
+  // with R2 configured and one without.
   stubStorageEnv()
 })
 afterEach(() => {
@@ -218,46 +218,31 @@ describe('produceNextTick — lease', () => {
   })
 })
 
-// Object storage is required, not optional (design spec §3.5, decision 1: the
-// cloud copy is the durable one). The `store` stage runs LAST, so without this
-// gate an unconfigured deployment pays for a full Remotion render and only
-// then fails the job — with no library row to show for it.
+// Object storage is optional now (src/stages/store.ts): there is no longer a
+// gate here at all. This is what actually distinguishes the new behaviour
+// from the old — a test that merely checked the tick "succeeds" could pass
+// vacuously if the gate secretly still ran and happened not to fire, so this
+// asserts the tick reaches and runs the pipeline (readyStages, not
+// neverStages) with the S3 env fully unset.
 describe('produceNextTick — object storage not configured', () => {
-  it('no-ops with reason bad-env before rendering anything', async () => {
-    const { db, runsRoot } = setup()
-    seedTopic(db)
-    vi.stubEnv('BRAINROT_S3_BUCKET', '')
-    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
-    // neverStages throws if the pipeline is reached at all: the gate must
-    // refuse before any stage runs, which is the entire point of the fix.
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
-    expect(result.action).toBe('noop')
-    expect(result.reason).toBe('bad-env')
-    expect(result.error).toContain('BRAINROT_S3_BUCKET')
-    // The cause travels in the result, never on stderr: this tick reruns every
-    // 30s under the daemon, where an unstructured print bypasses runWorker's
-    // idle dedupe. `brainrot produce-next` prints it for a human (cli.ts).
-    expect(stderr).not.toHaveBeenCalled()
-    stderr.mockRestore()
-    db.close()
-  })
-
-  it('leaves the topic unclaimed and takes no lease', async () => {
+  it('produces normally, with no bad-env gate, when storage env is unset', async () => {
     const { db, runsRoot } = setup()
     const topicId = seedTopic(db)
-    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', '')
-    const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
-    await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
-    // Nothing consumed: the next tick, once configured, produces this topic.
-    const topic = db.prepare('SELECT status FROM topics WHERE id = ?').get(topicId) as {
-      status: string
+    for (const key of [
+      'BRAINROT_S3_ENDPOINT',
+      'BRAINROT_S3_BUCKET',
+      'BRAINROT_S3_ACCESS_KEY_ID',
+      'BRAINROT_S3_SECRET_ACCESS_KEY',
+    ]) {
+      vi.stubEnv(key, '')
     }
-    expect(topic.status).toBe('candidate')
-    // The gate sits ahead of the lease for the same reason the channels-dir
-    // check does: burning a lease slot on it would only make the next firing
-    // wait on a lease that was never going to do work.
-    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
-    stderr.mockRestore()
+    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    expect(result).toEqual({
+      action: 'produced',
+      jobId: expect.any(String),
+      topicId,
+      status: 'ready',
+    })
     db.close()
   })
 })
@@ -278,9 +263,9 @@ describe('produceNextTick — config errors', () => {
     expect(result.action).toBe('noop')
     expect(result.reason).toBe('config-error')
     expect(result.error).toContain('broken.toml')
-    // ...and nothing on stderr: see the bad-env case above. The one-shot CLI's
-    // own test ('`produce-next` over a broken channels dir ...') pins the
-    // human-readable copy at the surface that still prints it.
+    // ...and nothing on stderr: the cause travels in the result only. The
+    // one-shot CLI's own test ('`produce-next` over a broken channels dir
+    // ...') pins the human-readable copy at the surface that still prints it.
     expect(stderr).not.toHaveBeenCalled()
     stderr.mockRestore()
     db.close()

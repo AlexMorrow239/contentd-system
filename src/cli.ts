@@ -106,7 +106,7 @@ function reportBlockedTick(
   result: { action: string; reason?: string; error?: string },
 ): void {
   if (result.action !== 'noop') return
-  if (result.reason !== 'config-error' && result.reason !== 'bad-env') return
+  if (result.reason !== 'config-error') return
   if (result.error !== undefined) console.error(`${command}: ${result.error}`)
 }
 
@@ -125,15 +125,13 @@ program
   .action(
     async (opts: { channel: string; topic: string; root?: string; dev?: boolean }) => {
       applyDevFlag(opts.dev)
-      // Refuse before the render, not after it: the `store` stage runs last,
-      // so an unconfigured deployment would otherwise pay for a full Remotion
-      // render and then fail the job with no library row. Same check the
-      // produce tick makes (src/loop/produce-next.ts).
+      // Object storage is optional (src/stages/store.ts): warn, don't refuse.
+      // The `store` stage runs last and simply no-ops with no S3 config, so an
+      // unconfigured deployment still produces a normal ready/needs-review job
+      // — it just has no cloud copy to hand to the (now manual) publish step.
       const storageError = s3ConfigError()
       if (storageError !== undefined) {
-        console.error(storageError)
-        process.exitCode = 1
-        return
+        console.error(`produce: ${storageError}`)
       }
       const paths = resolveBrainrotPaths(opts.root)
       const channel = loadChannelConfig(opts.channel)

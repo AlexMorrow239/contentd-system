@@ -155,15 +155,27 @@ describe('brainrot CLI — jobs and produce', () => {
     60000,
   )
 
-  // The `store` stage runs last, so an unconfigured deployment would otherwise
-  // pay for a full Remotion render and only then fail. Object storage is
-  // required (design spec §3.5) — so refuse up front, before any job row.
+  // Object storage is optional now (src/stages/store.ts): the `store` stage
+  // simply no-ops with no S3 config, so `produce` warns rather than refusing
+  // and keeps going. Reusing the nonexistent-channel setup from the test
+  // above (rather than a real channel, which would run a full render) proves
+  // exactly the part that changed: the storage warning no longer short-circuits
+  // the command — it falls through to the channel load and fails on ITS OWN
+  // error (ENOENT), not on the storage precondition.
   it.concurrent(
-    '`produce` exits 1 naming the missing storage keys, before creating a job',
+    '`produce` warns about missing storage keys but does not refuse to run',
     async () => {
       const root = testRoot()
       const result = await runCli(
-        ['produce', '--channel', 'channels/test.toml', '--topic', 'venus', '--root', root.root],
+        [
+          'produce',
+          '--channel',
+          '/no/such/channel.toml',
+          '--topic',
+          'venus',
+          '--root',
+          root.root,
+        ],
         // Empty, not absent: dotenv does not override a key already present in
         // the child env, so this holds whether or not the machine has a .env
         // with real R2 credentials in it.
@@ -176,9 +188,12 @@ describe('brainrot CLI — jobs and produce', () => {
           },
         },
       )
-      expect(result.exitCode).toBe(1)
+      // Still exits 1, but now for the channel file, not the storage check —
+      // the old refusal returned before ever reaching loadChannelConfig.
       expect(result.stderr).toContain('BRAINROT_S3_BUCKET')
       expect(result.stderr).toContain('object storage is not configured')
+      expect(result.stderr).toMatch(/ENOENT|no such file/)
+      expect(result.exitCode).toBe(1)
       expect(countJobs(root.dbPath)).toBe(0)
     },
     60000,

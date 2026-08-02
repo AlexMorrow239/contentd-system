@@ -1,8 +1,8 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import pino from 'pino'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { classify } from '../../errors.js'
 import type { JobContext, StageName } from '../../jobs/types.js'
 import { fakeStore } from '../../storage/fake.js'
@@ -140,5 +140,45 @@ describe('storeStage', () => {
 
   it('is named store', () => {
     expect(storeStage(store).name).toBe('store')
+  })
+
+  // Object storage is now optional: with no S3 configuration this stage does
+  // nothing and writes no store.json, which is exactly the shape runJob's
+  // final gate already tolerates for jobs produced before object storage
+  // existed (src/jobs/runner.ts).
+  it('no-ops when object storage is unconfigured', async () => {
+    for (const key of [
+      'BRAINROT_S3_ENDPOINT',
+      'BRAINROT_S3_BUCKET',
+      'BRAINROT_S3_ACCESS_KEY_ID',
+      'BRAINROT_S3_SECRET_ACCESS_KEY',
+    ]) {
+      vi.stubEnv(key, '')
+    }
+    writeFinalMp4()
+    // No store passed: run() must fall through to storeFromEnv() and find it
+    // unconfigured, rather than uploading via the fixture's store.
+    await storeStage().run(makeCtx())
+
+    expect(existsSync(path.join(runDir, 'store', 'store.json'))).toBe(false)
+  })
+
+  // The explicitly-passed store must win regardless of the environment: this
+  // is the test seam storeStage(store?) exists for. Without this test, a
+  // change that made the env check apply even when a store is passed would
+  // silently no-op every other test in this file whenever the developer's
+  // own .env lacks S3 credentials.
+  it('still uploads when a store is passed even if the environment is unconfigured', async () => {
+    for (const key of [
+      'BRAINROT_S3_ENDPOINT',
+      'BRAINROT_S3_BUCKET',
+      'BRAINROT_S3_ACCESS_KEY_ID',
+      'BRAINROT_S3_SECRET_ACCESS_KEY',
+    ]) {
+      vi.stubEnv(key, '')
+    }
+    writeFinalMp4()
+    await storeStage(store).run(makeCtx())
+    expect(existsSync(path.join(runDir, 'store', 'store.json'))).toBe(true)
   })
 })
