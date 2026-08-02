@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { openDb } from './index.js'
 
-describe('publishes and oauth_tokens tables', () => {
+describe('publishes, oauth_tokens and posts tables', () => {
   it('are created by openDb', () => {
     const db = openDb(':memory:')
     const names = (

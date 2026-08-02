@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { memDb, seedJob } from '../../testing/db.js'
+import { memDb, seedJob, seedPost } from '../../testing/db.js'
 import { markPosted, postedPlatforms, postsForJob, unmarkPosted } from '../posts.js'
 
 describe('posts', () => {
@@ -75,9 +75,16 @@ describe('posts', () => {
   it('does not restamp posted_at on a correcting write', () => {
     const db = memDb()
     seedJob(db, 'j1', { channel: 'alpha' })
-    markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube' })
-    const first = postsForJob(db, 'j1')[0]?.postedAt
+    seedPost(db, {
+      jobId: 'j1',
+      channel: 'alpha',
+      platform: 'youtube',
+      url: 'https://y/typo',
+      postedAt: '2020-01-01T00:00:00.000Z',
+    })
     markPosted(db, { jobId: 'j1', channel: 'alpha', platform: 'youtube', url: 'https://y/1' })
-    expect(postsForJob(db, 'j1')[0]?.postedAt).toBe(first)
+    const row = postsForJob(db, 'j1')[0]
+    expect(row?.url).toBe('https://y/1')
+    expect(row?.postedAt).toBe('2020-01-01T00:00:00.000Z')
   })
 })
