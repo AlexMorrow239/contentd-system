@@ -15,10 +15,10 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 /**
  * Handler implementations. DAEMON ONLY — src/arch.test.ts fails the build if
  * anything under src/dashboard/ imports this module, directly OR
- * transitively (including via a re-export), because it transitively pulls
- * publish adapters (and, from phase 2, Remotion and the provider clients)
- * into whatever process imports it. The dashboard reads ./catalog.js
- * instead, which is pure metadata.
+ * transitively (including via a re-export), because it transitively pulls the
+ * publish adapters, Remotion and the provider clients into whatever process
+ * imports it — the slow lane's handlers reach all three. The dashboard reads
+ * ./catalog.js instead, which is pure metadata.
  *
  * Each handler mirrors its CLI command's semantics, including which outcomes
  * are failures: `publish retry` on a job with no interrupted row exits 1, so
@@ -29,11 +29,12 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
  */
 
 /**
- * `runsRoot` and `setNotice` are deliberate phase-2 scaffolding: no handler
- * below uses either yet. `runsRoot` is here for a future render-triggering
- * action; `setNotice` is here for `auth` (phase 3), expected to publish an
- * OAuth consent URL through it — never a credential. Neither is dead code —
- * don't delete them for being currently unused.
+ * `runsRoot` is live: the two render-triggering handlers, `produce.next` and
+ * `jobs.resume`, both thread it straight through to the pipeline. `setNotice`
+ * is still unused by every handler below — it is here for `auth` (phase 3),
+ * expected to publish an OAuth consent URL through it, never a credential.
+ * That makes it scaffolding, not dead code; don't delete it for being
+ * currently uncalled.
  */
 export interface ActionContext {
   db: Database
@@ -41,9 +42,9 @@ export interface ActionContext {
   channelsDir: string
   runsRoot: string
   /**
-   * Publishes an interactive status for the operator to see. No current
-   * handler calls this — today the only writer of `notice` is the worker's
-   * own lease-blocked path.
+   * Publishes an interactive status for the operator to see. No handler calls
+   * this yet — today the only writer of `notice` is the worker's own
+   * lease-blocked path.
    */
   setNotice: (text: string) => void
 }

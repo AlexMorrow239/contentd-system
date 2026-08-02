@@ -295,13 +295,15 @@ not (see "outside these leases", above).
 pure metadata (`kind`, `lane`, label, zod arg schema, `confirm` flag, the
 lease it needs) with no heavy imports, read by **both** the dashboard (to
 render forms and validate submitted args) and the daemon; `handlers.ts` holds
-the `run` implementations for today's six actions — it imports
+the `run` implementations for today's eleven actions — it imports
 `approveLibrary`, `buildDigest`, the publish `ADAPTERS`,
-`interruptedPlatform`/`markInterruptedDone`/`retryInterrupted`, and
-`rejectTopics`/`requeueTopic` — and is imported **only** by the daemon. The
-phase-2 names this section once implied (`runJob`, `resumeJob`, `scoutAll`,
-which belong to `produce`/`resume`/`scout`) are **not present here yet**:
-`grep -n "runJob\|resumeJob\|scoutAll" src/actions/*.ts` returns nothing;
+`interruptedPlatform`/`markInterruptedDone`/`retryInterrupted`,
+`rejectTopics`/`requeueTopic`, and — since the slow lane landed —
+`produceNextTick`, `publishNextTick`, `scoutAll` and `resumeJob` — and is
+imported **only** by the daemon. Those last four are what make the arch lint
+below matter more than it did: they reach Remotion, the provider clients and
+the publish adapters transitively, so a single import of this module from the
+dashboard would pull all of it into the unauthenticated HTTP process.
 `queue.ts` is the DAO (`enqueueAction`, `pendingActions`, `startAction`,
 `completeAction`, `failAction`, `setActionNotice`, `getAction`,
 `listRecentActions`, `failRunningActions`) — there is no `claimNext`;
@@ -316,11 +318,19 @@ Anthropic, or credential code. An arch lint in `src/arch.test.ts`
 **transitively** — a real DFS over the module graph, not a substring grep —
 and fails if any path reaches `src/actions/handlers.ts`.
 
-Six actions exist today, all in the `fast` lane: `topics.reject`,
-`topics.requeue`, `library.approve`, `publish.retry`, `publish.markDone`,
-`digest.run`. The `slow` lane — anything that can take seconds or minutes: a
-render, an upload, a provider call — is built and its worker is registered,
-but carries no actions yet; that's a later plan. `actions-fast` drains up to
+Eleven actions exist today, six `fast` and five `slow`. Fast is
+`topics.reject`, `topics.requeue`, `library.approve`, `publish.retry`,
+`publish.markDone` and `digest.run` — local SQLite writes plus, in
+`digest.run`'s case, a config-directory read, never a network call, a provider
+call or a render. Slow — anything that can take seconds or minutes — is
+`produce.next`, `publish.next`, `publish.nextDryRun`, `scout.run` and
+`jobs.resume`. Four route through the confirm interstitial (`confirm: true`):
+`produce.next`, `jobs.resume` and `publish.next` — the ones that render, spend
+or post — plus `publish.markDone`, which writes an outcome the platform was
+never asked about. Note the gap: `scout.run` fires on one click and does spend
+(scoring, plus generation where `generate_topics` is set), so `confirm` tracks
+the irreversible and the expensive-per-click, not "costs money" as such.
+`actions-fast` drains up to
 `MAX_FAST_DRAIN` (50) pending rows per poll on its ~1s idle sleep so a
 checkbox click feels immediate, and also carries the daemon heartbeat
 (stamping `daemon_state`, throttled to `DAEMON_HEARTBEAT_MS` so a 1s poll
@@ -329,20 +339,44 @@ into the void." `actions-slow` claims and completes at most one row per poll
 on the standard 30s sleep, so one long action can never block the poll that
 would report it.
 
+That heartbeat is also a gate, not just a banner: `POST /actions` refuses with
+**409** while `daemon_state` is stale (`DAEMON_STALE_MS`, 60s — six missed
+beats), because a row queued against a dead daemon is a lie twice over. Nothing
+drains it, and on restart the whole backlog fires at once, which on the slow
+lane means a pile of renders. The probe runs on its **own** `openDbReadonly`
+handle, opened and closed before the write handle exists, so the structural
+claim in "the dashboard's read-only guarantee" below stays literally true — the
+entire write path is still one `INSERT`. A database it cannot read at all fails
+closed, the same conclusion a missing `daemon_state` row already draws.
+
 An action whose required lease (`produce`, `publish`, or `scout` — named
 exactly as the other workers name them) is already held is **skipped, not
 awaited**: it stays `pending`, explains itself through the row's `notice`
 column ("waiting for the publish lease"), and is retried on the next poll.
 Taking the head of the queue and blocking on it would let one long upload
 stall every trivial mutation behind it — the head-of-line problem the two
-lanes exist to prevent. Each poll's scan window (`ACTION_SCAN_WINDOW`, set to
-`MAX_FAST_DRAIN`) gives the slow lane (completion budget 1) a genuine 49-row
-margin (window 50 minus the 1 completion it needs), so a couple of
-consecutive lease-blocked rows can't idle it with runnable work sitting
-behind them; the fast lane's own completion budget
-already equals `MAX_FAST_DRAIN`, so its scan window is equal, not wider —
-the source comment in `src/loop/actions-worker.ts` calls that shared value a
-coincidence, not a coupling.
+lanes exist to prevent. A lease found held is remembered in a per-poll skip
+set, so every later row in the same poll wanting that same lease is passed
+over without re-attempting it: `acquireLease` opens a `BEGIN IMMEDIATE` write
+transaction, and on the fast lane's 1s poll a queue of blocked rows would
+otherwise be up to 50 write transactions a second of pure WAL churn for a
+lease that is plainly not going to free mid-poll. The skip also leaves those
+rows entirely untouched — no repeated `notice` write — which is the property
+`src/loop/test/actions-worker.test.ts` pins by asserting only the first
+blocked row carries a notice.
+
+Each poll's scan window (`ACTION_SCAN_WINDOW`, set to `MAX_FAST_DRAIN`) gives
+the slow lane (completion budget 1) a genuine 49-row margin (window 50 minus
+the 1 completion it needs), so a couple of consecutive lease-blocked rows
+can't idle it with runnable work sitting behind them; the fast lane's own
+completion budget already equals `MAX_FAST_DRAIN`, so its scan window is
+equal, not wider — the source comment in `src/loop/actions-worker.ts` calls
+that shared value a coincidence, not a coupling. The skip set does **not**
+widen that window: it removes redundant acquires, not the bound, so 50 rows
+all blocked on `produce` still means row 51 was never in the query's result
+set and does not run this poll. Left deliberately — it self-heals on the next
+poll, and a 50-deep queue on one lease is not a shape one operator clicking
+buttons produces.
 
 The two fast actions that do take a lease (`publish.retry`/`publish.markDone`,
 since they mutate `publishes` rows) hold it for `FAST_ACTION_LEASE_TTL_MS`
@@ -350,6 +384,44 @@ since they mutate `publishes` rows) hold it for `FAST_ACTION_LEASE_TTL_MS`
 TTL there would mean a SIGKILL inside a fast action's ~1ms window orphans the
 lease for the full 30 minutes, since the row-repair sweep below heals the row
 but not the lease.
+
+The slow lane cannot use one fixed short window, because a render legitimately
+runs for minutes. It instead takes a short `SLOW_ACTION_LEASE_TTL_MS` (5 min)
+and pushes it out every `SLOW_ACTION_HEARTBEAT_MS` (60s) from a `setInterval`
+that lives exactly as long as the handler — five beats per TTL, which is the
+tolerance for a synchronous stretch that starves the event loop, and the timer
+is `unref`'d so a pending beat can never hold the process open past SIGTERM.
+The reason is the fast lane's reason at a different scale: a SIGKILL mid-render
+heals the action row (`failRunningActions`) but not the lease, and `produce`'s
+own TTL is 90 minutes, so the daemon's produce worker would stall for 90
+minutes rather than 5.
+
+Which slow actions declare a lease is deliberately **not** uniform.
+`scout.run` declares `scout` and `jobs.resume` declares `produce`, because
+neither `scoutAll` nor `resumeJob` leases on its own — the CLI's `scout` and
+the daemon's `scoutUnit` each wrap `scoutAll` in the lease themselves, and the
+CLI's `resume` runs outside every lease on purpose, which is exactly the race
+the dashboard path must not have. `produce.next` and `publish.next` declare
+**none**, and that is the interesting case: `produceNextTick` and
+`publishNextTick` acquire `produce`/`publish` internally, so declaring the
+lease here would make the worker hold the very lease the tick then fails to
+take — every click would record a `{action:'noop',reason:'lease-held'}` result
+and call it a success. `publish.nextDryRun` declares none for a simpler reason:
+`publishNextTick` skips the acquire entirely when `dryRun` is set, so a dry run
+takes no lease anywhere.
+
+Two slow-handler behaviours are worth knowing before reading a result row.
+The three tick actions record the tick's own result **verbatim**, including a
+`lease-held` noop and including a `status: 'failed'` JobResult — `failAction`
+stores no `result`, so failing the action would throw away the very JobResult
+the operator queued it to read. And `scout.run` treats a broken channels
+directory as a `{action:'noop',reason:'config-error'}` recorded `done`, not a
+failure: `digest.run` folds the same `tryLoadChannelsDir` error into its
+result, the tick actions pass through their own `config-error` noop, and the
+CLI's `scout` exits 0 on it, reserving exit 1 for a `ScoutRunFailedError` from
+`scoutAll` itself. `scout.run` also passes `force: true` unconditionally — an
+operator clicking "scout now" means now, and `SCOUT_RECHECK_MS` would
+otherwise swallow the click.
 
 A `running` row left behind by a daemon crash is swept to `failed` once per
 worker start, with no age threshold — within one process, a `running` row on
@@ -715,9 +787,16 @@ an `INSERT INTO operator_actions`, and the daemon does the actual mutating
 out-of-process (see "the operator-action queue", above). That's also why the
 dashboard still holds no `ANTHROPIC_API_KEY` and no `BRAINROT_TOKEN_KEY`
 despite being able to queue an action that ends in a real upload: the
-credentials that mutation needs live only in the daemon. (Queueing a *render*
-is prospective, not current — `produce`/`resume`/`scout` stay CLI-only until a
-later phase wires them.)
+credentials that mutation needs live only in the daemon. Queueing a *render* is
+no longer prospective: `produce.next` and `jobs.resume` both end in a real
+Remotion render and real provider spend, `publish.next` in a real public
+upload, and `scout.run` in real provider calls — all from an unauthenticated
+POST, which is why the loopback binding, the two CSRF layers below and the 409
+liveness gate are the whole of the boundary. What is still CLI-only is a
+*named* topic
+(`brainrot produce --topic`), `library reject`, `topics prune-media`,
+`library backfill-store`, `publish preflight` and `auth` — a scope boundary,
+not a structural one.
 
 `POST /actions` is guarded by two independent layers (`src/dashboard/csrf.ts`),
 either of which alone would stop the classic cross-site-form attack: proof the
@@ -878,7 +957,7 @@ Conventions:
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~13s wall / ~70s CPU for 1476 tests across 94
+**Performance.** The suite runs ~13s wall / ~70s CPU for 1502 tests across 95
 files (warm; a first run after `pnpm install` is slower while the Remotion
 webpack cache in `node_modules/.cache` fills, and any measurement taken while
 something else is loading the machine can read 3x high). Wall clock is set by

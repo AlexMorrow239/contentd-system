@@ -390,8 +390,7 @@ furthest behind its `videos_per_day` pace and fans it out to every platform
 that channel declares (see Publishing above), and `digest` prints a daily
 report once per local day. The remaining two, `actions-fast` and
 `actions-slow`, drain the dashboard's operator-action queue instead of the
-pipeline — see "The dashboard can now publish — and will soon spend money
-too" below.
+pipeline — see "The dashboard publishes and spends money" below.
 Because throughput now follows demand rather than a clock, there's nothing
 scheduled to fall behind: a channel with videos ready gets them produced and
 published as fast as its own gates (backlog caps, cooldowns, quotas) allow,
@@ -525,7 +524,7 @@ worker still on a real clock: it fires once per local day at or after 08:00
 and a restart later the same day can re-fire it once. The other two workers,
 `actions-fast` and `actions-slow`, follow the same check-then-sleep shape but
 poll at ~1s and 30s respectively for a different queue — see "The dashboard
-can now publish — and will soon spend money too" below.
+publishes and spends money" below.
 
 Times that matter are container-local (`TZ=America/Chicago`, set in
 `deploy/docker/Dockerfile` and pinned again in `docker-compose.yml`'s
@@ -566,18 +565,20 @@ Every page it *reads* still opens the database through a read-only connection
 — the `brainrot-data` mount is read-write on purpose (SQLite must create the
 `-shm` file even to read a WAL database), but the guarantee lives in the
 connection flag, not the mount. What changed is that the dashboard now also
-*writes*, in one narrow way: buttons on the overview, library, topics and
-publishes pages queue an operator action (`POST /actions`) that the daemon
-executes, rather than mutating anything itself. Six actions are wired today —
-`topics reject/requeue`, `library approve`, `publish retry/mark-done`, and
-`run digest`. Everything else stays CLI-only for now — `library reject`,
-`topics prune-media`, `produce`, `resume`, `scout`, `produce-next`,
-`publish-next`, `auth`, `library backfill-store` and `publish preflight`
-among them; the list is illustrative, not exhaustive. That is this phase's
-scope boundary, not a structural limit, and a later plan moves some of them
-onto the same queue.
+*writes*, in one narrow way: buttons on the overview, jobs, library, topics
+and publishes pages queue an operator action (`POST /actions`) that the daemon
+executes, rather than mutating anything itself. Eleven actions are wired today.
+Six are fast — `topics reject/requeue`, `library approve`,
+`publish retry/mark-done` and `run digest` — and five are slow, meaning they
+can run for seconds or minutes: `produce next` (`/jobs`), per-job `resume`
+(`/jobs`), `publish next` and `publish next (dry run)` (`/publishes`), and
+`scout now` (`/topics`). The mutating commands still CLI-only are `produce`
+with an explicit topic, `library reject`, `topics prune-media`,
+`library backfill-store`, `publish preflight` and `auth`. That is a scope
+boundary, not a structural limit, and a later plan moves some of them onto the
+same queue.
 
-### The dashboard can now publish — and will soon spend money too
+### The dashboard publishes and spends money
 
 The dashboard queues operator actions (`POST /actions`) that the daemon
 executes. It has **no authentication**. The only things standing between a web
@@ -586,26 +587,35 @@ page you visit and your production pipeline are:
 1. the loopback binding (`127.0.0.1:8787` in `docker-compose.yml`), and
 2. the same-origin + CSRF-token check in `src/dashboard/csrf.ts`.
 
-Today's six wired actions (`topics reject/requeue`, `library approve`,
-`publish retry/mark-done`, `run digest`) already let a caller promote a video
-to `ready` or clear a stuck upload — both feed straight into the daemon's
-normal publish worker, so the result is a **real, public upload** to
-YouTube/Instagram, not just a row change. No action wired yet spends provider
-money directly — `produce`, `resume` and `scout` are still CLI-only — but they
-queue through this exact same unauthenticated endpoint and are the next phase
-of this same plan, so the security boundary has to hold before they land, not
-after.
+Three of the wired actions **spend real provider money** on a click:
+`produce next` runs the whole pipeline — an Anthropic call for the script,
+ElevenLabs if the channel configures `[voice.premium]`, and a full Remotion
+render — `resume` re-runs whichever of those stages the job has not finished,
+and `scout now` pays for topic scoring plus, where `generate_topics` is set,
+topic generation. Two of them **post publicly**:
+`publish next` uploads the next due video to every platform its channel
+declares, and `publish retry`/`library approve` feed the daemon's normal
+publish worker, so the result is a real upload to YouTube/Instagram rather than
+a row change. `publish next (dry run)` is the one that only reports what it
+would do.
+
+Four of them (`produce next`, `resume`, `publish next`, `publish mark-done`)
+route through a confirmation interstitial naming the consequence. The rest fire
+on one click, `scout now` included — so a click can spend without a prompt.
+Spend still lands under the ordinary per-video, per-channel-day and global-day
+budget caps, but those are enforced in the pipeline rather than at this
+endpoint: the cap is the backstop, not the gate.
 
 **Do not put the dashboard behind a tunnel, reverse proxy, or `0.0.0.0`
-binding.** Doing so turns it into remote code execution against your channels
-and your published accounts today, and against your provider budgets the
-moment the next phase ships. If you need remote access, use an SSH
-port-forward to loopback on both ends — never a published port.
+binding.** Doing so turns it into remote code execution against your channels,
+your published accounts and your provider budgets. If you need remote access,
+use an SSH port-forward to loopback on both ends — never a published port.
 
 Actions run inside the daemon under the same leases its workers take, so unlike
 the equivalent CLI commands they never race a live render or upload. The daemon
-must be running for a queued action to execute; the dashboard shows a banner
-when it is not.
+must be running for a queued action to execute: the dashboard shows a banner
+and disables the buttons when it is not, and `POST /actions` itself answers
+409 rather than queue work nothing would drain.
 
 ### Development vs. production
 
