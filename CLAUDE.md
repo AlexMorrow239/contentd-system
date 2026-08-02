@@ -391,10 +391,17 @@ and pushes it out every `SLOW_ACTION_HEARTBEAT_MS` (60s) from a `setInterval`
 that lives exactly as long as the handler — five beats per TTL, which is the
 tolerance for a synchronous stretch that starves the event loop, and the timer
 is `unref`'d so a pending beat can never hold the process open past SIGTERM.
-The reason is the fast lane's reason at a different scale: a SIGKILL mid-render
-heals the action row (`failRunningActions`) but not the lease, and `produce`'s
-own TTL is 90 minutes, so the daemon's produce worker would stall for 90
-minutes rather than 5.
+The reason is the fast lane's reason at a different scale, but the mitigation
+covers only the two slow actions that declare a lease at all — `jobs.resume`
+(`produce`) and `scout.run` (`scout`), below: a SIGKILL mid-render heals the
+action row (`failRunningActions`) but not the lease, and `produce`'s own TTL
+is 90 minutes, so without this short window `jobs.resume` would stall the
+daemon's produce worker for 90 minutes rather than 5. `produce.next` and
+`publish.next` — what an operator would call "the render button" — declare
+**no** lease here (see below): `produceNextTick`/`publishNextTick` self-acquire
+`produce`/`publish` with those leases' own 90-/30-minute TTLs, so a SIGKILL
+during either still orphans the lease for the full duration. The short TTL
+mitigates 2 of the 5 slow actions, not the slow lane as a whole.
 
 Which slow actions declare a lease is deliberately **not** uniform.
 `scout.run` declares `scout` and `jobs.resume` declares `produce`, because
@@ -795,7 +802,7 @@ Remotion render and real provider spend, `publish.next` in a real public
 upload, and `scout.run` in real provider calls — all from an unauthenticated
 POST, which is why the loopback binding and the two CSRF layers below are the
 whole of the boundary. The 409 liveness gate is not a third layer: it refuses
-only when the daemon looks stale (`src/dashboard/server.ts:171-179`), so a
+only when the daemon looks stale (`src/dashboard/server.ts:172-180`), so a
 cross-origin POST that already cleared CSRF still succeeds whenever the daemon
 is up — it protects the operator from queueing into the void, not the pipeline
 from an attacker. What is still CLI-only is a
