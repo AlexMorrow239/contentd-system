@@ -8,12 +8,7 @@ import { listTopics } from '../../scout/topics.js'
 import { scoutChannel } from '../../scout/scout.js'
 import type { FetchLike } from '../../scout/sources/types.js'
 import { produceNextTick } from '../../loop/produce-next.js'
-import { publishNextTick } from '../../loop/publish-next.js'
-import { parseTokenKey } from '../../publish/crypto.js'
-import { upsertToken } from '../../publish/tokens.js'
-import { YT_UPLOAD_SCOPE } from '../../publish/platforms/youtube.js'
 import { stubStorageEnv } from '../../testing/storage.js'
-import type { PlatformMeta, PublishAdapter } from '../../publish/types.js'
 import { STAGE_ORDER } from '../types.js'
 import type { JobContext, StageDef, StageName } from '../types.js'
 import { tmpDir } from '../../testing/tmp.js'
@@ -128,11 +123,9 @@ describe('golden-path loop e2e', () => {
     mkdirSync(runsRoot, { recursive: true })
 
     // Real channel TOML incl. [scout] and platforms — the same file
-    // scoutChannel (loaded via loadChannelsDir here), produceNextTick, and
-    // publishNextTick (via opts.channelsDir) all read. bg/bgm dirs are
-    // schema-required strings; fake stages never read them. The publish
-    // cadence carries no clock times: videos_per_day is the whole schedule,
-    // and the tick below injects a `now` inside the local publish window.
+    // scoutChannel (loaded via loadChannelsDir here) and produceNextTick
+    // both read. bg/bgm dirs are schema-required strings; fake stages never
+    // read them.
     writeFileSync(
       path.join(channelsDir, 'example.toml'),
       [
@@ -246,97 +239,6 @@ describe('golden-path loop e2e', () => {
     expect(used).toEqual({ status: 'used', job_id: tick.jobId })
 
     // the tick's lease was released in its finally
-    expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
-
-    // ── Publish: the ready video takes the channel's first ordinal ──────
-    // Client-credential and token-decryption env, read at call time by
-    // publishNextTick exactly like every other env-sourced constant in
-    // this codebase — never at module load.
-    vi.stubEnv('YT_CLIENT_ID', 'test-client-id')
-    vi.stubEnv('YT_CLIENT_SECRET', 'test-client-secret')
-    vi.stubEnv('BRAINROT_TOKEN_KEY', 'a'.repeat(64))
-    const tokenKey = parseTokenKey('a'.repeat(64))
-
-    // A LOCAL-time constructor (month is 0-based): with no prior attempt for
-    // this channel, PUBLISH_COOLDOWN_MS is clear and today's videos_per_day
-    // quota is unmet regardless of which local hour this resolves to, which
-    // a fixed UTC instant would not guarantee.
-    const publishNow = () => new Date(2024, 0, 1, 12, 0)
-
-    const uploadCalls: { videoPath: string; meta: PlatformMeta }[] = []
-    // A full adapter stub (upload only — credential resolution is bypassed
-    // outright) for the 'published' call below, mirroring publish-next.test.ts's
-    // own fakeAdapter conversion.
-    const fakeAdapter: PublishAdapter = {
-      platformId: 'youtube',
-      quota: { scope: 'global' },
-      postUrl: (postId) => `https://youtube.com/shorts/${postId}`,
-      hasCredential: () => true,
-      resolveCredential: async () => 'fake-access-token',
-      async upload(req) {
-        uploadCalls.push({ videoPath: req.media.localPath!, meta: req.meta })
-        return { postId: 'fakeVideoId1', url: 'https://youtube.com/shorts/fakeVideoId1' }
-      },
-    }
-
-    // Before any grant is on file, the due channel is blocked on auth — a
-    // blocked candidate never claims a row, so the ordinal stays open for the
-    // next tick (verified below). No `adapters` override here: this exercises
-    // the real ADAPTERS.youtube credential check (client env presence, then a
-    // decryptable stored token), which the fakeAdapter above would bypass.
-    const noGrant = await publishNextTick(db, { channelsDir, now: publishNow })
-    expect(noGrant).toEqual({
-      action: 'noop',
-      reason: 'no-auth',
-      reclaimed: { count: 0, bytes: 0 },
-    })
-    expect(uploadCalls).toEqual([])
-
-    // Consent flow output (Task 9): an encrypted refresh token on file.
-    upsertToken(db, 'youtube', 'example', 'rt-test-token', YT_UPLOAD_SCOPE, tokenKey)
-
-    const published = await publishNextTick(db, {
-      channelsDir,
-      now: publishNow,
-      adapters: { youtube: fakeAdapter },
-    })
-    expect(published).toEqual({
-      action: 'published',
-      channel: 'example',
-      jobId: tick.jobId,
-      results: [
-        {
-          platform: 'youtube',
-          status: 'published',
-          seq: 1,
-          postId: 'fakeVideoId1',
-          url: 'https://youtube.com/shorts/fakeVideoId1',
-        },
-      ],
-      reclaimed: { count: 0, bytes: 0 },
-    })
-    expect(uploadCalls).toEqual([
-      {
-        videoPath: path.join(runsRoot, tick.jobId!, 'assemble', 'final.mp4'),
-        meta: { title: 'Moon', description: 'd', hashtags: ['#moon'] },
-      },
-    ])
-
-    const libAfterPublish = db
-      .prepare('SELECT state FROM library WHERE job_id = ?')
-      .get(tick.jobId!) as { state: string }
-    expect(libAfterPublish.state).toBe('published')
-
-    const publishRow = db
-      .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
-      .get(tick.jobId!) as { status: string; post_id: string; url: string }
-    expect(publishRow).toEqual({
-      status: 'done',
-      post_id: 'fakeVideoId1',
-      url: 'https://youtube.com/shorts/fakeVideoId1',
-    })
-
-    // publish-next released its own lease too
     expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
 
     // ── Second tick: queue drained (the rejected topic is never eligible) ──

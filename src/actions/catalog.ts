@@ -20,7 +20,7 @@ import { BrainrotError } from '../errors.js'
 export type ActionLane = 'fast' | 'slow'
 
 /** The lease an action must hold, named exactly as the daemon's workers name it. */
-export type ActionLease = 'produce' | 'publish' | 'scout'
+export type ActionLease = 'produce' | 'scout'
 
 /**
  * Every entry spells out EVERY key, `undefined` included. `as const satisfies`
@@ -82,24 +82,6 @@ export const ACTIONS = {
     lease: undefined,
     args: z.object({ jobIds: list(jobId) }),
   },
-  'publish.retry': {
-    lane: 'fast',
-    label: 'retry',
-    confirm: false,
-    danger: undefined,
-    lease: 'publish',
-    args: z.object({ jobId }),
-  },
-  'publish.markDone': {
-    lane: 'fast',
-    label: 'mark done',
-    confirm: true,
-    danger:
-      'Records this upload as published without contacting the platform. ' +
-      'Only do this after confirming the post exists. It cannot be undone.',
-    lease: 'publish',
-    args: z.object({ jobId, postId: z.string().trim().min(1) }),
-  },
   'digest.run': {
     lane: 'fast',
     label: 'run digest',
@@ -118,26 +100,6 @@ export const ACTIONS = {
     // NOT a mistake: produceNextTick acquires the `produce` lease itself.
     // Declaring it here would make the worker hold the lease the tick then
     // fails to take, turning every click into a lease-held noop.
-    lease: undefined,
-    args: z.object({}),
-  },
-  'publish.next': {
-    lane: 'slow',
-    label: 'publish next',
-    confirm: true,
-    danger:
-      'Uploads the next due video to every platform its channel declares. ' +
-      'This posts publicly and cannot be undone.',
-    // publishNextTick acquires the `publish` lease itself — see produce.next.
-    lease: undefined,
-    args: z.object({}),
-  },
-  'publish.nextDryRun': {
-    lane: 'slow',
-    label: 'publish next (dry run)',
-    confirm: false,
-    danger: undefined,
-    // A dry run takes no lease at all, in the tick or here.
     lease: undefined,
     args: z.object({}),
   },

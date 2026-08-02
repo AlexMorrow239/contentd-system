@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { runAction } from '../../actions/handlers.js'
 import { getAction } from '../../actions/queue.js'
-import { memDb, seedAction, seedJob, seedTopic } from '../../testing/db.js'
+import { memDb, seedAction, seedTopic } from '../../testing/db.js'
 import { acquireLease } from '../lease.js'
 import { readDaemonState } from '../daemon-state.js'
 import type { UnitResult } from '../daemon.js'
@@ -13,7 +13,7 @@ import {
   SLOW_ACTION_HEARTBEAT_MS,
   SLOW_ACTION_LEASE_TTL_MS,
 } from '../actions-worker.js'
-import { PUBLISH_LEASE_TTL_MS } from '../lease.js'
+import { SCOUT_LEASE_TTL_MS } from '../../scout/scout.js'
 
 function unit(db: Database, lane: 'fast' | 'slow' = 'fast'): () => Promise<UnitResult> {
   return actionsUnit(db, lane, {
@@ -62,35 +62,43 @@ describe('actionsUnit', () => {
 
   it('records a handler failure without taking the worker down', async () => {
     const db = memDb()
-    seedJob(db, 'j1')
-    const id = seedAction(db, {
-      kind: 'publish.retry',
-      args: JSON.stringify({ jobId: 'j1' }),
-    })
+    // A candidate topic (the seedTopic default) is not claimed — requeueTopic
+    // refuses it, which is a real handler throw this test can observe without
+    // stubbing anything.
+    const topic = seedTopic(db)
+    const id = seedAction(db, { kind: 'topics.requeue', args: JSON.stringify({ id: topic }) })
     await expect(unit(db)()).resolves.toBeDefined()
     const row = getAction(db, id)
     expect(row?.status).toBe('failed')
-    expect(row?.error).toContain('no interrupted publish')
-    expect(row?.errorKind).toBe('not-found')
+    expect(row?.error).toContain('not requeued')
+    expect(row?.errorKind).toBe('refused')
   })
+
+  // The next four tests seed `kind: 'scout.run'` (lease: 'scout') onto the
+  // FAST lane. `lane` is a plain column the worker filters rows on, while the
+  // LEASE it takes comes from the catalog entry for `kind` — so this exercises
+  // the fast lane's generic lease-blocking mechanism (skip-set, notice, short
+  // TTL) using a kind that is really slow-lane-registered, because no
+  // fast-lane action declares a lease of its own. Do not "fix" this to a
+  // fast-registered kind — there isn't one.
 
   it('leaves a lease-blocked action pending and explains the wait', async () => {
     const db = memDb()
-    acquireLease(db, 'publish', 'someone-else', 60_000)
-    const id = seedAction(db, { kind: 'publish.retry', args: JSON.stringify({ jobId: 'j1' }) })
+    acquireLease(db, 'scout', 'someone-else', 60_000)
+    const id = seedAction(db, { kind: 'scout.run', args: '{}' })
     const result = await unit(db)()
     expect(result.worked).toBe(false)
     expect(getAction(db, id)?.status).toBe('pending')
-    expect(getAction(db, id)?.notice).toBe('waiting for the publish lease')
+    expect(getAction(db, id)?.notice).toBe('waiting for the scout lease')
   })
 
   it('skips past a lease-blocked action to one that can run', async () => {
-    // Otherwise a long upload holding the publish lease stalls every trivial
+    // Otherwise a long-running action holding a lease stalls every trivial
     // row mutation queued behind it — head-of-line blocking the lanes exist
     // to avoid.
     const db = memDb()
-    acquireLease(db, 'publish', 'someone-else', 60_000)
-    const blocked = seedAction(db, { kind: 'publish.retry', args: JSON.stringify({ jobId: 'j1' }) })
+    acquireLease(db, 'scout', 'someone-else', 60_000)
+    const blocked = seedAction(db, { kind: 'scout.run', args: '{}' })
     const topic = seedTopic(db)
     const runnable = seedAction(db, {
       kind: 'topics.reject',
@@ -103,17 +111,17 @@ describe('actionsUnit', () => {
 
   it('attempts a held lease once per poll, skipping later rows that need it', async () => {
     const db = memDb()
-    seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"a"}' })
-    seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"b"}' })
-    seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"c"}' })
+    seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
+    seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
+    seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
     // Someone else holds it for the whole poll.
-    expect(acquireLease(db, 'publish', 'pid:other', 60_000)).toBe(true)
+    expect(acquireLease(db, 'scout', 'pid:other', 60_000)).toBe(true)
 
     const result = await unit(db)()
 
     expect(result).toEqual({
       worked: false,
-      line: { action: 'noop', reason: 'lease-held', lease: 'publish' },
+      line: { action: 'noop', reason: 'lease-held', lease: 'scout' },
     })
     const notices = db
       .prepare('SELECT notice FROM operator_actions ORDER BY id ASC')
@@ -121,7 +129,7 @@ describe('actionsUnit', () => {
     // Only the FIRST blocked row is touched: the rest are skipped before any
     // acquire attempt, so they never get a notice written.
     expect(notices.map((r) => r.notice)).toEqual([
-      'waiting for the publish lease',
+      'waiting for the scout lease',
       null,
       null,
     ])
@@ -134,11 +142,13 @@ describe('actionsUnit', () => {
 
   it('releases the lease it took', async () => {
     const db = memDb()
-    seedJob(db, 'j1')
-    seedAction(db, { kind: 'publish.retry', args: JSON.stringify({ jobId: 'j1' }) })
+    // channelsDir is '/nonexistent/channels' (see `unit`), so scout.run's
+    // handler folds the load failure into a benign noop rather than throwing
+    // — this test only cares that the lease is freed either way.
+    seedAction(db, { kind: 'scout.run', args: '{}' })
     await unit(db)()
-    // A lease left held would wedge the publish worker for its whole TTL.
-    expect(acquireLease(db, 'publish', 'next-caller', 1_000)).toBe(true)
+    // A lease left held would wedge the scout worker for its whole TTL.
+    expect(acquireLease(db, 'scout', 'next-caller', 1_000)).toBe(true)
   })
 
   it('fails rows left running by a dead daemon, once, on the first poll', async () => {
@@ -249,19 +259,9 @@ describe('actionsUnit', () => {
     // runnable work at position 3. The scan window must be wide enough to
     // reach past them.
     const db = memDb()
-    seedJob(db, 'j1')
-    seedJob(db, 'j2')
-    acquireLease(db, 'publish', 'someone-else', 60_000)
-    const blockedA = seedAction(db, {
-      lane: 'slow',
-      kind: 'publish.retry',
-      args: JSON.stringify({ jobId: 'j1' }),
-    })
-    const blockedB = seedAction(db, {
-      lane: 'slow',
-      kind: 'publish.retry',
-      args: JSON.stringify({ jobId: 'j2' }),
-    })
+    acquireLease(db, 'scout', 'someone-else', 60_000)
+    const blockedA = seedAction(db, { lane: 'slow', kind: 'scout.run', args: '{}' })
+    const blockedB = seedAction(db, { lane: 'slow', kind: 'scout.run', args: '{}' })
     const topic = seedTopic(db)
     const runnable = seedAction(db, {
       lane: 'slow',
@@ -277,8 +277,7 @@ describe('actionsUnit', () => {
 
   it('acquires a fast-lane action lease with the short TTL, not the long per-lease TTL', async () => {
     const db = memDb()
-    seedJob(db, 'j1')
-    seedAction(db, { kind: 'publish.retry', args: JSON.stringify({ jobId: 'j1' }) })
+    seedAction(db, { kind: 'scout.run', args: '{}' })
     let expiresAt: string | undefined
     const before = Date.now()
     const tick = actionsUnit(db, 'fast', {
@@ -288,7 +287,7 @@ describe('actionsUnit', () => {
       run: async (ctx, kind, args) => {
         // Inspect the lease row while the action is in flight and still
         // holds it.
-        const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get('publish') as
+        const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get('scout') as
           | { expires_at: string }
           | undefined
         expiresAt = row?.expires_at
@@ -300,9 +299,9 @@ describe('actionsUnit', () => {
     const ttl = new Date(expiresAt as string).getTime() - before
     expect(ttl).toBeGreaterThan(0)
     // Generous tolerance around FAST_ACTION_LEASE_TTL_MS (60s), but nowhere
-    // near the 30-minute PUBLISH_LEASE_TTL_MS a lane-unaware TTL would use.
+    // near the 30-minute SCOUT_LEASE_TTL_MS a lane-unaware TTL would use.
     expect(ttl).toBeLessThan(FAST_ACTION_LEASE_TTL_MS + 10_000)
-    expect(ttl).toBeLessThan(PUBLISH_LEASE_TTL_MS)
+    expect(ttl).toBeLessThan(SCOUT_LEASE_TTL_MS)
   })
 
   it('fails a same-lane row with an unknown kind, naming the kind', async () => {
@@ -339,26 +338,25 @@ describe('actionsUnit', () => {
     expect(statuses.filter((s) => s === 'pending')).toHaveLength(1)
   })
 
-  // The next four tests seed `kind: 'publish.retry'` onto the SLOW lane, which
-  // is not how `publish.retry` is actually registered (it's a fast action).
-  // That's deliberate: `lane` is a plain column the worker filters rows on,
-  // while the LEASE it takes comes from the catalog entry for `kind`. Reusing
-  // an existing fast-lane kind on the slow lane exercises the slow-lane TTL
-  // and heartbeat code path before any real slow-lane action kind exists
-  // (those land in later tasks) — do not "fix" this to a real slow kind.
+  // The next four tests use `kind: 'scout.run'`, which really is a slow-lane,
+  // scout-leased action — but the `run` option is stubbed in every one of
+  // them, so scoutAll never actually runs. `lane` is a plain column the
+  // worker filters rows on, independent of the catalog's own `lane` for
+  // `kind`, which the fourth test below relies on to put this same kind on
+  // the FAST lane instead.
 
   it('acquires a slow action lease with the slow TTL, not the lease default', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
     try {
       const db = memDb()
-      seedAction(db, { kind: 'publish.retry', lane: 'slow', args: '{"jobId":"j1"}' })
+      seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
       let expiryDuringRun = ''
       const unit = actionsUnit(db, 'slow', {
         channelsDir: 'c',
         runsRoot: 'r',
         run: () => {
-          expiryDuringRun = leaseExpiry(db, 'publish')
+          expiryDuringRun = leaseExpiry(db, 'scout')
           return Promise.resolve({ ok: true })
         },
       })
@@ -376,7 +374,7 @@ describe('actionsUnit', () => {
     vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
     try {
       const db = memDb()
-      seedAction(db, { kind: 'publish.retry', lane: 'slow', args: '{"jobId":"j1"}' })
+      seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
       let release!: () => void
       const gate = new Promise<void>((resolve) => {
         release = resolve
@@ -391,9 +389,9 @@ describe('actionsUnit', () => {
       })
       const running = unit()
       await vi.advanceTimersByTimeAsync(0)
-      const before = leaseExpiry(db, 'publish')
+      const before = leaseExpiry(db, 'scout')
       await vi.advanceTimersByTimeAsync(SLOW_ACTION_HEARTBEAT_MS)
-      const after = leaseExpiry(db, 'publish')
+      const after = leaseExpiry(db, 'scout')
       expect(after > before).toBe(true)
       release()
       await running
@@ -407,7 +405,7 @@ describe('actionsUnit', () => {
     vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
     try {
       const db = memDb()
-      seedAction(db, { kind: 'publish.retry', lane: 'slow', args: '{"jobId":"j1"}' })
+      seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
       const unit = actionsUnit(db, 'slow', {
         channelsDir: 'c',
         runsRoot: 'r',
@@ -427,14 +425,14 @@ describe('actionsUnit', () => {
     vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
     try {
       const db = memDb()
-      seedAction(db, { kind: 'publish.retry', lane: 'fast', args: '{"jobId":"j1"}' })
+      seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
       let expiryDuringRun = ''
       let timersDuringRun = -1
       const unit = actionsUnit(db, 'fast', {
         channelsDir: 'c',
         runsRoot: 'r',
         run: () => {
-          expiryDuringRun = leaseExpiry(db, 'publish')
+          expiryDuringRun = leaseExpiry(db, 'scout')
           timersDuringRun = vi.getTimerCount()
           return Promise.resolve({ ok: true })
         },

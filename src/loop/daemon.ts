@@ -1,14 +1,13 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { errorMessage } from '../errors.js'
-import { localDay } from '../publish/schedule.js'
+import { localDay } from '../time.js'
 import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from '../scout/scout.js'
 import type { ScoutChannelResult } from '../scout/scout.js'
 import { FAST_IDLE_SLEEP_MS, actionsUnit } from './actions-worker.js'
 import { buildDigest } from './digest.js'
 import { acquireLease, releaseLease } from './lease.js'
 import { produceNextTick } from './produce-next.js'
-import { publishNextTick } from './publish-next.js'
 
 export const IDLE_SLEEP_MS = 30_000
 export const ERROR_SLEEP_MS = 60_000
@@ -104,27 +103,13 @@ export function produceUnit(
   }
 }
 
-export function publishUnit(
-  db: Database,
-  opts: { channelsDir: string; tick?: typeof publishNextTick },
-): () => Promise<UnitResult> {
-  const tick = opts.tick ?? publishNextTick
-  return async () => {
-    // `dryRun` must never be threaded in here: a dry-run result is
-    // `action: 'dry-run'`, which maps to worked:true, so the worker would
-    // re-check immediately forever — a hot loop previewing the same video.
-    const result = await tick(db, { channelsDir: opts.channelsDir })
-    return { worked: result.action !== 'noop', line: { ...result } }
-  }
-}
-
 /**
  * One unit = one scoutAll pass over every configured channel. The recheck
  * cadence AND the queue-depth demand check both live INSIDE scoutChannel now
  * (skipped: 'recheck-not-due' / 'queue-full'), backed by the persisted
- * `scout_state` table — so this unit is a thin wrapper, like produceUnit and
- * publishUnit, with no scheduling state of its own. lease-held never reaches
- * scoutChannel at all, so it never records an attempt, for free.
+ * `scout_state` table — so this unit is a thin wrapper, like produceUnit,
+ * with no scheduling state of its own. lease-held never reaches scoutChannel
+ * at all, so it never records an attempt, for free.
  */
 export function scoutUnit(
   db: Database,
@@ -256,7 +241,6 @@ export async function runDaemon(
     })
   const settled = await Promise.allSettled([
     supervise('produce', produceUnit(db, opts)),
-    supervise('publish', publishUnit(db, { channelsDir: opts.channelsDir })),
     supervise('scout', scoutUnit(db, { channelsDir: opts.channelsDir, now: opts.now })),
     supervise('digest', digestUnit(db, { channelsDir: opts.channelsDir, now: opts.now })),
     // The operator-action lanes. actions-fast also carries the daemon

@@ -7,7 +7,7 @@ import { classify } from './errors.js'
 import { BudgetExceededError } from './jobs/costs.js'
 import { pipelineStages } from './jobs/pipeline.js'
 import { ResumeError } from './jobs/resume.js'
-import { PublishError, PublishOutcomeUnknownError, PUBLISH_PLATFORMS } from './publish/types.js'
+import { PublishError, PublishOutcomeUnknownError } from './publish/types.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
@@ -107,18 +107,17 @@ describe('dashboard stage order', () => {
 
 describe('dashboard action isolation', () => {
   it('never directly or transitively imports src/actions/handlers.ts from src/dashboard/', async () => {
-    // handlers.ts transitively imports the publish adapters — and, from phase
-    // 2, Remotion and the provider clients. The dashboard is the one process
-    // terminating unauthenticated HTTP; it reads src/actions/catalog.ts, which
-    // is pure metadata, and enqueues. Same rule, same reason, as
-    // DASHBOARD_STAGE_ORDER above.
+    // handlers.ts transitively imports Remotion and the provider clients. The
+    // dashboard is the one process terminating unauthenticated HTTP; it reads
+    // src/actions/catalog.ts, which is pure metadata, and enqueues. Same rule,
+    // same reason, as DASHBOARD_STAGE_ORDER above.
     //
     // This walks the import graph rather than grepping for the literal
     // substring "actions/handlers": a dashboard file importing a module that
     // itself imports handlers.ts — or a barrel re-exporting from it — would
-    // pass a one-hop text grep while still pulling the publish adapters into
-    // the dashboard process. Same specifier-parsing shape as the "src/stories
-    // purity" lint below.
+    // pass a one-hop text grep while still pulling Remotion and the provider
+    // clients into the dashboard process. Same specifier-parsing shape as the
+    // "src/stories purity" lint below.
     const target = join(SRC_ROOT, 'actions', 'handlers.ts')
     const files = (await srcFiles(join(SRC_ROOT, 'dashboard'))).filter(
       (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
@@ -143,23 +142,6 @@ describe('dashboard action isolation', () => {
     )
     const chain = await findImportChain(files, target)
     expect(chain).not.toBeNull()
-  })
-})
-
-describe('publish-next platform agnosticism', () => {
-  it('publish-next.ts contains no youtube/instagram string literal in its own source', async () => {
-    // The tick drives platforms generically through the adapter registry
-    // (src/publish/platforms/index.ts); a platform name appearing in its source
-    // means a special case has crept back in.
-    //
-    // Previously lived inside loop/test/publish-next.test.ts, which is a
-    // behavior file.
-    const { readFile } = await import('node:fs/promises')
-    const src = await readFile(new URL('./loop/publish-next.ts', import.meta.url), 'utf8')
-    for (const platform of PUBLISH_PLATFORMS) {
-      expect(src).not.toContain(`'${platform}'`)
-      expect(src).not.toContain(`"${platform}"`)
-    }
   })
 })
 

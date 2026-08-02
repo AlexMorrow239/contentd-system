@@ -6,7 +6,7 @@ import {
   globalDaySpentMicros,
 } from '../../jobs/costs.js'
 import { quotaBackedOff, uploadsUsedToday } from '../../publish/publishes.js'
-import { localDay } from '../../publish/schedule.js'
+import { localDay } from '../../time.js'
 
 export interface StatusCount {
   status: string

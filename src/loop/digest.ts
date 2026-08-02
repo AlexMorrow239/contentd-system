@@ -14,7 +14,7 @@ import {
   QUOTA_BACKOFF_MS,
   videosPublishedToday,
 } from '../publish/publishes.js'
-import { localDay } from '../publish/schedule.js'
+import { localDay } from '../time.js'
 import { backlogCap } from './plan-tick.js'
 import {
   agedCutoff,

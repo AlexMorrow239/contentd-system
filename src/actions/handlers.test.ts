@@ -4,14 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../testing/channel.js'
-import {
-  memDb,
-  seedJob,
-  seedLibrary,
-  seedLibraryObject,
-  seedPublish,
-  seedTopic,
-} from '../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedLibraryObject, seedTopic } from '../testing/db.js'
 import { tmpDir } from '../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
@@ -105,56 +98,6 @@ describe('action handlers', () => {
     })
   })
 
-  it('clears an interrupted publish', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    seedPublish(db, 'j1', { status: 'interrupted' })
-    expect(await runAction(ctx(db), 'publish.retry', { jobId: 'j1' })).toEqual({ cleared: true })
-  })
-
-  it('fails a retry when the job has no interrupted publish', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    await expect(runAction(ctx(db), 'publish.retry', { jobId: 'j1' })).rejects.toThrow(
-      /no interrupted publish/,
-    )
-  })
-
-  it('marks an interrupted publish done and derives the url from its own platform', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    seedPublish(db, 'j1', { status: 'interrupted', platform: 'youtube' })
-    const result = (await runAction(ctx(db), 'publish.markDone', {
-      jobId: 'j1',
-      postId: 'abc123',
-    })) as { url: string | null }
-    // The interrupted row names the platform, so no --platform arg exists to
-    // get wrong — and a Shorts url can never be recorded against an IG media id.
-    expect(result.url).toContain('abc123')
-  })
-
-  it('fails mark-done when the job has no interrupted publish', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    await expect(
-      runAction(ctx(db), 'publish.markDone', { jobId: 'j1', postId: 'abc123' }),
-    ).rejects.toThrow(/no interrupted publish/)
-  })
-
-  it('marks an interrupted instagram publish done with no derivable url', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    seedPublish(db, 'j1', { status: 'interrupted', platform: 'instagram' })
-    const result = (await runAction(ctx(db), 'publish.markDone', {
-      jobId: 'j1',
-      postId: 'abc123',
-    })) as { url: string | null }
-    // Instagram's post id alone doesn't determine a permalink — its adapter's
-    // postUrl always returns null (src/publish/platforms/instagram.ts), so a
-    // mark-done on Instagram must record no url rather than a fabricated one.
-    expect(result.url).toBeNull()
-  })
-
   it('returns the digest text', async () => {
     const db = memDb()
     const result = (await runAction(ctx(db), 'digest.run', {})) as { text: string }
@@ -185,18 +128,6 @@ describe('action handlers', () => {
     // NOT a throw: the tick ran and declined because a render is in flight. This
     // is exactly what the CLI does (exit 0, benign noop).
     expect(result).toEqual({ action: 'noop', reason: 'lease-held' })
-  })
-
-  it('publish.next runs a real publish tick, publish.nextDryRun previews', async () => {
-    const db = memDb()
-    const tick = vi.fn().mockResolvedValue({ action: 'noop', reason: 'not-due' })
-    const ctx = { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} }
-
-    await ACTION_HANDLERS['publish.next'](ctx, {}, { publishNextTick: tick })
-    expect(tick).toHaveBeenLastCalledWith(db, { channelsDir: '/ch' })
-
-    await ACTION_HANDLERS['publish.nextDryRun'](ctx, {}, { publishNextTick: tick })
-    expect(tick).toHaveBeenLastCalledWith(db, { channelsDir: '/ch', dryRun: true })
   })
 
   it('scout.run forces past the recheck cooldown', async () => {
@@ -230,7 +161,7 @@ describe('action handlers', () => {
     )
     // Every sibling hitting this same tryLoadChannelsDir condition records
     // `done` with the reason visible: digest.run folds loaded.error into its
-    // result, produce.next/publish.next pass through the tick's
+    // result, produce.next passes through the tick's own
     // {action:'noop',reason:'config-error'}, and the CLI's own `scout` exits 0.
     // A lone `failed` here would be an inconsistency with no reason behind it.
     expect(result).toEqual({

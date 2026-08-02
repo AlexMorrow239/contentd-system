@@ -5,9 +5,6 @@ import { approveLibrary } from '../jobs/library.js'
 import { resumeJob } from '../jobs/resume.js'
 import { buildDigest } from '../loop/digest.js'
 import { produceNextTick } from '../loop/produce-next.js'
-import { publishNextTick } from '../loop/publish-next.js'
-import { ADAPTERS } from '../publish/platforms/index.js'
-import { interruptedPlatform, markInterruptedDone, retryInterrupted } from '../publish/publishes.js'
 import { scoutAll } from '../scout/scout.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
 import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
@@ -15,17 +12,16 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 /**
  * Handler implementations. DAEMON ONLY — src/arch.test.ts fails the build if
  * anything under src/dashboard/ imports this module, directly OR
- * transitively (including via a re-export), because it transitively pulls the
- * publish adapters, Remotion and the provider clients into whatever process
- * imports it — the slow lane's handlers reach all three. The dashboard reads
- * ./catalog.js instead, which is pure metadata.
+ * transitively (including via a re-export), because it transitively pulls
+ * Remotion and the provider clients into whatever process imports it — the
+ * slow lane's handlers reach both. The dashboard reads ./catalog.js instead,
+ * which is pure metadata.
  *
  * Each handler mirrors its CLI command's semantics, including which outcomes
- * are failures: `publish retry` on a job with no interrupted row exits 1, so
- * the action throws rather than recording a misleading success. One
- * deliberate exception: `library.approve` on a reclaimed job exits 1 on the
- * CLI but records `done` here with `reclaimed: [...]`, so the page can still
- * report the approvals that did succeed in the same batch.
+ * are failures. One deliberate exception: `library.approve` on a reclaimed
+ * job exits 1 on the CLI but records `done` here with `reclaimed: [...]`, so
+ * the page can still report the approvals that did succeed in the same
+ * batch.
  */
 
 /**
@@ -51,13 +47,12 @@ export interface ActionContext {
 
 /**
  * The optional third parameter is a test seam, mirroring the `opts.tick ??`
- * shape `produceUnit`/`publishUnit` already use in src/loop/daemon.ts. It is
- * never supplied in production — `runAction` calls handlers with two
- * arguments — so a handler that needs no seam simply ignores it.
+ * shape `produceUnit` already uses in src/loop/daemon.ts. It is never
+ * supplied in production — `runAction` calls handlers with two arguments —
+ * so a handler that needs no seam simply ignores it.
  */
 type HandlerDeps = {
   produceNextTick?: typeof produceNextTick
-  publishNextTick?: typeof publishNextTick
   scoutAll?: typeof scoutAll
   resumeJob?: typeof resumeJob
 }
@@ -116,35 +111,6 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     return Promise.resolve({ approved, requested: args.jobIds.length, reclaimed })
   },
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  'publish.retry': async (ctx, args) => {
-    if (!retryInterrupted(ctx.db, args.jobId)) {
-      throw new BrainrotError(`no interrupted publish for job ${args.jobId}`, {
-        domain: 'publish',
-        kind: 'not-found',
-      })
-    }
-    return { cleared: true }
-  },
-
-  // eslint-disable-next-line @typescript-eslint/require-await
-  'publish.markDone': async (ctx, args) => {
-    // The interrupted row names its own platform, so the url comes from that
-    // platform's adapter — there is no platform argument to get wrong. A
-    // platform whose url is not derivable from the id alone records none.
-    const platform = interruptedPlatform(ctx.db, args.jobId)
-    const url = platform === null ? null : ADAPTERS[platform]().postUrl(args.postId)
-    const ok =
-      platform !== null && markInterruptedDone(ctx.db, args.jobId, args.postId, url, ctx.now)
-    if (!ok) {
-      throw new BrainrotError(`no interrupted publish for job ${args.jobId}`, {
-        domain: 'publish',
-        kind: 'not-found',
-      })
-    }
-    return { platform, postId: args.postId, url }
-  },
-
   'digest.run': (ctx) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
     return Promise.resolve({
@@ -168,25 +134,16 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       runsRoot: ctx.runsRoot,
     }),
 
-  'publish.next': (ctx, _args, deps) =>
-    (deps?.publishNextTick ?? publishNextTick)(ctx.db, { channelsDir: ctx.channelsDir }),
-
-  'publish.nextDryRun': (ctx, _args, deps) =>
-    (deps?.publishNextTick ?? publishNextTick)(ctx.db, {
-      channelsDir: ctx.channelsDir,
-      dryRun: true,
-    }),
-
   'scout.run': async (ctx, _args, deps) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
     if (loaded.error !== undefined) {
-      // A benign noop recorded `done`, NOT a throw. Three siblings hit this
-      // exact condition and all report it this way — digest.run folds
-      // loaded.error into its result, produce.next/publish.next pass through
-      // the tick's own {action:'noop',reason:'config-error'} — and the CLI's
-      // `scout` exits 0 on it, reserving exit 1 for a ScoutRunFailedError
-      // thrown by scoutAll itself. The operator sees the cause either way;
-      // what a lone `failed` would add is inconsistency, not information.
+      // A benign noop recorded `done`, NOT a throw. A sibling hits this exact
+      // condition and reports it the same way — digest.run folds loaded.error
+      // into its result, produce.next passes through the tick's own
+      // {action:'noop',reason:'config-error'} — and the CLI's `scout` exits 0
+      // on it, reserving exit 1 for a ScoutRunFailedError thrown by scoutAll
+      // itself. The operator sees the cause either way; what a lone `failed`
+      // would add is inconsistency, not information.
       return { action: 'noop', reason: 'config-error', error: loaded.error }
     }
     // force:true unconditionally — an operator clicking "scout now" means now,

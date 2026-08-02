@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { localDay } from '../../publish/schedule.js'
+import { localDay } from '../../time.js'
 import { upsertToken } from '../../publish/tokens.js'
 import { memDb, seedLibraryObject } from '../../testing/db.js'
 import { testChannel } from '../../testing/channel.js'

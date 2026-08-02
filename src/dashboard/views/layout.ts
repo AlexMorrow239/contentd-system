@@ -1,12 +1,11 @@
 import { html, SafeHtml } from '../html.js'
 
-export type NavKey = 'overview' | 'jobs' | 'library' | 'publishes' | 'topics' | 'actions'
+export type NavKey = 'overview' | 'jobs' | 'library' | 'topics' | 'actions'
 
 const NAV: { key: NavKey; label: string; path: string }[] = [
   { key: 'overview', label: 'overview', path: '/' },
   { key: 'jobs', label: 'jobs', path: '/jobs' },
   { key: 'library', label: 'library', path: '/library' },
-  { key: 'publishes', label: 'publishes', path: '/publishes' },
   { key: 'topics', label: 'topics', path: '/topics' },
   { key: 'actions', label: 'actions', path: '/actions' },
 ]

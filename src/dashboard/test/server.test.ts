@@ -1,9 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
-import { localDay } from '../../publish/schedule.js'
 import { resolvePaths } from '../../config/paths.js'
 import type { DashboardConfig } from '../config.js'
 import { createApp } from '../server.js'
@@ -111,167 +110,6 @@ describe('createApp', () => {
     } finally {
       spy.mockRestore()
     }
-  })
-})
-
-describe('/publishes', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it('renders with a warning rather than 500-ing when the channels dir is unreadable', async () => {
-    const config = seededConfig() // channelsDir points at a directory that does not exist
-    const res = await createApp({ config }).request('/publishes')
-    expect(res.status).toBe(200)
-    expect(await res.text()).toContain('channel config error')
-  })
-
-  it('reports uploads used today with no cap figure', async () => {
-    const config = seededConfig()
-    const res = await createApp({ config }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('youtube: 0 uploads used today')
-  })
-
-  it('shows a backed-off badge after a recent youtube quota failure', async () => {
-    // Proves the dashboard reads the same runtime signal the publish loop
-    // gates on (quotaBackedOff), rather than a mirrored env-derived cap.
-    const config = seededConfig()
-    const now = new Date()
-    const db = openDb(config.paths.dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','failed')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, error_kind, created_at) ' +
-        "VALUES ('j1','youtube','space','2026-07-25',1,'failed',1,'quota',?)",
-    ).run(now.toISOString())
-    db.close()
-    const res = await createApp({ config, now: () => now }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('backed off')
-  })
-
-  it('says so when no channel has an instagram target configured', async () => {
-    const config = seededConfig() // channelsDir has no files at all
-    mkdirSync(config.paths.channelsDir, { recursive: true })
-    const res = await createApp({ config }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('instagram: no channel declares instagram in platforms')
-  })
-
-  it('reports instagram quota per channel — independent usage, not one summed figure', async () => {
-    // Instagram's quota is channel-scoped (one IG account per channel): a
-    // channel with its own [publish.instagram] table must get its own line,
-    // and one channel's usage must never be added into another's.
-    const config = seededConfig()
-    mkdirSync(config.paths.channelsDir, { recursive: true })
-    writeFileSync(
-      join(config.paths.channelsDir, 'space.toml'),
-      [
-        'name = "space"',
-        'niche = ["space facts"]',
-        'script_model = "claude-sonnet-5"',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
-        'videos_per_day = 1',
-        'platforms = ["instagram"]',
-        '',
-        '[voice]',
-        'volume = "af_heart"',
-        '',
-        '[caption_style]',
-        'font = "Inter"',
-        'font_size_px = 72',
-        'active_color = "#FFD700"',
-        'inactive_color = "#FFFFFF"',
-        'stroke_px = 8',
-        '',
-        '[budget]',
-        'per_video_usd = 8.0',
-        'per_day_usd = 20.0',
-        '',
-      ].join('\n'),
-    )
-    const now = new Date()
-    const today = localDay(now)
-    const db = openDb(config.paths.dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
-        "VALUES ('j1','instagram','space',?,1,'done',1)",
-    ).run(today)
-    db.close()
-
-    const res = await createApp({ config, now: () => now }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('space: 1 uploads used today')
-  })
-
-  it('backs off only the channel with a recent instagram quota failure, not its sibling', async () => {
-    // buildPlatformQuotas passes channel.name into quotaBackedOff for
-    // channel-scoped platforms — a call site nothing else here exercises,
-    // since the test above only proves independent USAGE counts. Two
-    // instagram channels, a quota failure seeded for one of them only: the
-    // backed-off badge must appear on that channel's line and nowhere else.
-    const config = seededConfig()
-    mkdirSync(config.paths.channelsDir, { recursive: true })
-    const channelToml = (name: string): string =>
-      [
-        `name = "${name}"`,
-        'niche = ["space facts"]',
-        'script_model = "claude-sonnet-5"',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
-        'videos_per_day = 1',
-        'platforms = ["instagram"]',
-        '',
-        '[voice]',
-        'volume = "af_heart"',
-        '',
-        '[caption_style]',
-        'font = "Inter"',
-        'font_size_px = 72',
-        'active_color = "#FFD700"',
-        'inactive_color = "#FFFFFF"',
-        'stroke_px = 8',
-        '',
-        '[budget]',
-        'per_video_usd = 8.0',
-        'per_day_usd = 20.0',
-        '',
-      ].join('\n')
-    writeFileSync(join(config.paths.channelsDir, 'space.toml'), channelToml('space'))
-    writeFileSync(join(config.paths.channelsDir, 'history.toml'), channelToml('history'))
-
-    const now = new Date()
-    const db = openDb(config.paths.dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','failed')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, error_kind, created_at) ' +
-        "VALUES ('j1','instagram','space','2026-07-25',1,'failed',1,'quota',?)",
-    ).run(now.toISOString())
-    db.close()
-
-    const res = await createApp({ config, now: () => now }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    const spaceLine = /<li>space:[^<]*(?:<[^/][^>]*>[^<]*<\/[^>]*>)?<\/li>/.exec(body)?.[0] ?? ''
-    const historyLine =
-      /<li>history:[^<]*(?:<[^/][^>]*>[^<]*<\/[^>]*>)?<\/li>/.exec(body)?.[0] ?? ''
-    expect(spaceLine).toContain('backed off')
-    // Pin the regex actually matched — the '' fallback would satisfy the
-    // not.toContain below vacuously.
-    expect(historyLine).toContain('history:')
-    expect(historyLine).not.toContain('backed off')
   })
 })
 
@@ -610,25 +448,28 @@ describe('POST /actions', () => {
 describe('GET /actions/confirm', () => {
   it('renders the interstitial for a confirmable action', async () => {
     const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
-      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+      '/actions/confirm?kind=jobs.resume&from=%2Fjobs&jobId=j1',
     )
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('cannot be undone')
+    // jobs.resume declares its own danger text rather than the generic
+    // "cannot be undone" fallback — pin a substring of it instead.
+    expect(body).toContain('spends real money')
     expect(body).toContain('value="j1"')
   })
 
   it('shows the daemon banner and disables the submit when the daemon heartbeat is stale', async () => {
-    // publish.markDone is the only confirm:true action and the only one
-    // reached through this route — a stale daemon here must read the same
-    // way it does on every other page rather than staying silently live.
+    // jobs.resume is one of the confirm:true actions, and the one reached
+    // through this route with a per-row jobId — a stale daemon here must
+    // read the same way it does on every other page rather than staying
+    // silently live.
     const config = seededConfig()
     const now = new Date()
     const db = openDb(config.paths.dbPath)
     seedDaemonState(db, { lastSeenAt: new Date(now.getTime() - 5 * 60_000) })
     db.close()
     const res = await createApp({ config, csrfToken: 'tok', now: () => now }).request(
-      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+      '/actions/confirm?kind=jobs.resume&from=%2Fjobs&jobId=j1',
     )
     expect(res.status).toBe(200)
     const body = await res.text()
@@ -644,7 +485,7 @@ describe('GET /actions/confirm', () => {
     db.prepare('DELETE FROM daemon_state').run()
     db.close()
     const res = await createApp({ config, csrfToken: 'tok' }).request(
-      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+      '/actions/confirm?kind=jobs.resume&from=%2Fjobs&jobId=j1',
     )
     expect(res.status).toBe(200)
     const body = await res.text()
@@ -679,7 +520,7 @@ describe('GET /actions/confirm', () => {
     // anything but the 200. Resolve each attribute the way a browser would
     // and assert on `.origin`, not string content.
     const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
-      `/actions/confirm?kind=publish.markDone&from=${encodeURIComponent(from)}&jobId=j1`,
+      `/actions/confirm?kind=jobs.resume&from=${encodeURIComponent(from)}&jobId=j1`,
     )
     expect(res.status).toBe(200)
     const body = await res.text()

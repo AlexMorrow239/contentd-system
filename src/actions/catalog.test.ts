@@ -9,10 +9,6 @@ describe('ACTIONS catalog', () => {
       'jobs.resume',
       'library.approve',
       'produce.next',
-      'publish.markDone',
-      'publish.next',
-      'publish.nextDryRun',
-      'publish.retry',
       'scout.run',
       'topics.reject',
       'topics.requeue',
@@ -27,17 +23,13 @@ describe('ACTIONS catalog', () => {
     }
   })
 
-  it('takes the publish lease for the two actions that mutate publishes rows', () => {
-    // The rest touch tables where a concurrent tick is benign; these two are
-    // owned by the publish state machine.
-    expect(ACTIONS['publish.retry'].lease).toBe('publish')
-    expect(ACTIONS['publish.markDone'].lease).toBe('publish')
+  it('declares no lease for actions that touch tables where a concurrent tick is benign', () => {
     expect(ACTIONS['topics.reject'].lease).toBeUndefined()
     expect(ACTIONS['library.approve'].lease).toBeUndefined()
   })
 
-  it('requires confirmation only for the irreversible action', () => {
-    expect(ACTIONS['publish.markDone'].confirm).toBe(true)
+  it('requires confirmation only for irreversible actions', () => {
+    expect(ACTIONS['jobs.resume'].confirm).toBe(true)
     // A per-row interstitial would make the most-used action worse than the CLI.
     expect(ACTIONS['topics.reject'].confirm).toBe(false)
   })
@@ -64,7 +56,7 @@ describe('ACTIONS catalog', () => {
 
   it('classifies a schema failure as config/invalid', () => {
     try {
-      parseActionArgs('publish.markDone', { jobId: 'j1' })
+      parseActionArgs('jobs.resume', {})
       expect.unreachable('should have thrown')
     } catch (err) {
       expect(err).toBeInstanceOf(BrainrotError)
@@ -74,7 +66,7 @@ describe('ACTIONS catalog', () => {
   })
 
   it('derives argument names from the schema so the two cannot drift', () => {
-    expect(actionArgNames('publish.markDone')).toEqual(['jobId', 'postId'])
+    expect(actionArgNames('jobs.resume')).toEqual(['jobId'])
     expect(actionArgNames('digest.run')).toEqual([])
   })
 
@@ -131,19 +123,15 @@ describe('ACTIONS catalog', () => {
     expect(parseActionArgs('topics.reject', fields)).toEqual({ ids: [4, 5] })
   })
 
-  it('declares no lease for the two tick actions, which lease themselves', () => {
-    // produceNextTick / publishNextTick acquire `produce` / `publish` internally.
-    // A worker holding the lease first would deadlock the tick against itself
-    // and record its lease-held noop as a success.
+  it('declares no lease for produce.next, which leases itself', () => {
+    // produceNextTick acquires `produce` internally. A worker holding the
+    // lease first would deadlock the tick against itself and record its
+    // lease-held noop as a success.
     expect(ACTIONS['produce.next'].lease).toBeUndefined()
-    expect(ACTIONS['publish.next'].lease).toBeUndefined()
-    expect(ACTIONS['publish.nextDryRun'].lease).toBeUndefined()
   })
 
-  it('confirms before spending or publishing, but not for a dry run', () => {
+  it('confirms before spending', () => {
     expect(ACTIONS['produce.next'].confirm).toBe(true)
-    expect(ACTIONS['publish.next'].confirm).toBe(true)
-    expect(ACTIONS['publish.nextDryRun'].confirm).toBe(false)
   })
 
   it('jobs.resume takes the produce lease and offers no force escape hatch', () => {
