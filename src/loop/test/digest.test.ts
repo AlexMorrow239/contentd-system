@@ -419,7 +419,8 @@ describe('buildDigest — library rows with no stored object', () => {
   // This line names `backfill-store`, so it must report exactly what that
   // command uploads — both now read unstoredLibraryJobs (src/jobs/library.ts).
   // A needs-review row is in scope for both: approving it promotes it straight
-  // into the publish pool, where a missing object is an Instagram failure.
+  // into the publish pool, where a missing object leaves the operator
+  // nothing to download and post.
   it('flags a needs-review library row with no stored object', () => {
     stubStorageEnv()
     const db = memDb()
