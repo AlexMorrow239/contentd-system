@@ -53,7 +53,12 @@ describe('storeStage', () => {
   it('uploads final.mp4 under videos/<channel>/<jobId>.mp4', async () => {
     writeFinalMp4()
     await storeStage(store).run(makeCtx())
-    const got = await store.get('videos/example/job-123.mp4')
+    // ObjectStore has no read method any more (publishing is manual now, so
+    // nothing in-process reads a stored object back) — verify the upload
+    // through the fake's own on-disk file instead of the interface.
+    const got = readFileSync(
+      path.join(storeRoot, encodeURIComponent('videos/example/job-123.mp4')),
+    )
     expect(got.equals(VIDEO)).toBe(true)
   })
 

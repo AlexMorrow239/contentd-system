@@ -12,32 +12,6 @@ import type { Platform } from './types.js'
  * pass a channel name and a platform list as plain data, never a ChannelConfig.
  */
 
-export interface PostRow {
-  jobId: string
-  channel: string
-  platform: Platform
-  url: string | null
-  postedAt: string
-}
-
-interface DbPostRow {
-  job_id: string
-  channel: string
-  platform: string
-  url: string | null
-  posted_at: string
-}
-
-function toPostRow(row: DbPostRow): PostRow {
-  return {
-    jobId: row.job_id,
-    channel: row.channel,
-    platform: row.platform as Platform,
-    url: row.url,
-    postedAt: row.posted_at,
-  }
-}
-
 /**
  * Idempotent on the composite primary key. `posted_at` is deliberately NOT
  * refreshed on conflict — the fact being recorded is when the video went out,
@@ -60,13 +34,6 @@ export function unmarkPosted(db: Database, jobId: string, platform: Platform): b
     db.prepare('DELETE FROM posts WHERE job_id = ? AND platform = ?').run(jobId, platform).changes >
     0
   )
-}
-
-export function postsForJob(db: Database, jobId: string): PostRow[] {
-  const rows = db
-    .prepare('SELECT * FROM posts WHERE job_id = ? ORDER BY platform ASC')
-    .all(jobId) as DbPostRow[]
-  return rows.map(toPostRow)
 }
 
 /**

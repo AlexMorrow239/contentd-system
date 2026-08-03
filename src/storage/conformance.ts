@@ -32,15 +32,6 @@ export function describeObjectStore(name: string, makeStore: () => Promise<Store
       }
     }
 
-    it('round-trips a body through put and get', async () => {
-      await withStore(async (store) => {
-        const key = uniqueKey()
-        await store.put(key, BODY, 'video/mp4')
-        const got = await store.get(key)
-        expect(got.equals(BODY)).toBe(true)
-      })
-    })
-
     it('reports the written byte count from put', async () => {
       await withStore(async (store) => {
         const key = uniqueKey()
@@ -67,44 +58,14 @@ export function describeObjectStore(name: string, makeStore: () => Promise<Store
       })
     })
 
-    it('get on a missing key throws StorageError with kind not-found', async () => {
-      await withStore(async (store) => {
-        await expect(store.get(uniqueKey())).rejects.toMatchObject({
-          name: 'StorageError',
-          kind: 'not-found',
-        })
-      })
-    })
-
-    it('presignGet returns a URL for an existing key', async () => {
-      await withStore(async (store) => {
-        const key = uniqueKey()
-        await store.put(key, BODY, 'video/mp4')
-        const url = await store.presignGet(key, 3600)
-        expect(typeof url).toBe('string')
-        expect(url.length).toBeGreaterThan(0)
-      })
-    })
-
-    // S3 presigning is a purely local signing operation — it never contacts
-    // the bucket, so it succeeds for keys that do not exist and the eventual
-    // GET is what 404s. The fake MUST match, or it would reject URLs the real
-    // store happily signs and the two would disagree on a live code path.
-    it('presignGet succeeds for a missing key', async () => {
-      await withStore(async (store) => {
-        const url = await store.presignGet(uniqueKey(), 3600)
-        expect(typeof url).toBe('string')
-        expect(url.length).toBeGreaterThan(0)
-      })
-    })
-
     it('put overwrites an existing key', async () => {
       await withStore(async (store) => {
         const key = uniqueKey()
         const second = Buffer.from('a completely different body', 'utf8')
         await store.put(key, BODY, 'video/mp4')
         await store.put(key, second, 'video/mp4')
-        expect((await store.get(key)).equals(second)).toBe(true)
+        const head = await store.head(key)
+        expect(head?.bytes).toBe(second.length)
       })
     })
 
@@ -131,7 +92,7 @@ export function describeObjectStore(name: string, makeStore: () => Promise<Store
       await withStore(async (store) => {
         const key = `videos/example-channel/${process.pid}-abc123.mp4`
         await store.put(key, BODY, 'video/mp4')
-        expect((await store.get(key)).equals(BODY)).toBe(true)
+        expect(await store.head(key)).not.toBeNull()
         await store.delete(key)
       })
     })

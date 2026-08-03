@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { memDb, seedLibraryObject } from '../../testing/db.js'
+import { memDb } from '../../testing/db.js'
 import { testChannel } from '../../testing/channel.js'
 import { stubStorageEnv } from '../../testing/storage.js'
 import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from '../digest.js'
@@ -485,34 +485,6 @@ describe('buildDigest — unstored-object action items require storage to be con
     const digest = buildDigest(db, [])
     expect(digest).not.toContain('j-unstored')
     expect(digest).not.toContain('backfill-store')
-    db.close()
-  })
-})
-
-describe('buildDigest — reclaimed but unreviewed videos', () => {
-  it('names a needs-review video whose bytes were freed, with the reject remedy', () => {
-    // The accepted consequence of not exempting needs-review from the reclaim
-    // sweep: nobody reviewed it inside backlog_days, so its object is gone.
-    // `library approve` refuses it, so this line is the only way an operator
-    // learns the row is dead weight.
-    const db = memDb()
-    seedJob(db, { id: 'job-1', channel: 'chan-a' })
-    seedLibrary(db, 'job-1', 'needs-review')
-    seedLibraryObject(db, 'job-1', { reclaimedAt: isoAgo(HOUR_MS) })
-
-    expect(buildDigest(db, [])).toContain(
-      'job job-1 (chan-a) is still needs-review but its stored object was reclaimed',
-    )
-    db.close()
-  })
-
-  it('says nothing about a needs-review video whose object is still held', () => {
-    const db = memDb()
-    seedJob(db, { id: 'job-1', channel: 'chan-a' })
-    seedLibrary(db, 'job-1', 'needs-review')
-    seedLibraryObject(db, 'job-1')
-
-    expect(buildDigest(db, [])).not.toContain('its stored object was reclaimed')
     db.close()
   })
 })

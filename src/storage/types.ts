@@ -1,9 +1,11 @@
 /**
  * The seam between the pipeline and wherever finished videos actually live
- * (design spec §3.1). Five methods, one caller each: `put` (the store stage),
- * `get` (YouTube's upload when the local file has been reclaimed), `head`
- * (post-upload verification and the digest sweep), `presignGet` (Instagram,
- * preflight), `delete` (library reject).
+ * (design spec §3.1). Three methods, one caller each: `put` (the store
+ * stage), `head` (post-upload verification and the digest sweep), `delete`
+ * (library reject). Publishing is manual now — the operator downloads and
+ * posts by hand — so there is no in-process reader of a stored object any
+ * more; `get` and `presignGet` existed only for the deleted YouTube upload
+ * and Instagram presign paths and were removed with them.
  *
  * Deliberately NO `list()`. Its only use would be sweeping for objects
  * orphaned by a failed reject-delete — a rare event costing fractions of a
@@ -13,9 +15,7 @@ import { BrainrotError } from '../errors.js'
 
 export interface ObjectStore {
   put(key: string, body: Buffer, contentType: string): Promise<{ etag: string; bytes: number }>
-  get(key: string): Promise<Buffer<ArrayBuffer>>
   head(key: string): Promise<{ bytes: number; contentType: string } | null>
-  presignGet(key: string, ttlSeconds: number): Promise<string>
   delete(key: string): Promise<void>
 }
 

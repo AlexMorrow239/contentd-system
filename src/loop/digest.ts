@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
 import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } from '../jobs/costs.js'
-import { pendingInventory, reclaimedUnreviewedJobs, unstoredLibraryJobs } from '../jobs/library.js'
+import { pendingInventory, unstoredLibraryJobs } from '../jobs/library.js'
 import { candidateTopicCount } from '../scout/topics.js'
 import type { Platform } from '../posts/types.js'
 // ./config.js, not ./s3.js: this must not drag the AWS SDK onto the digest's
@@ -349,16 +349,6 @@ export function buildDigest(
         `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,
       )
     }
-  }
-  // The other half of that story, and the accepted consequence of not exempting
-  // needs-review from the reclaim sweep (design spec §3): a video nobody
-  // reviewed in backlog_days had its bytes freed. `library approve` now refuses
-  // it, so without this line it would sit as inventory nothing drains and
-  // nothing reports.
-  for (const r of reclaimedUnreviewedJobs(db)) {
-    lines.push(
-      `  job ${r.jobId} (${r.channel}) is still needs-review but its stored object was reclaimed — it can no longer publish; run brainrot library reject ${r.jobId}`,
-    )
   }
   pushNoneIfEmpty(lines, actionItemsStart, '  none')
 

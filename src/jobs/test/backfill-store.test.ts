@@ -23,7 +23,12 @@ describe('backfillStore', () => {
     const res = await backfillStore({ db, store })
 
     expect(res.uploaded).toEqual(['job-1'])
-    expect((await store.get('videos/example/job-1.mp4')).toString()).toBe('mp4 bytes')
+    // ObjectStore has no read method any more (publishing is manual now, so
+    // nothing in-process reads a stored object back) — head()'s byte count is
+    // as far as the interface goes toward verifying the upload.
+    expect((await store.head('videos/example/job-1.mp4'))?.bytes).toBe(
+      Buffer.from('mp4 bytes').length,
+    )
     expect(
       db.prepare("SELECT object_key AS k FROM library_objects WHERE job_id = 'job-1'").get(),
     ).toEqual({ k: 'videos/example/job-1.mp4' })

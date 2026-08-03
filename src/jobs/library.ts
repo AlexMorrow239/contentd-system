@@ -115,25 +115,6 @@ export function approveLibrary(db: Database, jobIds: string[]): ApproveResult {
   return { approved, reclaimed }
 }
 
-/**
- * Videos whose bytes were reclaimed before anyone reviewed them — the digest's
- * only trace of the accepted consequence above. They are dead weight: they
- * still count as inventory (pendingInventory counts every needs-review row),
- * and approving one is refused, so the operator has to reject them by hand.
- */
-export function reclaimedUnreviewedJobs(db: Database): { jobId: string; channel: string }[] {
-  return db
-    .prepare(
-      `SELECT l.job_id AS jobId, j.channel AS channel
-       FROM library l
-       JOIN jobs j ON j.id = l.job_id
-       JOIN library_objects lo ON lo.job_id = l.job_id
-       WHERE l.state = 'needs-review' AND lo.reclaimed_at IS NOT NULL
-       ORDER BY l.job_id`,
-    )
-    .all() as { jobId: string; channel: string }[]
-}
-
 // Reject retires a row from either of two states: needs-review (never
 // promoted) or ready (pulled from the pool). There is no 'published' state
 // to pull back from any more — a video is either not yet fully posted

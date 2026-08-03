@@ -9,7 +9,6 @@ import {
   libraryObjectKeys,
   listLibrary,
   pendingInventory,
-  reclaimedUnreviewedJobs,
   rejectLibrary,
 } from '../library.js'
 import type { LibraryState } from '../library.js'
@@ -168,26 +167,6 @@ describe('approveLibrary', () => {
     // It was never approvable in the first place — calling that a reclaim
     // refusal would send the operator after the wrong cause.
     expect(approveLibrary(db, [ready])).toEqual({ approved: 0, reclaimed: [] })
-    db.close()
-  })
-})
-
-describe('reclaimedUnreviewedJobs', () => {
-  it('names needs-review rows whose bytes were freed, and nothing else', () => {
-    const db = memDb()
-    const gone = seedJob(db, { id: 'gone-job', channel: 'chan-a' })
-    seedLibrary(db, gone, { state: 'needs-review' })
-    seedLibraryObject(db, gone, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
-    const held = seedJob(db, { id: 'held-job' })
-    seedLibrary(db, held, { state: 'needs-review' })
-    seedLibraryObject(db, held)
-    // A reclaimed object on a REVIEWED row is the normal end state, not a
-    // finding: the reclaim sweep only reaches it once every platform settled.
-    const readyGone = seedJob(db, { id: 'ready-gone-job' })
-    seedLibrary(db, readyGone, { state: 'ready' })
-    seedLibraryObject(db, readyGone, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
-
-    expect(reclaimedUnreviewedJobs(db)).toEqual([{ jobId: 'gone-job', channel: 'chan-a' }])
     db.close()
   })
 })

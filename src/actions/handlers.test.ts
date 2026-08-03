@@ -5,7 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../testing/channel.js'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedTopic } from '../testing/db.js'
-import { postsForJob } from '../posts/posts.js'
+import { postedPlatforms } from '../posts/posts.js'
 import { fakeStore } from '../storage/fake.js'
 import { stubStorageEnv } from '../testing/storage.js'
 import { tmpDir } from '../testing/tmp.js'
@@ -209,7 +209,7 @@ describe('action handlers', () => {
       url: 'https://y/1',
     })
     expect(result).toEqual({ jobId: 'j1', platform: 'youtube', posted: true })
-    expect(postsForJob(db, 'j1')).toHaveLength(1)
+    expect(postedPlatforms(db, ['j1']).get('j1')?.size).toBe(1)
   })
 
   // The handler must resolve the channel itself: the dashboard form has a job
@@ -220,7 +220,10 @@ describe('action handlers', () => {
     seedJob(db, 'j1', { channel: 'beta' })
     seedLibrary(db, 'j1', { state: 'ready' })
     await runAction(ctx(db), 'post.mark', { jobId: 'j1', platform: 'youtube' })
-    expect(postsForJob(db, 'j1')[0]?.channel).toBe('beta')
+    const rows = db.prepare('SELECT channel FROM posts WHERE job_id = ?').all('j1') as {
+      channel: string
+    }[]
+    expect(rows[0]?.channel).toBe('beta')
   })
 
   it('post.mark throws for an unknown job', async () => {
