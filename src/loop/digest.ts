@@ -4,6 +4,9 @@ import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } fro
 import { pendingInventory, reclaimedUnreviewedJobs, unstoredLibraryJobs } from '../jobs/library.js'
 import { candidateTopicCount } from '../scout/topics.js'
 import type { Platform } from '../posts/types.js'
+// ./config.js, not ./s3.js: this must not drag the AWS SDK onto the digest's
+// startup path, same reasoning as produce-next.ts's own import of this.
+import { s3ConfigError } from '../storage/config.js'
 import { backlogCap } from './plan-tick.js'
 
 // A job 'running' longer than this has almost certainly lost its process —
@@ -332,11 +335,20 @@ export function buildDigest(
   // cache and the bucket is the durable copy — and would fire constantly.
   // Shared with backfillStore so this line reports exactly the rows the
   // command it names will upload (src/jobs/library.ts).
-  const unstored = unstoredLibraryJobs(db)
-  for (const r of unstored) {
-    lines.push(
-      `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,
-    )
+  //
+  // Gated on storage being configured: object storage is now OPTIONAL (the
+  // `store` stage no-ops without it), so on a laptop-only deployment with no
+  // bucket EVERY finished video has no `library_objects` row and this block
+  // would tell the operator to run a command (`library backfill-store`) that
+  // itself cannot run without storage. Same gate produce-next.ts already
+  // applies to the reclaim sweep, for the identical reason.
+  if (s3ConfigError() === undefined) {
+    const unstored = unstoredLibraryJobs(db)
+    for (const r of unstored) {
+      lines.push(
+        `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,
+      )
+    }
   }
   // The other half of that story, and the accepted consequence of not exempting
   // needs-review from the reclaim sweep (design spec §3): a video nobody
