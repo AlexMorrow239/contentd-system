@@ -100,4 +100,12 @@ describe('renderPostQueuePage', () => {
     const out = renderPostQueuePage(pageData([])).value
     expect(out).toContain('nothing waiting to post')
   })
+
+  it('offers a discard (library.reject) control on the card', () => {
+    // confirm:true, so this renders as a link to the confirm interstitial
+    // rather than a direct form — same shape as post.unmark above.
+    const out = renderPostQueuePage(pageData([card({ jobId: 'j1' })])).value
+    expect(out).toContain('kind=library.reject')
+    expect(out).toContain('jobIds=j1')
+  })
 })

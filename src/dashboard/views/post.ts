@@ -129,6 +129,16 @@ function renderCard(card: PostCard, csrfToken: string, daemonStale: boolean): Sa
     <div class="post-platforms">
       ${card.platforms.map((p) => platformBlock(card.jobId, p, csrfToken, from, daemonStale))}
     </div>
+    <footer class="post-card-footer">
+      ${actionForm({
+        kind: 'library.reject',
+        csrfToken,
+        from,
+        fields: { jobIds: card.jobId },
+        disabled: daemonStale,
+        subtle: true,
+      })}
+    </footer>
   </article>`
 }
 
