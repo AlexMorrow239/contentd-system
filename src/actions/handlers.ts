@@ -1,13 +1,20 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
-import { BrainrotError } from '../errors.js'
-import { approveLibrary, rejectLibrary } from '../jobs/library.js'
+import { errorMessage, BrainrotError } from '../errors.js'
+import {
+  approveLibrary,
+  deleteRejectedObjects,
+  libraryObjectKeys,
+  rejectLibrary,
+} from '../jobs/library.js'
 import { resumeJob } from '../jobs/resume.js'
 import { buildDigest } from '../loop/digest.js'
 import { produceNextTick } from '../loop/produce-next.js'
 import { markPosted, unmarkPosted } from '../posts/posts.js'
 import { scoutAll } from '../scout/scout.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
+import { s3ConfigError } from '../storage/config.js'
+import type { ObjectStore } from '../storage/types.js'
 import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 
 /**
@@ -56,6 +63,14 @@ type HandlerDeps = {
   produceNextTick?: typeof produceNextTick
   scoutAll?: typeof scoutAll
   resumeJob?: typeof resumeJob
+  /**
+   * Test seam standing in for `(await import('../storage/s3.js')).storeFromEnv()`
+   * in `library.reject` — keeps the AWS SDK's ~35ms/~10MB startup cost off
+   * every other path that imports this module, mirroring the CLI's `reject`
+   * command. A thrown error here is treated exactly like a real
+   * `storeFromEnv()` throw: nothing to delete.
+   */
+  storeFromEnv?: () => ObjectStore
 }
 
 type Handler<K extends ActionKind> = (
@@ -175,8 +190,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     // dashboard only has a job id, and a mismatched channel would misfile the
     // row in every channel-scoped read (pendingInventory, reclaim, the digest).
     const row = ctx.db.prepare('SELECT channel FROM jobs WHERE id = ?').get(args.jobId) as
-      | { channel: string }
-      | undefined
+      { channel: string } | undefined
     if (row === undefined) {
       throw new BrainrotError(`no such job: ${args.jobId}`, { domain: 'job', kind: 'not-found' })
     }
@@ -198,11 +212,53 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     removed: unmarkPosted(ctx.db, args.jobId, args.platform),
   }),
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  'library.reject': async (ctx, args) => ({
-    rejected: rejectLibrary(ctx.db, args.jobIds),
-    requested: args.jobIds.length,
-  }),
+  // Mirrors the CLI's `library reject` command (src/cli.ts): keys are read
+  // BEFORE the state change, and the object delete is best-effort AFTER it —
+  // the reject itself must not depend on network reachability, and a storage
+  // failure must not roll back (or fail) the state change. See that
+  // command's comment for why: a failure here leaves an orphaned object, and
+  // the warning is how an operator finds it.
+  'library.reject': async (ctx, args, deps) => {
+    const objects = libraryObjectKeys(ctx.db, args.jobIds)
+    const rejected = rejectLibrary(ctx.db, args.jobIds)
+
+    let deleted: string[] = []
+    let failed: string[] = []
+    let storageUnavailable: string | undefined
+    if (objects.length > 0) {
+      let store: ObjectStore | null = null
+      const configError = s3ConfigError()
+      if (configError !== undefined) {
+        storageUnavailable = configError
+      } else {
+        try {
+          store = deps?.storeFromEnv
+            ? deps.storeFromEnv()
+            : (await import('../storage/s3.js')).storeFromEnv()
+        } catch (err) {
+          storageUnavailable = errorMessage(err)
+        }
+      }
+      if (store !== null) {
+        const outcome = await deleteRejectedObjects({
+          db: ctx.db,
+          objects,
+          store,
+          warn: (message) => ctx.setNotice(message),
+        })
+        deleted = outcome.deleted
+        failed = outcome.failed
+      }
+    }
+
+    return {
+      rejected,
+      requested: args.jobIds.length,
+      objectsDeleted: deleted.length,
+      objectsFailed: failed.length,
+      ...(storageUnavailable !== undefined ? { storageUnavailable } : {}),
+    }
+  },
 }
 
 /**
