@@ -311,7 +311,16 @@ describe('action handlers', () => {
 
     const result = await runAction(ctx(db), 'library.reject', { jobIds: ['j1'] })
 
-    expect(result).toMatchObject({ rejected: 1, requested: 1, objectsDeleted: 0 })
+    // Every field asserted: this is exactly the branch where storageUnavailable
+    // is the interesting output, and objectsFailed must stay 0 — unconfigured
+    // storage is "nothing to delete", not a delete attempt that failed.
+    expect(result).toEqual({
+      rejected: 1,
+      requested: 1,
+      objectsDeleted: 0,
+      objectsFailed: 0,
+      storageUnavailable: expect.stringContaining('object storage is not configured'),
+    })
     expect(
       (db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as { state: string })
         .state,
