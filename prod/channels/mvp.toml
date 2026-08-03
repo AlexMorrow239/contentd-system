@@ -27,24 +27,28 @@ bg_dir = "assets/bg"
 bgm_dir = "assets/bgm"
 
 # Pure demand. Nothing here is clipped against a platform cap at config load
-# anymore (the old assertQuotaHeadroom is gone): each platform clips itself at
-# runtime when its own API returns a quota error, which backs that platform
-# off for 6h and leaves the other one publishing. Expected steady state:
-# 15 videos/day produced, ~15 Instagram legs, ~6 YouTube legs (YouTube's real
-# ~6/day per-Google-Cloud-project ceiling), ~21 published legs/day.
+# (the old assertQuotaHeadroom is gone), and there is no runtime quota
+# detection or backoff anymore either — posting is manual, through the
+# dashboard's /post checklist, so there is no automated upload to be rejected
+# or backed off in the first place. This number just sets how many videos
+# production tries to finish per day; how many actually get posted by hand
+# each day is up to the operator. 15/day was sized for the old automated
+# throughput target and is the operator's to revisit now that posting is
+# manual — left as-is here, not re-justified.
 videos_per_day = 15
-# Inventory depth cap AND the aged-out horizon — one number. At 15/day this
-# lets 30 unconsumed videos accumulate before production stops, and gives each
-# video 2 days to find a publish slot before it counts as passed over.
-# `pendingInventory` counts EVERY unconsumed video, not just the ~9/day
-# YouTube never reaches: all 15/day count as inventory until their YouTube leg
-# either lands or ages out. With YouTube at zero (pre-auth, or a hard outage
-# past this window) that inventory climbs straight to the 30 cap, planTick
-# reports `backlog-full`, and the digest shows a standing "holding 30 of 30
-# ... production paused" item. That is self-balancing and expected on day
-# one (or during any YouTube outage), not a fault — it is what stops
-# never-ageing-out YouTube legs from being produced forever on top of an
-# already-full backlog.
+# Inventory depth cap ONLY now — nothing ages out anymore. At 15/day this
+# lets 30 unconsumed videos (finished but not yet posted to every declared
+# platform) accumulate before production stops; there is no time horizon
+# attached to that number, and no video is ever discarded automatically for
+# taking too long to post. `pendingInventory` counts every video that hasn't
+# been posted to ALL of `platforms` below (or manually discarded via the
+# "discard" control on /post or /library, which sets `library.state =
+# 'blocked'` and removes it from the count). If posting falls behind — nobody
+# works the /post queue for a while — inventory climbs to the 30 cap,
+# planTick reports `backlog-full`, and production pauses until a human posts
+# (or discards) enough videos to make room again. That's expected backpressure,
+# not a fault: it is what stops production from running unbounded ahead of a
+# queue nobody is clearing.
 backlog_days = 2
 
 # The /post checklist for this channel — a flat list, not a schedule and not
