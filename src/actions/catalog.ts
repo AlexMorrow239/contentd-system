@@ -157,7 +157,13 @@ export const ACTIONS = {
     args: z.object({ jobId, platform }),
   },
   'library.reject': {
-    lane: 'fast',
+    // Slow, not fast: the handler makes real network calls (a dynamic S3
+    // import plus one store.delete() per object, sequentially), and the fast
+    // lane also carries the daemon heartbeat — a slow or unreachable bucket
+    // during a multi-job discard must not stall the heartbeat and trip the
+    // dashboard's 409 liveness gate. No lease: it races no worker, and the
+    // object deletes are idempotent.
+    lane: 'slow',
     label: 'discard',
     confirm: true,
     danger:
