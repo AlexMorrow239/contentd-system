@@ -1,10 +1,11 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
-import { approveLibrary } from '../jobs/library.js'
+import { approveLibrary, rejectLibrary } from '../jobs/library.js'
 import { resumeJob } from '../jobs/resume.js'
 import { buildDigest } from '../loop/digest.js'
 import { produceNextTick } from '../loop/produce-next.js'
+import { markPosted, unmarkPosted } from '../posts/posts.js'
 import { scoutAll } from '../scout/scout.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
 import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
@@ -167,6 +168,41 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       runsRoot: ctx.runsRoot,
       channelsDir: ctx.channelsDir,
     }),
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  'post.mark': async (ctx, args) => {
+    // The channel is resolved here rather than taken from the form: the
+    // dashboard only has a job id, and a mismatched channel would misfile the
+    // row in every channel-scoped read (pendingInventory, reclaim, the digest).
+    const row = ctx.db.prepare('SELECT channel FROM jobs WHERE id = ?').get(args.jobId) as
+      | { channel: string }
+      | undefined
+    if (row === undefined) {
+      throw new BrainrotError(`no such job: ${args.jobId}`, { domain: 'job', kind: 'not-found' })
+    }
+    markPosted(ctx.db, {
+      jobId: args.jobId,
+      channel: row.channel,
+      platform: args.platform,
+      url: args.url,
+    })
+    return { jobId: args.jobId, platform: args.platform, posted: true }
+  },
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  'post.unmark': async (ctx, args) => ({
+    jobId: args.jobId,
+    platform: args.platform,
+    // Reported, not thrown: unmarking something already gone is the operator
+    // getting the state they asked for, not a failure.
+    removed: unmarkPosted(ctx.db, args.jobId, args.platform),
+  }),
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  'library.reject': async (ctx, args) => ({
+    rejected: rejectLibrary(ctx.db, args.jobIds),
+    requested: args.jobIds.length,
+  }),
 }
 
 /**

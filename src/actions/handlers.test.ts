@@ -5,6 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../testing/channel.js'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedTopic } from '../testing/db.js'
+import { postsForJob } from '../posts/posts.js'
 import { tmpDir } from '../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
@@ -194,5 +195,50 @@ describe('action handlers', () => {
         { resumeJob: resume },
       ),
     ).rejects.toThrow('already done')
+  })
+
+  it('post.mark records the post', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    const result = await runAction(ctx(db), 'post.mark', {
+      jobId: 'j1',
+      platform: 'youtube',
+      url: 'https://y/1',
+    })
+    expect(result).toEqual({ jobId: 'j1', platform: 'youtube', posted: true })
+    expect(postsForJob(db, 'j1')).toHaveLength(1)
+  })
+
+  // The handler must resolve the channel itself: the dashboard form has a job
+  // id, and denormalizing the wrong channel onto the row would misfile the
+  // video in every channel-scoped read.
+  it('post.mark resolves the channel from the job', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'beta' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    await runAction(ctx(db), 'post.mark', { jobId: 'j1', platform: 'youtube' })
+    expect(postsForJob(db, 'j1')[0]?.channel).toBe('beta')
+  })
+
+  it('post.mark throws for an unknown job', async () => {
+    await expect(
+      runAction(ctx(memDb()), 'post.mark', { jobId: 'nope', platform: 'youtube' }),
+    ).rejects.toThrow(/nope/)
+  })
+
+  it('post.unmark reports when there was nothing to unmark', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    const result = await runAction(ctx(db), 'post.unmark', { jobId: 'j1', platform: 'youtube' })
+    expect(result).toEqual({ jobId: 'j1', platform: 'youtube', removed: false })
+  })
+
+  it('library.reject discards and reports the count', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    const result = await runAction(ctx(db), 'library.reject', { jobIds: ['j1'] })
+    expect(result).toEqual({ rejected: 1, requested: 1 })
   })
 })

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { BrainrotError } from '../errors.js'
+import { PLATFORMS } from '../posts/types.js'
 
 /**
  * The action catalog: pure metadata, no behaviour. This module is imported by
@@ -56,6 +57,14 @@ function list<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.infer<T>[]> {
 
 const topicId = z.coerce.number().int().positive()
 const jobId = z.string().trim().min(1)
+const platform = z.enum(PLATFORMS)
+// A form submits an untouched text field as ''. That means "not provided",
+// not "the url is the empty string", so it must become undefined before the
+// DAO stores it — otherwise the library page would render an empty <a href>.
+const optionalUrl = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().trim().url().optional(),
+)
 
 export const ACTIONS = {
   'topics.reject': {
@@ -125,6 +134,37 @@ export const ACTIONS = {
     // dashboard path race-free where the CLI path is not.
     lease: 'produce',
     args: z.object({ jobId }),
+  },
+  'post.mark': {
+    lane: 'fast',
+    label: 'mark posted',
+    confirm: false,
+    danger: undefined,
+    // No lease: `posts` is a table no worker touches, so there is nothing to
+    // race. This is why FAST_ACTION_LEASE_TTL_MS could go with the old
+    // publish actions — no fast action leases any more.
+    lease: undefined,
+    args: z.object({ jobId, platform, url: optionalUrl }),
+  },
+  'post.unmark': {
+    lane: 'fast',
+    label: 'unmark',
+    confirm: true,
+    danger:
+      'Removes the record that this video was posted to this platform, including ' +
+      'the saved link. It does not delete anything on the platform itself.',
+    lease: undefined,
+    args: z.object({ jobId, platform }),
+  },
+  'library.reject': {
+    lane: 'fast',
+    label: 'discard',
+    confirm: true,
+    danger:
+      'Discards this video: it leaves the posting queue and stops counting toward ' +
+      'the channel backlog, so production can resume. Its stored bytes are freed.',
+    lease: undefined,
+    args: z.object({ jobIds: list(jobId) }),
   },
 } as const satisfies Record<string, ActionDescriptor>
 

@@ -3,11 +3,14 @@ import { BrainrotError } from '../errors.js'
 import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from './catalog.js'
 
 describe('ACTIONS catalog', () => {
-  it('declares exactly the phase-1 fast actions plus the phase-2 slow ones', () => {
+  it('declares exactly the phase-1 fast actions plus the phase-2 slow ones and the posts trio', () => {
     expect(Object.keys(ACTIONS).sort()).toEqual([
       'digest.run',
       'jobs.resume',
       'library.approve',
+      'library.reject',
+      'post.mark',
+      'post.unmark',
       'produce.next',
       'scout.run',
       'topics.reject',
@@ -140,5 +143,39 @@ describe('ACTIONS catalog', () => {
     // Taking over a job stuck in `running` asserts no live process holds it —
     // something the dashboard cannot verify. Break-glass stays on the CLI.
     expect(actionArgNames('jobs.resume')).toEqual(['jobId'])
+  })
+
+  it('validates post.mark args, defaulting url to absent', () => {
+    expect(parseActionArgs('post.mark', { jobId: 'j1', platform: 'youtube' })).toEqual({
+      jobId: 'j1',
+      platform: 'youtube',
+    })
+  })
+
+  it('rejects an unknown platform for post.mark', () => {
+    expect(() => parseActionArgs('post.mark', { jobId: 'j1', platform: 'myspace' })).toThrow(
+      /platform/,
+    )
+  })
+
+  // An empty url field submits as '' from a form, which is "not provided",
+  // not "the url is the empty string".
+  it('treats an empty url field as absent', () => {
+    expect(parseActionArgs('post.mark', { jobId: 'j1', platform: 'youtube', url: '' })).toEqual({
+      jobId: 'j1',
+      platform: 'youtube',
+    })
+  })
+
+  it('routes the destructive actions through the interstitial', () => {
+    expect(ACTIONS['post.unmark'].confirm).toBe(true)
+    expect(ACTIONS['library.reject'].confirm).toBe(true)
+    expect(ACTIONS['post.mark'].confirm).toBe(false)
+  })
+
+  it('takes no lease for any posts action', () => {
+    expect(ACTIONS['post.mark'].lease).toBeUndefined()
+    expect(ACTIONS['post.unmark'].lease).toBeUndefined()
+    expect(ACTIONS['library.reject'].lease).toBeUndefined()
   })
 })

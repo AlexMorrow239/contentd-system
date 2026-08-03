@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { runAction } from '../../actions/handlers.js'
 import { getAction } from '../../actions/queue.js'
 import { memDb, seedAction, seedTopic } from '../../testing/db.js'
 import { acquireLease } from '../lease.js'
@@ -8,12 +7,10 @@ import { readDaemonState } from '../daemon-state.js'
 import type { UnitResult } from '../daemon.js'
 import {
   actionsUnit,
-  FAST_ACTION_LEASE_TTL_MS,
   MAX_FAST_DRAIN,
   SLOW_ACTION_HEARTBEAT_MS,
   SLOW_ACTION_LEASE_TTL_MS,
 } from '../actions-worker.js'
-import { SCOUT_LEASE_TTL_MS } from '../../scout/scout.js'
 
 function unit(db: Database, lane: 'fast' | 'slow' = 'fast'): () => Promise<UnitResult> {
   return actionsUnit(db, lane, {
@@ -275,35 +272,6 @@ describe('actionsUnit', () => {
     expect(getAction(db, runnable)?.status).toBe('done')
   })
 
-  it('acquires a fast-lane action lease with the short TTL, not the long per-lease TTL', async () => {
-    const db = memDb()
-    seedAction(db, { kind: 'scout.run', args: '{}' })
-    let expiresAt: string | undefined
-    const before = Date.now()
-    const tick = actionsUnit(db, 'fast', {
-      channelsDir: '/nonexistent',
-      runsRoot: '/nonexistent',
-      now: () => new Date('2026-08-01T10:00:00Z'),
-      run: async (ctx, kind, args) => {
-        // Inspect the lease row while the action is in flight and still
-        // holds it.
-        const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get('scout') as
-          | { expires_at: string }
-          | undefined
-        expiresAt = row?.expires_at
-        return runAction(ctx, kind, args)
-      },
-    })
-    await tick()
-    expect(expiresAt).toBeDefined()
-    const ttl = new Date(expiresAt as string).getTime() - before
-    expect(ttl).toBeGreaterThan(0)
-    // Generous tolerance around FAST_ACTION_LEASE_TTL_MS (60s), but nowhere
-    // near the 30-minute SCOUT_LEASE_TTL_MS a lane-unaware TTL would use.
-    expect(ttl).toBeLessThan(FAST_ACTION_LEASE_TTL_MS + 10_000)
-    expect(ttl).toBeLessThan(SCOUT_LEASE_TTL_MS)
-  })
-
   it('fails a same-lane row with an unknown kind, naming the kind', async () => {
     const db = memDb()
     const id = seedAction(db, { lane: 'fast', kind: 'not-a-real-kind' })
@@ -420,7 +388,13 @@ describe('actionsUnit', () => {
     }
   })
 
-  it('leaves the fast lane on the fast TTL with no heartbeat', async () => {
+  // scout.run is really slow-lane, catalog-wise, but this row's `lane`
+  // column is forced to 'fast' to exercise the generic mechanism: any lease
+  // acquired through this path now always uses SLOW_ACTION_LEASE_TTL_MS
+  // (there is no separate fast-lane TTL any more, since no fast-registered
+  // action leases), but the heartbeat must still gate on the row's actual
+  // lane, not on "a lease was declared".
+  it('leaves the fast lane with no heartbeat, even when it acquires a lease', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
     try {
@@ -439,7 +413,7 @@ describe('actionsUnit', () => {
       })
       await unit()
       expect(expiryDuringRun).toBe(
-        new Date(Date.now() + FAST_ACTION_LEASE_TTL_MS).toISOString(),
+        new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString(),
       )
       expect(timersDuringRun).toBe(0)
     } finally {
