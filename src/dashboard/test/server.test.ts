@@ -7,7 +7,7 @@ import { resolvePaths } from '../../config/paths.js'
 import type { DashboardConfig } from '../config.js'
 import { createApp } from '../server.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { seedDaemonState, seedJob, seedLibrary } from '../../testing/db.js'
+import { seedDaemonState, seedJob, seedLibrary, seedPost } from '../../testing/db.js'
 import { channelToml } from '../../testing/channel.js'
 
 /** Reverses html.ts's escaping, so a value pulled out of rendered markup can be parsed as a URL. */
@@ -243,6 +243,43 @@ describe('/post', () => {
     const navEnd = body.indexOf('</nav>')
     const nav = body.slice(navStart, navEnd)
     expect(nav.indexOf('href="/post"')).toBeLessThan(nav.indexOf('href="/"'))
+  })
+})
+
+describe('/posts', () => {
+  it('says so when there are no posts yet', async () => {
+    const config = seededConfig()
+    const res = await createApp({ config }).request('/posts')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('no posts yet')
+  })
+
+  it('lists a posted video with its channel, platform, topic and link', async () => {
+    const config = seededConfig()
+    const db = openDb(config.paths.dbPath)
+    seedJob(db, 'j1', { channel: 'alpha', topic: 'a topic' })
+    seedPost(db, {
+      jobId: 'j1',
+      channel: 'alpha',
+      platform: 'youtube',
+      url: 'https://youtube.com/shorts/j1',
+    })
+    db.close()
+
+    const res = await createApp({ config }).request('/posts')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('a topic')
+    expect(body).toContain('alpha')
+    expect(body).toContain('https://youtube.com/shorts/j1')
+  })
+
+  it('is in the nav', async () => {
+    const config = seededConfig()
+    const res = await createApp({ config }).request('/posts')
+    const body = await res.text()
+    expect(body).toContain('<a class="active" href="/posts">posts</a>')
   })
 })
 

@@ -30,6 +30,7 @@ import { countJobs, getJobDetail, jobChannels, listJobs } from './queries/jobs.j
 import type { JobStatus } from './queries/jobs.js'
 import { buildOverview } from './queries/overview.js'
 import { listPostQueue } from './queries/post.js'
+import { listPostLog } from './queries/posts.js'
 import { countTopics, topicChannels } from './queries/topics.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
@@ -40,6 +41,7 @@ import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 import { renderOverviewPage } from './views/overview.js'
 import { renderPostQueuePage } from './views/post.js'
+import { renderPostLogPage } from './views/posts.js'
 import { renderTopicsPage } from './views/topics.js'
 
 export interface DashboardVars {
@@ -266,6 +268,20 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           daemonStale,
           configError: error,
         }),
+      }),
+    )
+  })
+
+  app.get('/posts', (c) => {
+    const db = c.get('db')
+
+    return c.html(
+      layout({
+        title: 'posts',
+        root: deps.config.paths.root,
+        activeNav: 'posts',
+        refreshSeconds: actionPollSeconds(db, c.req.query('action')),
+        body: renderPostLogPage({ entries: listPostLog(db) }),
       }),
     )
   })
