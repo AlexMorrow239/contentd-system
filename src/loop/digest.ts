@@ -329,12 +329,14 @@ export function buildDigest(
       `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)`,
     )
   }
-  // A publishable library row with no stored object cannot reach Instagram:
-  // publishMedia.url() has nothing to presign. The old check here was
-  // existsSync on the local path, which is now NORMAL — runs/ is a disposable
-  // cache and the bucket is the durable copy — and would fire constantly.
-  // Shared with backfillStore so this line reports exactly the rows the
-  // command it names will upload (src/jobs/library.ts).
+  // A publishable library row with no stored object has nothing the operator
+  // can download and post once its local runs/ file is gone: runs/ is a
+  // disposable cache and the bucket is the durable copy, so a missing
+  // library_objects row is the only remaining trace worth flagging. Checking
+  // existsSync on the local path instead would fire constantly, since a video
+  // living only in runs/ (never uploaded) is now NORMAL. Shared with
+  // backfillStore so this line reports exactly the rows the command it names
+  // will upload (src/jobs/library.ts).
   //
   // Gated on storage being configured: object storage is now OPTIONAL (the
   // `store` stage no-ops without it), so on a laptop-only deployment with no

@@ -148,8 +148,9 @@ export interface UnstoredLibraryJob {
  * state — a rejected video's object was deliberately deleted (design spec
  * decision 7), and re-uploading it would resurrect what the operator threw
  * away. 'needs-review' is deliberately IN scope: approving one promotes it
- * straight into the publish pool, where a missing object is an Instagram
- * failure, so it is worth uploading and worth reporting before then.
+ * straight into the publish pool, where a missing object leaves the operator
+ * nothing to download and post, so it is worth uploading and worth reporting
+ * before then.
  */
 export function unstoredLibraryJobs(db: Database): UnstoredLibraryJob[] {
   return db

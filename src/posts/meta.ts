@@ -43,19 +43,19 @@ export function normalizeTitle(title: string): string {
   return title.replace(/[<>]/g, '').trim().slice(0, TITLE_MAX_CHARS)
 }
 
-// The exact description youtubeTarget.upload sends: hashtags are appended to
-// the description body, so the 5000-char limit applies to this combined form
-// rather than to the description alone. The adapter composes it by calling
-// here, so the bounded form and the sent form are the same string by
-// construction.
+// The exact description the dashboard's /post page shows the operator to
+// paste into YouTube: hashtags are appended to the description body, so the
+// 5000-char limit applies to this combined form rather than to the
+// description alone. The page composes it by calling here, so the bounded
+// form and the pasted form are the same string by construction.
 export function renderDescription(description: string, hashtags: string[]): string {
   return hashtags.length > 0 ? `${description}\n\n${hashtags.join(' ')}` : description
 }
 
-// The exact tags array youtubeTarget.upload sends: the leading '#' is not part
-// of a YouTube tag. Same construction rule as renderDescription — the adapter
-// composes through here, so the bounded form and the sent form are one string
-// list by construction.
+// The exact tags array the dashboard's /post page shows for pasting into
+// YouTube: the leading '#' is not part of a YouTube tag. Same construction
+// rule as renderDescription — the page composes through here, so the bounded
+// form and the pasted form are one string list by construction.
 export function renderTags(hashtags: string[]): string[] {
   return hashtags.map((h) => h.replace(/^#/, ''))
 }
@@ -68,11 +68,11 @@ export function tagsPayloadLength(tags: string[]): number {
   return tags.reduce((n, t) => n + t.length, 0) + Math.max(0, tags.length - 1)
 }
 
-// The exact string instagramTarget.upload sends as the Reel caption — title
-// doubles as a display-only headline Instagram never receives on its own, so
-// composing it in is how the model's title still reaches the post. Same
-// construction rule as renderDescription: the bounded form (below) and the
-// sent form are one string by construction.
+// The exact string the dashboard's /post page shows the operator to paste as
+// the Reel caption — title doubles as a display-only headline Instagram never
+// receives on its own, so composing it in is how the model's title still
+// reaches the post. Same construction rule as renderDescription: the bounded
+// form (below) and the pasted form are one string by construction.
 export function renderCaption(meta: PlatformMeta): string {
   return `${meta.title}\n\n${renderDescription(meta.description, meta.hashtags)}`
 }
@@ -159,7 +159,7 @@ function normalizeForTiktok(meta: PlatformMeta): PlatformMeta {
  * back to a topic-derived one.
  */
 // An exhaustive map, not a ternary with a YouTube default: adding a platform
-// to PUBLISH_PLATFORMS without giving it bounds here is a compile error
+// to PLATFORMS without giving it bounds here is a compile error
 // rather than a silent inheritance of YouTube's limits.
 const NORMALIZERS: Record<Platform, (meta: PlatformMeta) => PlatformMeta> = {
   youtube: normalizeForYoutube,

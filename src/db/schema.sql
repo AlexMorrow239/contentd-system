@@ -13,6 +13,12 @@ CREATE TABLE IF NOT EXISTS job_stages (
 );
 CREATE TABLE IF NOT EXISTS library (
   job_id TEXT PRIMARY KEY REFERENCES jobs(id), video_path TEXT NOT NULL, metadata_json TEXT NOT NULL,
+  -- 'published' is a retired state: migrate.ts rewrites every existing row to
+  -- 'ready' and nothing writes it any more. It stays in the CHECK only because
+  -- a CHECK cannot be ALTERed — tightening it would need a full table rebuild,
+  -- which isn't worth it for a constraint that is merely permissive.
+  -- src/jobs/library.ts's LibraryState type (which excludes it) is the
+  -- authoritative set of states a row can actually be in.
   state TEXT NOT NULL CHECK (state IN ('ready','needs-review','published','blocked')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -103,9 +109,10 @@ CREATE TABLE IF NOT EXISTS scout_state (
 
 -- The operator-action queue. The dashboard's ONLY write is an INSERT here;
 -- the daemon's actions-fast / actions-slow workers drain it and execute each
--- action in-process, under the same leases the produce/publish workers take.
--- That is what makes a dashboard-triggered mutation race-free where the
--- equivalent CLI command is not (see CLAUDE.md, "outside these leases").
+-- action in-process, under the same leases (produce, scout) the daemon's
+-- other workers take. That is what makes a dashboard-triggered mutation
+-- race-free where the equivalent CLI command is not (see CLAUDE.md, "outside
+-- these leases").
 --
 -- `notice` carries an interactive status an action wants the operator to see
 -- before it can proceed. Today the only writer is the worker's lease-blocked

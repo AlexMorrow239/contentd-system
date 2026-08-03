@@ -482,7 +482,8 @@ library
     // deletion that is unambiguously safe.
     const objects = libraryObjectKeys(db, jobIds)
     const changed = rejectLibrary(db, jobIds)
-    // reject takes needs-review AND ready; published rows are skipped.
+    // reject takes needs-review AND ready; those are the only two states a
+    // row can be pulled back from — there is no 'published' state any more.
     console.log(`rejected ${changed} of ${jobIds.length}`)
 
     // Best-effort: the reject itself must not depend on network reachability.

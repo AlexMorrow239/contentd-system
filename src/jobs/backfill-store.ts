@@ -6,8 +6,9 @@ import { unstoredLibraryJobs, upsertLibraryObject } from './library.js'
 
 /**
  * Uploads finished videos produced before object storage existed. Without it,
- * every library row predating this plan is YouTube-only — publishMedia.url()
- * has nothing to presign, so Instagram fails them as 'rejected'.
+ * every library row predating this plan has nothing in the bucket at all —
+ * once its local runs/ file is cleaned up, the operator has no way to
+ * download it for manual posting to any platform.
  *
  * Operator command, run outside the publish lease like the others. Rows whose
  * local file has already been reclaimed are unrecoverable and reported as
