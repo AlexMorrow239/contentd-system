@@ -40,20 +40,24 @@ function tableExists(db: Database, table: string): boolean {
  * fact (the bytes are gone) rather than a heuristic, so it is the only
  * signal that can never regress into an age check by accident.
  *
- * MUST run before the 'published' -> 'ready' rewrite below, and MUST match
- * BOTH 'ready' and 'published': a reclaimed row can be sitting in either
- * state by the time this runs (a video already resting at 'ready', or one
- * still 'published' and not yet rewritten), and matching both is what keeps
+ * Runs before the 'published' -> 'ready' rewrite below, and MUST match ALL
+ * THREE of 'needs-review', 'ready' and 'published': a reclaimed row can be
+ * sitting in any of the three by the time this runs (a QC-failed video that
+ * never got a publish row, one already resting at 'ready', or one still
+ * 'published' and not yet rewritten), and matching all three is what keeps
  * this step correct even if a database already ran a migrate() that applied
- * the rewrite before this step existed. A NOT-yet-reclaimed 'published' row
- * is untouched here and still legitimately becomes 'ready' below, re-entering
- * the queue.
+ * the rewrite before this step existed. Because the IN clause already
+ * includes 'ready', running this step after the rewrite would still catch a
+ * reclaimed 'published' row once it becomes 'ready' — the ordering is
+ * belt-and-braces, not load-bearing; see the note by the call site below. A
+ * NOT-yet-reclaimed 'published' row is untouched here and still legitimately
+ * becomes 'ready' below, re-entering the queue.
  */
 function blockReclaimedLibraryRows(db: Database): void {
   if (!tableExists(db, 'library') || !tableExists(db, 'library_objects')) return
   db.prepare(
     `UPDATE library SET state = 'blocked'
-     WHERE state IN ('ready', 'published')
+     WHERE state IN ('needs-review', 'ready', 'published')
        AND EXISTS (SELECT 1 FROM library_objects lo
                    WHERE lo.job_id = library.job_id AND lo.reclaimed_at IS NOT NULL)`,
   ).run()
@@ -148,8 +152,10 @@ export function migrate(db: Database): void {
   if (tableExists(db, 'library_objects') && !hasColumn(db, 'library_objects', 'reclaimed_at')) {
     db.exec('ALTER TABLE library_objects ADD COLUMN reclaimed_at TEXT')
   }
-  // MUST run before migratePublishesToPosts, which contains the 'published'
-  // -> 'ready' rewrite — see blockReclaimedLibraryRows' own comment for why.
+  // Runs before migratePublishesToPosts, which contains the 'published' ->
+  // 'ready' rewrite. Not load-bearing: blockReclaimedLibraryRows' own IN
+  // clause already covers 'ready', so the two calls are order-insensitive by
+  // construction — see blockReclaimedLibraryRows' own comment for why.
   blockReclaimedLibraryRows(db)
   migratePublishesToPosts(db)
   addTopicStoryColumns(db)

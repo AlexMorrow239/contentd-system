@@ -418,8 +418,8 @@ describe('migrate — blocks library rows whose object was already reclaimed', (
     const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
       state: string
     }
-    // Must be 'blocked', proving the block step ran BEFORE the
-    // 'published' -> 'ready' rewrite would otherwise have won this row.
+    // Must be 'blocked' — the IN clause matching 'published' directly is what
+    // wins this row, independent of call order (see the note below).
     expect(row.state).toBe('blocked')
   })
 
@@ -433,6 +433,34 @@ describe('migrate — blocks library rows whose object was already reclaimed', (
       state: string
     }
     expect(row.state).toBe('ready')
+  })
+
+  it("blocks a reclaimed 'needs-review' row", () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'needs-review' })
+    seedLibraryObject(db, 'j1', { reclaimedAt: '2026-07-01T00:00:00.000Z' })
+    migrate(db)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    expect(row.state).toBe('blocked')
+  })
+
+  // Control for the test above: proves the step still keys off reclaimed_at
+  // and has not become a blanket 'needs-review' wipe — a NON-reclaimed
+  // needs-review row (the ordinary QC-failed-and-still-live case) must stay
+  // exactly as it is.
+  it("leaves a NON-reclaimed 'needs-review' row untouched", () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'needs-review' })
+    seedLibraryObject(db, 'j1')
+    migrate(db)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    expect(row.state).toBe('needs-review')
   })
 
   it("leaves a NON-reclaimed 'ready' row untouched", () => {
@@ -460,17 +488,17 @@ describe('migrate — blocks library rows whose object was already reclaimed', (
     expect(row.state).toBe('blocked')
   })
 
-  // Proves the ordering (and the "match BOTH states" requirement) actually
-  // matters, rather than being defensive-but-inert. Simulates the adverse
-  // case the block step must survive: the 'published' -> 'ready' rewrite has
-  // ALREADY happened by the time the block check runs — either because a
-  // database already applied an earlier migrate() that predates this fix (the
-  // rewrite existed long before the block step did), or because a future
-  // refactor swapped the two calls in migrate(). If the block step matched
-  // only 'published' (the seemingly-sufficient state given it is meant to run
-  // BEFORE the rewrite), this row would already be 'ready' by the time it
-  // runs and would slip through untouched — reproducing finding 1's bug. The
-  // 'ready' branch of the IN clause is what catches it regardless.
+  // Proves the "match every state" requirement actually matters, rather than
+  // being defensive-but-inert. Simulates the adverse case the block step must
+  // survive: the 'published' -> 'ready' rewrite has ALREADY happened by the
+  // time the block check runs — either because a database already applied an
+  // earlier migrate() that predates this fix (the rewrite existed long before
+  // the block step did), or a hypothetical future refactor that swapped the
+  // two calls in migrate(). If the block step matched only 'published', this
+  // row would already be 'ready' by the time it runs and would slip through
+  // untouched — reproducing finding 1's bug. The 'ready' branch of the IN
+  // clause is what catches it regardless, which is exactly why the ordering
+  // of the two calls in migrate() is belt-and-braces rather than load-bearing.
   it('still catches a reclaimed row that already reads as ready, as if the rewrite ran first', () => {
     const db = memDb()
     seedJob(db, 'j1', { channel: 'alpha' })
