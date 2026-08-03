@@ -15,7 +15,6 @@ export interface S3Config {
   accessKeyId: string
   secretAccessKey: string
   region: string
-  publicEndpoint?: string
 }
 
 /**
@@ -34,7 +33,6 @@ function readConfig(): { config: S3Config; missing: string[] } {
     if (value === '') missing.push(name)
     return value
   }
-  const publicEndpoint = process.env.BRAINROT_S3_PUBLIC_ENDPOINT?.trim()
   const config: S3Config = {
     endpoint: read('BRAINROT_S3_ENDPOINT'),
     bucket: read('BRAINROT_S3_BUCKET'),
@@ -42,7 +40,6 @@ function readConfig(): { config: S3Config; missing: string[] } {
     secretAccessKey: read('BRAINROT_S3_SECRET_ACCESS_KEY'),
     // R2 ignores region but the SDK requires one; 'auto' is R2's documented value.
     region: process.env.BRAINROT_S3_REGION?.trim() || 'auto',
-    publicEndpoint: publicEndpoint === '' ? undefined : publicEndpoint,
   }
   return { config, missing }
 }

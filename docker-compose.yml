@@ -138,9 +138,6 @@ services:
       BRAINROT_S3_SECRET_ACCESS_KEY: ${BRAINROT_R2_SECRET_ACCESS_KEY}
       # R2 ignores region but the SDK requires one.
       BRAINROT_S3_REGION: 'auto'
-      # Never set for production: presigning must sign against the real R2
-      # endpoint. This exists only so a dev .env's MinIO value cannot leak in.
-      BRAINROT_S3_PUBLIC_ENDPOINT: ''
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
