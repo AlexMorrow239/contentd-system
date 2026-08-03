@@ -72,9 +72,13 @@ function migratePublishesToPosts(db: Database): void {
     // OR IGNORE guards the one shape the old schema permitted: two 'done' rows
     // for one (job, platform). ux_publishes_live constrained only LIVE rows,
     // so a retried-then-succeeded leg could leave a second done row behind.
+    // posted_at means when the video actually went out. created_at is when the
+    // row was CLAIMED, not when the upload landed — finished_at is the true
+    // timestamp, and it's nullable, so the fallback is required for rows from
+    // before that column was backfilled.
     db.prepare(
       `INSERT OR IGNORE INTO posts (job_id, channel, platform, url, posted_at)
-       SELECT job_id, channel, platform, url, created_at
+       SELECT job_id, channel, platform, url, COALESCE(finished_at, created_at)
        FROM publishes WHERE status = 'done'
        ORDER BY created_at ASC`,
     ).run()

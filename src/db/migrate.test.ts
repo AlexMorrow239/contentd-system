@@ -287,7 +287,7 @@ describe('publishes -> posts', () => {
       CREATE TABLE publishes (
         id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, channel TEXT NOT NULL,
         platform TEXT NOT NULL, status TEXT NOT NULL, url TEXT,
-        error_kind TEXT, created_at TEXT NOT NULL
+        error_kind TEXT, created_at TEXT NOT NULL, finished_at TEXT
       );
       CREATE TABLE oauth_tokens (channel TEXT NOT NULL, platform TEXT NOT NULL);
     `)
@@ -312,6 +312,32 @@ describe('publishes -> posts', () => {
       url: 'https://y/1',
       posted_at: '2026-01-01T00:00:00.000Z',
     })
+  })
+
+  it('uses finished_at as posted_at when present, not created_at', () => {
+    const db = memDb()
+    seedLegacy(db)
+    db.prepare(
+      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at, finished_at) " +
+        "VALUES ('j1','alpha','youtube','done','https://y/1'," +
+        "'2026-01-01T00:00:00.000Z','2026-01-01T00:05:00.000Z')",
+    ).run()
+    migrate(db)
+    const row = db.prepare('SELECT posted_at FROM posts WHERE job_id = ?').get('j1')
+    expect(row).toEqual({ posted_at: '2026-01-01T00:05:00.000Z' })
+  })
+
+  it('falls back to created_at when finished_at is null', () => {
+    const db = memDb()
+    seedLegacy(db)
+    db.prepare(
+      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at, finished_at) " +
+        "VALUES ('j1','alpha','youtube','done','https://y/1'," +
+        "'2026-01-01T00:00:00.000Z',NULL)",
+    ).run()
+    migrate(db)
+    const row = db.prepare('SELECT posted_at FROM posts WHERE job_id = ?').get('j1')
+    expect(row).toEqual({ posted_at: '2026-01-01T00:00:00.000Z' })
   })
 
   it('drops both legacy tables', () => {
