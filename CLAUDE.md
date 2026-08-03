@@ -5,10 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Brainrot Machine: an automated pipeline that turns a topic into a finished,
-QC-checked, word-captioned 9:16 short video, and publishes it to YouTube
-Shorts and/or Instagram Reels — per channel, per declared platform — on a
-per-channel schedule. Single Node/TypeScript package — not a
-multi-package monorepo (`pnpm-workspace.yaml` here only configures
+QC-checked, word-captioned 9:16 short video, ready to post to YouTube Shorts,
+Instagram Reels and/or TikTok — per channel, per declared platform. The
+pipeline's job ends at a finished video in the library; posting it is a
+manual, per-platform step an operator does by hand from the dashboard's
+`/post` page (see "Posting: manual, per platform" below) — there is no
+upload adapter, no OAuth grant and no scheduler in this codebase. Single
+Node/TypeScript package — not a multi-package monorepo
+(`pnpm-workspace.yaml` here only configures
 `allowBuilds`/`minimumReleaseAgeExclude`, it declares no `packages:` list).
 `remotion/` has its own `tsconfig.json` and is type-checked separately but is
 built from the same root and `pnpm install`.
@@ -28,16 +32,14 @@ pnpm test:coverage            # same run + v8 coverage -> coverage/ (report-only
 pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one LLM call
 
 pnpm brainrot produce --channel local/channels/<name>.toml --topic "..."
-pnpm brainrot run                    # the demand-driven daemon: produce/publish/scout workers + digest
-pnpm brainrot scout | produce-next | publish-next | digest  # one manual/debug unit of each, outside the daemon
+pnpm brainrot run                    # the demand-driven daemon: produce/scout/digest workers + the action lanes
+pnpm brainrot scout | produce-next | digest  # one manual/debug unit of each, outside the daemon
 pnpm brainrot jobs | costs
 pnpm brainrot topics list|reject <ids...>
 pnpm brainrot topics requeue <id>   # orphaned 'claimed' topic -> 'candidate'; refuses while a live job holds it
 pnpm brainrot topics prune-media [--channel <name>] [--dry-run]  # re-check reddit candidates, reject image-sourced ones
 pnpm brainrot library list|approve|reject <jobIds...>
-pnpm brainrot publish retry|mark-done <jobId>
-pnpm brainrot publishes list [--days N]
-pnpm brainrot auth youtube|instagram --channel <name>
+pnpm brainrot library backfill-store   # upload finished videos with no stored object yet
 
 # A bare `pnpm brainrot ...` on the host reads `local/` — unset BRAINROT_ROOT
 # means local, and production is `/app/state` inside the container — an
@@ -46,9 +48,6 @@ pnpm brainrot auth youtube|instagram --channel <name>
 docker compose exec brainrot pnpm brainrot jobs   # read-only; safe while the daemon runs
 # Mutating commands take no lease and race live workers — stop the daemon first:
 docker compose stop brainrot && docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId>
-# `auth` needs --headless in the container (prints the consent url, binds
-# 0.0.0.0 so the published callback port reaches it) and needs NO daemon stop:
-docker compose exec brainrot pnpm brainrot auth youtube --channel <name> --headless
 # src/ is baked into the image, not mounted — code changes need a rebuild:
 docker compose build brainrot
 ```
@@ -98,14 +97,16 @@ duration. Voice synthesis has its own independent fallback chain
 on failure or absence — this is a plain per-channel setting, not a pipeline
 branch.
 
-### One daemon, six workers share one SQLite file
+### One daemon, five workers share one SQLite file
 
 `brainrot run` (`src/loop/daemon.ts`) is the container's `CMD` and the only
 long-running process — there is no host cron and no per-loop container
-anymore. It starts six workers concurrently: produce, publish, scout, digest,
+anymore. It starts five workers concurrently: `produce`, `scout`, `digest`,
 and a pair — `actions-fast` / `actions-slow` — covered in their own
-subsection below. Every worker shares one shape (`runWorker`): check demand →
-do one unit of work → re-check immediately, so throughput now follows demand,
+subsection below. There is no `publish` worker: nothing in this codebase
+uploads to a platform, so there is nothing left to schedule or back off.
+Every worker shares one shape (`runWorker`): check demand →
+do one unit of work → re-check immediately, so throughput follows demand,
 not a schedule. An idle unit sleeps `IDLE_SLEEP_MS` (30s) before its next
 check — `runWorker` takes a per-worker override, which is what lets
 `actions-fast` poll at ~1s instead — and a unit that throws logs a
@@ -113,107 +114,71 @@ check — `runWorker` takes a per-worker override, which is what lets
 daemon down. Consecutive identical idle lines are deduped (keyed on the
 emitted JSON) so a quiet night is silent rather than one line every 30
 seconds forever — any worked unit or error resets the dedupe so the next idle
-reason is still reported once. `digest` is one of the original four pipeline
-workers that isn't demand-driven: it's time-gated, firing once per local day
+reason is still reported once. `digest` is the one pipeline
+worker that isn't demand-driven: it's time-gated, firing once per local day
 at or after `DIGEST_HOUR` (08:00), with an in-memory guard so a same-day
 restart can re-fire it once — acceptable for a read-only report whose only
 delivery is the log stream.
 
-`produce` and `publish` wrap `src/loop/produce-next.ts` and
-`src/loop/publish-next.ts`, which still each do **one unit of work per
-call** — the daemon's poll loop controls throughput now, not cron cadence,
-but the tick functions' own shape is unchanged. Both:
+`produce` wraps `src/loop/produce-next.ts`, which still does **one unit of
+work per call** — the daemon's poll loop controls throughput now, not cron
+cadence, but the tick function's own shape is unchanged. It:
 
-- take a named lease (`src/loop/lease.ts`, `leases` table) so only one
-  process is doing that kind of work at a time; a held lease is a normal
-  no-op, not an error. This now guards **daemon-vs-manual-CLI** races rather
-  than daemon-vs-daemon ones — see "outside these leases" below. `scout`
-  takes one too (name `scout`, 30-min TTL, acquired inside `scoutUnit`) and
-  prints the same `lease-held` noop line. `produce-next` heartbeats its
-  lease at every stage start (`runJob`'s `heartbeat` option, threaded
-  through `resumeJob` as well) so a render longer than the TTL is not taken
-  over mid-flight.
-- run an idempotent **repair sweep** at the top of the lease window to heal
+- takes a named lease (`src/loop/lease.ts`, `leases` table, name `produce`)
+  so only one process is doing that kind of work at a time; a held lease is a
+  normal no-op, not an error. This now guards **daemon-vs-manual-CLI** races
+  rather than daemon-vs-daemon ones — see "outside these leases" below.
+  `scout` takes the only other lease (name `scout`, 30-min TTL, acquired
+  inside `scoutUnit`) and prints the same `lease-held` noop line. There are
+  two lease names in the whole codebase: `produce` and `scout`.
+  `produce-next` heartbeats its lease at every stage start (`runJob`'s
+  `heartbeat` option, threaded through `resumeJob` as well) so a render
+  longer than the TTL is not taken over mid-flight.
+- runs an idempotent **repair sweep** at the top of the lease window to heal
   state left inconsistent by a crash between two writes that should have been
-  atomic (e.g. a topic left `claimed` after its job already landed in
-  `library`; a `publishes` row left `claimed` after an upload that never
-  confirmed).
-- read `channels/*.toml` fresh every unit — via `tryLoadChannelsDir`, before
+  atomic — a topic left `claimed` after its job already landed in `library`.
+- reads `channels/*.toml` fresh every unit — via `tryLoadChannelsDir`, before
   the lease: a broken TOML is reported as a `config-error` noop line rather
   than thrown, because a unit that throws logs a `worker-error` line, not a
   structured noop.
-- validate the env they depend on before the lease too, as a `bad-env` noop:
-  `publish-next` checks `BRAINROT_TOKEN_KEY` (`badEnvMessage` — that is now
-  the only variable left to check, since quota is no longer config-derived),
-  `produce-next` checks that object storage is configured
-  (`s3ConfigError`, `src/storage/config.ts`). The latter is a fail-fast, not a
-  duplicate of the `store` stage's own construction: `store` runs **last**, so
-  without the gate an unconfigured deployment pays for a full Remotion render
-  and only then fails the job. Object storage is required to produce — there is
-  no local-only fallback (design spec §3.5).
+- runs a **reclaim sweep** in the same lease window, skipped entirely when
+  object storage isn't configured (`s3ConfigError() === undefined` gates it):
+  `posts/reclaim.ts`'s `reclaimableObjects` finds every video in the channel
+  whose stored object is still in the bucket but has already been posted to
+  every platform the channel declares (a plain `COUNT(*) FROM posts ... >=
+  declared.length` correlated subquery — no age clause, no "settled" state
+  machine; see "Config" below for why the old aged-out horizon needed none of
+  that either), and `reclaimObjects` deletes the object and stamps
+  `reclaimed_at`. The `library_objects` row survives reclaim so
+  `unstoredLibraryJobs` can still tell "reclaimed" from "never stored" by row
+  absence, which is what stops `library backfill-store` from re-uploading
+  what this sweep just deleted.
+
+Object storage itself is **optional**, not required to produce. The `store`
+stage (`src/stages/store.ts`), which runs last in the pipeline, no-ops and
+logs rather than throwing when `s3ConfigError()` is set — an unconfigured
+deployment still produces a normal `ready`/`needs-review` job, it just has no
+cloud copy and the video lives only under `runs/`. `produce`'s CLI command
+warns to stderr on the same condition rather than refusing (`src/cli.ts`).
+This replaced an earlier fail-fast design (design spec §3.5 predates the
+removal of the publish pipeline, when Instagram's upload required a publicly
+reachable URL); nothing in this codebase requires that anymore.
 
 `produce-next` asks `planTick` (`src/loop/plan-tick.ts`) whether to resume a
-blocked job or claim+produce a new topic; `publish-next` asks
-`src/publish/schedule.ts` which channels are due — under their
-`videos_per_day` count for the local calendar day (`localDay`, deliberately
-local, never `toISOString()`) and past `PUBLISH_COOLDOWN_MS` (10 minutes, a
-code constant, not config) since their last attempt — orders them by how far
-behind that count they are, and fans the chosen video out to every declared
-platform that still wants it. There is no posting window anymore: the
-cooldown is an anti-burst guard, not a schedule (a platform seeing six
-uploads land in three minutes reads it as spam), and demand — `videos_per_day`
-still unmet today — is the only thing that makes a channel due, so nothing
-stops a whole day's quota firing back-to-back once each video clears its own
-cooldown.
+blocked job or claim+produce a new topic. `planTick` skips a channel holding
+`ceil(videos_per_day × backlog_days)` unconsumed videos (`pendingInventory`,
+`jobs/library.ts`) and reports `backlog-full` — "unconsumed" now means "not
+yet posted to every platform the channel declares", a plain row-existence
+check against `posts`, not an age-based definition. `backlog_days` (default
+2) is consequently a pure **production depth cap**: hold too much unposted
+video and production pauses for that channel until the operator posts or
+discards some of it. There is no aged-out horizon anymore — nothing deletes a
+video for sitting in the queue too long; the operator's `library.reject`
+("discard") is the only way a video that will never be posted stops counting
+toward the cap.
 
-**Platform quota is detected at runtime, never declared.** The platform's own
-error response is the only source of truth for its cap, so `videos_per_day` is
-pure demand: nothing in config load or in the tick counts uploads against a
-number of ours. When an adapter classifies an upload failure as `kind: 'quota'`
-(YouTube's `quotaExceeded`/`uploadLimitExceeded`/`dailyLimitExceeded`,
-Instagram's Graph codes 4 and 17), the resulting `publishes` row **is** the
-backoff marker — durable across daemon restarts, no extra table and no extra
-write. `quotaBackedOff` (`src/publish/publishes.ts`) asks whether a
-quota-kind `failed` row exists inside `QUOTA_BACKOFF_MS`, and the tick's
-`platformOpen` drops that platform from the fan-out for the window; the other
-platform publishes in the same unit, and a video half-published this way stays
-a candidate for the platform it missed. The video never burns an attempt —
-only `error_kind = 'rejected'` counts toward `MAX_PUBLISH_ATTEMPTS`. A unit
-where quota was the first thing to rule every platform out reports the
-`platform-quota` noop reason, unchanged from the counting design it replaced.
-
-Two details carry the weight. `QUOTA_BACKOFF_MS` is **6 hours sliding, not
-rest-of-local-day**: YouTube's quota resets at midnight Pacific while
-`localDay` is the operator's local day, so a day-scoped rule retrying at 00:10
-local hits the still-unreset quota, stamps a fresh failure onto the new day,
-and wedges the platform permanently. A sliding window is timezone-agnostic,
-costs at most ~3 probe attempts a day, recovers within 6h of the true reset,
-and absorbs Instagram's rolling-24h and burst limits with the same rule. And
-`PLATFORM_QUOTAS` (`publish/platforms/quota.ts`) survives as **scope only** —
-`{ scope: 'global' | 'channel' }`, no cap — because scope is platform
-semantics rather than a tunable number: it decides the backoff's blast radius.
-YouTube is `global` (one Google Cloud project's quota, shared by every
-channel) so its marker is looked up with no channel filter; Instagram is
-`channel` (one IG account per channel) so each channel backs off alone. The
-same descriptors feed the dashboard's quota panel, which now shows
-uploads-used-today plus a `backed off` badge and no cap at all.
-`BRAINROT_YT_UPLOADS_PER_DAY` / `BRAINROT_IG_UPLOADS_PER_DAY` are gone and now
-inert — a `.env` or compose file still setting one is silently ignored, the
-same treatment the four replaced path variables got.
-
-The digest reports quota accordingly: a count of quota failures in the last
-24h phrased as awareness, not an action item ("uploads back off 6h per failure
-and retry automatically"), because the operator has nothing to do unless the
-count is climbing — which would mean the window is shorter than the platform's
-real reset horizon. It also carries a **topic-starvation** action item: a
-channel that both scouts (any of `subreddits`, `rss`, `generate_topics`) and
-publishes, holding 0 candidate topics AND 0 unpublished videos, will stop
-publishing the moment its backlog drains, and every other line in the digest
-would stay quiet about it. Channels with no scout sources are excluded — they
-are fed by manual `brainrot produce`, where an empty queue is normal.
-
-Manual **CLI** commands (`produce`, `resume`, `auth <platform>`,
-`library approve/reject`, `publish retry/mark-done`, `topics reject/requeue`)
+Manual **CLI** commands (`produce`, `resume`,
+`library approve/reject`, `topics reject/requeue`)
 deliberately run **outside** these leases — they are operator actions that can
 race a live daemon worker if the daemon container isn't stopped first. This is
 the CLI path only, and it is deliberate: the CLI is the break-glass tool and
@@ -223,7 +188,7 @@ needed.
 The **dashboard** path does not have this property. Its controls enqueue into
 `operator_actions`, which the daemon's `actions-fast` / `actions-slow` workers
 drain in-process, taking the same leases — so a dashboard-triggered
-`publish retry` waits for the publish lease instead of racing an upload. Prefer
+`jobs.resume` waits for the produce lease instead of racing a render. Prefer
 the dashboard for routine operator work; reach for the CLI when the daemon
 itself is the problem.
 
@@ -238,55 +203,31 @@ subreddit isn't refetched on every 30-second idle poll — backed by the
 in-memory state, so it survives a daemon restart. Because the gate lives
 inside `scoutChannel`/`scoutAll` rather than in the daemon's `scoutUnit`, it
 applies equally to a manual `pnpm brainrot scout` run — pass `--force` to
-bypass it immediately, the same shape `publish-next --force` already uses.
-`scoutUnit` (`src/loop/daemon.ts`) is consequently a thin wrapper like
-`produceUnit`/`publishUnit`, carrying no scheduling state of its own: it
+bypass it immediately. `scoutUnit` (`src/loop/daemon.ts`) is consequently a
+thin wrapper like `produceUnit`, carrying no scheduling state of its own: it
 calls `scoutAll` on every configured channel every poll and maps the result
 (reporting `queue-full` when at least one channel hit the depth gate, staying
 silent when every channel is simply not due for a recheck yet — the common
-case). The queue-depth gate itself (`skipped: 'queue-full'`, below) is
-unchanged, and now sits alongside a sibling `skipped: 'recheck-not-due'`.
-
-`publish-next` runs a second sweep in the same window: `publish/reclaim.ts`
-deletes the stored object of every video whose declared platforms have all
-**settled** — published, attempt-capped, or aged past `backlog_days` with no
-live row (`publish/settled.ts`). That last clause exists because *passed over*
-is a real outcome: a channel doing 10 videos/day against YouTube's ~6/day cap
-never publishes 4 of them, and `channelVideoCandidates` orders `created_at
-DESC`, so tomorrow's videos outrank them forever. No `publishes` row is ever
-written for such a leg, so without an age clause those objects would live
-forever and their videos would count as inventory forever. Ageing out also
-requires CONTENTION inside the video's own grace window: a `done` row of a
-different job in the same channel, created after the video and at or before
-the same horizon. Without any contention test a publish outage longer than
-`backlog_days` would age out the whole bucket on the first recovering tick;
-without the upper bound, the single publish that recovers from that outage
-would age out everything stranded behind it one tick later. The three
-consumers of the predicate — the sweep, `pendingInventory`, and
-`channelVideoCandidates`' hand-written SQL twin — must agree exactly, and
-`publish/test/settled.test.ts`'s "the passed-over video, end to end" describe
-is what pins them together. The row in
-`library_objects` survives with `reclaimed_at` stamped — `unstoredLibraryJobs`
-finds backfill candidates by the ABSENCE of a row, so keeping it is what stops
-`library backfill-store` from re-uploading what the sweep deleted.
-
-Both `produce` and `scout` are demand-gated, not just rate-gated. `planTick` skips a channel
-holding `ceil(videos_per_day × backlog_days)` unconsumed videos
-(`pendingInventory`, `jobs/library.ts`) and reports `backlog-full`;
+case). The queue-depth gate itself (`skipped: 'queue-full'`) is
+unchanged, and sits alongside a sibling `skipped: 'recheck-not-due'`.
 `scoutChannel` returns `skipped: 'queue-full'` before fetching or scoring
 anything once a channel has `ceil(videos_per_day × queue_days)` candidate
-topics. The settled predicate is shared by the reclaim sweep,
-`pendingInventory`, and (through its age clause alone) `channelVideoCandidates`
-— that sharing is load-bearing: define inventory independently and an
-attempt-capped or passed-over video counts forever, wedging the channel's
-production permanently.
+topics.
+
+The digest carries a **topic-starvation** action item: a
+channel that both scouts (any of `subreddits`, `rss`, `generate_topics`) and
+declares `platforms`, holding 0 candidate topics AND 0 unposted videos, will
+stop producing the moment its backlog drains, and every other line in the
+digest would stay quiet about it. Channels with no scout sources are
+excluded — they are fed by manual `brainrot produce`, where an empty queue is
+normal.
 
 ### The operator-action queue: two more workers, drained fast and slow
 
 The dashboard's only write is an `INSERT` into `operator_actions`
 (`src/db/schema.sql`, alongside a one-row `daemon_state` liveness table). Two
 more daemon workers, `actions-fast` and `actions-slow`, drain that queue
-in-process **under the same leases the `produce`, `publish` and `scout`
+in-process **under the same leases the `produce` and `scout`
 workers take** (`digest` takes no lease at all) — this is what makes a
 dashboard-triggered mutation race-free where the equivalent CLI command is
 not (see "outside these leases", above).
@@ -295,20 +236,19 @@ not (see "outside these leases", above).
 pure metadata (`kind`, `lane`, label, zod arg schema, `confirm` flag, the
 lease it needs) with no heavy imports, read by **both** the dashboard (to
 render forms and validate submitted args) and the daemon; `handlers.ts` holds
-the `run` implementations for today's eleven actions — it imports
-`approveLibrary`, `buildDigest`, the publish `ADAPTERS`,
-`interruptedPlatform`/`markInterruptedDone`/`retryInterrupted`,
-`rejectTopics`/`requeueTopic`, and — since the slow lane landed —
-`produceNextTick`, `publishNextTick`, `scoutAll` and `resumeJob` — and is
-imported **only** by the daemon. Those last four are what make the arch lint
-below matter more than it did: they reach Remotion, the provider clients and
-the publish adapters transitively, so a single import of this module from the
-dashboard would pull all of it into the unauthenticated HTTP process.
-`queue.ts` is the DAO (`enqueueAction`, `pendingActions`, `startAction`,
-`completeAction`, `failAction`, `setActionNotice`, `getAction`,
-`listRecentActions`, `failRunningActions`) — there is no `claimNext`;
-`pendingActions` plus `startAction`'s `status = 'pending'` guard together
-serve that role.
+the `run` implementations for today's ten actions — it imports
+`approveLibrary`/`rejectLibrary`/`deleteRejectedObjects`, `buildDigest`,
+`markPosted`/`unmarkPosted` (`src/posts/posts.ts`),
+`rejectTopics`/`requeueTopic`, and `produceNextTick`, `scoutAll` and
+`resumeJob` — and is imported **only** by the daemon. Those last three are
+what make the arch lint below matter more than it did: they reach Remotion
+and the provider clients transitively, so a single import of this module
+from the dashboard would pull all of it into the unauthenticated HTTP
+process. `queue.ts` is the DAO (`enqueueAction`, `pendingActions`,
+`startAction`, `completeAction`, `failAction`, `setActionNotice`,
+`getAction`, `listRecentActions`, `failRunningActions`) — there is no
+`claimNext`; `pendingActions` plus `startAction`'s `status = 'pending'` guard
+together serve that role.
 
 The split is load-bearing, not organizational, the same discipline
 `DASHBOARD_STAGE_ORDER` already follows: the dashboard is the one process
@@ -318,18 +258,23 @@ Anthropic, or credential code. An arch lint in `src/arch.test.ts`
 **transitively** — a real DFS over the module graph, not a substring grep —
 and fails if any path reaches `src/actions/handlers.ts`.
 
-Eleven actions exist today, six `fast` and five `slow`. Fast is
-`topics.reject`, `topics.requeue`, `library.approve`, `publish.retry`,
-`publish.markDone` and `digest.run` — local SQLite writes plus, in
-`digest.run`'s case, a config-directory read, never a network call, a provider
-call or a render. Slow — anything that can take seconds or minutes — is
-`produce.next`, `publish.next`, `publish.nextDryRun`, `scout.run` and
-`jobs.resume`. Four route through the confirm interstitial (`confirm: true`):
-`produce.next`, `jobs.resume` and `publish.next` — the ones that render, spend
-or post — plus `publish.markDone`, which writes an outcome the platform was
-never asked about. Note the gap: `scout.run` fires on one click and does spend
-(scoring, plus generation where `generate_topics` is set), so `confirm` tracks
-the irreversible and the expensive-per-click, not "costs money" as such.
+Ten actions exist today, seven `fast` and three `slow`. Fast is
+`topics.reject`, `topics.requeue`, `library.approve`, `digest.run`,
+`post.mark`, `post.unmark` and `library.reject` — local SQLite writes plus,
+in `digest.run`'s case, a config-directory read, never a network call, a
+provider call or a render, and never a lease: no fast action leases anymore,
+since the two that used to (mutating `publishes` rows) are gone with that
+table. Slow — anything that can take seconds or minutes — is `produce.next`,
+`scout.run` and `jobs.resume`. Four route through the confirm interstitial
+(`confirm: true`): `produce.next` and `jobs.resume` — the ones that render
+and spend — plus two fast, data-losing actions: `library.reject` ("discard"),
+which frees stored bytes and pulls a video out of the posting queue for
+good, and `post.unmark`, which throws away a saved link the operator may not
+remember. Neither of those two spends money or takes seconds; the
+interstitial here is about irrecoverable data loss, not slowness. Note the
+gap the other way: `scout.run` fires on one click and does spend (scoring,
+plus generation where `generate_topics` is set) yet has `confirm: false` —
+`confirm` tracks the irreversible/data-losing, not "costs money" as such.
 `actions-fast` drains up to
 `MAX_FAST_DRAIN` (50) pending rows per poll on its ~1s idle sleep so a
 checkbox click feels immediate, and also carries the daemon heartbeat
@@ -349,11 +294,11 @@ claim in "the dashboard's read-only guarantee" below stays literally true — th
 entire write path is still one `INSERT`. A database it cannot read at all fails
 closed, the same conclusion a missing `daemon_state` row already draws.
 
-An action whose required lease (`produce`, `publish`, or `scout` — named
+An action whose required lease (`produce` or `scout` — named
 exactly as the other workers name them) is already held is **skipped, not
 awaited**: it stays `pending`, explains itself through the row's `notice`
-column ("waiting for the publish lease"), and is retried on the next poll.
-Taking the head of the queue and blocking on it would let one long upload
+column ("waiting for the produce lease"), and is retried on the next poll.
+Taking the head of the queue and blocking on it would let one long render
 stall every trivial mutation behind it — the head-of-line problem the two
 lanes exist to prevent. A lease found held is remembered in a per-poll skip
 set, so every later row in the same poll wanting that same lease is passed
@@ -378,12 +323,12 @@ set and does not run this poll. Left deliberately — it self-heals on the next
 poll, and a 50-deep queue on one lease is not a shape one operator clicking
 buttons produces.
 
-The two fast actions that do take a lease (`publish.retry`/`publish.markDone`,
-since they mutate `publishes` rows) hold it for `FAST_ACTION_LEASE_TTL_MS`
-(60s) rather than the lease's own long TTL — using `publish`'s real 30-minute
-TTL there would mean a SIGKILL inside a fast action's ~1ms window orphans the
-lease for the full 30 minutes, since the row-repair sweep below heals the row
-but not the lease.
+No fast action takes a lease anymore. The two that used to
+(`publish.retry`/`publish.markDone`, mutating `publishes` rows, each holding
+it for a short `FAST_ACTION_LEASE_TTL_MS` rather than the lease's own long
+TTL) were deleted along with the `publishes` table; `post.mark`/`post.unmark`
+mutate `posts`, a table no worker touches, so there is nothing left to race
+and nothing to lease.
 
 The slow lane cannot use one fixed short window, because a render legitimately
 runs for minutes. It instead takes a short `SLOW_ACTION_LEASE_TTL_MS` (5 min)
@@ -391,42 +336,37 @@ and pushes it out every `SLOW_ACTION_HEARTBEAT_MS` (60s) from a `setInterval`
 that lives exactly as long as the handler — five beats per TTL, which is the
 tolerance for a synchronous stretch that starves the event loop, and the timer
 is `unref`'d so a pending beat can never hold the process open past SIGTERM.
-The reason is the fast lane's reason at a different scale, but the mitigation
-covers only the two slow actions that declare a lease at all — `jobs.resume`
-(`produce`) and `scout.run` (`scout`), below: a SIGKILL mid-render heals the
-action row (`failRunningActions`) but not the lease, and `produce`'s own TTL
-is 90 minutes, so without this short window `jobs.resume` would stall the
-daemon's produce worker for 90 minutes rather than 5. `produce.next` and
-`publish.next` — what an operator would call "the render button" — declare
-**no** lease here (see below): `produceNextTick`/`publishNextTick` self-acquire
-`produce`/`publish` with those leases' own 90-/30-minute TTLs, so a SIGKILL
-during either still orphans the lease for the full duration. The short TTL
-mitigates 2 of the 5 slow actions, not the slow lane as a whole.
+The mitigation covers only the two slow actions that declare a lease at all —
+`jobs.resume` (`produce`) and `scout.run` (`scout`), below: a SIGKILL
+mid-render heals the action row (`failRunningActions`) but not the lease, and
+`produce`'s own TTL is 90 minutes, so without this short window `jobs.resume`
+would stall the daemon's produce worker for 90 minutes rather than 5.
+`produce.next` — what an operator would call "the render button" — declares
+**no** lease here (see below): `produceNextTick` self-acquires `produce`
+with that lease's own 90-minute TTL, so a SIGKILL mid-tick still orphans the
+lease for the full duration. The short TTL mitigates 2 of the 3 slow
+actions, not the slow lane as a whole.
 
 Which slow actions declare a lease is deliberately **not** uniform.
 `scout.run` declares `scout` and `jobs.resume` declares `produce`, because
 neither `scoutAll` nor `resumeJob` leases on its own — the CLI's `scout` and
 the daemon's `scoutUnit` each wrap `scoutAll` in the lease themselves, and the
 CLI's `resume` runs outside every lease on purpose, which is exactly the race
-the dashboard path must not have. `produce.next` and `publish.next` declare
-**none**, and that is the interesting case: `produceNextTick` and
-`publishNextTick` acquire `produce`/`publish` internally, so declaring the
-lease here would make the worker hold the very lease the tick then fails to
-take — every click would record a `{action:'noop',reason:'lease-held'}` result
-and call it a success. `publish.nextDryRun` declares none for a simpler reason:
-`publishNextTick` skips the acquire entirely when `dryRun` is set, so a dry run
-takes no lease anywhere.
+the dashboard path must not have. `produce.next` declares **none**, and that
+is the interesting case: `produceNextTick` acquires `produce` internally, so
+declaring the lease here would make the worker hold the very lease the tick
+then fails to take — every click would record a
+`{action:'noop',reason:'lease-held'}` result and call it a success.
 
 Two slow-handler behaviours are worth knowing before reading a result row.
-The three tick actions record the tick's own result **verbatim**, including a
-`status: 'failed'` JobResult and, for `produce.next`/`publish.next` (the two
-that actually acquire a lease — `publish.nextDryRun` skips the acquire
-entirely), a `lease-held` noop — `failAction`
+`produce.next` (the one tick action left) records the tick's own result
+**verbatim**, including a `status: 'failed'` JobResult and a `lease-held`
+noop — `failAction`
 stores no `result`, so failing the action would throw away the very JobResult
 the operator queued it to read. And `scout.run` treats a broken channels
 directory as a `{action:'noop',reason:'config-error'}` recorded `done`, not a
 failure: `digest.run` folds the same `tryLoadChannelsDir` error into its
-result, the tick actions pass through their own `config-error` noop, and the
+result, `produce.next` passes through its own `config-error` noop, and the
 CLI's `scout` exits 0 on it, reserving exit 1 for a `ScoutRunFailedError` from
 `scoutAll` itself. `scout.run` also passes `force: true` unconditionally — an
 operator clicking "scout now" means now, and `SCOUT_RECHECK_MS` would
@@ -448,30 +388,45 @@ through a zod schema with defaults, then normalized into camelCase
 depends on: **the file's basename must equal the TOML's `name` field** —
 `resumeJob` resolves a job's channel config by filename
 (`<channelsDir>/<job.channel>.toml`), so a mismatch would silently wedge
-resume. Duplicate declared names are also rejected at load time. A channel
-TOML with no `[publish]` table never enters the publish pool; one with no
-`[scout]` table is never scouted (manual `produce` still works). A `[publish]`
-table holds one `[publish.<platform>]` sub-table per platform the channel
-targets (`youtube`, `instagram`), each validated against that platform's own
-option schema — no schedule of its own, since cadence comes from the
-channel's `videos_per_day`. A stale `slots` key at either level, or a stale
-`[scout] min_score` key, is a load error naming its replacement (`slots` ->
-`videos_per_day`; `min_score` -> the code constant `SCOUT_MIN_SCORE`). A
-channel declaring both `[publish.youtube]`
-and `[publish.instagram]` cross-posts the same rendered video to both.
+resume. Duplicate declared names are also rejected at load time. One with no
+`[scout]` table is never scouted (manual `produce` still works).
+
+Target platforms are a flat top-level array, not a nested table:
+`platforms = ["youtube", "instagram", "tiktok"]`. It's the checklist the
+`/post` page renders and the set `pendingInventory` measures "fully posted"
+against — not a schedule and not a credential, since nothing in this
+codebase uploads anywhere. An empty list (the default) means "not decided
+yet": the channel still produces, it just has no posting checklist yet, and
+every unconsumed video counts toward its backlog. `platformsSchema` rejects
+an unknown platform or a duplicate entry by name, not with zod's generic
+enum message, so an operator who mistypes one is told what they actually
+typed. A channel TOML that still declares a `[publish]` table is a load
+error naming the replacement (`the [publish] table was removed — declare
+targets as a top-level platforms = [...] instead`) — there is no per-platform
+options sub-table anymore (no `privacy`, `category_id`, `ig_user_id`, ...:
+nothing here calls a platform API, so there is nothing for those options to
+configure). A stale `slots` key at either level, or a stale `[scout]
+min_score` key, is a load error naming its replacement too (`slots` ->
+`videos_per_day`; `min_score` -> the code constant `SCOUT_MIN_SCORE`).
 
 Config load does **no** platform math on `videos_per_day`. There used to be a
 third whole-directory invariant, `assertQuotaHeadroom`, rejecting a channel set
 that declared more videos/day than a platform's cap allowed; it is deleted,
-because that cap was a guess and the platform enforces its own at runtime (see
-the daemon section above). `videos_per_day` is now pure demand — a channel may
-declare 15 against a platform that will only take 6, and the surplus simply
-ages out through `backlog_days` as passed-over inventory.
+because that cap was only ever a guess an unimplemented upload path could not
+enforce. `videos_per_day` is pure demand — a channel may declare more than an
+operator can realistically post by hand, and the surplus simply piles up
+against `backlog_days` until production pauses for that channel.
 
-`backlog_days` (default 2) is the inventory depth cap AND the aged-out horizon
-— one number, because "hold more inventory" and "give each video longer to
-find a slot" are the same statement. `[scout] queue_days` (default 3) is its
-scout-side analogue.
+`backlog_days` (default 2) is a pure **production depth cap**, not an
+aged-out horizon — nothing in this codebase deletes a video for sitting in
+the queue too long anymore. It caps how many finished, unposted videos
+(`pendingInventory`, `jobs/library.ts` — a plain count against `posts`) a
+channel may hold before `produce-next` stops producing more for it; the only
+way a video stops counting is the operator posting it (on every declared
+platform) or discarding it (`library.reject`). `[scout] queue_days` (default
+3) is its scout-side analogue, capping how many scored candidate topics a
+channel may hold queued before `scout` stops fetching and scoring more for
+it.
 
 `BRAINROT_ROOT` is the single path knob, resolved by `src/config/paths.ts`
 into `<root>/db/brainrot.db`, `<root>/runs`, and `<root>/channels`; unset
@@ -672,12 +627,17 @@ trap as the `queue_days` overshoot just above — a depth or window sized in one
 unit (stories, queue slots) silently measured in another (rows, parts) —
 worth naming twice since a third instance of it is likely.
 
-Publishing is an **ordered series**: `channelVideoCandidates` blocks part N on
-a platform until part N-1 is `done` there, folded into the `blockedPlatforms`
-set it already computes, plus an `ORDER BY` term putting continuation parts
-ahead of unrelated videos. The **settled** predicate is deliberately untouched
-— a permanently-failed part 1 strands its successors, which the existing age
-clause absorbs exactly as it does passed-over videos.
+Posting a series is an **ordered** operation, but the ordering is no longer
+enforced as a hard gate — there is no scheduler left to enforce it against.
+`channelVideoCandidates`, which used to block part N on a platform until part
+N-1 was `done` there, is gone with `src/publish/schedule.ts`. What is left is
+`listPostQueue`'s (`src/dashboard/queries/post.ts`) `ORDER BY created_at ASC`:
+parts are produced in order, so the `/post` page naturally lists them in
+order, and working down the page top-to-bottom is what keeps a series posted
+in sequence without the operator having to track it by hand. A permanently
+unposted part 1 no longer strands its successors on any timer — nothing ages
+a video out anymore (see "Config" above) — it just sits at the top of the
+queue until the operator posts or discards it.
 
 Two schema/migration invariants are worth stating because both were nearly
 violated during implementation. The story indexes (`ix_topics_job`,
@@ -719,17 +679,24 @@ so callers still match `instanceof z.ZodError` — and `src/providers/errors.ts`
 everywhere (an arch lint enforces this). It exports `BrainrotError` plus
 `errorMessage` / `classify` / `tagError` / `errorContext` / `isAbortLike`.
 
-Every error carries two axes: a `domain` (`publish`, `storage`, `provider`,
-`config`, `job`, `scout`, `internal`) and a `kind` (`auth`, `quota`, `budget`,
-`invalid`, `not-found`, `rejected`, `conflict`, `refused`, `transient`,
-`unknown-outcome`, `internal`), so a surface can match at either width. There
-is deliberately no `retryable` flag: `transient` retries next tick, `quota`
-after `QUOTA_BACKOFF_MS` (6h, and on the publish path the failed row itself is
-what remembers), `budget` after a cap change, and `unknown-outcome` never —
-retry meaning belongs to each surface.
+Every error carries two axes: a `domain` (`storage`, `provider`,
+`config`, `job`, `scout`, `internal` — `'publish'` is gone along with
+`src/publish/`; nothing left throws it) and a `kind` (`auth`, `quota`,
+`budget`, `invalid`, `not-found`, `rejected`, `conflict`, `refused`,
+`transient`, `unknown-outcome`, `internal`), so a surface can match at either
+width. `kind` is untouched by the publishing removal — `auth` still describes
+a real condition elsewhere (`kind: isAuthStatus(...) ? 'auth' : 'transient'`
+in both `providers/elevenlabs.ts` and `providers/whisperx.ts`); `quota`
+currently has no live throw site (the platform quota responses it used to
+classify went with the adapters), but it stays in the vocabulary rather than
+being pruned reactively — a future provider integration is the more likely
+next user of it than a resurrected publish path. There is
+deliberately no `retryable` flag: `transient` retries next tick, `budget`
+retries after a cap change, and `unknown-outcome` never — retry meaning
+belongs to each surface.
 
 The concrete classes stay co-located with the domain they describe
-(`PublishError` in `publish/types.ts`, `StorageError` in `storage/types.ts`,
+(`StorageError` in `storage/types.ts`,
 `BudgetExceededError` in `jobs/costs.ts`, `ResumeError` in `jobs/resume.ts`,
 the scout trio in `scout/scout.ts`) and extend the base. `src/errors.ts` owns
 the vocabulary, not every error object. A subclass narrowing `kind` must use
@@ -752,35 +719,42 @@ premium voice, kokoro/edge-tts for the free voice fallback chain).
 job's voice.json wasn't produced by a successful ElevenLabs synth (ElevenLabs
 itself returns word timings directly, no alignment pass needed).
 
-### Publishing: OAuth + encrypted credentials, per platform
+### Posting: manual, per platform
 
-`src/publish/` holds the multi-platform upload path: `oauth-flow.ts` runs the
-one-time interactive per-channel consent grant for each platform
-(`runYoutubeAuthFlow`, `runInstagramAuthFlow` — structurally identical
-loopback-listener-then-browser-consent flows, Instagram's with an extra
-short-lived-to-long-lived token exchange Meta requires), `crypto.ts` /
-`tokens.ts` store the resulting credential AES-256-GCM-encrypted in
-`oauth_tokens` (`BRAINROT_TOKEN_KEY` never leaves `.env`; the table's
-`expires_at` column is NULL for YouTube's non-expiring refresh token and set
-for Instagram's ~60-day long-lived token), `platforms/youtube.ts` and
-`platforms/instagram.ts` each implement upload mechanics and credential
-resolution behind the shared `PublishAdapter` seam (`platforms/index.ts` is
-the one-line-per-platform registry `publish-next` drives generically),
-`schedule.ts` reads `videos_per_day` as the day's demand and pairs it with
-the fixed `PUBLISH_COOLDOWN_MS` cooldown (no window, no per-video gap
-derived from `videos_per_day` anymore, and no platform cap — `schedule.ts`
-decides only whether a CHANNEL is due; whether a PLATFORM is open is
-`quotaBackedOff`'s answer, in the DAO), and `publishes.ts` is the DAO for
-the `publishes` table's
-claim/done/failed/interrupted state machine, keyed per (channel, platform),
-with a `seq` ordinal per local day standing in for the old clock-time slot.
-The two platforms' credential-resolution shapes differ: YouTube mints a
-fresh access token from its stored refresh token on every tick, while
-Instagram's stored token _is_ the access token and is refreshed in place by
-its adapter only when within its expiry window (`IG_TOKEN_REFRESH_WINDOW_MS`)
-— there is no per-tick mint step. Refresh tokens, access tokens, and other
-credential material must never reach logs or stdout — CLI commands print
-only confirmations.
+There is no `src/publish/` anymore — no OAuth flow, no encrypted credential
+store, no upload adapter, no scheduler, no quota backoff. Posting a finished
+video is something the operator does by hand, once per platform, from the
+dashboard's `/post` page.
+
+`src/posts/` is what replaced it: `types.ts` declares `PLATFORMS =
+['youtube', 'instagram', 'tiktok']` and the `Platform` union; `meta.ts` holds
+`platformEntrySchema` (title/description/hashtags), written into
+`library.metadata_json` by the script stage and read back by the dashboard's
+`/post` query, plus per-platform char/hashtag limits and
+`normalizePlatformMeta`, which composes YouTube's title+description+tags into
+separate paste fields but folds the others into one caption block (Instagram
+and TikTok have no separate title field, so their body is
+`title. description #tags`); `posts.ts` is the DAO for the `posts` table — a
+row exists **iff** the operator posted that video to that platform, full
+stop. No status, no attempt count, no error kind, because nothing here talks
+to a platform and there is no failure mode to model. `markPosted` is
+idempotent on the `(job_id, platform)` primary key and deliberately does
+**not** refresh `posted_at` on a second call (a typo'd-url correction must
+not restamp when the video actually went out) but does overwrite `url`
+(the later value is the correction); `unmarkPosted` deletes the row.
+`reclaim.ts` (covered in the daemon section above) is the read that decides
+when a video's stored bytes can be freed: "posted to every platform the
+channel declares."
+
+The `/post` page (`src/dashboard/queries/post.ts`,
+`src/dashboard/views/post.ts`) renders one card per unposted video, with a
+readonly, copy-buttoned paste field per still-open platform holding the
+composed title/body/tags, a `url` field to paste the live link back in once
+posted, and a "mark posted" button (`post.mark`). A platform already marked
+shows its saved link and an "unmark" control (`post.unmark`) instead of the
+paste fields — reversing a mis-click does not require re-typing anything.
+Nothing on this page, or anywhere in the codebase, ever holds a platform
+credential: the paste-and-click shape is the entire mechanism.
 
 ### The dashboard's read-only guarantee narrows, not disappears
 
@@ -794,21 +768,23 @@ are writes — so no read route can mutate state. `POST /actions` is the one
 exception: it opens a separate `openDbActions` handle whose only statement is
 an `INSERT INTO operator_actions`, and the daemon does the actual mutating
 out-of-process (see "the operator-action queue", above). That's also why the
-dashboard still holds no `ANTHROPIC_API_KEY` and no `BRAINROT_TOKEN_KEY`
-despite being able to queue an action that ends in a real upload: the
-credentials that mutation needs live only in the daemon. Queueing a *render* is
-no longer prospective: `produce.next` and `jobs.resume` both end in a real
-Remotion render and real provider spend, `publish.next` in a real public
-upload, and `scout.run` in real provider calls — all from an unauthenticated
-POST, which is why the loopback binding and the two CSRF layers below are the
-whole of the boundary. The 409 liveness gate is not a third layer: it refuses
-only when the daemon looks stale (`src/dashboard/server.ts:172-180`), so a
+dashboard still holds no `ANTHROPIC_API_KEY`: the credentials a queued
+render needs live only in the daemon — though there is now nothing left for
+the dashboard to hold a credential FOR either way, since no queued action
+ends in a platform upload anymore (`BRAINROT_TOKEN_KEY` itself is gone,
+along with the encrypted credential store it protected). Queueing a
+*render* is still not prospective, though: `produce.next` and `jobs.resume`
+both end in a real Remotion render and real provider spend, and `scout.run`
+in real provider calls — all from an unauthenticated POST, which is why the
+loopback binding and the two CSRF layers below are the whole of the
+boundary. The 409 liveness gate is not a third layer: it refuses
+only when the daemon looks stale (`src/dashboard/server.ts:164-183`), so a
 cross-origin POST that already cleared CSRF still succeeds whenever the daemon
 is up — it protects the operator from queueing into the void, not the pipeline
 from an attacker. What is still CLI-only is a
 *named* topic
-(`brainrot produce --topic`), `library reject`, `topics prune-media`,
-`library backfill-store`, `publish preflight` and `auth` — a scope boundary,
+(`brainrot produce --topic`), `topics prune-media` and
+`library backfill-store` — a scope boundary,
 not a structural one.
 
 `POST /actions` is guarded by two independent layers (`src/dashboard/csrf.ts`),
@@ -837,10 +813,10 @@ viewer; a test asserts the two lists match so they cannot drift.
 
 The library page draws four byte states — `local` (runs/ file present),
 `archived` (bucket only), `reclaimed` (object deleted after every declared
-platform settled), and `unstored` (no `library_objects` row at all, i.e. the
-`library backfill-store` backlog) — plus a `live` column of post urls from
-`publishes`. All four come from the database plus `existsSync`; the dashboard
-still holds no bucket credentials.
+platform was posted to), and `unstored` (no `library_objects` row at all,
+i.e. the `library backfill-store` backlog) — plus a `live` column of post
+urls from `posts`. All four come from the database plus `existsSync`; the
+dashboard still holds no bucket credentials.
 
 ### Remotion rendering
 
@@ -865,9 +841,12 @@ no rows to show for it). Never move this back to a bind mount.
 `busy_timeout=5000` because the daemon's concurrent workers, the dashboard,
 and `docker compose exec` CLI runs all open it at once. It holds:
 `jobs`/`job_stages` (pipeline
-progress), `library` (finished videos awaiting review/publish), `topics`
+progress), `library` (finished videos awaiting review/posting), `topics`
 (scout queue), `scout_state` (per-channel last-scout-attempt timestamp),
-`costs` (spend ledger), `leases`, `publishes`, `oauth_tokens`.
+`costs` (spend ledger), `leases`, `posts` (the manual-posting record — one
+row per (job, platform) actually posted; `publishes` and `oauth_tokens` are
+gone, dropped by `migrate.ts` along with the publishing pipeline they
+backed).
 Per-job filesystem artifacts live under `<root>/runs/<jobId>/<stage>/`. Schema lives
 in `src/db/schema.sql`, applied via `db.exec` on every `openDb` call (plain
 `CREATE TABLE IF NOT EXISTS`) — so schema.sql alone is the declarative shape
@@ -886,14 +865,19 @@ rebuild a table renames the old one aside and replays `schema.sql` rather than
 carrying its own copy of the DDL — schema.sql stays the single source of truth
 for table shape.
 
-The one construct schema.sql deliberately does **not** carry is
-`ux_publishes_live`, the partial unique index enforcing one live publishes row
-per (job, platform). Because `openDb` execs schema.sql on every command, DDL
-that can fail on existing _data_ (as `CREATE UNIQUE INDEX` can) would wedge the
-entire CLI rather than one command. It lives in migrate.ts, which probes for
-violating rows first and skips-with-a-warning instead of throwing; schema.sql
-carries the statement as a comment so it still reads as the whole shape. Any
-future data-dependent DDL belongs there for the same reason.
+Data-dependent DDL — a `CREATE UNIQUE INDEX` or similar that can fail against
+existing rows rather than just existing schema — belongs in `migrate.ts`
+rather than `schema.sql`, for the same reason every other step there does:
+`openDb` execs schema.sql on every command, so DDL that can fail on data
+would wedge the entire CLI rather than one command, and a migrate.ts step
+can probe for violating rows first and skip-with-a-warning instead of
+throwing. `ux_publishes_live`, the partial unique index that used to enforce
+one live `publishes` row per (job, platform), was the worked example of
+this; it went with the table it constrained. `posts`' own primary key,
+`(job_id, platform)`, needs no equivalent — it's a plain `CREATE TABLE`
+constraint, not something that can fail against pre-existing data, because
+the table starts empty on every fresh install and `migratePublishesToPosts`
+(`src/db/migrate.ts`) backfills it with `INSERT OR IGNORE`.
 
 ### Test layout and conventions
 
@@ -950,8 +934,8 @@ Conventions:
 - Conditional tiers use `describe.skipIf`/`it.skipIf`. A bare `return` reports
   a **pass** for work that never ran.
 - Prefer one file per module over a facet split, even for a large file
-  (`cli.test.ts`, `src/loop/test/publish-next.test.ts`, and
-  `src/publish/test/publishes.test.ts` are each several hundred lines holding
+  (`cli.test.ts`, `src/dashboard/test/server.test.ts`, and
+  `src/scout/test/scout.test.ts` are each several hundred lines holding
   every describe for their module, subprocess and in-process tests included).
   A split earns its keep only when it separates a genuinely different concern
   — `src/config/channels.smoke.test.ts` stays apart from `channel.test.ts`
@@ -962,21 +946,21 @@ Conventions:
 - A `_<module>.fixtures.ts` holds what only that module needs, and **delegates
   row SQL to `src/testing/db.ts`** rather than re-issuing INSERTs. That is what
   lets a module keep an ergonomic local call shape (digest ages rows via
-  `isoAgo`; the publish tick wants a video file the candidate scan can `stat`)
-  without a second copy of the schema.
+  `isoAgo`) without a second copy of the schema.
 - Repo-wide architecture lints go in `src/arch.test.ts`. They are import-heavy
   by nature (proving module A must not load module B means loading B), so they
   are kept out of behavior files that would otherwise be instant.
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~13s wall / ~70s CPU for 1502 tests across 95
-files (warm; a first run after `pnpm install` is slower while the Remotion
-webpack cache in `node_modules/.cache` fills, and any measurement taken while
-something else is loading the machine can read 3x high). Wall clock is set by
-the slowest single file, not by the total — `src/jobs/test/golden-path.test.ts`
-is the floor at ~13s, one indivisible e2e render: the whole suite finishing in
-about that same time is the sign everything else is fully parallel behind it. That also means CPU spent anywhere shows up
+**Performance.** The suite runs ~23s wall for 1127 tests (plus 1 skipped)
+across 85 files (warm; a first run after `pnpm install` is slower while the
+Remotion webpack cache in `node_modules/.cache` fills, and any measurement
+taken while something else is loading the machine can read 3x high). Wall
+clock is set by the slowest single file, not by the total —
+`src/jobs/test/golden-path.test.ts` is the floor at ~14s, one indivisible
+e2e render: the whole suite finishing within about 10s of that same number
+is the sign everything else is fully parallel behind it. That also means CPU spent anywhere shows up
 everywhere: cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
 `golden-path`, `assemble` and `remotion` too, purely by ending the contention.
 

@@ -1,7 +1,11 @@
 # Brainrot Machine
 
 Automated short-form video pipeline. `brainrot produce` turns a topic into a
-finished, QC-checked, word-captioned 9:16 MP4 in the library.
+finished, QC-checked, word-captioned 9:16 MP4 in the library. The pipeline's
+job ends there — posting a finished video to YouTube Shorts, Instagram Reels
+or TikTok is a manual, per-platform step an operator does by hand from the
+dashboard (see "Posting a video" below). There is no upload adapter, no
+OAuth grant and no scheduler in this codebase.
 
 ## Prerequisites
 
@@ -112,18 +116,19 @@ pnpm brainrot costs   # per-day USD totals, last 7 days
 
 ## Object storage
 
-Finished videos are uploaded to Cloudflare R2 by the `store` stage. Instagram
-publishing requires this: `graph.instagram.com` rejects direct uploads with
-`The parameter video_url is required` — Meta's servers fetch the video from a
-URL you provide, so a finished video must be reachable over the public internet.
+**Object storage is optional.** Finished videos can be uploaded to Cloudflare
+R2 by the `store` stage, which runs last in the pipeline. With the
+`BRAINROT_S3_*` keys unset, `store` simply no-ops and logs it — `produce`
+still finishes with a normal `ready`/`needs-review` job, the CLI prints a
+warning to stderr rather than refusing, and the video lives only under
+`runs/`. What you lose without it: no cloud archive, no
+`library backfill-store` recovery path, and `runs/<jobId>/` becomes the only
+copy — reclaiming disk by deleting it is then a real, unrecoverable deletion
+of that video, not just clearing a cache of a durable copy.
 
-**Object storage is required to produce, including for a YouTube-only setup.**
-The uploaded copy is the durable one — `runs/` is a disposable cache you can
-reclaim at any time — so there is no fallback to local-only storage and no
-"skip the upload" switch: one that silently wrote videos nowhere durable would
-be a worse failure than refusing. With the `BRAINROT_S3_*` keys unset,
-`produce` exits 1 and `produce-next` no-ops with `"reason":"bad-env"`, both
-_before_ rendering rather than after.
+Configure it if you want a durable copy independent of the machine's local
+disk, or if you plan to post from a different machine than the one that
+rendered:
 
 1. In the Cloudflare dashboard, create an **R2 bucket** named exactly `brainrot-videos` —
    the name is pinned as a literal in `docker-compose.yml`.
@@ -133,15 +138,8 @@ _before_ rendering rather than after.
    maps these onto `BRAINROT_S3_*` inside the production container only — the host CLI's
    own `BRAINROT_S3_*` keeps pointing at local MinIO, see "Local development" below.
 
-Verify before going live — this fetches the stored object back and checks it is
-a well-formed, correctly-typed, complete MP4:
-
-```bash
-pnpm brainrot publish preflight <jobId>
-```
-
-Videos finished before object storage existed have no stored object and are
-YouTube-only until uploaded:
+Videos finished before object storage was configured have no stored object.
+Back-fill them:
 
 ```bash
 pnpm brainrot library backfill-store
@@ -173,228 +171,102 @@ Then run the storage test tier, which creates the bucket if it is missing:
 pnpm test:storage
 ```
 
-**A MinIO presigned URL is not reachable by Meta.** It is `localhost`, so it
-proves content-type and completeness but nothing about public reachability.
-Real Instagram publishing always needs real R2.
+**A MinIO presigned URL is `localhost`,** which is fine for the object-store
+conformance tests (they only need content-type and completeness) but is not
+reachable from anywhere off-machine — irrelevant to posting now that posting
+is a manual download-and-upload from `/post`, but worth knowing if you build
+against the stored object for anything else.
 
-## Publishing
+## Posting a video
 
-`ready` library videos upload automatically via the `publish` worker (see
-Automation below), one channel-day's `videos_per_day` quota at a time, paced
-only by a fixed 10-minute anti-burst cooldown between attempts — not by any
-pace derived from `videos_per_day` — to every platform a channel declares. A
-video is not "done" until every declared platform has taken it.
-
-### YouTube
-
-#### One-time setup (per Google Cloud project, not per channel)
-
-1. Create (or reuse) a project at
-   [console.cloud.google.com](https://console.cloud.google.com).
-2. Enable the **YouTube Data API v3** for that project (APIs & Services →
-   Enable APIs and Services → search "YouTube Data API v3" → Enable).
-3. APIs & Services → Credentials → Create Credentials → OAuth client ID.
-   **Application type: Desktop app** — Desktop-app clients accept a
-   consent redirect to any loopback port, so the CLI's flow needs no
-   redirect URI registered.
-4. Add the client id/secret to `.env`:
-
-   ```
-   YT_CLIENT_ID=...
-   YT_CLIENT_SECRET=...
-   ```
-
-5. Generate a token-encryption key and add it too. Credentials for every
-   platform are stored AES-256-GCM-encrypted in the database under this one
-   key — this key never leaves `.env`:
-
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-   ```
-
-   ```
-   BRAINROT_TOKEN_KEY=<paste the 64-hex-char output>
-   ```
-
-#### Per-channel auth
-
-Each YouTube channel is its own brand account and needs its own consent
-grant — run once per channel, and again any time a grant expires or gets
-revoked:
+Posting is manual. The pipeline's job ends when a video lands in the
+library as `ready`; getting it onto YouTube, Instagram or TikTok is
+something an operator does by hand, from the dashboard's `/post` page:
 
 ```bash
-pnpm brainrot auth youtube --channel example
+docker compose up -d dashboard
+open http://127.0.0.1:8787/post
 ```
 
-This opens the system browser to Google's consent screen. **Pick the
-channel's YouTube brand account, not your personal Google account** —
-the upload-only scope this flow requests can't read back which channel
-you picked, so the CLI cannot warn you if you pick wrong. A wrong pick is
-recoverable: re-run the command and pick correctly. The first published
-URL in a wrong channel's digest is usually what surfaces the mistake.
+1. **Open `/post`.** It lists every `ready` video that still has at least
+   one declared platform unposted, oldest first — story-mode parts included,
+   in order, so working down the page top-to-bottom keeps a series posted in
+   sequence without having to track it by hand.
+2. **Play or download the video** from the inline player on its card (or from
+   `/library` — same file).
+3. **Copy the per-platform blocks.** Each still-open platform on the card has
+   a readonly, copy-buttoned paste field: YouTube gets separate title,
+   description and tags fields; Instagram and TikTok get one composed caption
+   (they have no separate title field, so it reads `title. description
+   #tags`).
+4. **Upload by hand** through each platform's own app or web uploader, using
+   the pasted title/caption/tags.
+5. **Tick the platform off.** Back on `/post`, paste the live post's URL into
+   the `url` field (optional — you can also mark it posted with no link) and
+   click "mark posted". The card's block for that platform swaps to a
+   "posted" state showing the saved link and an "unmark" control, in case of
+   a mis-click.
 
-### Instagram
+A video is not fully done until every platform the channel declares has been
+marked. Once it is, its stored object (if any) is freed automatically on the
+next produce tick's reclaim sweep — see Object storage above.
 
-#### One-time setup (per Meta app, not per channel)
-
-1. Create an app at [developers.facebook.com](https://developers.facebook.com)
-   and add the **Instagram** product (the "Instagram API" use case) — this
-   provisions **Business Login for Instagram**, not Facebook Login for
-   Business; don't add the Facebook Login product, its scopes
-   (`instagram_content_publish`, `pages_show_list`, `business_management`)
-   belong to a different login flow and Meta's consent screen rejects them
-   as "Invalid Scopes" if this app requests them.
-2. On the app's **Instagram → API setup with Instagram login** page: add
-   yourself as an **Instagram tester** (no App Review needed for the
-   operator's own accounts in development mode), note the **Instagram App
-   ID/Secret** shown there — a different credential pair from the Facebook
-   App ID at the top of the dashboard — and register
-   **`https://localhost:51834/`** as a valid OAuth redirect URI (https, not
-   http — Meta rejects a plain http redirect URI even for localhost; the
-   Dashboard will likely save it with the trailing slash regardless of
-   whether you type one — matching it is required, the code-exchange step
-   validates the redirect URI as an exact string, unlike the more lenient
-   consent screen). The flow terminates that TLS connection itself with a
-   fresh self-signed certificate each run; your browser will show a
-   one-time "connection not private" warning after you approve — click
-   through it, that's expected, not a sign anything's wrong.
-3. Add the Instagram app id/secret to `.env`:
-
-   ```
-   IG_APP_ID=...
-   IG_APP_SECRET=...
-   ```
-
-4. `BRAINROT_TOKEN_KEY` from the YouTube setup above is reused as-is —
-   Instagram's credential is encrypted with the same key, no second one to
-   generate.
-
-Each target account must be an Instagram **Business or Creator** account —
-convert a personal account under Instagram settings if needed.
-
-#### Per-channel auth
-
-```bash
-pnpm brainrot auth instagram --channel example
-```
-
-This opens the system browser to Instagram's consent screen. **Pick the
-channel's Instagram account** — as with YouTube, a wrong pick is recoverable
-by re-running the command.
+**Production is held once a channel hits its backlog cap.** `backlog_days`
+(default 2) caps how many finished, unposted videos a channel may hold;
+`produce-next` stops producing more for a channel sitting at
+`ceil(videos_per_day × backlog_days)` unconsumed videos until the operator
+clears some of that backlog. Nothing ages a video out anymore — there is no
+scheduler left to time a post against, so a video the operator hasn't gotten
+to yet simply waits. If a video will never be posted (wrong take, dead
+topic), **discarding** it from `/library` (`library reject`, or the
+dashboard's "discard" action) is how it stops counting toward that cap: it
+frees the video's stored bytes and drops out of the posting queue for good.
 
 ### Channel config
 
-Add a `[publish]` table to a channel's TOML to opt it into the publish
-pool — channels without one never publish. Each platform the channel
-publishes to gets its own `[publish.<platform>]` sub-table; declare both to
-cross-post the same rendered video to both platforms:
+Declare which platforms a channel targets as a flat top-level array —
+not a `[publish]` table, which no longer exists:
 
 ```toml
 videos_per_day = 3
-
-[publish]
-
-[publish.youtube]
-privacy = "private"
-category_id = 24
-made_for_kids = false
-
-[publish.instagram]
-ig_user_id = "17841400000000000"
-share_to_feed = true
+platforms = ["youtube", "instagram", "tiktok"]
 ```
 
-`videos_per_day` is the only volume knob: the pipeline produces that many
-videos a day and publishes each one to every platform the channel declares.
-There is no posting window anymore — the daemon's publish worker checks
-every channel continuously and fires the instant one is due. "Due" means two
-things: under its `videos_per_day` count for the local calendar day, and
-past a fixed 10-minute cooldown (`PUBLISH_COOLDOWN_MS`) since that channel's
-last attempt. The cooldown is an anti-burst guard, not a schedule — a
-platform seeing six uploads land in three minutes reads it as spam — so
-nothing spreads a day's quota evenly; a channel with several videos ready at
-once can post all of them back-to-back, ten minutes apart, rather than every
-few hours. The count is still a same-day ceiling, not a guarantee: a channel
-with nothing ready, or already at its daily count, simply stays idle until
-there's more to do.
-
-Platform limits are not declared or checked here. `videos_per_day` is pure
-demand, and each platform clips itself at its own real limit at runtime — see
-Quota below.
-
-A channel that falls short of its `videos_per_day` count on a given day —
-the machine was asleep, a platform's quota was exhausted, credentials broke —
-has no makeup post; the digest reports any channel that published fewer
-videos than its `videos_per_day` yesterday, with a per-platform split, so the
-shortfall is visible without hunting through logs. A channel that _met_ its
-count is a separate case the split alone can't show: the digest also flags
-any declared platform that published zero videos that day while the channel
-published at least one elsewhere ("N uploads while the channel published
-…"), so a platform stuck at zero successes doesn't hide behind another
-platform's healthy volume.
+`videos_per_day` is the volume knob: the pipeline produces that many videos
+a day per channel. It is pure demand, not a schedule and not a cap checked
+against any platform — nothing here calls a platform API, so there is
+nothing to enforce a limit against. An empty (or absent) `platforms` list
+means "not decided yet": the channel still produces, it just has no posting
+checklist on `/post`, and every unconsumed video counts toward the channel's
+backlog until platforms are declared.
 
 `backlog_days` (default `2`) caps how many finished videos a channel may hold
-before `produce-next` stops producing more for it. "Held" means every video
-the channel has not finished with: awaiting review, awaiting its first
-platform, and already live on one declared platform but still owed to
-another. A video leaves the count once every platform the channel declares
-has published it, given up on it after three rejections, or run out of time
-for it.
-
-That last case is the other half of the knob: `backlog_days` doubles as the
-horizon a video is given to find a publish slot. Past it — and only once
-another video actually published _while this one was waiting_, so neither a
-publish outage nor the first upload that recovers from one ever counts — the
-video is written off as aged out and its stored object is deleted. That includes a video still awaiting review: approve it within
-`backlog_days` or its bytes are reclaimed, `library approve` refuses it, and
-the daily digest tells you to reject it. `[scout]
-queue_days` (default `3`) is the same idea one stage earlier: it caps how many
-scored candidate topics a channel may hold queued before `scout` stops
-fetching and scoring more for it.
-
-### Quota
-
-Platform quotas are detected at **runtime**, not declared in config: the
-platform's own quota error (YouTube `quotaExceeded`/`uploadLimitExceeded`/
-`dailyLimitExceeded`; Instagram Graph codes 4/17) is stored on the failed
-`publishes` row, and that row backs the platform off for six hours
-(`QUOTA_BACKOFF_MS`) while other declared platforms keep publishing.
-`videos_per_day` is pure demand — declaring more than a platform can take is
-legal, and each platform simply clips itself at its real limit.
-
-- **YouTube**'s quota is per Google Cloud **project**, not per channel:
-  10,000 units/day at 1,600 units/upload works out to roughly **6 uploads a
-  day, project-wide, across every channel sharing that project** — so the
-  backoff applies globally. If six a day isn't enough, request a quota
-  increase at <https://support.google.com/youtube/contact/yt_api_form>.
-- **Instagram**'s is per IG account, i.e. per channel: Meta's Content
-  Publishing API allows **50 posts per rolling 24h per account**, and the
-  backoff is scoped to the one channel that hit it.
-
-There is nothing to tune by hand, and the old
-`BRAINROT_YT_UPLOADS_PER_DAY` / `BRAINROT_IG_UPLOADS_PER_DAY` env overrides
-are gone (a `.env` still setting them is silently ignored).
+before `produce-next` stops producing more for it — see "Posting a video"
+above for what that means day to day. `[scout] queue_days` (default `3`) is
+the same idea one stage earlier: it caps how many scored candidate topics a
+channel may hold queued before `scout` stops fetching and scoring more for
+it.
 
 ## Automation
 
 Production is one long-running process: `brainrot run` is the container's
-`CMD` and starts a daemon with six workers running concurrently — there is
+`CMD` and starts a daemon with five workers running concurrently — there is
 no host cron, no launchd agent, and no per-worker container anymore. Each
 worker polls in a tight loop: check demand, do one unit of work if there is
 any, and re-check immediately; an idle worker sleeps 30 seconds before
 checking again, and a worker whose unit throws logs the error and sleeps 60
 seconds rather than taking the daemon down. `scout` fills the topic queue,
 `produce` performs one unit of work per pass (resume one blocked job or
-produce one video), `publish` picks one `ready` video from the channel
-furthest behind its `videos_per_day` pace and fans it out to every platform
-that channel declares (see Publishing above), and `digest` prints a daily
-report once per local day. The remaining two, `actions-fast` and
+produce one video), and `digest` prints a daily report once per local day.
+There is no `publish` worker — nothing in this codebase uploads to a
+platform, so there is nothing left to schedule; posting is the manual `/post`
+workflow above. The remaining two, `actions-fast` and
 `actions-slow`, drain the dashboard's operator-action queue instead of the
-pipeline — see "The dashboard publishes and spends money" below.
-Because throughput now follows demand rather than a clock, there's nothing
-scheduled to fall behind: a channel with videos ready gets them produced and
-published as fast as its own gates (backlog caps, cooldowns, quotas) allow,
-and a channel with nothing to do costs nothing but an idle poll.
+pipeline — see "The dashboard queues renders and spends money" below.
+Because throughput follows demand rather than a clock, there's nothing
+scheduled to fall behind: a channel with topics ready gets them produced as
+fast as its own gates (backlog caps, budgets) allow, and a channel with
+nothing to do costs nothing but an idle poll.
 
 No API keys are needed for scouting: reddit subreddits and RSS sources are
 both read through their public feeds. Reddit's feed carries no `stickied`
@@ -460,7 +332,7 @@ means "start" can silently run old code. `--build` makes it always build (or
 confirm current) first.
 
 This brings up both services: `whisperx` (the caption-alignment sidecar) and
-`brainrot` (the daemon: `brainrot run`, six workers polling for demand),
+`brainrot` (the daemon: `brainrot run`, five workers polling for demand),
 which waits on `whisperx`'s healthcheck before its workers start. There is
 one log stream for everything the daemon does:
 
@@ -478,19 +350,10 @@ with `lease-held`,
 `no-eligible-work`, `backlog-full`, `claim-conflict` (an operator command won
 a topic or job mid-unit), `resume-refused` (a blocked job's channel TOML or
 the job itself is gone, so no tick can heal it — the message names which),
-`bad-env` (object storage is not configured —
-checked before the lease, so a full render is never paid for just to fail at
-the `store` stage), or `config-error`; `publish` noops with `lease-held`,
-`paced` (this channel attempted less than `PUBLISH_COOLDOWN_MS`, 10 minutes,
-ago — an anti-burst guard, not a schedule), `daily-count-met` (this channel
-already hit `videos_per_day` for the local calendar day), `no-publish-channel`
-(no channel in the dir declares `[publish]`), `platform-quota`,
-`no-ready-video`, `no-video-file` (the `ready` row's file was pruned from
-`runs/`), `no-auth`, `bad-env` (a malformed `BRAINROT_TOKEN_KEY`), or `config-error`
-(the channels dir would not load); `scout` with `lease-held`, `queue-full`, `no-scout-sources` (a channel
-was due for a recheck but none of the due ones declares a `[scout]` source),
-or that same `config-error`. The `error` field of a `config-error` or
-`bad-env` line carries the cause — under the daemon that JSON line is the
+or `config-error`; `scout` with `lease-held`, `queue-full`, `no-scout-sources`
+(a channel was due for a recheck but none of the due ones declares a
+`[scout]` source), or that same `config-error`. The `error` field of a
+`config-error` line carries the cause — under the daemon that JSON line is the
 only report, deliberately: an unstructured stderr print would bypass the idle
 dedupe and repeat every 30 seconds. The one-shot commands below still echo it
 to stderr, where a human is watching. A worker whose unit throws instead
@@ -499,19 +362,17 @@ logs `{"worker":...,"action":"worker-error","error":...}` and backs off for
 line, not an exit code, is the daemon's failure signal, since the daemon
 itself never exits under normal operation.
 
-The standalone `pnpm brainrot produce-next` / `publish-next` / `scout` /
+The standalone `pnpm brainrot produce-next` / `scout` /
 `digest` commands (useful for a manual, one-shot run outside the daemon)
 keep the old exit-code contract: exit `0` for any noop or
 successful action, exit `1` when real work failed — a `failed`/`blocked`
-produce, a fan-out with any platform entry not `published` (a
-`publish-failed` result, or a `published` one carrying a
-`failed`/`unknown`/`skipped` leg), or a scout run whose every channel died.
+produce, or a scout run whose every channel died.
 
 ### Cadence
 
 There is no schedule to configure — throughput comes from the poll loop
-itself (`src/loop/daemon.ts`). Each of the daemon's four pipeline workers
-(produce, publish, scout, digest) checks demand, does one unit of work if
+itself (`src/loop/daemon.ts`). Each of the daemon's three pipeline workers
+(produce, scout, digest) checks demand, does one unit of work if
 there is any, and re-checks immediately; an idle worker sleeps 30 seconds
 (`IDLE_SLEEP_MS`) before its next check, and a worker whose unit throws
 sleeps 60 seconds (`ERROR_SLEEP_MS`) instead. `scout` layers a per-channel
@@ -525,14 +386,13 @@ worker still on a real clock: it fires once per local day at or after 08:00
 and a restart later the same day can re-fire it once. The other two workers,
 `actions-fast` and `actions-slow`, follow the same check-then-sleep shape but
 poll at ~1s and 30s respectively for a different queue — see "The dashboard
-publishes and spends money" below.
+queues renders and spends money" below.
 
 Times that matter are container-local (`TZ=America/Chicago`, set in
 `deploy/docker/Dockerfile` and pinned again in `docker-compose.yml`'s
 `environment:` block — an `env_file` value of the same name would otherwise
 override the image's `ENV`), regardless of the host Mac's own timezone.
-Changing any of the constants above, or `PUBLISH_COOLDOWN_MS`
-(`src/publish/schedule.ts`), means editing the source and running
+Changing any of the constants above means editing the source and running
 `docker compose build brainrot`, same as any other source change. There is
 no hot reload.
 
@@ -546,12 +406,13 @@ docker compose up -d dashboard
 open http://127.0.0.1:8787
 ```
 
-Six pages: an overview (job health, spend against all three budget caps,
-held leases, YouTube quota), jobs with a per-stage timeline and the raw error
-text, the library with inline video playback, the publish schedule as a
-day-by-ordinal grid including attempts that never happened, the scout topic
-queue, and an action history page (`/actions`) listing every operator action
-that has been queued, with its status, result and error.
+Seven pages: `/post`, the manual posting queue described above; an overview
+(job health, spend against all three budget caps, held leases); jobs with a
+per-stage timeline and the raw error text; the library with inline video
+playback; `/posts`, a reverse-chronological log of what has actually gone
+out (posted-at, channel, platform, topic, link); the scout topic queue; and
+an action history page (`/actions`) listing every operator action that has
+been queued, with its status, result and error.
 
 The dashboard serves whichever root it is given, like every other entrypoint —
 there is no in-page database switcher, and the footer names the root being
@@ -567,19 +428,19 @@ Every page it *reads* still opens the database through a read-only connection
 `-shm` file even to read a WAL database), but the guarantee lives in the
 connection flag, not the mount. What changed is that the dashboard now also
 *writes*, in one narrow way: buttons on the overview, jobs, library, topics
-and publishes pages queue an operator action (`POST /actions`) that the daemon
-executes, rather than mutating anything itself. Eleven actions are wired today.
-Six are fast — `topics reject/requeue`, `library approve`,
-`publish retry/mark-done` and `run digest` — and five are slow, meaning they
-can run for seconds or minutes: `produce next` (`/jobs`), per-job `resume`
-(`/jobs`), `publish next` and `publish next (dry run)` (`/publishes`), and
-`scout now` (`/topics`). The mutating commands still CLI-only are `produce`
-with an explicit topic, `library reject`, `topics prune-media`,
-`library backfill-store`, `publish preflight` and `auth`. That is a scope
-boundary, not a structural limit, and a later plan moves some of them onto the
-same queue.
+and post pages queue an operator action (`POST /actions`) that the daemon
+executes, rather than mutating anything itself. Ten actions are wired today.
+Seven are fast — `topics reject/requeue`, `library approve`, `run digest`,
+`post mark/unmark` and `library reject` (discard) — and three are slow,
+meaning they can run for seconds or minutes: `produce next` (`/jobs`),
+per-job `resume` (`/jobs`), and `scout now` (`/topics`). Nothing wired to the
+dashboard uploads to a platform — posting is the paste-and-click `/post`
+workflow above, not a queued action. The mutating commands still CLI-only
+are `produce` with an explicit topic, `topics prune-media` and
+`library backfill-store`. That is a scope
+boundary, not a structural limit.
 
-### The dashboard publishes and spends money
+### The dashboard queues renders and spends money
 
 The dashboard queues operator actions (`POST /actions`) that the daemon
 executes. It has **no authentication**. The only things standing between a web
@@ -588,22 +449,21 @@ page you visit and your production pipeline are:
 1. the loopback binding (`127.0.0.1:8787` in `docker-compose.yml`), and
 2. the same-origin + CSRF-token check in `src/dashboard/csrf.ts`.
 
-Three of the wired actions **spend real provider money** on a click:
-`produce next` runs the whole pipeline — an Anthropic call for the script,
-ElevenLabs if the channel configures `[voice.premium]`, and a full Remotion
-render — `resume` re-runs whichever of those stages the job has not finished,
-and `scout now` pays for topic scoring plus, where `generate_topics` is set,
-topic generation. Three of them **post publicly**:
-`publish next` uploads the next due video to every platform its channel
-declares, and `publish retry`/`library approve` feed the daemon's normal
-publish worker, so the result is a real upload to YouTube/Instagram rather than
-a row change. `publish next (dry run)` is the one that only reports what it
-would do.
+Nothing wired to the dashboard posts publicly anymore — there is no upload
+adapter left to call. Two of the wired actions **spend real provider money**
+on a click, though: `produce next` runs the whole pipeline — an Anthropic
+call for the script, ElevenLabs if the channel configures `[voice.premium]`,
+and a full Remotion render — and `resume` re-runs whichever of those stages
+the job has not finished. `scout now` also spends, on topic scoring plus,
+where `generate_topics` is set, topic generation.
 
-Four of them (`produce next`, `resume`, `publish next`, `publish mark-done`)
-route through a confirmation interstitial naming the consequence. The rest fire
-on one click, `scout now` included — so a click can spend without a prompt.
-Spend still lands under a budget cap, but which one depends on the action.
+Four actions route through a confirmation interstitial naming the
+consequence: `produce next` and `resume`, because they spend and render, plus
+two that lose data rather than money — `library reject` ("discard", which
+frees stored bytes and pulls a video out of the posting queue for good) and
+`post unmark` (which throws away a saved live link). The rest fire on one
+click, `scout now` included — so a click can spend without a prompt. Spend
+still lands under a budget cap, but which one depends on the action.
 `produce next` and `resume` each have a job to meter against, so they clear
 the full chain — per-video, channel-day, and global-day. `scout now` has no
 job row: its cost is ledgered under a sentinel `scout:<channel>` id that the
@@ -612,12 +472,13 @@ so only the global-day cap backs it. Either way the cap is enforced in the
 pipeline rather than at this endpoint: it's the backstop, not the gate.
 
 **Do not put the dashboard behind a tunnel, reverse proxy, or `0.0.0.0`
-binding.** Doing so turns it into remote code execution against your channels,
-your published accounts and your provider budgets. If you need remote access,
+binding.** Doing so turns it into remote code execution against your channels
+and your provider budgets — it can still trigger real renders and real
+provider spend, even with no upload path left. If you need remote access,
 use an SSH port-forward to loopback on both ends — never a published port.
 
 Actions run inside the daemon under the same leases its workers take, so unlike
-the equivalent CLI commands they never race a live render or upload. The daemon
+the equivalent CLI commands they never race a live render. The daemon
 must be running for a queued action to execute: the dashboard shows a banner
 and disables the buttons when it is not, and `POST /actions` itself answers
 409 rather than queue work nothing would drain.
@@ -651,59 +512,28 @@ the ledger the production budget caps read.
 
 ### Promotion
 
-Once a channel developed under `local/channels/` is ready to go live, stop the
-daemon first — the `publish` worker reads `oauth_tokens` from inside the
-container on every unit it does (immediately after work, at most every 30s
-while idle), and this writes that table from the host:
+Once a channel developed under `local/channels/` is ready to go live, copy
+its TOML into `prod/channels/`:
 
 ```bash
 cp local/channels/<name>.toml prod/channels/<name>.toml   # edit as needed
-
-docker compose exec brainrot pnpm brainrot auth youtube --channel <name> --headless
-# (and/or `auth instagram --channel <name> --headless`, for whichever
-# platforms the channel's [publish] table declares)
 ```
 
-`--headless` prints a consent URL instead of launching a browser. Open it on
-your own machine, grant consent, and the redirect lands back in the container;
-the command then prints its confirmation and exits. Instagram's callback is
-HTTPS with a per-run self-signed cert, so the browser shows a
-"connection not private" interstitial once — clicking through is expected.
-
-The daemon does **not** need to be stopped. `auth` writes one `oauth_tokens`
-row, and the publish worker reading that table concurrently is exactly what
-WAL plus `busy_timeout` is for — unlike the recovery commands below, which
-mutate job state a live worker may also be acting on.
-
-Three things have to line up for the callback to arrive, which is why
-`--headless` sets all three at once rather than leaving them as separate
-flags (`authFlowTransport` in `src/publish/oauth-flow.ts`):
-
-- **The listener binds `0.0.0.0`, not `127.0.0.1`.** A container-loopback
-  listener is unreachable through a published port. Compose publishes to
-  `127.0.0.1` on the _host_, so the callback still is not reachable
-  off-machine.
-- **The port is fixed**, since Compose must publish it before the flow starts
-  and cannot learn an ephemeral one chosen at runtime — `YT_AUTH_DEFAULT_PORT`
-  (51835) and `IG_AUTH_DEFAULT_PORT` (51834). `--port` overrides, but must
-  then match `docker-compose.yml`, and Instagram's is additionally
-  pre-registered with Meta so it cannot be renumbered unilaterally.
-- **The consent URL is printed** rather than opened, because `open` is a macOS
-  binary absent from the Debian image, and there is no browser in there to
-  look at anyway.
-
-Validation is unaffected: `auth <platform>` still calls `loadChannelsDir()`
-against the directory it's pointed at, which enforces the
-basename-equals-`name` invariant and rejects duplicate declared names — a
-malformed promotion fails at promotion time, not at the next tick.
-
-Note that `src/` is baked into the image, not mounted, so a code change to the
-auth flow needs `docker compose build brainrot` before `exec` will run it.
+There is no credential grant to run — nothing in this codebase authenticates
+against a platform, so promoting a channel is just getting its TOML into the
+production channels directory with the right `platforms` declared.
+`loadChannelsDir()` validates it the same way it validates every other
+channel: the basename-equals-`name` invariant and no duplicate declared
+names, so a malformed promotion fails at the next daemon tick's config load,
+reported as `config-error`, rather than corrupting state. The daemon does
+not need to be stopped for this — copying a file into `prod/channels/` is
+picked up by the next unit's fresh `tryLoadChannelsDir` read, no restart
+required.
 
 ### Operating the database
 
-All persistent state — jobs, library, topics, costs, leases, publishes and
-the encrypted `oauth_tokens` — lives in the `brainrot-data` **named volume**,
+All persistent state — jobs, library, topics, costs, leases and
+posts — lives in the `brainrot-data` **named volume**,
 not under `data/`. `docker-compose.yml`'s mount comment carries the full
 reasoning; the short version is that SQLite's WAL mode needs coherent shared
 memory across every process that opens the file, a macOS bind mount reaches
@@ -731,9 +561,11 @@ docker run --rm -v project-brainrot_brainrot-data:/d -v "$PWD":/out alpine \
   sh -c 'mv /d/backup.db /out/brainrot-backup.db'
 ```
 
-`docker volume rm brainrot-data` destroys every OAuth grant along with the
-run history — re-granting consent per channel per platform is the only way
-back, so take a snapshot before anything that recreates volumes.
+`docker volume rm brainrot-data` destroys the entire posting record along with
+every job, library and cost row — there is no re-granting anything to get it
+back, since nothing here holds a grant anymore, but the history itself (which
+videos were already posted where) is genuinely gone. Take a snapshot before
+anything that recreates volumes.
 
 ### Recovery
 
@@ -741,26 +573,24 @@ Everything else that renders or mutates job state goes through the
 container, not the host — same binary, same filesystem layout, no drift.
 Manual commands take no lease of their own, so a hand-run invocation can
 execute concurrently with a live daemon worker and both may act on the same
-job/topic — `produce-next` holds a `produce` lease and `publish-next` holds
-its own separate `publish` lease, but neither one covers a manual command.
-Stop the daemon first, then run the command as a one-shot container:
-`docker compose exec` requires a running service, and `stop` just took it
-down, so recovery commands use `docker compose run --rm --no-deps` instead —
-it starts a fresh container from the same image, with the same env and
-mounts, and `--no-deps` keeps it from pulling `whisperx` back up as a side
-effect.
+job/topic — `produce-next` holds the `produce` lease, but a manual command
+never does. Stop the daemon first, then run the command as a one-shot
+container: `docker compose exec` requires a running service, and `stop` just
+took it down, so recovery commands use `docker compose run --rm --no-deps`
+instead — it starts a fresh container from the same image, with the same env
+and mounts, and `--no-deps` keeps it from pulling `whisperx` back up as a
+side effect.
 
 ```bash
 docker compose stop brainrot
 docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId>
 docker compose run --rm --no-deps brainrot pnpm brainrot library approve <jobIds...>
-docker compose run --rm --no-deps brainrot pnpm brainrot publish retry <jobId>
 docker compose start brainrot
 ```
 
-The same pattern covers `produce`, `library reject`, and `publish
-mark-done`. Restart the daemon (`docker compose start brainrot`) once
-recovery is done — its workers stay paused until you do.
+The same pattern covers `produce` and `library reject`. Restart the daemon
+(`docker compose start brainrot`) once recovery is done — its workers stay
+paused until you do.
 
 - **A stranded topic can be returned to the queue.** A topic stays `claimed`
   for as long as its job might still run, so a job abandoned for good leaves
@@ -811,11 +641,11 @@ recovery is done — its workers stay paused until you do.
   triggers are demand-based, not scheduled, so a slept-through period is
   simply picked up at the next wake. The instant the machine wakes and the
   container resumes, each worker's next poll sees whatever demand piled up
-  (topics to scout, videos to produce or publish) and acts on it right away,
-  subject to the same gates as always — `videos_per_day`,
-  `PUBLISH_COOLDOWN_MS`, `backlog_days`. A channel that stayed under its
-  `videos_per_day` count while the machine slept simply stays due; there is
-  still no makeup once that count is met for the day.
+  (topics to scout, videos to produce) and acts on it right away,
+  subject to the same gates as always — `videos_per_day`, `backlog_days`. A
+  channel that stayed under its `videos_per_day` count while the machine
+  slept simply stays due; there is still no makeup once that count is met
+  for the day.
 - **Docker Desktop must be set to start at login**, or nothing runs after a
   reboot and there is no alarm that fires — the failure looks identical to an
   idle day.
@@ -830,19 +660,18 @@ recovery is done — its workers stay paused until you do.
 
 ### Timezones: two different clocks
 
-- **Budget caps and the daily video quota roll over at UTC midnight;
-  publishing rolls over at local midnight.** The spend caps and the
-  per-channel `videos_per_day` quota both key off the cost ledger /
-  `jobs.created_at`, which is UTC, so "today" for those flips at midnight
-  UTC — 7 pm EST / 8 pm EDT, i.e. late afternoon/early evening US-Eastern —
-  not at local midnight. Expect a fresh production quota and budget headroom
-  in the early evening. The publish quota and cooldown
-  (`src/publish/schedule.ts`) and both platforms' per-day upload counters
-  (YouTube's project-wide one and Instagram's per-channel one) are the
-  opposite: they key off the **container's** local wall-clock day (`TZ` is
+- **Budget caps and the daily production quota roll over at UTC midnight;
+  the digest fires on the local day.** The spend caps and the per-channel
+  `videos_per_day` production quota (`planTick`'s `today < videosPerDay`
+  check) both key off the cost ledger / `jobs.created_at`, which is UTC, so
+  "today" for those flips at midnight UTC — 7 pm EST / 8 pm EDT, i.e. late
+  afternoon/early evening US-Eastern — not at local midnight. Expect a fresh
+  production quota and budget headroom in the early evening. `digest` is the
+  one thing left keyed off the **container's** local wall-clock day (`TZ` is
   pinned to `America/Chicago` in `docker-compose.yml`'s `environment:` block
-  regardless of the host Mac's own timezone), so they roll over at local
-  midnight, not UTC midnight.
+  regardless of the host Mac's own timezone): it fires once per local day at
+  or after `DIGEST_HOUR` (08:00). Posting has no clock at all anymore — it
+  happens whenever the operator gets to `/post`.
   A `{"worker":"produce","action":"noop","reason":"lease-held"}` line is
   normal while a long render from an earlier unit is still running — `scout`
   takes a lease of its own (30 min) and prints the same shape of line if a

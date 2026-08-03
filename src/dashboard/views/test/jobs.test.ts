@@ -212,7 +212,7 @@ describe('renderJobDetailPage', () => {
     const out = renderJobDetailPage(reclaimed, RUNS_ROOT).value
     expect(out).not.toContain('/library/j1/video')
     expect(out).not.toContain('<video')
-    expect(out).toContain('reclaimed — the stored object was deleted after every platform settled')
+    expect(out).toContain('reclaimed — the stored object was deleted after every platform was posted to')
   })
 
   it('says the video is unstored instead of rendering a dead player, naming the fix', () => {

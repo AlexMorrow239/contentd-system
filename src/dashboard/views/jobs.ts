@@ -157,7 +157,7 @@ export function renderJobDetailPage(detail: JobDetail, runsRoot: string): SafeHt
             : detail.bytes === 'archived'
               ? html`<p class="muted">archived to object storage — not available locally</p>`
               : detail.bytes === 'reclaimed'
-                ? html`<p class="muted">reclaimed — the stored object was deleted after every platform settled</p>`
+                ? html`<p class="muted">reclaimed — the stored object was deleted after every platform was posted to</p>`
                 : html`<p class="muted">not stored — run <code>library backfill-store</code></p>`}
           ${renderLinks(detail.links, html``)}
         </div>`

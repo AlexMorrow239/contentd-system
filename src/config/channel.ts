@@ -225,10 +225,13 @@ const rawSchema = z.object({
 //
 // 1. An RSS item has no post body, so a story channel scouting RSS would fetch
 //    and score items it can never narrate — and look healthy doing it.
-// 2. A series drains at videos_per_day/day, so it needs max_parts /
-//    videos_per_day days to publish. If that exceeds backlog_days the tail
-//    ages out mid-series (publish/settled.ts) and viewers are stranded on part
-//    2 forever. Caught here rather than at 3am.
+// 2. A series posts at videos_per_day/day at best, so it needs max_parts /
+//    videos_per_day days to clear. backlog_days caps how much unposted video
+//    a channel may hold before production stops (planTick's pendingInventory
+//    gate) — if max_parts exceeds that capacity, production blocks on the
+//    channel's own unfinished series before the last part is ever rendered,
+//    stranding viewers on an earlier part indefinitely. Caught here rather
+//    than at 3am.
 const channelSchema = rawSchema.superRefine((cfg, ctx) => {
   if (cfg.publish !== undefined) {
     ctx.addIssue({
@@ -263,7 +266,7 @@ const channelSchema = rawSchema.superRefine((cfg, ctx) => {
       path: ['story', 'max_parts'],
       message:
         `max_parts ${cfg.story.max_parts} exceeds videos_per_day x backlog_days (${cfg.videos_per_day} x ${cfg.backlog_days} = ${capacity}) — ` +
-        'the tail of a series would age out before it could publish; raise videos_per_day or backlog_days, or lower max_parts',
+        'production would stall on this series before its last part rendered; raise videos_per_day or backlog_days, or lower max_parts',
     })
   }
 })
