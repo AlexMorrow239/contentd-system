@@ -8,7 +8,13 @@ import { errorMessage } from '../errors.js'
 import type { LibraryState } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { enqueueAction, getAction } from '../actions/queue.js'
-import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
+import {
+  ACTIONS,
+  actionArgNames,
+  formToArgs,
+  isActionKind,
+  parseActionArgs,
+} from '../actions/catalog.js'
 import { daemonIsStale, readDaemonState } from '../loop/daemon-state.js'
 import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
 import type { DashboardConfig } from './config.js'
@@ -23,6 +29,7 @@ import {
 import { countJobs, getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
 import { buildOverview } from './queries/overview.js'
+import { listPostQueue } from './queries/post.js'
 import { countTopics, topicChannels } from './queries/topics.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
@@ -32,6 +39,7 @@ import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 import { renderOverviewPage } from './views/overview.js'
+import { renderPostQueuePage } from './views/post.js'
 import { renderTopicsPage } from './views/topics.js'
 
 export interface DashboardVars {
@@ -85,7 +93,10 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
       form = await c.req.formData()
     } catch (err) {
       return c.html(
-        actionErrorPage(deps.config.paths.root, `could not read the submitted form: ${errorMessage(err)}`),
+        actionErrorPage(
+          deps.config.paths.root,
+          `could not read the submitted form: ${errorMessage(err)}`,
+        ),
         400,
       )
     }
@@ -236,6 +247,27 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     } finally {
       db.close()
     }
+  })
+
+  app.get('/post', (c) => {
+    const db = c.get('db')
+    const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
+    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+
+    return c.html(
+      layout({
+        title: 'post',
+        root: deps.config.paths.root,
+        activeNav: 'post',
+        refreshSeconds: actionPollSeconds(db, c.req.query('action')),
+        body: renderPostQueuePage({
+          cards: listPostQueue(db, channels),
+          csrfToken,
+          daemonStale,
+          configError: error,
+        }),
+      }),
+    )
   })
 
   app.get('/', (c) => {

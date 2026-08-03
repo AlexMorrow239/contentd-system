@@ -147,6 +147,9 @@ export interface TopicRow {
   status: string
   jobId: string | null
   createdAt: string | null
+  seriesKey: string | null
+  partIndex: number | null
+  partCount: number | null
 }
 
 /** Returns the autoincrement id, which most topic tests assert on. */
@@ -166,6 +169,9 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     status: 'candidate',
     jobId: null,
     createdAt: null,
+    seriesKey: null,
+    partIndex: null,
+    partCount: null,
     ...overrides,
   }
   const cols = [
@@ -179,6 +185,9 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     'reason',
     'status',
     'job_id',
+    'series_key',
+    'part_index',
+    'part_count',
   ]
   const vals: unknown[] = [
     row.channel,
@@ -191,6 +200,9 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     row.reason,
     row.status,
     row.jobId,
+    row.seriesKey,
+    row.partIndex,
+    row.partCount,
   ]
   if (row.createdAt !== null) {
     cols.push('created_at')
@@ -298,12 +310,30 @@ export function seedAction(db: Database, overrides: Partial<ActionRowSeed> = {})
     ...overrides,
   }
   const cols = [
-    'kind', 'lane', 'args', 'status', 'requested_by',
-    'started_at', 'finished_at', 'result', 'error', 'error_kind', 'notice',
+    'kind',
+    'lane',
+    'args',
+    'status',
+    'requested_by',
+    'started_at',
+    'finished_at',
+    'result',
+    'error',
+    'error_kind',
+    'notice',
   ]
   const vals: unknown[] = [
-    row.kind, row.lane, row.args, row.status, row.requestedBy,
-    row.startedAt, row.finishedAt, row.result, row.error, row.errorKind, row.notice,
+    row.kind,
+    row.lane,
+    row.args,
+    row.status,
+    row.requestedBy,
+    row.startedAt,
+    row.finishedAt,
+    row.result,
+    row.error,
+    row.errorKind,
+    row.notice,
   ]
   // created_at has a schema default; naming it with NULL would override the
   // default with NULL, so it is only named when the caller pinned a value.

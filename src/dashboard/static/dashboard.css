@@ -176,25 +176,133 @@ video {
 
 /* Operator action controls. Deliberately plain: the dashboard ships no
    JavaScript, so every one of these is a real form submit or a link. */
-.action { display: inline; }
+.action {
+  display: inline;
+}
 .action-button {
-  font: inherit; cursor: pointer; padding: 0.15rem 0.5rem;
-  border: 1px solid currentColor; border-radius: 3px; background: transparent; color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
 }
 .action-button[disabled],
-.action-button[aria-disabled='true'] { opacity: 0.4; cursor: not-allowed; }
-.action-button.danger { border-color: #b00; color: #b00; }
-.action-link { text-decoration: underline; }
-.action-link[aria-disabled='true'] { text-decoration: none; opacity: 0.4; cursor: not-allowed; }
-.page-actions {
-  margin: 0.5rem 0 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;
+.action-button[aria-disabled='true'] {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
-.banner { padding: 0.5rem 0.75rem; border: 1px solid currentColor; border-radius: 3px; }
-.banner.error { color: #b00; }
-.actions-list .row { display: grid; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid #8883;
-  grid-template-columns: 6rem 12rem 4rem 1fr 14rem; align-items: baseline; }
-.actions-list .row.highlight { background: #ffd8; }
-.actions-list .detail { grid-column: 1 / -1; }
-.actions-list .status-running { font-weight: 600; }
-.notice { font-style: italic; }
-.field { display: block; margin: 0.5rem 0; }
+.action-button.danger {
+  border-color: #b00;
+  color: #b00;
+}
+.action-link {
+  text-decoration: underline;
+}
+.action-link[aria-disabled='true'] {
+  text-decoration: none;
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.page-actions {
+  margin: 0.5rem 0 1rem;
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.banner {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+}
+.banner.error {
+  color: #b00;
+}
+.actions-list .row {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid #8883;
+  grid-template-columns: 6rem 12rem 4rem 1fr 14rem;
+  align-items: baseline;
+}
+.actions-list .row.highlight {
+  background: #ffd8;
+}
+.actions-list .detail {
+  grid-column: 1 / -1;
+}
+.actions-list .status-running {
+  font-weight: 600;
+}
+.notice {
+  font-style: italic;
+}
+.field {
+  display: block;
+  margin: 0.5rem 0;
+}
+
+/* The /post manual posting queue: one card per finished video, oldest first. */
+.post-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+.post-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 320px) 1fr;
+  align-items: start;
+}
+.post-card header {
+  grid-column: 1 / -1;
+}
+.post-card video {
+  max-width: 320px;
+}
+.badge.series {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0.1rem 0.4rem;
+  border-radius: 3px;
+  border: 1px solid currentColor;
+  margin-left: 0.5rem;
+}
+.post-platforms {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+.post-platform {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem 0.75rem;
+}
+.post-platform.posted {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.copy-row {
+  display: flex;
+  gap: 0.35rem;
+  align-items: flex-start;
+}
+.copy-row textarea {
+  flex: 1;
+  font: inherit;
+}
+.copy-btn {
+  font: inherit;
+  cursor: pointer;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  white-space: nowrap;
+}
