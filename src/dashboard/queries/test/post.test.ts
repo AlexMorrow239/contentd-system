@@ -85,4 +85,98 @@ describe('listPostQueue', () => {
     seedTopic(db, { jobId: 'j1', seriesKey: 's1', partIndex: 2, partCount: 4 })
     expect(listPostQueue(db, [alpha])[0]?.seriesLabel).toBe('part 2/4')
   })
+
+  it('labels nothing for a single-part video', () => {
+    const db = memDb()
+    seedReady(db, 'j1', '2026-01-01T00:00:00.000Z')
+    seedTopic(db, { jobId: 'j1', seriesKey: 's1', partIndex: 1, partCount: 1 })
+    expect(listPostQueue(db, [alpha])[0]?.seriesLabel).toBeNull()
+  })
+
+  it('renders an Instagram caption and caps its hashtags at 30', () => {
+    const db = memDb()
+    const igChannel = testChannel({ name: 'ig', platforms: ['instagram'] })
+    seedJob(db, 'j1', { channel: 'ig', topic: 'topic j1' })
+    const hashtags = Array.from({ length: 40 }, (_, i) => `#tag${i}`)
+    seedLibrary(db, 'j1', {
+      state: 'ready',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      metadataJson: JSON.stringify({
+        instagram: { title: 'IG title', description: 'IG body', hashtags },
+      }),
+    })
+    const [card] = listPostQueue(db, [igChannel])
+    const ig = card?.platforms.find((p) => p.platform === 'instagram')
+    expect(ig?.title).toBeNull()
+    expect(ig?.body.startsWith('IG title\n\nIG body\n\n')).toBe(true)
+    const tagsInBody = ig?.body.match(/#tag\d+/g) ?? []
+    expect(tagsInBody.length).toBeLessThanOrEqual(30)
+  })
+
+  describe('malformed metadata containment', () => {
+    it('contains unparseable JSON to one card, leaving a neighbour intact', () => {
+      const db = memDb()
+      seedJob(db, 'bad', { channel: 'alpha', topic: 'bad topic' })
+      seedLibrary(db, 'bad', {
+        state: 'ready',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        metadataJson: '{not json',
+      })
+      seedReady(db, 'good', '2026-01-02T00:00:00.000Z')
+
+      const cards = listPostQueue(db, [alpha])
+      expect(cards).toHaveLength(2)
+
+      const badCard = cards.find((c) => c.jobId === 'bad')
+      expect(badCard?.platforms).toEqual([
+        expect.objectContaining({ platform: 'youtube', title: null, body: '', tags: null }),
+        expect.objectContaining({ platform: 'tiktok', title: null, body: '', tags: null }),
+      ])
+
+      const goodCard = cards.find((c) => c.jobId === 'good')
+      const yt = goodCard?.platforms.find((p) => p.platform === 'youtube')
+      expect(yt?.title).toBe('YT title')
+      expect(yt?.body).toBe('YT body\n\n#a')
+    })
+
+    it('contains a wrong-shape platform entry to that platform, leaving others on the card intact', () => {
+      const db = memDb()
+      seedJob(db, 'j1', { channel: 'alpha', topic: 'topic j1' })
+      seedLibrary(db, 'j1', {
+        state: 'ready',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        metadataJson: JSON.stringify({
+          youtube: { title: 123, description: 'YT body', hashtags: ['#a'] },
+          tiktok: { title: 'TT title', description: 'TT body', hashtags: ['#b'] },
+        }),
+      })
+      const [card] = listPostQueue(db, [alpha])
+      const yt = card?.platforms.find((p) => p.platform === 'youtube')
+      expect(yt).toEqual(
+        expect.objectContaining({ platform: 'youtube', title: null, body: '', tags: null }),
+      )
+      const tt = card?.platforms.find((p) => p.platform === 'tiktok')
+      expect(tt?.body).toBe('TT title\n\nTT body\n\n#b')
+    })
+
+    it('contains a platform declared by the channel but absent from the metadata', () => {
+      const db = memDb()
+      seedJob(db, 'j1', { channel: 'alpha', topic: 'topic j1' })
+      seedLibrary(db, 'j1', {
+        state: 'ready',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        metadataJson: JSON.stringify({
+          youtube: { title: 'YT title', description: 'YT body', hashtags: ['#a'] },
+          // tiktok entirely absent
+        }),
+      })
+      const [card] = listPostQueue(db, [alpha])
+      const yt = card?.platforms.find((p) => p.platform === 'youtube')
+      expect(yt?.title).toBe('YT title')
+      const tt = card?.platforms.find((p) => p.platform === 'tiktok')
+      expect(tt).toEqual(
+        expect.objectContaining({ platform: 'tiktok', title: null, body: '', tags: null }),
+      )
+    })
+  })
 })
