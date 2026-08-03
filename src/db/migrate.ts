@@ -22,6 +22,44 @@ function tableExists(db: Database, table: string): boolean {
 }
 
 /**
+ * Marks as 'blocked' (library's discard state) any library row whose stored
+ * object was already reclaimed by the OLD publish pipeline's reclaim sweep.
+ *
+ * Why `reclaimed_at`, never an age: the OLD sweep stamped it only once it
+ * judged a video fully SETTLED (every declared platform published, or the
+ * video passed over and aged out past `backlog_days`), and only then deleted
+ * the bytes. Manual posting removed that settled/aged-out notion entirely —
+ * `pendingInventory` now counts every 'ready'/'needs-review' row not yet
+ * posted to every declared platform, forever, with deliberately no age
+ * escape hatch (an age rule would resume production during an operator's
+ * quiet stretch and compound the backlog — see CLAUDE.md). Composed
+ * together, an untouched historical row would migrate to 'ready', count as
+ * pending inventory forever, permanently wedge the channel's backlog cap,
+ * and the /post page would render it as postable when its bytes are
+ * actually gone. `reclaimed_at` sidesteps all of that: it is a structural
+ * fact (the bytes are gone) rather than a heuristic, so it is the only
+ * signal that can never regress into an age check by accident.
+ *
+ * MUST run before the 'published' -> 'ready' rewrite below, and MUST match
+ * BOTH 'ready' and 'published': a reclaimed row can be sitting in either
+ * state by the time this runs (a video already resting at 'ready', or one
+ * still 'published' and not yet rewritten), and matching both is what keeps
+ * this step correct even if a database already ran a migrate() that applied
+ * the rewrite before this step existed. A NOT-yet-reclaimed 'published' row
+ * is untouched here and still legitimately becomes 'ready' below, re-entering
+ * the queue.
+ */
+function blockReclaimedLibraryRows(db: Database): void {
+  if (!tableExists(db, 'library') || !tableExists(db, 'library_objects')) return
+  db.prepare(
+    `UPDATE library SET state = 'blocked'
+     WHERE state IN ('ready', 'published')
+       AND EXISTS (SELECT 1 FROM library_objects lo
+                   WHERE lo.job_id = library.job_id AND lo.reclaimed_at IS NOT NULL)`,
+  ).run()
+}
+
+/**
  * The publishing pipeline was removed; per-platform posting is now recorded by
  * hand in `posts`. Carries the history worth keeping — the rows that actually
  * went out — and drops the two tables nothing reads any more.
@@ -106,6 +144,9 @@ export function migrate(db: Database): void {
   if (tableExists(db, 'library_objects') && !hasColumn(db, 'library_objects', 'reclaimed_at')) {
     db.exec('ALTER TABLE library_objects ADD COLUMN reclaimed_at TEXT')
   }
+  // MUST run before migratePublishesToPosts, which contains the 'published'
+  // -> 'ready' rewrite — see blockReclaimedLibraryRows' own comment for why.
+  blockReclaimedLibraryRows(db)
   migratePublishesToPosts(db)
   addTopicStoryColumns(db)
 }

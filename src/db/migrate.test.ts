@@ -5,7 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openDb } from './index.js'
 import { migrate } from './migrate.js'
-import { memDb, seedJob, seedLibrary } from '../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedLibraryObject } from '../testing/db.js'
 import { tmpDir } from '../testing/tmp.js'
 
 // The CURRENT canonical schema — the same text openDb hands migrate(). Read
@@ -367,5 +367,97 @@ describe('publishes -> posts', () => {
   it('is a no-op on a fresh database', () => {
     const db = memDb()
     expect(() => migrate(db)).not.toThrow()
+  })
+})
+
+describe('migrate — blocks library rows whose object was already reclaimed', () => {
+  it("blocks a reclaimed 'ready' row", () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibraryObject(db, 'j1', { reclaimedAt: '2026-07-01T00:00:00.000Z' })
+    migrate(db)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    expect(row.state).toBe('blocked')
+  })
+
+  it("blocks a reclaimed 'published' row — NOT 'ready'", () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'published' })
+    seedLibraryObject(db, 'j1', { reclaimedAt: '2026-07-01T00:00:00.000Z' })
+    migrate(db)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    // Must be 'blocked', proving the block step ran BEFORE the
+    // 'published' -> 'ready' rewrite would otherwise have won this row.
+    expect(row.state).toBe('blocked')
+  })
+
+  it("still rewrites a NON-reclaimed 'published' row to 'ready'", () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'published' })
+    // No library_objects row at all: nothing to reclaim.
+    migrate(db)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    expect(row.state).toBe('ready')
+  })
+
+  it("leaves a NON-reclaimed 'ready' row untouched", () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibraryObject(db, 'j1')
+    migrate(db)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    expect(row.state).toBe('ready')
+  })
+
+  it('is idempotent: a second migrate() run leaves the blocked row blocked', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibraryObject(db, 'j1', { reclaimedAt: '2026-07-01T00:00:00.000Z' })
+    migrate(db)
+    expect(() => migrate(db)).not.toThrow()
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    expect(row.state).toBe('blocked')
+  })
+
+  // Proves the ordering (and the "match BOTH states" requirement) actually
+  // matters, rather than being defensive-but-inert. Simulates the adverse
+  // case the block step must survive: the 'published' -> 'ready' rewrite has
+  // ALREADY happened by the time the block check runs — either because a
+  // database already applied an earlier migrate() that predates this fix (the
+  // rewrite existed long before the block step did), or because a future
+  // refactor swapped the two calls in migrate(). If the block step matched
+  // only 'published' (the seemingly-sufficient state given it is meant to run
+  // BEFORE the rewrite), this row would already be 'ready' by the time it
+  // runs and would slip through untouched — reproducing finding 1's bug. The
+  // 'ready' branch of the IN clause is what catches it regardless.
+  it('still catches a reclaimed row that already reads as ready, as if the rewrite ran first', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    // Seeded directly as 'ready' with reclaimed_at set — the state this row
+    // would already be in if the 'published' -> 'ready' rewrite had run
+    // ahead of the block step, whether by a swapped call order or by a prior
+    // deploy of migrate() that predates this fix.
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibraryObject(db, 'j1', { reclaimedAt: '2026-07-01T00:00:00.000Z' })
+    migrate(db)
+    const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as {
+      state: string
+    }
+    expect(row.state).toBe('blocked')
   })
 })
