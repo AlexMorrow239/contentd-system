@@ -7,7 +7,7 @@ import { channelToml, writeChannelsDir } from '../testing/channel.js'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedTopic } from '../testing/db.js'
 import { postedPlatforms } from '../posts/posts.js'
 import { fakeStore } from '../storage/fake.js'
-import { stubStorageEnv } from '../testing/storage.js'
+import { storageEnvVars, stubStorageEnv } from '../testing/storage.js'
 import { tmpDir } from '../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
@@ -197,6 +197,78 @@ describe('action handlers', () => {
         { resumeJob: resume },
       ),
     ).rejects.toThrow('already done')
+  })
+
+  it('jobs.produce resolves a channel NAME to its config and runs the pipeline', async () => {
+    const db = memDb()
+    const dir = writeChannelsDir(
+      { 'alpha.toml': channelToml({ name: 'alpha' }) },
+      tmpDir('produce-action'),
+    )
+    // Echoes back the real jobId createJob generated, exactly as the real
+    // runJob does — it never invents a different id than the one it was
+    // given. A hardcoded literal here (e.g. 'j1') would make the notice
+    // assertion below depend on nanoid() happening to produce that literal,
+    // which it practically never does.
+    const run = vi.fn().mockImplementation((_db, _channel, id: string) =>
+      Promise.resolve({ jobId: id, status: 'ready' }),
+    )
+    const notices: string[] = []
+    const result = await ACTION_HANDLERS['jobs.produce'](
+      {
+        db,
+        now: new Date(),
+        channelsDir: dir,
+        runsRoot: '/runs',
+        setNotice: (t) => notices.push(t),
+      },
+      { channel: 'alpha', topic: 'why the moon is loud' },
+      { runJob: run },
+    )
+    expect(result).toMatchObject({ status: 'ready' })
+    const jobId = (result as { jobId: string }).jobId
+    expect(jobId.length).toBeGreaterThan(0)
+    // The job id is published the moment it exists: a SIGKILL mid-render leaves
+    // a failed action row, and this notice is the only thing linking it to a
+    // job that is still resumable.
+    expect(notices.some((n) => n.includes(jobId))).toBe(true)
+  })
+
+  it('jobs.produce still produces with object storage unconfigured, and says so', async () => {
+    // Object storage is OPTIONAL: `store` no-ops, the job is normal, the video
+    // just lives only under runs/. Mirrors `produce`'s stderr warning — the
+    // action has no stderr, so the warning rides in the result.
+    for (const key of Object.keys(storageEnvVars())) vi.stubEnv(key, undefined)
+    const db = memDb()
+    const dir = writeChannelsDir(
+      { 'alpha.toml': channelToml({ name: 'alpha' }) },
+      tmpDir('produce-action-nostore'),
+    )
+    const run = vi.fn().mockResolvedValue({ jobId: 'j1', status: 'ready' })
+    const result = await ACTION_HANDLERS['jobs.produce'](
+      { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+      { channel: 'alpha', topic: 't' },
+      { runJob: run },
+    )
+    expect(run).toHaveBeenCalled()
+    expect(result).toMatchObject({ jobId: 'j1', status: 'ready' })
+    expect((result as { storageWarning?: string }).storageWarning).toMatch(/S3|storage/i)
+  })
+
+  it('jobs.produce rejects an unknown channel name without creating a job', async () => {
+    const db = memDb()
+    const dir = writeChannelsDir(
+      { 'alpha.toml': channelToml({ name: 'alpha' }) },
+      tmpDir('produce-action-unknown'),
+    )
+    await expect(
+      ACTION_HANDLERS['jobs.produce'](
+        { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+        { channel: 'beta', topic: 't' },
+        {},
+      ),
+    ).rejects.toThrow(/beta/)
+    expect((db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }).n).toBe(0)
   })
 
   it('post.mark records the post', async () => {

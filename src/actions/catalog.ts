@@ -134,6 +134,29 @@ export const ACTIONS = {
     lease: undefined,
     args: z.object({}),
   },
+  'jobs.produce': {
+    lane: 'slow',
+    label: 'produce',
+    confirm: true,
+    danger:
+      'Renders a brand-new video for this channel on the topic you typed. This ' +
+      'spends real money on the script, the voice and the captions, and takes ' +
+      'minutes. Nothing is posted anywhere — the video lands in the library.',
+    // runJob does not lease — the CLI's `produce` runs outside every lease on
+    // purpose. Taking `produce` here is what makes the dashboard path
+    // race-free against the daemon's own produce worker. Contrast
+    // `produce.next` directly above, which must declare NO lease because
+    // produceNextTick acquires one itself.
+    lease: 'produce',
+    args: z.object({
+      // A channel NAME, not a path: the handler resolves it inside
+      // channelsDir. An operator-supplied path would be a file-read primitive
+      // on a process that holds credentials. This is the one place the action
+      // deliberately differs from the CLI, whose --channel takes a path.
+      channel: z.string().trim().min(1),
+      topic: z.string().trim().min(1),
+    }),
+  },
   'scout.run': {
     lane: 'slow',
     label: 'scout now',

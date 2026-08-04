@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { tryLoadChannelsDir } from '../config/channel.js'
+import { loadChannelsDir, tryLoadChannelsDir } from '../config/channel.js'
 import { errorMessage, BrainrotError } from '../errors.js'
 import {
   approveLibrary,
@@ -7,7 +7,9 @@ import {
   libraryObjectKeys,
   rejectLibrary,
 } from '../jobs/library.js'
+import { pipelineStages } from '../jobs/pipeline.js'
 import { resumeJob } from '../jobs/resume.js'
+import { createJob, runJob } from '../jobs/runner.js'
 import { buildDigest } from '../loop/digest.js'
 import { produceNextTick } from '../loop/produce-next.js'
 import { markPosted, unmarkPosted } from '../posts/posts.js'
@@ -65,6 +67,7 @@ type HandlerDeps = {
   produceNextTick?: typeof produceNextTick
   scoutAll?: typeof scoutAll
   resumeJob?: typeof resumeJob
+  runJob?: typeof runJob
   /**
    * Test seam standing in for `(await import('../storage/s3.js')).storeFromEnv()`
    * in `library.reject` — keeps the AWS SDK's ~35ms/~10MB startup cost off
@@ -151,6 +154,34 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       channelsDir: ctx.channelsDir,
       runsRoot: ctx.runsRoot,
     }),
+
+  'jobs.produce': async (ctx, args, deps) => {
+    // Object storage is optional (src/stages/store.ts no-ops without it), so
+    // this is a warning carried in the result, NOT a refusal — the same
+    // decision `produce` makes when it writes one line to stderr. Read before
+    // the render so the answer describes the run that is about to happen.
+    const storageWarning = s3ConfigError()
+    // Resolve the NAME through the loader, never by string-joining a path:
+    // loadChannelsDir already enforces that a file's basename equals its
+    // declared `name`, which is the invariant resume depends on.
+    const channel = loadChannelsDir(ctx.channelsDir).find((c) => c.name === args.channel)
+    if (channel === undefined) {
+      throw new BrainrotError(`unknown channel "${args.channel}" (checked ${ctx.channelsDir})`, {
+        domain: 'config',
+        kind: 'not-found',
+      })
+    }
+    const jobId = createJob(ctx.db, channel, { topic: args.topic })
+    // Publish the job id the instant it exists. If this process is killed
+    // mid-render the action row goes `failed` while the JOB stays resumable —
+    // and because failAction no longer clears `notice` (Task 1), this line is
+    // what tells the operator which job to resume.
+    ctx.setNotice(`job ${jobId}`)
+    const result = await (deps?.runJob ?? runJob)(ctx.db, channel, jobId, pipelineStages(), {
+      runsRoot: ctx.runsRoot,
+    })
+    return storageWarning === undefined ? result : { ...result, storageWarning }
+  },
 
   'scout.run': async (ctx, _args, deps) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
