@@ -401,4 +401,36 @@ describe('action handlers', () => {
         .state,
     ).toBe('blocked')
   })
+
+  it('library.backfillStore uploads the unstored backlog and reports both lists', async () => {
+    const db = memDb()
+    const backfill = vi.fn().mockResolvedValue({ uploaded: ['j1', 'j2'], skipped: ['j3'] })
+    const result = await ACTION_HANDLERS['library.backfillStore'](
+      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+      {},
+      { backfillStore: backfill, storeFromEnv: () => fakeStore(tmpDir('backfill-store')) },
+    )
+    expect(result).toEqual({ uploaded: ['j1', 'j2'], skipped: ['j3'] })
+  })
+
+  it('library.backfillStore fails when object storage is unreachable', async () => {
+    const db = memDb()
+    const backfill = vi.fn()
+    await expect(
+      ACTION_HANDLERS['library.backfillStore'](
+        { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+        {},
+        {
+          backfillStore: backfill,
+          storeFromEnv: () => {
+            throw new Error('S3_BUCKET is not set')
+          },
+        },
+      ),
+    ).rejects.toThrow(/S3_BUCKET/)
+    // Unlike library.reject, where deletion is best-effort cleanup after a state
+    // change that already happened, uploading IS this action. There is nothing
+    // partial to report, so it must fail rather than record a green no-op.
+    expect(backfill).not.toHaveBeenCalled()
+  })
 })

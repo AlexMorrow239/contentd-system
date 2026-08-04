@@ -9,6 +9,7 @@ describe('ACTIONS catalog', () => {
       'jobs.produce',
       'jobs.resume',
       'library.approve',
+      'library.backfillStore',
       'library.reject',
       'post.mark',
       'post.unmark',

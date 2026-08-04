@@ -7,6 +7,7 @@ import {
   libraryObjectKeys,
   rejectLibrary,
 } from '../jobs/library.js'
+import { backfillStore } from '../jobs/backfill-store.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
@@ -75,6 +76,7 @@ type HandlerDeps = {
    * `storeFromEnv()` throw: nothing to delete.
    */
   storeFromEnv?: () => ObjectStore
+  backfillStore?: typeof backfillStore
 }
 
 type Handler<K extends ActionKind> = (
@@ -290,6 +292,11 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       objectsFailed: failed.length,
       ...(storageUnavailable !== undefined ? { storageUnavailable } : {}),
     }
+  },
+
+  'library.backfillStore': async (ctx, _args, deps) => {
+    const store = deps?.storeFromEnv?.() ?? (await import('../storage/s3.js')).storeFromEnv()
+    return (deps?.backfillStore ?? backfillStore)({ db: ctx.db, store })
   },
 }
 

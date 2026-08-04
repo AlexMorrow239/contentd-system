@@ -217,6 +217,19 @@ export const ACTIONS = {
     lease: undefined,
     args: z.object({ jobIds: list(jobId) }),
   },
+  'library.backfillStore': {
+    lane: 'slow',
+    label: 'backfill store',
+    confirm: true,
+    danger:
+      'Uploads every finished video that has no stored object yet. This can be ' +
+      'a lot of bytes and costs whatever your object storage charges for them.',
+    // No lease: it races no worker. The reclaim sweep deletes only objects
+    // whose library_objects row survives, and this uploads only rows with no
+    // such row at all — the two cannot collide on the same job.
+    lease: undefined,
+    args: z.object({}),
+  },
 } as const satisfies Record<string, ActionDescriptor>
 
 export type ActionKind = keyof typeof ACTIONS
