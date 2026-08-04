@@ -123,6 +123,35 @@ describe('renderJobsPage', () => {
     }).value
     expect(out).toContain('/actions/confirm?kind=produce.next')
   })
+
+  it('offers a produce form that lands on the confirm page with both arguments', () => {
+    const out = renderJobsPage({
+      jobs: [],
+      channels: ['alpha', 'beta'],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    // A GET form, not a POST: confirm:true actions route through the
+    // interstitial, and a GET form is how a zero-JS page gets operator input
+    // into that link's query string.
+    expect(out).toMatch(/<form[^>]+method="get"[^>]+action="\/actions\/confirm"/)
+    expect(out).toContain('value="jobs.produce"')
+    expect(out).toContain('name="channel"')
+    expect(out).toContain('name="topic"')
+  })
+
+  it('renders no produce form when the channels list is empty', () => {
+    const out = renderJobsPage({
+      jobs: [],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    // An empty <select> submits nothing and the interstitial would 400 on it.
+    expect(out).not.toContain('value="jobs.produce"')
+  })
 })
 
 describe('renderJobDetailPage', () => {

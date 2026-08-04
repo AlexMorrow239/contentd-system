@@ -208,4 +208,15 @@ describe('renderTopicsPage', () => {
     }).value
     expect(out).toMatch(/<button[^>]*disabled/)
   })
+
+  it('offers prune-media alongside scout-now', () => {
+    const out = renderTopicsPage({
+      topics: [],
+      channels: ['alpha'],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('/actions/confirm?kind=topics.pruneMedia')
+  })
 })

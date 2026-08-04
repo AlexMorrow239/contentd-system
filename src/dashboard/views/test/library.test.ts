@@ -223,4 +223,9 @@ describe('renderLibraryPage', () => {
     }).value
     expect(out).not.toContain('library.reject')
   })
+
+  it('offers a backfill page control', () => {
+    const out = renderLibraryPage({ ...pageData([]), csrfToken: 'tok', daemonStale: false }).value
+    expect(out).toContain('/actions/confirm?kind=library.backfillStore')
+  })
 })

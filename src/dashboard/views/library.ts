@@ -3,7 +3,7 @@ import { html, httpUrlOrNull, SafeHtml } from '../html.js'
 import type { LibraryEntry, QcSummary } from '../queries/library.js'
 import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
-import { actionForm, daemonBanner } from './actions.js'
+import { actionForm, daemonBanner, pageActions } from './actions.js'
 
 const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'blocked']
 
@@ -108,10 +108,21 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
     <button type="submit">filter</button>
   </form>`
 
+  const controls = pageActions([
+    actionForm({
+      kind: 'library.backfillStore',
+      csrfToken: data.csrfToken,
+      from: '/library',
+      fields: {},
+      disabled: data.daemonStale,
+    }),
+  ])
+
   if (data.entries.length === 0) {
     return html`${daemonBanner(data.daemonStale)}
       <h1>library</h1>
       ${filters}
+      ${controls}
       <p class="empty">no library entries match these filters</p>`
   }
 
@@ -134,6 +145,7 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
   return html`${daemonBanner(data.daemonStale)}
     <h1>library</h1>
     ${filters}
+    ${controls}
     ${truncationNotice(data.entries.length, data.total)}
     <table>
       <thead>

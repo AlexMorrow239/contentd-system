@@ -70,6 +70,14 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
       fields: {},
       disabled: data.daemonStale,
     }),
+    actionForm({
+      kind: 'topics.pruneMedia',
+      csrfToken: data.csrfToken,
+      from: '/topics',
+      fields: {},
+      disabled: data.daemonStale,
+      subtle: true,
+    }),
   ])
 
   if (data.topics.length === 0) {

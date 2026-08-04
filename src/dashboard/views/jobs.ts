@@ -73,6 +73,28 @@ export function truncationNotice(shown: number, total: number | undefined): Safe
   return html`<p class="muted">showing ${shown.toLocaleString()} of ${total.toLocaleString()}</p>`
 }
 
+/**
+ * A GET form to the confirmation interstitial, not a POST to /actions:
+ * jobs.produce is confirm:true, so the operator must see the "this spends real
+ * money" page first. The interstitial reads `channel` and `topic` out of the
+ * query string because both are names in the action's own zod schema.
+ */
+function produceForm(channels: string[], daemonStale: boolean): SafeHtml {
+  // An empty <select> would submit no channel at all, so there is no form
+  // worth rendering — same disabled treatment as a stale daemon.
+  if (daemonStale || channels.length === 0) {
+    return html`<span class="action-link" aria-disabled="true">produce…</span>`
+  }
+  return html`<form class="action" method="get" action="/actions/confirm">
+    <input type="hidden" name="kind" value="jobs.produce">
+    <select name="channel">
+      ${channels.map((c) => html`<option value="${c}">${c}</option>`)}
+    </select>
+    <input type="text" name="topic" placeholder="topic" required>
+    <button class="action-button" type="submit">produce…</button>
+  </form>`
+}
+
 export function renderJobsPage(data: JobsPageData): SafeHtml {
   const filters = html`<form class="filters" method="get" action="/jobs">
     <select name="channel">
@@ -94,6 +116,7 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
       fields: {},
       disabled: data.daemonStale,
     }),
+    produceForm(data.channels, data.daemonStale),
   ])
 
   if (data.jobs.length === 0) {
