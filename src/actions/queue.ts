@@ -80,9 +80,11 @@ export function failAction(db: Database, id: number, err: unknown, now: Date): v
 /**
  * Publishes an interactive status for the row to show the operator. Today the
  * only caller is the worker's lease-blocked path, writing to a row that is
- * still `pending` (e.g. "waiting for the publish lease"). Once `auth`
- * (phase 3) lands, a running action is expected to use this for an OAuth
- * consent URL — never a credential.
+ * still `pending` (e.g. "waiting for the produce lease"). The planned second
+ * writer is a *running* handler reporting progress through
+ * `ActionContext.setNotice`. That was originally scoped for an OAuth consent
+ * url; OAuth is gone with the publishing pipeline, so the live use is
+ * `topics.pruneMedia`'s per-row progress over a minutes-long rate-limited run.
  */
 export function setActionNotice(db: Database, id: number, notice: string | null): void {
   db.prepare('UPDATE operator_actions SET notice = ? WHERE id = ?').run(notice, id)

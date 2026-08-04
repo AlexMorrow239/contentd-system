@@ -35,10 +35,12 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 /**
  * `runsRoot` is live: the two render-triggering handlers, `produce.next` and
  * `jobs.resume`, both thread it straight through to the pipeline. `setNotice`
- * is still unused by every handler below — it is here for `auth` (phase 3),
- * expected to publish an OAuth consent URL through it, never a credential.
- * That makes it scaffolding, not dead code; don't delete it for being
- * currently uncalled.
+ * is still unused by every handler below. It was scaffolded for an OAuth
+ * consent url, which is gone with the publishing pipeline; its remaining
+ * purpose is a running handler publishing progress or context the operator
+ * needs mid-flight — `topics.pruneMedia`'s per-row progress and
+ * `jobs.produce`'s job id. Scaffolding, not dead code; don't delete it for
+ * being currently uncalled.
  */
 export interface ActionContext {
   db: Database

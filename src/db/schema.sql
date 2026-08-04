@@ -115,12 +115,11 @@ CREATE TABLE IF NOT EXISTS scout_state (
 -- these leases").
 --
 -- `notice` carries an interactive status an action wants the operator to see
--- before it can proceed. Today the only writer is the worker's lease-blocked
--- path, stamped on a row that is still `pending` (e.g. "waiting for the
--- publish lease"). Once `auth` (phase 3) lands, a running action is expected
--- to use it for an OAuth consent URL the operator must click — never a
--- credential: handlers must record the consent url, never the code or the
--- token.
+-- while it is still in flight. Today the only writer is the worker's
+-- lease-blocked path, stamped on a row that is still `pending` (e.g. "waiting
+-- for the produce lease"); the planned second writer is a *running* handler
+-- reporting progress. It was originally scoped for an OAuth consent url,
+-- which is gone with the publishing pipeline.
 --
 -- Rows are kept indefinitely as an audit log. The table is tiny and the
 -- /actions page reads a bounded window, so there is no pruning step.
