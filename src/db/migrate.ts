@@ -1,10 +1,5 @@
 import type { Database } from 'better-sqlite3'
 
-// A substring of the OLD publishes DDL, unique enough to detect the
-// pre-migration shape without parsing SQL. sqlite_master.sql stores the
-// CREATE TABLE statement verbatim, so this substring check is exact.
-const OLD_PUBLISHES_CHECK_MARKER = "platform IN ('youtube')"
-
 interface TableInfoRow {
   name: string
 }
@@ -26,125 +21,84 @@ function tableExists(db: Database, table: string): boolean {
   return row !== undefined
 }
 
-function publishesHasOldCheck(db: Database): boolean {
-  const row = db
-    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'publishes'")
-    .get() as { sql: string } | undefined
-  return row !== undefined && row.sql.includes(OLD_PUBLISHES_CHECK_MARKER)
-}
-
-const PUBLISHES_COLUMNS =
-  'id, job_id, platform, channel, day, seq, status, post_id, url, error, error_kind, attempt, created_at, finished_at'
-
 /**
- * Table rebuild for the two publishes changes CREATE TABLE IF NOT EXISTS
- * cannot express against an existing database: SQLite can neither widen a
- * CHECK constraint nor retype a column in place.
+ * Marks as 'blocked' (library's discard state) any library row whose stored
+ * object was already reclaimed by the OLD publish pipeline's reclaim sweep.
  *
- * One branch, not two, because every database carrying the old
- * `platform IN ('youtube')` CHECK also has the `slot` column — the CHECK
- * predates the seq migration, so a database old enough to still have it is
- * necessarily old enough to have `slot` too. The slot->seq mapping therefore
- * subsumes the old CHECK's rebuild unconditionally, and because the rebuild
- * replays schema.sql, it fixes the CHECK as a side effect regardless of which
- * predicate triggered the call.
+ * Why `reclaimed_at`, never an age: the OLD sweep stamped it only once it
+ * judged a video fully SETTLED (every declared platform published, or the
+ * video passed over and aged out past `backlog_days`), and only then deleted
+ * the bytes. Manual posting removed that settled/aged-out notion entirely —
+ * `pendingInventory` now counts every 'ready'/'needs-review' row not yet
+ * posted to every declared platform, forever, with deliberately no age
+ * escape hatch (an age rule would resume production during an operator's
+ * quiet stretch and compound the backlog — see CLAUDE.md). Composed
+ * together, an untouched historical row would migrate to 'ready', count as
+ * pending inventory forever, permanently wedge the channel's backlog cap,
+ * and the /post page would render it as postable when its bytes are
+ * actually gone. `reclaimed_at` sidesteps all of that: it is a structural
+ * fact (the bytes are gone) rather than a heuristic, so it is the only
+ * signal that can never regress into an age check by accident.
  *
- * Renaming the old table out of the way lets schema.sql's own CREATE TABLE IF
- * NOT EXISTS rebuild `publishes` at its current shape; every other statement
- * in the file is a no-op against the tables already here.
- *
- * AUTOINCREMENT's id-reuse guarantee survives this — SQLite tracks the
- * largest ROWID ever inserted into a table (sqlite_sequence), not just the
- * largest auto-generated one, so copying explicit `id` values via
- * INSERT...SELECT still advances it correctly (verified by the
- * never-reuses-an-id test).
+ * Runs before the 'published' -> 'ready' rewrite below, and MUST match ALL
+ * THREE of 'needs-review', 'ready' and 'published': a reclaimed row can be
+ * sitting in any of the three by the time this runs (a QC-failed video that
+ * never got a publish row, one already resting at 'ready', or one still
+ * 'published' and not yet rewritten), and matching all three is what keeps
+ * this step correct even if a database already ran a migrate() that applied
+ * the rewrite before this step existed. Because the IN clause already
+ * includes 'ready', running this step after the rewrite would still catch a
+ * reclaimed 'published' row once it becomes 'ready' — the ordering is
+ * belt-and-braces, not load-bearing; see the note by the call site below. A
+ * NOT-yet-reclaimed 'published' row is untouched here and still legitimately
+ * becomes 'ready' below, re-entering the queue.
  */
-function rebuildPublishes(db: Database, schemaSql: string): void {
-  // Historical rows have clock-time slots, not ordinals. Ranking by slot
-  // within each (channel, platform, day) reproduces the order they were
-  // actually attempted in; `id` is a tiebreak that the old
-  // UNIQUE(channel,platform,day,slot) made unreachable, kept for determinism.
-  const copy = `INSERT INTO publishes (${PUBLISHES_COLUMNS})
-       SELECT id, job_id, platform, channel, day,
-              ROW_NUMBER() OVER (PARTITION BY channel, platform, day ORDER BY slot, id),
-              status, post_id, url, error, error_kind, attempt, created_at, finished_at
-       FROM publishes_old`
-  db.transaction(() => {
-    db.exec('ALTER TABLE publishes RENAME TO publishes_old')
-    db.exec(schemaSql)
-    db.exec(copy)
-    db.exec('DROP TABLE publishes_old')
-  }).immediate()
-}
-
-// The statuses that mean "this video has gone, or is going, to this platform"
-// — exactly channelVideoCandidates' blocking set (publish/publishes.ts). One
-// text so the index and that read cannot drift apart.
-const LIVE_PUBLISH_STATUSES = "'claimed','done','interrupted'"
-
-const LIVE_PUBLISH_INDEX = 'ux_publishes_live'
-
-function liveIndexExists(db: Database): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
-    .get(LIVE_PUBLISH_INDEX)
-  return row !== undefined
+function blockReclaimedLibraryRows(db: Database): void {
+  if (!tableExists(db, 'library') || !tableExists(db, 'library_objects')) return
+  db.prepare(
+    `UPDATE library SET state = 'blocked'
+     WHERE state IN ('needs-review', 'ready', 'published')
+       AND EXISTS (SELECT 1 FROM library_objects lo
+                   WHERE lo.job_id = library.job_id AND lo.reclaimed_at IS NOT NULL)`,
+  ).run()
 }
 
 /**
- * The (job, platform) pairs that already hold more than one live row — i.e.
- * the rows CREATE UNIQUE INDEX would reject. Empty on every database whose
- * history is consistent, which is every database that has not actually
- * double-published.
- */
-function liveDuplicates(db: Database): { job_id: string; platform: string }[] {
-  return db
-    .prepare(
-      `SELECT job_id, platform FROM publishes WHERE status IN (${LIVE_PUBLISH_STATUSES})
-       GROUP BY job_id, platform HAVING COUNT(*) > 1 ORDER BY job_id, platform`,
-    )
-    .all() as { job_id: string; platform: string }[]
-}
-
-/**
- * The database-level double-publish backstop (design spec §7): at most one
- * live publishes row per (job_id, platform), which is the same rule
- * `channelVideoCandidates` applies when it decides a platform is blocked. With
- * it, a second lease holder racing the first fails at the INSERT, and
- * claimPublish's existing SQLITE_CONSTRAINT_UNIQUE → null path reports
- * `claim-conflict` before any upload happens.
+ * The publishing pipeline was removed; per-platform posting is now recorded by
+ * hand in `posts`. Carries the history worth keeping — the rows that actually
+ * went out — and drops the two tables nothing reads any more.
  *
- * PROBED, not created blind, and deliberately absent from schema.sql. openDb
- * execs schema.sql and calls this on EVERY command, so a violating historical
- * row would make an unguarded CREATE UNIQUE INDEX throw at startup and wedge
- * the whole CLI — including `publish mark-done` and `publish retry`, the very
- * commands that resolve the violation. So: violations are reported and the
- * index is skipped, leaving behavior exactly as it was before this step
- * existed (lease + blocking read), and the next open after an operator clears
- * them creates it. A skip is a degraded guarantee; a wedge is an outage.
- *
- * Both resolution paths — `retryInterrupted` and `markPublishFailed` — move a
- * row to 'failed', which is outside the predicate, so the index never blocks a
- * legitimate retry.
+ * Dropping `publishes` is what makes this step self-disabling, so it is
+ * idempotent for free and a no-op on a fresh database.
  */
-function ensureLivePublishIndex(db: Database, onWarn: (message: string) => void): void {
-  if (liveIndexExists(db)) return
-  const dupes = liveDuplicates(db)
-  if (dupes.length > 0) {
-    const pairs = dupes.map((d) => `${d.job_id}/${d.platform}`).join(', ')
-    onWarn(
-      `publishes: skipping unique index ${LIVE_PUBLISH_INDEX} — ${dupes.length} (job, platform) ` +
-        `pair(s) hold more than one live (${LIVE_PUBLISH_STATUSES}) row: ${pairs}. ` +
-        'Resolve each with `brainrot publish mark-done <jobId>` or `brainrot publish retry ' +
-        "<jobId>` (both move the stale row to 'failed'), then reopen to create the index. " +
-        'Until then the publish lease is the only double-publish guard.',
-    )
-    return
+function migratePublishesToPosts(db: Database): void {
+  if (tableExists(db, 'publishes')) {
+    // OR IGNORE guards the one shape the old schema permitted: two 'done' rows
+    // for one (job, platform). ux_publishes_live constrained only LIVE rows,
+    // so a retried-then-succeeded leg could leave a second done row behind.
+    // posted_at means when the video actually went out. created_at is when the
+    // row was CLAIMED, not when the upload landed — finished_at is the true
+    // timestamp, and it's nullable, so the fallback is required for rows from
+    // before that column was backfilled.
+    db.prepare(
+      `INSERT OR IGNORE INTO posts (job_id, channel, platform, url, posted_at)
+       SELECT job_id, channel, platform, url, COALESCE(finished_at, created_at)
+       FROM publishes WHERE status = 'done'
+       ORDER BY created_at ASC`,
+    ).run()
+    db.exec('DROP TABLE publishes')
   }
-  db.exec(
-    `CREATE UNIQUE INDEX IF NOT EXISTS ${LIVE_PUBLISH_INDEX} ON publishes (job_id, platform) ` +
-      `WHERE status IN (${LIVE_PUBLISH_STATUSES})`,
-  )
+  if (tableExists(db, 'oauth_tokens')) db.exec('DROP TABLE oauth_tokens')
+
+  // 'published' meant "at least one platform took it", which posts now records
+  // directly. 'ready' is the right resting state for a partially posted video.
+  // Guarded by tableExists: several migrate.test.ts fixtures build a bare
+  // handle that never declares `library` at all, and this step must stay a
+  // no-op on them like every other step here does for the table it doesn't
+  // find.
+  if (tableExists(db, 'library')) {
+    db.prepare("UPDATE library SET state = 'ready' WHERE state = 'published'").run()
+  }
 }
 
 // Story-mode columns on `topics`. Five plain ADD COLUMNs, each probed
@@ -155,8 +109,8 @@ function ensureLivePublishIndex(db: Database, onWarn: (message: string) => void)
 // within this function is the reason: openDb execs schema.sql BEFORE calling
 // migrate, so an index over series_key/part_index placed there would throw on
 // every existing database — those columns arrive via the ALTER TABLEs below.
-// A throw during openDb wedges every CLI command, so this follows the same
-// rule ux_publishes_live already does.
+// A throw during openDb wedges every CLI command, so the index is created
+// here, after the columns it references exist.
 const TOPIC_STORY_COLUMNS: [string, string][] = [
   ['body_text', 'TEXT'],
   ['series_key', 'TEXT'],
@@ -184,42 +138,25 @@ function addTopicStoryColumns(db: Database): void {
  * declarative form. Every step inspects state before acting, so re-running is
  * a no-op. Called by openDb only — never by openDbReadonly, which must stay
  * write-free.
- *
- * `schemaSql` is the same schema.sql text openDb just exec'd. The rebuild
- * replays it rather than carrying its own copy of the publishes DDL:
- * schema.sql is the single source of truth for table shape, and a second
- * hand-written copy here would silently drift from it the first time a
- * column is added — producing differently-shaped tables on migrated versus
- * freshly-created databases.
- *
- * `onWarn` is where a step that declined to apply itself reports why. It goes
- * to stderr (console.warn), never stdout: every loop tick and CLI command
- * prints a single JSON line, and a warning must not land in it.
  */
-export function migrate(
-  db: Database,
-  schemaSql: string,
-  onWarn: (message: string) => void = (m) => console.warn(m),
-): void {
-  if (!hasColumn(db, 'oauth_tokens', 'expires_at')) {
-    db.exec('ALTER TABLE oauth_tokens ADD COLUMN expires_at TEXT')
-  }
+export function migrate(db: Database): void {
   // The submission target behind a scouted topic. Backfilled for existing rows
   // by `brainrot topics prune-media`, which is the only thing that can recover
   // it — topics.url is the comments permalink, not the target.
   if (tableExists(db, 'topics') && !hasColumn(db, 'topics', 'target_url')) {
     db.exec('ALTER TABLE topics ADD COLUMN target_url TEXT')
   }
-  // Marks an object deliberately deleted after every declared platform
-  // settled (publish/reclaim.ts). NULL means the bytes are still in the
-  // bucket, which is the correct reading for every pre-existing row.
+  // Marks an object deliberately deleted after every declared platform was
+  // posted (posts/reclaim.ts). NULL means the bytes are still in the bucket,
+  // which is the correct reading for every pre-existing row.
   if (tableExists(db, 'library_objects') && !hasColumn(db, 'library_objects', 'reclaimed_at')) {
     db.exec('ALTER TABLE library_objects ADD COLUMN reclaimed_at TEXT')
   }
-  if (hasColumn(db, 'publishes', 'slot') || publishesHasOldCheck(db)) {
-    rebuildPublishes(db, schemaSql)
-  }
-  // After the rebuild: a rebuilt table is a new table with no indexes on it.
-  ensureLivePublishIndex(db, onWarn)
+  // Runs before migratePublishesToPosts, which contains the 'published' ->
+  // 'ready' rewrite. Not load-bearing: blockReclaimedLibraryRows' own IN
+  // clause already covers 'ready', so the two calls are order-insensitive by
+  // construction — see blockReclaimedLibraryRows' own comment for why.
+  blockReclaimedLibraryRows(db)
+  migratePublishesToPosts(db)
   addTopicStoryColumns(db)
 }

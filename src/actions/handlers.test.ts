@@ -4,14 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../testing/channel.js'
-import {
-  memDb,
-  seedJob,
-  seedLibrary,
-  seedLibraryObject,
-  seedPublish,
-  seedTopic,
-} from '../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedLibraryObject, seedTopic } from '../testing/db.js'
+import { postedPlatforms } from '../posts/posts.js'
+import { fakeStore } from '../storage/fake.js'
+import { stubStorageEnv } from '../testing/storage.js'
 import { tmpDir } from '../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
@@ -105,56 +101,6 @@ describe('action handlers', () => {
     })
   })
 
-  it('clears an interrupted publish', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    seedPublish(db, 'j1', { status: 'interrupted' })
-    expect(await runAction(ctx(db), 'publish.retry', { jobId: 'j1' })).toEqual({ cleared: true })
-  })
-
-  it('fails a retry when the job has no interrupted publish', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    await expect(runAction(ctx(db), 'publish.retry', { jobId: 'j1' })).rejects.toThrow(
-      /no interrupted publish/,
-    )
-  })
-
-  it('marks an interrupted publish done and derives the url from its own platform', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    seedPublish(db, 'j1', { status: 'interrupted', platform: 'youtube' })
-    const result = (await runAction(ctx(db), 'publish.markDone', {
-      jobId: 'j1',
-      postId: 'abc123',
-    })) as { url: string | null }
-    // The interrupted row names the platform, so no --platform arg exists to
-    // get wrong — and a Shorts url can never be recorded against an IG media id.
-    expect(result.url).toContain('abc123')
-  })
-
-  it('fails mark-done when the job has no interrupted publish', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    await expect(
-      runAction(ctx(db), 'publish.markDone', { jobId: 'j1', postId: 'abc123' }),
-    ).rejects.toThrow(/no interrupted publish/)
-  })
-
-  it('marks an interrupted instagram publish done with no derivable url', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    seedPublish(db, 'j1', { status: 'interrupted', platform: 'instagram' })
-    const result = (await runAction(ctx(db), 'publish.markDone', {
-      jobId: 'j1',
-      postId: 'abc123',
-    })) as { url: string | null }
-    // Instagram's post id alone doesn't determine a permalink — its adapter's
-    // postUrl always returns null (src/publish/platforms/instagram.ts), so a
-    // mark-done on Instagram must record no url rather than a fabricated one.
-    expect(result.url).toBeNull()
-  })
-
   it('returns the digest text', async () => {
     const db = memDb()
     const result = (await runAction(ctx(db), 'digest.run', {})) as { text: string }
@@ -185,18 +131,6 @@ describe('action handlers', () => {
     // NOT a throw: the tick ran and declined because a render is in flight. This
     // is exactly what the CLI does (exit 0, benign noop).
     expect(result).toEqual({ action: 'noop', reason: 'lease-held' })
-  })
-
-  it('publish.next runs a real publish tick, publish.nextDryRun previews', async () => {
-    const db = memDb()
-    const tick = vi.fn().mockResolvedValue({ action: 'noop', reason: 'not-due' })
-    const ctx = { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} }
-
-    await ACTION_HANDLERS['publish.next'](ctx, {}, { publishNextTick: tick })
-    expect(tick).toHaveBeenLastCalledWith(db, { channelsDir: '/ch' })
-
-    await ACTION_HANDLERS['publish.nextDryRun'](ctx, {}, { publishNextTick: tick })
-    expect(tick).toHaveBeenLastCalledWith(db, { channelsDir: '/ch', dryRun: true })
   })
 
   it('scout.run forces past the recheck cooldown', async () => {
@@ -230,7 +164,7 @@ describe('action handlers', () => {
     )
     // Every sibling hitting this same tryLoadChannelsDir condition records
     // `done` with the reason visible: digest.run folds loaded.error into its
-    // result, produce.next/publish.next pass through the tick's
+    // result, produce.next passes through the tick's own
     // {action:'noop',reason:'config-error'}, and the CLI's own `scout` exits 0.
     // A lone `failed` here would be an inconsistency with no reason behind it.
     expect(result).toEqual({
@@ -263,5 +197,136 @@ describe('action handlers', () => {
         { resumeJob: resume },
       ),
     ).rejects.toThrow('already done')
+  })
+
+  it('post.mark records the post', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    const result = await runAction(ctx(db), 'post.mark', {
+      jobId: 'j1',
+      platform: 'youtube',
+      url: 'https://y/1',
+    })
+    expect(result).toEqual({ jobId: 'j1', platform: 'youtube', posted: true })
+    expect(postedPlatforms(db, ['j1']).get('j1')?.size).toBe(1)
+  })
+
+  // The handler must resolve the channel itself: the dashboard form has a job
+  // id, and denormalizing the wrong channel onto the row would misfile the
+  // video in every channel-scoped read.
+  it('post.mark resolves the channel from the job', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'beta' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    await runAction(ctx(db), 'post.mark', { jobId: 'j1', platform: 'youtube' })
+    const rows = db.prepare('SELECT channel FROM posts WHERE job_id = ?').all('j1') as {
+      channel: string
+    }[]
+    expect(rows[0]?.channel).toBe('beta')
+  })
+
+  it('post.mark throws for an unknown job', async () => {
+    await expect(
+      runAction(ctx(memDb()), 'post.mark', { jobId: 'nope', platform: 'youtube' }),
+    ).rejects.toThrow(/nope/)
+  })
+
+  it('post.unmark reports when there was nothing to unmark', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    const result = await runAction(ctx(db), 'post.unmark', { jobId: 'j1', platform: 'youtube' })
+    expect(result).toEqual({ jobId: 'j1', platform: 'youtube', removed: false })
+  })
+
+  it('library.reject discards and reports the count', async () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    const result = await runAction(ctx(db), 'library.reject', { jobIds: ['j1'] })
+    expect(result).toEqual({ rejected: 1, requested: 1, objectsDeleted: 0, objectsFailed: 0 })
+  })
+
+  it('library.reject deletes the stored object and drops the library_objects row', async () => {
+    stubStorageEnv()
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibraryObject(db, 'j1', { objectKey: 'videos/j1.mp4' })
+    const store = fakeStore(tmpDir('brainrot-handlers-reject-'))
+    const deleteSpy = vi.spyOn(store, 'delete')
+    // Seed the object into the fake store so a real delete has something to
+    // remove — proves the handler actually calls store.delete with the right
+    // key, not just that it returns a plausible-looking result.
+    await store.put('videos/j1.mp4', Buffer.from('x'), 'video/mp4')
+
+    const result = await ACTION_HANDLERS['library.reject'](
+      ctx(db),
+      { jobIds: ['j1'] },
+      { storeFromEnv: () => store },
+    )
+
+    expect(deleteSpy).toHaveBeenCalledWith('videos/j1.mp4')
+    expect(result).toEqual({ rejected: 1, requested: 1, objectsDeleted: 1, objectsFailed: 0 })
+    expect(db.prepare('SELECT * FROM library_objects WHERE job_id = ?').get('j1')).toBeUndefined()
+    expect(
+      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as { state: string })
+        .state,
+    ).toBe('blocked')
+  })
+
+  it('library.reject does not fail the action when the store delete throws', async () => {
+    stubStorageEnv()
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibraryObject(db, 'j1', { objectKey: 'videos/j1.mp4' })
+    const failingStore = {
+      ...fakeStore(tmpDir('brainrot-handlers-reject-fail-')),
+      delete: vi.fn().mockRejectedValue(new Error('network unreachable')),
+    }
+
+    const result = await ACTION_HANDLERS['library.reject'](
+      ctx(db),
+      { jobIds: ['j1'] },
+      { storeFromEnv: () => failingStore },
+    )
+
+    expect(result).toEqual({ rejected: 1, requested: 1, objectsDeleted: 0, objectsFailed: 1 })
+    // The state change stands even though the delete failed — the row is
+    // left in place so the next sweep can retry the delete.
+    expect(
+      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as { state: string })
+        .state,
+    ).toBe('blocked')
+    expect(db.prepare('SELECT * FROM library_objects WHERE job_id = ?').get('j1')).toBeDefined()
+  })
+
+  it('library.reject treats unconfigured object storage as nothing to delete', async () => {
+    vi.stubEnv('BRAINROT_S3_ENDPOINT', '')
+    vi.stubEnv('BRAINROT_S3_BUCKET', '')
+    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', '')
+    vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', '')
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedLibrary(db, 'j1', { state: 'ready' })
+    seedLibraryObject(db, 'j1', { objectKey: 'videos/j1.mp4' })
+
+    const result = await runAction(ctx(db), 'library.reject', { jobIds: ['j1'] })
+
+    // Every field asserted: this is exactly the branch where storageUnavailable
+    // is the interesting output, and objectsFailed must stay 0 — unconfigured
+    // storage is "nothing to delete", not a delete attempt that failed.
+    expect(result).toEqual({
+      rejected: 1,
+      requested: 1,
+      objectsDeleted: 0,
+      objectsFailed: 0,
+      storageUnavailable: expect.stringContaining('object storage is not configured'),
+    })
+    expect(
+      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as { state: string })
+        .state,
+    ).toBe('blocked')
   })
 })

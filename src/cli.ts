@@ -5,20 +5,13 @@ import { Command } from 'commander'
 import { errorMessage } from './errors.js'
 import { createJob, runJob } from './jobs/runner.js'
 import { resumeJob } from './jobs/resume.js'
-import { loadChannelConfig, loadChannelsDir, tryLoadChannelsDir } from './config/channel.js'
+import { loadChannelConfig, tryLoadChannelsDir } from './config/channel.js'
 import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from './scout/scout.js'
 import { acquireLease, releaseLease } from './loop/lease.js'
 import { produceNextTick } from './loop/produce-next.js'
-import { publishExitCode, publishNextTick } from './loop/publish-next.js'
 import { buildDigest } from './loop/digest.js'
 import { runDaemon } from './loop/daemon.js'
 import { openDb } from './db/index.js'
-import {
-  interruptedPlatform,
-  listPublishes,
-  markInterruptedDone,
-  retryInterrupted,
-} from './publish/publishes.js'
 import { pruneMedia } from './scout/prune-media.js'
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
@@ -32,18 +25,6 @@ import {
 } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
 import { backfillStore } from './jobs/backfill-store.js'
-import {
-  authFlowTransport,
-  IG_AUTH_DEFAULT_PORT,
-  runInstagramAuthFlow,
-  runYoutubeAuthFlow,
-  YT_AUTH_DEFAULT_PORT,
-} from './publish/oauth-flow.js'
-import { parseTokenKey } from './publish/crypto.js'
-import { upsertToken } from './publish/tokens.js'
-import { ADAPTERS } from './publish/platforms/index.js'
-import { preflight } from './publish/preflight.js'
-import { PUBLISH_PLATFORMS, type Platform } from './publish/types.js'
 // storage/s3.js is imported dynamically at the three commands that need it —
 // a static import puts the AWS SDK on the startup path of every command.
 // storage/config.js carries no SDK import, so this one is free.
@@ -81,30 +62,6 @@ export function parseLibraryJobIds(raw: string[]): string[] {
     }
     return token
   })
-}
-
-/**
- * Validate `publishes list --days` values. Same shape as parseTopicIds's
- * tokens — positive decimal integers only ("0", "-3", "3.5", "abc" all
- * reject) — but for a single flag value rather than a list of ids. Throws
- * BEFORE any db handle exists, so a bad value means exit 1 with no query.
- * Exported so cli.test.ts can assert it in-process.
- */
-export function parsePublishDays(raw: string): number {
-  if (!/^[1-9]\d*$/.test(raw)) {
-    throw new Error(`invalid --days "${raw}": must be a positive integer`)
-  }
-  return Number(raw)
-}
-
-// `auth <platform> --port` must be a real TCP port: an unvalidated
-// Number.parseInt would silently turn a typo into NaN and fail later inside
-// server.listen() with a cryptic Node error instead of here.
-function parseAuthPort(raw: string): number {
-  if (!/^[1-9]\d*$/.test(raw) || Number(raw) > 65535) {
-    throw new Error(`invalid --port "${raw}": must be a positive integer up to 65535`)
-  }
-  return Number(raw)
 }
 
 // One flag, not three. The container/host split is built on this single value:
@@ -149,7 +106,7 @@ function reportBlockedTick(
   result: { action: string; reason?: string; error?: string },
 ): void {
   if (result.action !== 'noop') return
-  if (result.reason !== 'config-error' && result.reason !== 'bad-env') return
+  if (result.reason !== 'config-error') return
   if (result.error !== undefined) console.error(`${command}: ${result.error}`)
 }
 
@@ -168,15 +125,13 @@ program
   .action(
     async (opts: { channel: string; topic: string; root?: string; dev?: boolean }) => {
       applyDevFlag(opts.dev)
-      // Refuse before the render, not after it: the `store` stage runs last,
-      // so an unconfigured deployment would otherwise pay for a full Remotion
-      // render and then fail the job with no library row. Same check the
-      // produce tick makes (src/loop/produce-next.ts).
+      // Object storage is optional (src/stages/store.ts): warn, don't refuse.
+      // The `store` stage runs last and simply no-ops with no S3 config, so an
+      // unconfigured deployment still produces a normal ready/needs-review job
+      // — it just has no cloud copy to hand to the (now manual) publish step.
       const storageError = s3ConfigError()
       if (storageError !== undefined) {
-        console.error(storageError)
-        process.exitCode = 1
-        return
+        console.error(`produce: ${storageError}`)
       }
       const paths = resolveBrainrotPaths(opts.root)
       const channel = loadChannelConfig(opts.channel)
@@ -203,8 +158,8 @@ program
   .action(async (opts: { root?: string; force?: boolean }) => {
     const paths = resolveBrainrotPaths(opts.root)
     // Config load precedes the db handle AND the lease, exactly as in
-    // produce-next/publish-next: a broken channel TOML blocks the whole run
-    // either way, and letting it throw meant exit 1 with NO JSON line every
+    // produce-next: a broken channel TOML blocks the whole run either way,
+    // and letting it throw meant exit 1 with NO JSON line every
     // firing — the one shape the cron log's every-tick-prints-a-line contract
     // cannot survive. The message also goes to stderr, since a line grepped
     // only for `action` would otherwise carry the cause silently.
@@ -218,7 +173,7 @@ program
     }
     const channels = loaded.channels
     const db = openDb(paths.dbPath)
-    // Same lease discipline as the produce/publish loops: two overlapping scout
+    // Same lease discipline as the produce loop: two overlapping scout
     // runs would race the global-budget check and double-spend. A held lease is
     // a benign no-op, exit 0. The pid-tagged holder means an expiry takeover can
     // never be released by the evicted process (releaseLease matches on holder).
@@ -337,9 +292,7 @@ program
 
 program
   .command('run')
-  .description(
-    'run the demand-driven daemon: produce, publish and scout workers plus the daily digest',
-  )
+  .description('run the demand-driven daemon: produce and scout workers plus the daily digest')
   .option('--root <path>', ROOT_OPTION_DESC)
   .action(async (opts: { root?: string }) => {
     const paths = resolveBrainrotPaths(opts.root)
@@ -350,37 +303,6 @@ program
       db.close()
     }
   })
-
-program
-  .command('publish-next')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .option('--dry-run', 'preview the next publish without writing anything')
-  .option(
-    '--force',
-    'ignore the publish window, the pacing gap, and the daily count (local testing; platform quotas still apply)',
-  )
-  .action(
-    async (opts: { root?: string; dryRun?: boolean; force?: boolean }) => {
-      const paths = resolveBrainrotPaths(opts.root)
-      const db = openDb(paths.dbPath)
-      try {
-        const result = await publishNextTick(db, {
-          channelsDir: paths.channelsDir,
-          dryRun: opts.dryRun,
-          force: opts.force,
-        })
-        reportBlockedTick('publish-next', result)
-        // One cron-greppable JSON line. Exit 1 when ANY platform in the fan-out
-        // is not 'published' — failed, unknown, or skipped all need operator
-        // attention — a partial success still needs to be visible to cron —
-        // while every noop and dry-run preview stays a benign exit 0.
-        process.stdout.write(JSON.stringify(result) + '\n')
-        process.exitCode = publishExitCode(result)
-      } finally {
-        db.close()
-      }
-    },
-  )
 
 // Operator veto (reject) and repair (requeue) over the scouted topic queue.
 // Actions are thin: id validation lives in parseTopicIds, state transitions
@@ -560,7 +482,8 @@ library
     // deletion that is unambiguously safe.
     const objects = libraryObjectKeys(db, jobIds)
     const changed = rejectLibrary(db, jobIds)
-    // reject takes needs-review AND ready; published rows are skipped.
+    // reject takes needs-review AND ready; those are the only two states a
+    // row can be pulled back from — there is no 'published' state any more.
     console.log(`rejected ${changed} of ${jobIds.length}`)
 
     // Best-effort: the reject itself must not depend on network reachability.
@@ -602,116 +525,6 @@ library
     }
   })
 
-// Interactive per-channel OAuth grant (design spec §4.2). Thin glue: all flow
-// logic and error taxonomy live in the run*AuthFlow functions; this action
-// only resolves the channel/env inputs around one and persists the result.
-const auth = program.command('auth')
-
-/**
- * Registers `auth <platform>`. Every platform's grant has the same shape —
- * resolve the channel, require its credential env vars, run the flow, store
- * the token encrypted — so only the flow itself and which env vars it needs
- * vary. `run` receives the env values in `envVars` order.
- */
-function registerAuthCommand(spec: {
-  platform: Platform
-  envVars: string[]
-  // The fixed port Compose publishes for this platform, used only by
-  // --headless (see authFlowTransport).
-  headlessDefaultPort: number
-  run(
-    values: string[],
-    transport: ReturnType<typeof authFlowTransport>,
-  ): Promise<{ token: string; scopes: string; expiresAt: string | null }>
-}): void {
-  auth
-    .command(spec.platform)
-    .requiredOption('--channel <name>', 'channel name to authorize')
-    .option('--root <path>', ROOT_OPTION_DESC)
-    .option(
-      '--headless',
-      'run where no browser exists (inside the container): print the consent url instead of launching a browser, and bind the callback on all interfaces so a published port reaches it',
-    )
-    .option(
-      '--port <port>',
-      'fixed callback port (default: an ephemeral port, or the platform default under --headless)',
-      parseAuthPort,
-    )
-    .action(
-      async (opts: {
-        channel: string
-        root?: string
-        headless?: boolean
-        port?: number
-      }) => {
-        // Channel + env checks precede any db handle or browser launch, so a
-        // typo or missing credential fails clean before Alex is asked to click
-        // through a consent screen.
-        const paths = resolveBrainrotPaths(opts.root)
-        const channels = loadChannelsDir(paths.channelsDir)
-        const channel = channels.find((c) => c.name === opts.channel)
-        if (!channel) {
-          throw new Error(
-            `auth ${spec.platform}: unknown channel "${opts.channel}" (checked ${paths.channelsDir})`,
-          )
-        }
-        const key = parseTokenKey(process.env.BRAINROT_TOKEN_KEY)
-        const values = spec.envVars.map((name) => {
-          const value = process.env[name]
-          if (!value) {
-            throw new Error(`auth ${spec.platform}: ${name} is not set (add it to .env)`)
-          }
-          return value
-        })
-        const granted = await spec.run(
-          values,
-          authFlowTransport(
-            { headless: opts.headless, port: opts.port },
-            spec.headlessDefaultPort,
-          ),
-        )
-        const db = openDb(paths.dbPath)
-        try {
-          upsertToken(
-            db,
-            spec.platform,
-            channel.name,
-            granted.token,
-            granted.scopes,
-            key,
-            granted.expiresAt,
-          )
-        } finally {
-          db.close()
-        }
-        // Confirmation only — never the token itself (house rule: token
-        // material never touches logs or stdout).
-        const expiry = granted.expiresAt === null ? '' : `, expires ${granted.expiresAt}`
-        console.log(
-          `authorized ${spec.platform} for channel "${channel.name}" — scopes: ${granted.scopes}${expiry}`,
-        )
-      },
-    )
-}
-
-registerAuthCommand({
-  platform: 'youtube',
-  envVars: ['YT_CLIENT_ID', 'YT_CLIENT_SECRET'],
-  headlessDefaultPort: YT_AUTH_DEFAULT_PORT,
-  // A refresh token does not expire, hence the null expiry.
-  run: async ([clientId, clientSecret], transport) => {
-    const granted = await runYoutubeAuthFlow({ clientId, clientSecret, ...transport })
-    return { token: granted.refreshToken, scopes: granted.scopes, expiresAt: null }
-  },
-})
-
-registerAuthCommand({
-  platform: 'instagram',
-  envVars: ['IG_APP_ID', 'IG_APP_SECRET'],
-  headlessDefaultPort: IG_AUTH_DEFAULT_PORT,
-  run: ([appId, appSecret], transport) => runInstagramAuthFlow({ appId, appSecret, ...transport }),
-})
-
 program
   .command('digest')
   .option('--root <path>', ROOT_OPTION_DESC)
@@ -730,121 +543,13 @@ program
       const db = openDb(paths.dbPath)
       try {
         process.stdout.write(
-          buildDigest(db, loaded.channels, {}, { channelsError: loaded.error }) + '\n',
+          buildDigest(db, loaded.channels, { channelsError: loaded.error }) + '\n',
         )
       } finally {
         db.close()
       }
     } catch (err) {
       console.error(errorMessage(err))
-    }
-  })
-
-// Manual repair for `interrupted` publishes (design spec decision 12):
-// publish-next's own repair sweep marks a stale claim `interrupted` — it
-// never guesses whether the upload actually landed on YouTube, so the
-// operator resolves it by hand after checking YouTube Studio. State
-// transitions live in the publishes DAO (Task 7); these actions are thin glue.
-const publish = program.command('publish')
-
-publish
-  .command('retry <jobId>')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .action((jobId: string, opts: { root?: string }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    try {
-      const ok = retryInterrupted(db, jobId)
-      if (!ok) {
-        console.error(`no interrupted publish for job ${jobId}`)
-        process.exitCode = 1
-        return
-      }
-      console.log(
-        `job ${jobId}: interrupted publish cleared — back in the pool for the next due attempt`,
-      )
-    } finally {
-      db.close()
-    }
-  })
-
-publish
-  .command('mark-done <jobId> <postId>')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .action((jobId: string, postId: string, opts: { root?: string }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    try {
-      // The interrupted row names its own platform, so the URL comes from
-      // that platform's adapter — no --platform flag, and no chance of
-      // recording a Shorts URL against an Instagram media id. A platform
-      // whose post URL is not derivable from the id alone (Instagram) records
-      // no URL rather than a fabricated one.
-      const platform = interruptedPlatform(db, jobId)
-      const url = platform === null ? null : ADAPTERS[platform]().postUrl(postId)
-      const ok = platform !== null && markInterruptedDone(db, jobId, postId, url, new Date())
-      if (!ok) {
-        console.error(`no interrupted publish for job ${jobId}`)
-        process.exitCode = 1
-        return
-      }
-      console.log(`job ${jobId}: marked done — ${url ?? postId}`)
-    } finally {
-      db.close()
-    }
-  })
-
-publish
-  .command('preflight <jobId>')
-  .description('verify a stored video is fetchable and well-formed before Meta sees it')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .option('--platform <platform>', 'publish platform', 'instagram')
-  .action(async (jobId: string, opts: { root?: string; platform?: string }) => {
-    const platform = opts.platform ?? 'instagram'
-    if (!PUBLISH_PLATFORMS.includes(platform as Platform)) {
-      console.error(`unknown platform: ${platform}`)
-      process.exitCode = 1
-      return
-    }
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    const result = await preflight({
-      db,
-      jobId,
-      platform: platform as Platform,
-      store: (await import('./storage/s3.js')).storeFromEnv(),
-    })
-    console.log(`object: ${result.objectKey}`)
-    for (const c of result.checks) {
-      console.log(`  ${c.passed ? 'ok  ' : 'FAIL'} ${c.name}: ${c.detail}`)
-    }
-    // Printing the signed URL is this command's purpose — manual verification
-    // in a browser. The publish tick must never log it.
-    console.log(`url: ${result.url}`)
-    console.log(`caption:\n${result.caption}`)
-    if (!result.ok) process.exitCode = 1
-  })
-
-const publishes = program.command('publishes')
-
-publishes
-  .command('list')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .option('--days <n>', 'lookback window in days', '7')
-  .action((opts: { root?: string; days: string }) => {
-    // Validated BEFORE the db opens, mirroring parseTopicIds.
-    const days = parsePublishDays(opts.days)
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    try {
-      const rows = listPublishes(db, { sinceDays: days })
-      if (rows.length === 0) {
-        console.log(`no publishes in the last ${days} days`)
-        return
-      }
-      for (const r of rows) {
-        console.log(
-          `${r.day} #${String(r.seq)} ${r.channel} ${r.platform} ${r.status} attempt ${r.attempt} ${r.jobId} ${r.url ?? r.error ?? '-'}`,
-        )
-      }
-    } finally {
-      db.close()
     }
   })
 

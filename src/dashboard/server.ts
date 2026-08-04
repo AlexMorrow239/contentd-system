@@ -7,13 +7,14 @@ import { openDbActions, openDbReadonly } from '../db/index.js'
 import { errorMessage } from '../errors.js'
 import type { LibraryState } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
-import type { ChannelConfig } from '../config/channel.js'
-import { quotaBackedOff, uploadsUsedToday } from '../publish/publishes.js'
-import { localDay } from '../publish/schedule.js'
-import { PUBLISH_PLATFORMS } from '../publish/types.js'
-import { PLATFORM_QUOTAS } from '../publish/platforms/quota.js'
 import { enqueueAction, getAction } from '../actions/queue.js'
-import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
+import {
+  ACTIONS,
+  actionArgNames,
+  formToArgs,
+  isActionKind,
+  parseActionArgs,
+} from '../actions/catalog.js'
 import { daemonIsStale, readDaemonState } from '../loop/daemon-state.js'
 import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
 import type { DashboardConfig } from './config.js'
@@ -28,7 +29,8 @@ import {
 import { countJobs, getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
 import type { JobStatus } from './queries/jobs.js'
 import { buildOverview } from './queries/overview.js'
-import { buildPublishGrids, interruptedPublishes } from './queries/publishes.js'
+import { listPostQueue } from './queries/post.js'
+import { listPostLog } from './queries/posts.js'
 import { countTopics, topicChannels } from './queries/topics.js'
 import { listTopics } from '../scout/topics.js'
 import type { TopicStatus } from '../scout/topics.js'
@@ -38,8 +40,8 @@ import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
 import { renderOverviewPage } from './views/overview.js'
-import { renderPublishesPage } from './views/publishes.js'
-import type { PlatformQuotaView } from './views/publishes.js'
+import { renderPostQueuePage } from './views/post.js'
+import { renderPostLogPage } from './views/posts.js'
 import { renderTopicsPage } from './views/topics.js'
 
 export interface DashboardVars {
@@ -57,7 +59,7 @@ export interface DashboardDeps {
 const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url))
 
 const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
-const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
+const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'blocked']
 const TOPIC_STATUS_VALUES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
@@ -93,7 +95,10 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
       form = await c.req.formData()
     } catch (err) {
       return c.html(
-        actionErrorPage(deps.config.paths.root, `could not read the submitted form: ${errorMessage(err)}`),
+        actionErrorPage(
+          deps.config.paths.root,
+          `could not read the submitted form: ${errorMessage(err)}`,
+        ),
         400,
       )
     }
@@ -244,6 +249,41 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     } finally {
       db.close()
     }
+  })
+
+  app.get('/post', (c) => {
+    const db = c.get('db')
+    const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
+    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+
+    return c.html(
+      layout({
+        title: 'post',
+        root: deps.config.paths.root,
+        activeNav: 'post',
+        refreshSeconds: actionPollSeconds(db, c.req.query('action')),
+        body: renderPostQueuePage({
+          cards: listPostQueue(db, channels),
+          csrfToken,
+          daemonStale,
+          configError: error,
+        }),
+      }),
+    )
+  })
+
+  app.get('/posts', (c) => {
+    const db = c.get('db')
+
+    return c.html(
+      layout({
+        title: 'posts',
+        root: deps.config.paths.root,
+        activeNav: 'posts',
+        refreshSeconds: actionPollSeconds(db, c.req.query('action')),
+        body: renderPostLogPage({ entries: listPostLog(db) }),
+      }),
+    )
   })
 
   app.get('/', (c) => {
@@ -397,39 +437,6 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     })
   })
 
-  app.get('/publishes', (c) => {
-    const db = c.get('db')
-    const now = deps.now?.() ?? new Date()
-
-    const rawDays = Number(c.req.query('days') ?? '14')
-    const days = Number.isInteger(rawDays) && rawDays > 0 && rawDays <= 90 ? rawDays : 14
-
-    // tryLoadChannelsDir, not loadChannelsDir: a broken TOML degrades one
-    // panel into a warning instead of 500-ing the page.
-    const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
-
-    const daemonStale = daemonStaleFor(db, now)
-    const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
-
-    return c.html(
-      layout({
-        title: 'publishes',
-        root: deps.config.paths.root,
-        activeNav: 'publishes',
-        refreshSeconds,
-        body: renderPublishesPage({
-          grids: buildPublishGrids(db, channels, days, now),
-          days,
-          quotas: buildPlatformQuotas(db, channels, localDay(now), now),
-          interrupted: interruptedPublishes(db),
-          configError: error,
-          csrfToken,
-          daemonStale,
-        }),
-      }),
-    )
-  })
-
   app.get('/topics', (c) => {
     const db = c.get('db')
     const rawStatus = c.req.query('status')
@@ -566,49 +573,6 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   })
 
   return app
-}
-
-/**
- * Reuses the same quota SCOPE descriptors the publish loop enforces against
- * (PLATFORM_QUOTAS — which is exactly what each adapter exposes as
- * `adapter.quota`, and what publish-next.ts's own quota gate reads) rather
- * than a mirrored copy that could silently drift. Imported from the leaf
- * quota module, not through ADAPTERS: a read-only viewer has no business
- * pulling upload mechanics and credential code into its process to read one
- * static field. 'global' (YouTube: one shared Google Cloud project quota)
- * reports one all-channels figure; 'channel' (Instagram: one IG account per
- * channel) has no single meaningful "used" total to report, so it reports a
- * per-channel breakdown instead — summing usage across channels that are
- * each rate-limited independently would misreport how much headroom any one
- * channel actually has left. `backedOff` reads quotaBackedOff — a SELECT
- * against `publishes`, so this stays read-only like every other dashboard
- * query.
- */
-function buildPlatformQuotas(
-  db: Database,
-  channels: ChannelConfig[],
-  day: string,
-  now: Date,
-): PlatformQuotaView[] {
-  return PUBLISH_PLATFORMS.map((platform) => {
-    const quota = PLATFORM_QUOTAS[platform]
-    if (quota.scope === 'global') {
-      return {
-        platform,
-        scope: 'global',
-        used: uploadsUsedToday(db, platform, day),
-        backedOff: quotaBackedOff(db, platform, now),
-      }
-    }
-    const perChannel = channels
-      .filter((channel) => channel.publish?.targets.some((t) => t.platform === platform) === true)
-      .map((channel) => ({
-        channel: channel.name,
-        used: uploadsUsedToday(db, platform, day, channel.name),
-        backedOff: quotaBackedOff(db, platform, now, channel.name),
-      }))
-    return { platform, scope: 'channel', perChannel }
-  })
 }
 
 /**

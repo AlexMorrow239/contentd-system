@@ -51,18 +51,6 @@ export const MAX_FAST_DRAIN = 50
 export const ACTION_SCAN_WINDOW = MAX_FAST_DRAIN
 
 /**
- * A fast-lane action completes in milliseconds — the acquire-to-release
- * window around a single SQLite UPDATE — so 60s is already three orders of
- * magnitude of headroom. Using the lease's own (much longer) TTL here would
- * mean a SIGKILL inside that ~1ms window orphans the lease for that full TTL
- * (30 min for `publish`); `failRunningActions` heals the row on restart but
- * not the lease, so e.g. publishing would stall silently until expiry. Only
- * the slow lane, where an action can legitimately run for minutes, uses the
- * per-lease TTL below.
- */
-export const FAST_ACTION_LEASE_TTL_MS = 60_000
-
-/**
  * The slow lane's own lease TTL, deliberately far below the leases' own
  * defaults (`produce` is 90 minutes). A slow action can legitimately run for
  * minutes, so unlike the fast lane it cannot simply use a short fixed window —
@@ -80,10 +68,6 @@ export const SLOW_ACTION_LEASE_TTL_MS = 300_000
  * ffmpeg — but nothing here guarantees that).
  */
 export const SLOW_ACTION_HEARTBEAT_MS = 60_000
-
-function leaseTtlMs(lane: ActionLane): number {
-  return lane === 'fast' ? FAST_ACTION_LEASE_TTL_MS : SLOW_ACTION_LEASE_TTL_MS
-}
 
 /**
  * One lane's drain. `fast` clears up to MAX_FAST_DRAIN actions per call;
@@ -205,7 +189,10 @@ async function executeOne(
   let beat: ReturnType<typeof setInterval> | undefined
   if (lease !== undefined) {
     holder = `pid:${process.pid}:action:${row.id}`
-    if (!acquireLease(db, lease, holder, leaseTtlMs(deps.lane))) {
+    // Every kind that declares a lease (`scout.run`, `jobs.resume`) is
+    // slow-lane, so this always resolves to the slow TTL in practice — there
+    // is no separate fast-lane TTL any more, since no fast action leases.
+    if (!acquireLease(db, lease, holder, SLOW_ACTION_LEASE_TTL_MS)) {
       // Guarded on the text actually changing: the fast lane polls every 1s,
       // so an unconditional write here is one WAL write per second per
       // blocked row for as long as the lease is held — exactly the churn
@@ -214,8 +201,10 @@ async function executeOne(
       if (row.notice !== text) setActionNotice(db, row.id, text)
       return { blockedBy: lease }
     }
-    // Only the slow lane: a fast action's whole acquire-to-release window is a
-    // single SQLite UPDATE, so it cannot outlive even the 60s fast TTL.
+    // The heartbeat still gates on lane === 'slow' explicitly, rather than
+    // being implied by "any action that leases is slow": the mechanism stays
+    // generic so a future fast action that legitimately needs a lease is not
+    // silently starved of a heartbeat.
     if (deps.lane === 'slow') {
       // `let holder` doesn't narrow inside a closure even though it was just
       // assigned above; capture it as a const so the interval callback below

@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { BrainrotError } from '../errors.js'
+import { PLATFORMS } from '../posts/types.js'
 
 /**
  * The action catalog: pure metadata, no behaviour. This module is imported by
@@ -20,7 +21,7 @@ import { BrainrotError } from '../errors.js'
 export type ActionLane = 'fast' | 'slow'
 
 /** The lease an action must hold, named exactly as the daemon's workers name it. */
-export type ActionLease = 'produce' | 'publish' | 'scout'
+export type ActionLease = 'produce' | 'scout'
 
 /**
  * Every entry spells out EVERY key, `undefined` included. `as const satisfies`
@@ -56,6 +57,14 @@ function list<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.infer<T>[]> {
 
 const topicId = z.coerce.number().int().positive()
 const jobId = z.string().trim().min(1)
+const platform = z.enum(PLATFORMS)
+// A form submits an untouched text field as ''. That means "not provided",
+// not "the url is the empty string", so it must become undefined before the
+// DAO stores it — otherwise the library page would render an empty <a href>.
+const optionalUrl = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().trim().url().optional(),
+)
 
 export const ACTIONS = {
   'topics.reject': {
@@ -82,24 +91,6 @@ export const ACTIONS = {
     lease: undefined,
     args: z.object({ jobIds: list(jobId) }),
   },
-  'publish.retry': {
-    lane: 'fast',
-    label: 'retry',
-    confirm: false,
-    danger: undefined,
-    lease: 'publish',
-    args: z.object({ jobId }),
-  },
-  'publish.markDone': {
-    lane: 'fast',
-    label: 'mark done',
-    confirm: true,
-    danger:
-      'Records this upload as published without contacting the platform. ' +
-      'Only do this after confirming the post exists. It cannot be undone.',
-    lease: 'publish',
-    args: z.object({ jobId, postId: z.string().trim().min(1) }),
-  },
   'digest.run': {
     lane: 'fast',
     label: 'run digest',
@@ -118,26 +109,6 @@ export const ACTIONS = {
     // NOT a mistake: produceNextTick acquires the `produce` lease itself.
     // Declaring it here would make the worker hold the lease the tick then
     // fails to take, turning every click into a lease-held noop.
-    lease: undefined,
-    args: z.object({}),
-  },
-  'publish.next': {
-    lane: 'slow',
-    label: 'publish next',
-    confirm: true,
-    danger:
-      'Uploads the next due video to every platform its channel declares. ' +
-      'This posts publicly and cannot be undone.',
-    // publishNextTick acquires the `publish` lease itself — see produce.next.
-    lease: undefined,
-    args: z.object({}),
-  },
-  'publish.nextDryRun': {
-    lane: 'slow',
-    label: 'publish next (dry run)',
-    confirm: false,
-    danger: undefined,
-    // A dry run takes no lease at all, in the tick or here.
     lease: undefined,
     args: z.object({}),
   },
@@ -163,6 +134,43 @@ export const ACTIONS = {
     // dashboard path race-free where the CLI path is not.
     lease: 'produce',
     args: z.object({ jobId }),
+  },
+  'post.mark': {
+    lane: 'fast',
+    label: 'mark posted',
+    confirm: false,
+    danger: undefined,
+    // No lease: `posts` is a table no worker touches, so there is nothing to
+    // race. This is why FAST_ACTION_LEASE_TTL_MS could go with the old
+    // publish actions — no fast action leases any more.
+    lease: undefined,
+    args: z.object({ jobId, platform, url: optionalUrl }),
+  },
+  'post.unmark': {
+    lane: 'fast',
+    label: 'unmark',
+    confirm: true,
+    danger:
+      'Removes the record that this video was posted to this platform, including ' +
+      'the saved link. It does not delete anything on the platform itself.',
+    lease: undefined,
+    args: z.object({ jobId, platform }),
+  },
+  'library.reject': {
+    // Slow, not fast: the handler makes real network calls (a dynamic S3
+    // import plus one store.delete() per object, sequentially), and the fast
+    // lane also carries the daemon heartbeat — a slow or unreachable bucket
+    // during a multi-job discard must not stall the heartbeat and trip the
+    // dashboard's 409 liveness gate. No lease: it races no worker, and the
+    // object deletes are idempotent.
+    lane: 'slow',
+    label: 'discard',
+    confirm: true,
+    danger:
+      'Discards this video: it leaves the posting queue and stops counting toward ' +
+      'the channel backlog, so production can resume. Its stored bytes are freed.',
+    lease: undefined,
+    args: z.object({ jobIds: list(jobId) }),
   },
 } as const satisfies Record<string, ActionDescriptor>
 

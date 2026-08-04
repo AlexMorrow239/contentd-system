@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../../config/channel.js'
 import { testChannel } from '../../../testing/channel.js'
-import { memDb, seedPublish } from '../../../testing/db.js'
+import { memDb } from '../../../testing/db.js'
 import { buildOverview } from '../overview.js'
 
 function channel(name: string, perDayUsdMicros: number): ChannelConfig {
@@ -165,29 +165,4 @@ describe('buildOverview', () => {
     expect(data.leases.find((l) => l.name === 'publish')?.expired).toBe(false)
   })
 
-  it('counts today uploads and reports not backed off with no recent quota failure', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
-        "VALUES ('j1','youtube','space','2026-07-25',1,'done',1)",
-    ).run()
-    const data = buildOverview(db, [], new Date('2026-07-25T12:00:00'))
-    expect(data.quotaUsed).toBe(1)
-    expect(data.quotaBackedOff).toBe(false)
-  })
-
-  it('reports quotaBackedOff true after a recent youtube quota failure', () => {
-    const now = new Date('2026-07-25T12:00:00Z')
-    seedPublish(db, 'j1', {
-      platform: 'youtube',
-      channel: 'space',
-      status: 'failed',
-      errorKind: 'quota',
-      createdAt: new Date(now.getTime() - 60_000).toISOString(),
-    })
-    const data = buildOverview(db, [], now)
-    expect(data.quotaBackedOff).toBe(true)
-  })
 })

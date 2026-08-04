@@ -8,7 +8,6 @@ const KEYS = [
   'BRAINROT_S3_ACCESS_KEY_ID',
   'BRAINROT_S3_SECRET_ACCESS_KEY',
   'BRAINROT_S3_REGION',
-  'BRAINROT_S3_PUBLIC_ENDPOINT',
 ] as const
 
 // Shared by every describe block below: each test starts from a clean slate
@@ -36,19 +35,12 @@ describe('s3ConfigFromEnv', () => {
       accessKeyId: 'ak',
       secretAccessKey: 'sk',
       region: 'us-east-1',
-      publicEndpoint: undefined,
     })
   })
 
   it("defaults region to 'auto' for R2", () => {
     setRequired()
     expect(s3ConfigFromEnv().region).toBe('auto')
-  })
-
-  it('carries publicEndpoint through when set', () => {
-    setRequired()
-    vi.stubEnv('BRAINROT_S3_PUBLIC_ENDPOINT', 'http://localhost:9000')
-    expect(s3ConfigFromEnv().publicEndpoint).toBe('http://localhost:9000')
   })
 
   // The no-silent-fallback rule (design spec §3.5). A production tick that

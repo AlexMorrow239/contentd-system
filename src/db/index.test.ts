@@ -46,11 +46,12 @@ describe('openDb', () => {
   })
 
   it('sets a 5s busy_timeout so co-firing writers wait out lock windows', () => {
-    // The daemon's produce/publish/scout/digest workers run concurrently in
-    // one process (src/loop/daemon.ts), and manual CLI commands (produce,
-    // resume, library approve, ...) can run as separate processes against the
-    // same SQLite file at the same time; without this an overlapping write
-    // window throws SQLITE_BUSY and crashes a run mid-flight.
+    // The daemon's produce/scout/digest/actions-fast/actions-slow workers run
+    // concurrently in one process (src/loop/daemon.ts), and manual CLI
+    // commands (produce, resume, library approve, ...) can run as separate
+    // processes against the same SQLite file at the same time; without this
+    // an overlapping write window throws SQLITE_BUSY and crashes a run
+    // mid-flight.
     const db = openDb(tempDbPath())
     expect(db.pragma('busy_timeout', { simple: true })).toBe(5000)
     db.close()

@@ -147,6 +147,9 @@ export interface TopicRow {
   status: string
   jobId: string | null
   createdAt: string | null
+  seriesKey: string | null
+  partIndex: number | null
+  partCount: number | null
 }
 
 /** Returns the autoincrement id, which most topic tests assert on. */
@@ -166,6 +169,9 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     status: 'candidate',
     jobId: null,
     createdAt: null,
+    seriesKey: null,
+    partIndex: null,
+    partCount: null,
     ...overrides,
   }
   const cols = [
@@ -179,6 +185,9 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     'reason',
     'status',
     'job_id',
+    'series_key',
+    'part_index',
+    'part_count',
   ]
   const vals: unknown[] = [
     row.channel,
@@ -191,6 +200,9 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     row.reason,
     row.status,
     row.jobId,
+    row.seriesKey,
+    row.partIndex,
+    row.partCount,
   ]
   if (row.createdAt !== null) {
     cols.push('created_at')
@@ -209,82 +221,27 @@ export function seedScoutState(db: Database, channel: string, lastAttemptAt: Dat
   )
 }
 
-export interface PublishRow {
-  platform: string
-  channel: string
-  day: string
-  seq: number
-  status: string
-  postId: string | null
-  url: string | null
-  error: string | null
-  errorKind: string | null
-  attempt: number
-  createdAt: string | null
-  finishedAt: string | null
-}
-
-export function seedPublish(
+export function seedPost(
   db: Database,
-  jobId: string,
-  overrides: Partial<PublishRow> = {},
-): number {
+  overrides: Partial<{
+    jobId: string
+    channel: string
+    platform: string
+    url: string | null
+    postedAt: string
+  }> = {},
+): void {
   const row = {
+    jobId: 'job-1',
+    channel: 'alpha',
     platform: 'youtube',
-    channel: 'chan-a',
-    // The suite's canonical fixture day. Tests that assert on `day` (quota
-    // windows, listPublishes ranges) pass it explicitly; this default only has
-    // to be stable and in the past.
-    day: '2026-07-20',
-    seq: 1,
-    status: 'done',
-    postId: null,
-    url: null,
-    error: null,
-    errorKind: null,
-    attempt: 1,
-    createdAt: null,
-    finishedAt: null,
+    url: null as string | null,
+    postedAt: new Date().toISOString(),
     ...overrides,
   }
-  const cols = [
-    'job_id',
-    'platform',
-    'channel',
-    'day',
-    'seq',
-    'status',
-    'post_id',
-    'url',
-    'error',
-    'error_kind',
-    'attempt',
-    'finished_at',
-  ]
-  const vals: unknown[] = [
-    jobId,
-    row.platform,
-    row.channel,
-    row.day,
-    row.seq,
-    row.status,
-    row.postId,
-    row.url,
-    row.error,
-    row.errorKind,
-    row.attempt,
-    row.finishedAt,
-  ]
-  if (row.createdAt !== null) {
-    cols.push('created_at')
-    vals.push(row.createdAt)
-  }
-  const res = db
-    .prepare(
-      `INSERT INTO publishes (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
-    )
-    .run(...vals)
-  return Number(res.lastInsertRowid)
+  db.prepare(
+    'INSERT INTO posts (job_id, channel, platform, url, posted_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(row.jobId, row.channel, row.platform, row.url, row.postedAt)
 }
 
 export function seedCost(
@@ -353,12 +310,30 @@ export function seedAction(db: Database, overrides: Partial<ActionRowSeed> = {})
     ...overrides,
   }
   const cols = [
-    'kind', 'lane', 'args', 'status', 'requested_by',
-    'started_at', 'finished_at', 'result', 'error', 'error_kind', 'notice',
+    'kind',
+    'lane',
+    'args',
+    'status',
+    'requested_by',
+    'started_at',
+    'finished_at',
+    'result',
+    'error',
+    'error_kind',
+    'notice',
   ]
   const vals: unknown[] = [
-    row.kind, row.lane, row.args, row.status, row.requestedBy,
-    row.startedAt, row.finishedAt, row.result, row.error, row.errorKind, row.notice,
+    row.kind,
+    row.lane,
+    row.args,
+    row.status,
+    row.requestedBy,
+    row.startedAt,
+    row.finishedAt,
+    row.result,
+    row.error,
+    row.errorKind,
+    row.notice,
   ]
   // created_at has a schema default; naming it with NULL would override the
   // default with NULL, so it is only named when the caller pinned a value.

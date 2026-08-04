@@ -3,18 +3,12 @@ import { writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import {
-  applyDevFlag,
-  DEV_VOICE_ENV,
-  parsePublishDays,
-  parseTopicIds,
-  pipelineStages,
-} from './cli.js'
+import { applyDevFlag, DEV_VOICE_ENV, parseTopicIds, pipelineStages } from './cli.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 import { openDb } from './db/index.js'
 import { runCli } from './testing/run-cli.js'
 import { storageEnvVars } from './testing/storage.js'
-import { countJobs, seedLibraryRow, seedPublishRow } from './testing/cli.js'
+import { countJobs, seedLibraryRow } from './testing/cli.js'
 import { tmpDir, testRoot } from './testing/tmp.js'
 
 // Mirrors run-cli.ts's CLI_ENTRY resolution (dist/cli.js, built by the Vitest
@@ -57,21 +51,6 @@ describe('parseTopicIds', () => {
     expect(() => parseTopicIds(['-3'])).toThrow('invalid topic id "-3"')
     // the FIRST offender is the one named, even when later tokens are also bad
     expect(() => parseTopicIds(['5', '0', '-3'])).toThrow('invalid topic id "0"')
-  })
-})
-
-describe('parsePublishDays', () => {
-  it('parses a positive integer string', () => {
-    expect(parsePublishDays('7')).toBe(7)
-    expect(parsePublishDays('1')).toBe(1)
-    expect(parsePublishDays('30')).toBe(30)
-  })
-
-  it('throws naming the value; "0", "-3", "3.5", "abc" all reject', () => {
-    expect(() => parsePublishDays('0')).toThrow('invalid --days "0": must be a positive integer')
-    expect(() => parsePublishDays('-3')).toThrow('invalid --days "-3"')
-    expect(() => parsePublishDays('3.5')).toThrow('invalid --days "3.5"')
-    expect(() => parsePublishDays('abc')).toThrow('invalid --days "abc"')
   })
 })
 
@@ -176,15 +155,27 @@ describe('brainrot CLI — jobs and produce', () => {
     60000,
   )
 
-  // The `store` stage runs last, so an unconfigured deployment would otherwise
-  // pay for a full Remotion render and only then fail. Object storage is
-  // required (design spec §3.5) — so refuse up front, before any job row.
+  // Object storage is optional now (src/stages/store.ts): the `store` stage
+  // simply no-ops with no S3 config, so `produce` warns rather than refusing
+  // and keeps going. Reusing the nonexistent-channel setup from the test
+  // above (rather than a real channel, which would run a full render) proves
+  // exactly the part that changed: the storage warning no longer short-circuits
+  // the command — it falls through to the channel load and fails on ITS OWN
+  // error (ENOENT), not on the storage precondition.
   it.concurrent(
-    '`produce` exits 1 naming the missing storage keys, before creating a job',
+    '`produce` warns about missing storage keys but does not refuse to run',
     async () => {
       const root = testRoot()
       const result = await runCli(
-        ['produce', '--channel', 'channels/test.toml', '--topic', 'venus', '--root', root.root],
+        [
+          'produce',
+          '--channel',
+          '/no/such/channel.toml',
+          '--topic',
+          'venus',
+          '--root',
+          root.root,
+        ],
         // Empty, not absent: dotenv does not override a key already present in
         // the child env, so this holds whether or not the machine has a .env
         // with real R2 credentials in it.
@@ -197,9 +188,12 @@ describe('brainrot CLI — jobs and produce', () => {
           },
         },
       )
-      expect(result.exitCode).toBe(1)
+      // Still exits 1, but now for the channel file, not the storage check —
+      // the old refusal returned before ever reaching loadChannelConfig.
       expect(result.stderr).toContain('BRAINROT_S3_BUCKET')
       expect(result.stderr).toContain('object storage is not configured')
+      expect(result.stderr).toMatch(/ENOENT|no such file/)
+      expect(result.exitCode).toBe(1)
       expect(countJobs(root.dbPath)).toBe(0)
     },
     60000,
@@ -543,10 +537,19 @@ describe('brainrot CLI — digest', () => {
 
 describe('brainrot CLI — library', () => {
   it.concurrent(
-    '`library approve` exits 1 when every id was refused for having been reclaimed',
+    '`library approve` reports 0 approved for an id migrate already blocked as reclaimed',
     async () => {
-      // A wrapper script reads the exit code, not the stderr line: approving
-      // nothing at all is a failed operation, not a quiet no-op.
+      // seedLibraryRow's own openDb call runs migrate(), and migrate's
+      // blockReclaimedLibraryRows step now covers 'needs-review' (not just
+      // 'ready'/'published' — see src/db/migrate.ts), so this row is already
+      // 'blocked' before `library approve` ever runs. approveLibrary's own
+      // live "already reclaimed" refusal (src/jobs/library.ts) exists for a
+      // row that becomes reclaimed later in a still-open process (e.g. the
+      // daemon) — it is covered directly in
+      // src/jobs/test/library.test.ts and does not fire here, because a
+      // fresh CLI invocation never sees a reclaimed row still sitting in
+      // 'needs-review'. An id in any other state is simply not approved,
+      // exit 0.
       const root = testRoot()
       seedLibraryRow(root.dbPath, {
         jobId: 'job-gone-1',
@@ -555,9 +558,14 @@ describe('brainrot CLI — library', () => {
         reclaimed: true,
       })
       const result = await runCli(['library', 'approve', 'job-gone-1', '--root', root.root])
-      expect(result.exitCode).toBe(1)
+      expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('approved 0 of 1')
-      expect(result.stderr).toContain('already reclaimed')
+      const db = openDb(root.dbPath)
+      const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-gone-1') as {
+        state: string
+      }
+      db.close()
+      expect(row.state).toBe('blocked')
     },
     60000,
   )
@@ -570,179 +578,6 @@ describe('brainrot CLI — library', () => {
       const result = await runCli(['library', 'approve', 'job-ok-1', '--root', root.root])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('approved 1 of 1')
-    },
-    60000,
-  )
-})
-
-describe('brainrot CLI — publish and publishes', () => {
-  it.concurrent(
-    '`publish --help` lists the retry/mark-done subcommands',
-    async () => {
-      const result = await runCli(['publish', '--help'])
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('retry')
-      expect(result.stdout).toContain('mark-done')
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publish retry` on a job with no interrupted publish exits 1 naming the job',
-    async () => {
-      const root = testRoot()
-      const result = await runCli(['publish', 'retry', 'no-such-job', '--root', root.root])
-      expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('no interrupted publish for job no-such-job')
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publish retry` on a job with an interrupted publish clears it and returns the job to the pool',
-    async () => {
-      const root = testRoot()
-      seedPublishRow(root.dbPath, {
-        jobId: 'job-retry-1',
-        channel: 'demo',
-        day: '2026-07-22',
-        seq: 1,
-        status: 'interrupted',
-      })
-      const result = await runCli(['publish', 'retry', 'job-retry-1', '--root', root.root])
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('job-retry-1')
-      const db = openDb(root.dbPath)
-      const row = db
-        .prepare('SELECT status, error_kind, error FROM publishes WHERE job_id = ?')
-        .get('job-retry-1') as { status: string; error_kind: string; error: string }
-      db.close()
-      expect(row.status).toBe('failed')
-      expect(row.error_kind).toBe('transient')
-      expect(row.error).toContain('manually cleared')
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publish mark-done` on a job with no interrupted publish exits 1 naming the job',
-    async () => {
-      const root = testRoot()
-      const result = await runCli([
-        'publish',
-        'mark-done',
-        'no-such-job',
-        'yt-post-1',
-        '--root',
-        root.root,
-      ])
-      expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('no interrupted publish for job no-such-job')
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publish mark-done` on a job with an interrupted publish marks it done and flips the library row',
-    async () => {
-      const root = testRoot()
-      seedPublishRow(root.dbPath, {
-        jobId: 'job-done-1',
-        channel: 'demo',
-        day: '2026-07-22',
-        seq: 1,
-        status: 'interrupted',
-      })
-      const result = await runCli([
-        'publish',
-        'mark-done',
-        'job-done-1',
-        'yt-post-1',
-        '--root',
-        root.root,
-      ])
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('https://youtube.com/shorts/yt-post-1')
-      const db = openDb(root.dbPath)
-      const publishRow = db
-        .prepare('SELECT status, post_id, url FROM publishes WHERE job_id = ?')
-        .get('job-done-1') as { status: string; post_id: string; url: string }
-      const libraryRow = db
-        .prepare('SELECT state FROM library WHERE job_id = ?')
-        .get('job-done-1') as { state: string }
-      db.close()
-      expect(publishRow.status).toBe('done')
-      expect(publishRow.post_id).toBe('yt-post-1')
-      expect(publishRow.url).toBe('https://youtube.com/shorts/yt-post-1')
-      expect(libraryRow.state).toBe('published')
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publishes --help` lists the list subcommand',
-    async () => {
-      const result = await runCli(['publishes', '--help'])
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('list')
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publishes list` on an empty db prints a friendly empty message',
-    async () => {
-      const root = testRoot()
-      const result = await runCli(['publishes', 'list', '--root', root.root])
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('no publishes in the last 7 days')
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publishes list` prints day/seq/channel/platform/status/attempt/jobId and the url or error',
-    async () => {
-      const root = testRoot()
-      seedPublishRow(root.dbPath, {
-        jobId: 'job-list-done',
-        channel: 'demo',
-        day: '2026-07-22',
-        seq: 1,
-        status: 'done',
-        postId: 'yt-1',
-        url: 'https://youtube.com/shorts/yt-1',
-        attempt: 1,
-      })
-      seedPublishRow(root.dbPath, {
-        jobId: 'job-list-failed',
-        channel: 'demo',
-        day: '2026-07-22',
-        seq: 2,
-        status: 'failed',
-        error: 'upload rejected: bad file',
-        errorKind: 'rejected',
-        attempt: 2,
-      })
-      const result = await runCli(['publishes', 'list', '--root', root.root])
-      expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain(
-        '2026-07-22 #1 demo youtube done attempt 1 job-list-done https://youtube.com/shorts/yt-1',
-      )
-      expect(result.stdout).toContain(
-        '2026-07-22 #2 demo youtube failed attempt 2 job-list-failed upload rejected: bad file',
-      )
-    },
-    60000,
-  )
-
-  it.concurrent(
-    '`publishes list --days garbage` exits 1 before opening the db',
-    async () => {
-      const root = testRoot()
-      const result = await runCli(['publishes', 'list', '--days', 'garbage', '--root', root.root])
-      expect(result.exitCode).toBe(1)
-      expect(result.stderr).toContain('invalid --days "garbage"')
     },
     60000,
   )

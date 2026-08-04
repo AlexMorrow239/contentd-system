@@ -106,13 +106,13 @@ describe('actionForm', () => {
 
   it('links to the interstitial instead of posting when the action needs confirming', () => {
     const out = actionForm({
-      kind: 'publish.markDone',
+      kind: 'jobs.resume',
       csrfToken: 'tok',
-      from: '/publishes',
+      from: '/jobs',
       fields: { jobId: 'j1' },
-      label: 'mark done',
+      label: 'resume',
     }).value
-    expect(out).toContain('/actions/confirm?kind=publish.markDone')
+    expect(out).toContain('/actions/confirm?kind=jobs.resume')
     expect(out).not.toContain('method="post"')
   })
 
@@ -129,16 +129,16 @@ describe('actionForm', () => {
   })
 
   it('renders the confirm-type control as a non-navigable, disabled span when the daemon is down', () => {
-    // publish.markDone is the one confirm:true action and the only one
-    // reached through the confirm-link path — a stale-daemon guard that
-    // forgets this branch leaves the single irreversible action clickable
-    // while every other control on the page is disabled.
+    // jobs.resume is one of the confirm:true actions, and the only one
+    // reached through the confirm-link path with a per-row jobId — a
+    // stale-daemon guard that forgets this branch leaves an irreversible
+    // action clickable while every other control on the page is disabled.
     const out = actionForm({
-      kind: 'publish.markDone',
+      kind: 'jobs.resume',
       csrfToken: 'tok',
-      from: '/publishes',
+      from: '/jobs',
       fields: { jobId: 'j1' },
-      label: 'mark done',
+      label: 'resume',
       disabled: true,
     }).value
     expect(out).not.toContain('<a ')
@@ -151,26 +151,30 @@ describe('actionForm', () => {
 describe('renderConfirmPage', () => {
   it('states the consequence and posts the prefilled args', () => {
     const out = renderConfirmPage({
-      kind: 'publish.markDone',
+      kind: 'jobs.resume',
       csrfToken: 'tok',
-      from: '/publishes',
+      from: '/jobs',
       fields: { jobId: 'j1' },
       missing: [],
       daemonStale: false,
     }).value
-    expect(out).toContain('cannot be undone')
+    // jobs.resume declares its own danger text (not the generic fallback),
+    // so this pins a substring of ACTIONS['jobs.resume'].danger itself.
+    expect(out).toContain('spends real money')
     expect(out).toContain('name="jobId" value="j1"')
     expect(out).toContain('name="csrf" value="tok"')
     expect(out).toContain('method="post"')
   })
 
   it('renders a text input for an argument the caller could not supply', () => {
-    // publish.markDone needs a postId the operator reads off the platform, so
-    // the interstitial doubles as the input form.
+    // `missing` is a plain caller-supplied list, independent of what `kind`
+    // actually declares in its own arg schema — this pins renderConfirmPage's
+    // generic behavior (the interstitial doubling as an input form for
+    // whatever field the caller could not prefill), not any specific action.
     const out = renderConfirmPage({
-      kind: 'publish.markDone',
+      kind: 'jobs.resume',
       csrfToken: 'tok',
-      from: '/publishes',
+      from: '/jobs',
       fields: { jobId: 'j1' },
       missing: ['postId'],
       daemonStale: false,
@@ -185,9 +189,9 @@ describe('renderConfirmPage', () => {
     // them, so a value with quotes and angle brackets does not break out.
     const hostile = 'j1" <script>alert(1)</script>'
     const out = renderConfirmPage({
-      kind: 'publish.markDone',
+      kind: 'jobs.resume',
       csrfToken: 'tok',
-      from: '/publishes',
+      from: '/jobs',
       fields: { jobId: hostile },
       missing: [],
       daemonStale: false,
@@ -200,9 +204,9 @@ describe('renderConfirmPage', () => {
 
   it('shows the daemon banner and disables the submit button when the daemon is stale', () => {
     const out = renderConfirmPage({
-      kind: 'publish.markDone',
+      kind: 'jobs.resume',
       csrfToken: 'tok',
-      from: '/publishes',
+      from: '/jobs',
       fields: { jobId: 'j1' },
       missing: [],
       daemonStale: true,

@@ -12,23 +12,16 @@
  *   - `kind`   — what kind of break it was
  *
  * A surface matches at whichever width it needs: `kind === 'transient'` for
- * anything worth another tick, or `domain === 'publish' && kind === 'auth'`
+ * anything worth another tick, or `domain === 'storage' && kind === 'auth'`
  * for one specific condition.
  *
  * There is deliberately NO `retryable` boolean. It would be a lie: 'transient'
  * retries next tick, 'quota' tomorrow, 'budget' after a cap change, and
- * 'unknown-outcome' must never retry at all. Retry meaning is per-surface, and
- * publish-next.ts already maps kind -> row status correctly.
+ * 'unknown-outcome' must never retry at all. Retry meaning is per-surface,
+ * and each surface maps kind -> its own outcome correctly.
  */
 
-export type ErrorDomain =
-  | 'publish'
-  | 'storage'
-  | 'provider'
-  | 'config'
-  | 'job'
-  | 'scout'
-  | 'internal'
+export type ErrorDomain = 'storage' | 'provider' | 'config' | 'job' | 'scout' | 'internal'
 
 export type ErrorKind =
   | 'auth' // credential missing, expired, or refused

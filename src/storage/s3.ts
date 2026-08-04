@@ -1,11 +1,9 @@
 import {
   DeleteObjectCommand,
-  GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3'
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { s3ConfigFromEnv, type S3Config } from './config.js'
 import { StorageError, type ObjectStore } from './types.js'
 import { errorMessage, isAuthStatus } from '../errors.js'
@@ -53,14 +51,6 @@ export function s3Store(config: S3Config): ObjectStore {
   }
   const client = new S3Client({ ...base, endpoint: config.endpoint })
 
-  // Presigning binds the endpoint hostname into the signature. Inside Compose
-  // the SDK reaches MinIO at http://minio:9000, but a URL signed against that
-  // hostname is unfetchable from anywhere else — so signing gets its own
-  // client pointed at the publicly reachable host when one is configured.
-  const signClient = config.publicEndpoint
-    ? new S3Client({ ...base, endpoint: config.publicEndpoint })
-    : client
-
   return {
     async put(key, body, contentType) {
       let res
@@ -83,19 +73,6 @@ export function s3Store(config: S3Config): ObjectStore {
       return { etag: (res.ETag ?? '').replaceAll('"', ''), bytes: body.length }
     },
 
-    async get(key) {
-      try {
-        const res = await client.send(new GetObjectCommand({ Bucket: config.bucket, Key: key }))
-        if (res.Body === undefined) {
-          throw new StorageError(`s3Store.get(${key}): empty response body`, 'transient')
-        }
-        return Buffer.from(await res.Body.transformToByteArray())
-      } catch (err) {
-        if (err instanceof StorageError) throw err
-        throw mapS3Error(`s3Store.get(${key})`, err)
-      }
-    },
-
     async head(key) {
       try {
         const res = await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }))
@@ -109,18 +86,6 @@ export function s3Store(config: S3Config): ObjectStore {
         // precisely to find out whether the key exists.
         if (mapped.kind === 'not-found') return null
         throw mapped
-      }
-    },
-
-    async presignGet(key, ttlSeconds) {
-      try {
-        return await getSignedUrl(
-          signClient,
-          new GetObjectCommand({ Bucket: config.bucket, Key: key }),
-          { expiresIn: ttlSeconds },
-        )
-      } catch (err) {
-        throw mapS3Error(`s3Store.presignGet(${key})`, err)
       }
     },
 

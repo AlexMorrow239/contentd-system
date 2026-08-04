@@ -26,16 +26,15 @@ export const SLOW_FIRST = [
   'src/stages/test/visuals-volume.test.ts', // ffmpeg crop+loop
   'src/stages/test/qc.test.ts', // ffmpeg analysis passes
   'remotion/remotion.test.ts', // bundle() + selectComposition
-  'src/jobs/test/golden-path-loop.test.ts', // scout -> produce -> publish e2e
+  'src/jobs/test/golden-path-loop.test.ts', // scout -> produce e2e
   // Every CLI-spawning file: a cold `node dist/cli.js` costs seconds, not the
   // ~0.34s the runCli docstring once claimed, because the entry point pulls in
-  // the whole pipeline. cli.test.ts and loop/test/publish-next.test.ts each
-  // hold their subcommand's subprocess tests alongside their in-process ones —
-  // a single file per module, not a facet split.
+  // the whole pipeline. cli.test.ts holds every subcommand's subprocess tests
+  // alongside its in-process ones — a single file per module, not a facet
+  // split.
   'src/cli.test.ts',
   'src/testing/run-cli.test.ts',
   'src/jobs/test/resume.test.ts',
-  'src/loop/test/publish-next.test.ts',
   'src/loop/test/produce-next.test.ts',
   'src/media/ffmpeg.test.ts', // real ffmpeg encodes
 ]

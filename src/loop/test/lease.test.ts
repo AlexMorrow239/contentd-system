@@ -1,11 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  acquireLease,
-  extendLease,
-  PRODUCE_LEASE_TTL_MS,
-  PUBLISH_LEASE_TTL_MS,
-  releaseLease,
-} from '../lease.js'
+import { acquireLease, extendLease, PRODUCE_LEASE_TTL_MS, releaseLease } from '../lease.js'
 import { memDb } from '../../testing/db.js'
 
 // Only the boundary test fakes the clock; restoring here keeps a failing
@@ -93,10 +87,10 @@ describe('acquireLease', () => {
     vi.setSystemTime(now)
     const insert = db.prepare('INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?)')
     insert.run('produce', 'pid:dead', now.toISOString())
-    insert.run('publish', 'pid:live', new Date(now.getTime() + 1).toISOString())
+    insert.run('scout', 'pid:live', new Date(now.getTime() + 1).toISOString())
 
     expect(acquireLease(db, 'produce', 'pid:new', PRODUCE_LEASE_TTL_MS)).toBe(true)
-    expect(acquireLease(db, 'publish', 'pid:new', PUBLISH_LEASE_TTL_MS)).toBe(false)
+    expect(acquireLease(db, 'scout', 'pid:new', PRODUCE_LEASE_TTL_MS)).toBe(false)
     db.close()
   })
 })
@@ -166,11 +160,5 @@ describe('extendLease', () => {
     expect(extendLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(false)
     expect(db.prepare('SELECT COUNT(*) AS n FROM leases').get()).toEqual({ n: 0 })
     db.close()
-  })
-})
-
-describe('PUBLISH_LEASE_TTL_MS', () => {
-  it('is 30 minutes — a much shorter window than produce, one upload per tick', () => {
-    expect(PUBLISH_LEASE_TTL_MS).toBe(1_800_000)
   })
 })

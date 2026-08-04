@@ -8,32 +8,15 @@ import type { ChannelConfig } from '../../config/channel.js'
  * Fixtures shared by the `digest.*.test.ts` files.
  *
  * These wrap `src/testing/db.ts` rather than issuing their own INSERTs: the
- * digest tests want an options-object call shape with digest-flavored defaults
- * (ages expressed via isoAgo, a fixed publish day), while the SQL itself has
- * no business being duplicated per module. ~170 lines of this used to sit
- * above the first describe in a single 964-line file, with one more helper
- * buried between two describes 800 lines down.
+ * digest tests want an options-object call shape with digest-flavored
+ * defaults (ages expressed via isoAgo), while the SQL itself has no business
+ * being duplicated per module. ~170 lines of this used to sit above the first
+ * describe in a single 964-line file, with one more helper buried between two
+ * describes 800 lines down.
  */
 
 export const HOUR_MS = 3_600_000
 export const DAY_MS = 24 * HOUR_MS
-
-// Same filler-key idiom as tokens.test.ts: AES-256 sized, never a real
-// secret, and only ever handed to encrypt/decrypt round-trips here.
-export const TEST_KEY = Buffer.alloc(32, 0x42)
-export const TEST_KEY_HEX = TEST_KEY.toString('hex')
-export const OTHER_KEY_HEX = Buffer.alloc(32, 0x11).toString('hex')
-
-/**
- * The env-dependent digest checks (blocked-job reasons, token health) read
- * process.env by default; tests pass explicit presence flags so a developer's
- * own .env can never flip an assertion.
- */
-export const ENV_OK = {
-  ytClientIdPresent: true,
-  ytClientSecretPresent: true,
-  tokenKeyHex: TEST_KEY_HEX,
-}
 
 /**
  * Explicit timestamps in the schema default's own format ('...T...Z' with
@@ -78,37 +61,15 @@ export function seedLibraryPath(db: Database, jobId: string, videoPath: string):
   kit.seedLibrary(db, jobId, { videoPath, state: 'ready' })
 }
 
-/**
- * day/seq default to fixed values so tests control the
- * UNIQUE (channel, platform, day, seq) constraint explicitly.
- */
-export function seedPublish(
+/** Marks a job posted to a platform — the Posting section reads the `posts` table, not `publishes`. */
+export function seedPost(
   db: Database,
-  opts: {
-    jobId: string
-    channel?: string
-    platform?: 'youtube' | 'instagram'
-    day?: string
-    seq?: number
-    status?: 'claimed' | 'done' | 'failed' | 'interrupted'
-    url?: string | null
-    error?: string | null
-    errorKind?: 'auth' | 'quota' | 'rejected' | 'transient' | null
-    attempt?: number
-    createdAt?: string
-  },
+  opts: { jobId: string; channel?: string; platform?: 'youtube' | 'instagram' | 'tiktok' },
 ): void {
-  kit.seedPublish(db, opts.jobId, {
-    platform: opts.platform ?? 'youtube',
+  kit.seedPost(db, {
+    jobId: opts.jobId,
     channel: opts.channel ?? 'chan-a',
-    day: opts.day ?? '2026-07-19',
-    seq: opts.seq ?? 1,
-    status: opts.status ?? 'done',
-    url: opts.url ?? null,
-    error: opts.error ?? null,
-    errorKind: opts.errorKind ?? null,
-    attempt: opts.attempt ?? 1,
-    createdAt: opts.createdAt ?? isoAgo(HOUR_MS),
+    platform: opts.platform ?? 'youtube',
   })
 }
 
@@ -153,7 +114,7 @@ export function seedCost(db: Database, jobId: string, usdMicros: number): void {
   kit.seedCost(db, jobId, { provider: 'fal', operation: 'video', usdMicros })
 }
 
-/** A channel that declares a youtube publish target, which most sections need. */
+/** A channel that declares youtube as a target platform, which most sections need. */
 export function publishChannel(
   name: string,
   overrides: { videosPerDay?: number } = {},
@@ -161,14 +122,7 @@ export function publishChannel(
   return testChannel({
     name,
     videosPerDay: overrides.videosPerDay ?? 2,
-    publish: {
-      targets: [
-        {
-          platform: 'youtube',
-          options: { privacy: 'public', categoryId: 24, madeForKids: false },
-        },
-      ],
-    },
+    platforms: ['youtube'],
   })
 }
 

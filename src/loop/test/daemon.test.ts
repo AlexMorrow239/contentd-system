@@ -6,7 +6,6 @@ import {
   abortableSleep,
   digestUnit,
   produceUnit,
-  publishUnit,
   runDaemon,
   runWorker,
   scoutUnit,
@@ -235,26 +234,6 @@ describe('produceUnit', () => {
     })
     await unit()
     expect(seen).toEqual({ channelsDir: '/chans', runsRoot: '/runs' })
-  })
-})
-
-describe('publishUnit', () => {
-  it('treats publish-failed as worked — an attempt was consumed', async () => {
-    const db = memDb()
-    const unit = publishUnit(db, {
-      channelsDir: '/nowhere',
-      tick: async () => ({ action: 'publish-failed', results: [] }),
-    })
-    expect((await unit()).worked).toBe(true)
-  })
-
-  it('maps a noop tick to idle with the tick line', async () => {
-    const db = memDb()
-    const unit = publishUnit(db, {
-      channelsDir: '/nowhere',
-      tick: async () => ({ action: 'noop', reason: 'paced' }),
-    })
-    expect(await unit()).toEqual({ worked: false, line: { action: 'noop', reason: 'paced' } })
   })
 })
 

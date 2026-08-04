@@ -138,14 +138,6 @@ export function renderOverviewPage(
           </tbody>
         </table>
       </div>
-      <div class="panel">
-        <h2>youtube quota</h2>
-        <p>
-          ${String(data.quotaUsed)} uploads used today${
-            data.quotaBackedOff ? html` <span class="error">backed off</span>` : html``
-          }
-        </p>
-      </div>
     </div>
     <div class="panel">
       <h2>needs attention</h2>

@@ -5,8 +5,6 @@ import {
   globalDailyCapMicros,
   globalDaySpentMicros,
 } from '../../jobs/costs.js'
-import { quotaBackedOff, uploadsUsedToday } from '../../publish/publishes.js'
-import { localDay } from '../../publish/schedule.js'
 
 export interface StatusCount {
   status: string
@@ -58,9 +56,6 @@ export interface OverviewData {
    */
   unattributedUsdMicros: number
   leases: LeaseState[]
-  quotaUsed: number
-  /** True when a recent youtube quota-kind failure has youtube backed off (quotaBackedOff). */
-  quotaBackedOff: boolean
 }
 
 export function buildOverview(db: Database, channels: ChannelConfig[], now: Date): OverviewData {
@@ -135,7 +130,5 @@ export function buildOverview(db: Database, channels: ChannelConfig[], now: Date
     channelSpend,
     unattributedUsdMicros: Math.max(0, globalSpentUsdMicros - attributedUsdMicros),
     leases,
-    quotaUsed: uploadsUsedToday(db, 'youtube', localDay(now)),
-    quotaBackedOff: quotaBackedOff(db, 'youtube', now),
   }
 }

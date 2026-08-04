@@ -1,14 +1,14 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import BetterSqlite3 from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
-import { localDay } from '../../publish/schedule.js'
 import { resolvePaths } from '../../config/paths.js'
 import type { DashboardConfig } from '../config.js'
 import { createApp } from '../server.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { seedDaemonState } from '../../testing/db.js'
+import { seedDaemonState, seedJob, seedLibrary, seedPost } from '../../testing/db.js'
+import { channelToml } from '../../testing/channel.js'
 
 /** Reverses html.ts's escaping, so a value pulled out of rendered markup can be parsed as a URL. */
 function unescapeHtmlAttr(value: string): string {
@@ -114,175 +114,6 @@ describe('createApp', () => {
   })
 })
 
-describe('/publishes', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs()
-  })
-
-  it('renders with a warning rather than 500-ing when the channels dir is unreadable', async () => {
-    const config = seededConfig() // channelsDir points at a directory that does not exist
-    const res = await createApp({ config }).request('/publishes')
-    expect(res.status).toBe(200)
-    expect(await res.text()).toContain('channel config error')
-  })
-
-  it('reports uploads used today with no cap figure', async () => {
-    const config = seededConfig()
-    const res = await createApp({ config }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('youtube: 0 uploads used today')
-  })
-
-  it('shows a backed-off badge after a recent youtube quota failure', async () => {
-    // Proves the dashboard reads the same runtime signal the publish loop
-    // gates on (quotaBackedOff), rather than a mirrored env-derived cap.
-    const config = seededConfig()
-    const now = new Date()
-    const db = openDb(config.paths.dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','failed')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, error_kind, created_at) ' +
-        "VALUES ('j1','youtube','space','2026-07-25',1,'failed',1,'quota',?)",
-    ).run(now.toISOString())
-    db.close()
-    const res = await createApp({ config, now: () => now }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('backed off')
-  })
-
-  it('says so when no channel has an instagram target configured', async () => {
-    const config = seededConfig() // channelsDir has no files at all
-    mkdirSync(config.paths.channelsDir, { recursive: true })
-    const res = await createApp({ config }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('instagram: no channel has a [publish.instagram] target configured')
-  })
-
-  it('reports instagram quota per channel — independent usage, not one summed figure', async () => {
-    // Instagram's quota is channel-scoped (one IG account per channel): a
-    // channel with its own [publish.instagram] table must get its own line,
-    // and one channel's usage must never be added into another's.
-    const config = seededConfig()
-    mkdirSync(config.paths.channelsDir, { recursive: true })
-    writeFileSync(
-      join(config.paths.channelsDir, 'space.toml'),
-      [
-        'name = "space"',
-        'niche = ["space facts"]',
-        'script_model = "claude-sonnet-5"',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
-        'videos_per_day = 1',
-        '',
-        '[voice]',
-        'volume = "af_heart"',
-        '',
-        '[caption_style]',
-        'font = "Inter"',
-        'font_size_px = 72',
-        'active_color = "#FFD700"',
-        'inactive_color = "#FFFFFF"',
-        'stroke_px = 8',
-        '',
-        '[budget]',
-        'per_video_usd = 8.0',
-        'per_day_usd = 20.0',
-        '',
-        '[publish]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "1"',
-        '',
-      ].join('\n'),
-    )
-    const now = new Date()
-    const today = localDay(now)
-    const db = openDb(config.paths.dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt) ' +
-        "VALUES ('j1','instagram','space',?,1,'done',1)",
-    ).run(today)
-    db.close()
-
-    const res = await createApp({ config, now: () => now }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    expect(body).toContain('space: 1 uploads used today')
-  })
-
-  it('backs off only the channel with a recent instagram quota failure, not its sibling', async () => {
-    // buildPlatformQuotas passes channel.name into quotaBackedOff for
-    // channel-scoped platforms — a call site nothing else here exercises,
-    // since the test above only proves independent USAGE counts. Two
-    // instagram channels, a quota failure seeded for one of them only: the
-    // backed-off badge must appear on that channel's line and nowhere else.
-    const config = seededConfig()
-    mkdirSync(config.paths.channelsDir, { recursive: true })
-    const channelToml = (name: string): string =>
-      [
-        `name = "${name}"`,
-        'niche = ["space facts"]',
-        'script_model = "claude-sonnet-5"',
-        'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
-        'videos_per_day = 1',
-        '',
-        '[voice]',
-        'volume = "af_heart"',
-        '',
-        '[caption_style]',
-        'font = "Inter"',
-        'font_size_px = 72',
-        'active_color = "#FFD700"',
-        'inactive_color = "#FFFFFF"',
-        'stroke_px = 8',
-        '',
-        '[budget]',
-        'per_video_usd = 8.0',
-        'per_day_usd = 20.0',
-        '',
-        '[publish]',
-        '',
-        '[publish.instagram]',
-        'ig_user_id = "1"',
-        '',
-      ].join('\n')
-    writeFileSync(join(config.paths.channelsDir, 'space.toml'), channelToml('space'))
-    writeFileSync(join(config.paths.channelsDir, 'history.toml'), channelToml('history'))
-
-    const now = new Date()
-    const db = openDb(config.paths.dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','failed')",
-    ).run()
-    db.prepare(
-      'INSERT INTO publishes (job_id, platform, channel, day, seq, status, attempt, error_kind, created_at) ' +
-        "VALUES ('j1','instagram','space','2026-07-25',1,'failed',1,'quota',?)",
-    ).run(now.toISOString())
-    db.close()
-
-    const res = await createApp({ config, now: () => now }).request('/publishes')
-    expect(res.status).toBe(200)
-    const body = await res.text()
-    const spaceLine = /<li>space:[^<]*(?:<[^/][^>]*>[^<]*<\/[^>]*>)?<\/li>/.exec(body)?.[0] ?? ''
-    const historyLine =
-      /<li>history:[^<]*(?:<[^/][^>]*>[^<]*<\/[^>]*>)?<\/li>/.exec(body)?.[0] ?? ''
-    expect(spaceLine).toContain('backed off')
-    // Pin the regex actually matched — the '' fallback would satisfy the
-    // not.toContain below vacuously.
-    expect(historyLine).toContain('history:')
-    expect(historyLine).not.toContain('backed off')
-  })
-})
-
 describe('video streaming', () => {
   function configWithVideo(bytes: Buffer, videoPathInDb?: string): DashboardConfig {
     const paths = resolvePaths(tmpDir('brainrot-vid-'))
@@ -355,10 +186,111 @@ describe('/', () => {
   })
 })
 
+describe('/post', () => {
+  it('reports an empty queue when there is nothing to post', async () => {
+    const config = seededConfig()
+    mkdirSync(config.paths.channelsDir, { recursive: true })
+    const res = await createApp({ config }).request('/post')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('nothing waiting to post')
+  })
+
+  it('lists a ready video with a mark-posted form for its declared platform', async () => {
+    const config = seededConfig()
+    mkdirSync(config.paths.channelsDir, { recursive: true })
+    writeFileSync(
+      join(config.paths.channelsDir, 'alpha.toml'),
+      channelToml({ name: 'alpha', platforms: ['youtube'] }),
+    )
+    const db = openDb(config.paths.dbPath)
+    seedJob(db, 'j1', { channel: 'alpha', topic: 'a topic' })
+    seedLibrary(db, 'j1', {
+      state: 'ready',
+      metadataJson: JSON.stringify({
+        youtube: { title: 'YT title', description: 'YT body', hashtags: [] },
+      }),
+    })
+    db.close()
+
+    const res = await createApp({ config }).request('/post')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('a topic')
+    expect(body).toContain('name="kind" value="post.mark"')
+    expect(body).toContain('name="platform" value="youtube"')
+  })
+
+  it('renders the page error banner instead of 500ing on a broken channels directory', async () => {
+    const config = seededConfig()
+    mkdirSync(config.paths.channelsDir, { recursive: true })
+    // Two files declaring the same channel name is a loadChannelsDir error.
+    writeFileSync(join(config.paths.channelsDir, 'a.toml'), channelToml({ name: 'dup' }))
+    writeFileSync(join(config.paths.channelsDir, 'b.toml'), channelToml({ name: 'dup' }))
+
+    const res = await createApp({ config }).request('/post')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('channel config error')
+  })
+
+  it('is the first nav item', async () => {
+    const config = seededConfig()
+    mkdirSync(config.paths.channelsDir, { recursive: true })
+    const res = await createApp({ config }).request('/post')
+    const body = await res.text()
+    const navStart = body.indexOf('<nav>')
+    const navEnd = body.indexOf('</nav>')
+    const nav = body.slice(navStart, navEnd)
+    expect(nav.indexOf('href="/post"')).toBeLessThan(nav.indexOf('href="/"'))
+  })
+})
+
+describe('/posts', () => {
+  it('says so when there are no posts yet', async () => {
+    const config = seededConfig()
+    const res = await createApp({ config }).request('/posts')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('no posts yet')
+  })
+
+  it('lists a posted video with its channel, platform, topic and link', async () => {
+    const config = seededConfig()
+    const db = openDb(config.paths.dbPath)
+    seedJob(db, 'j1', { channel: 'alpha', topic: 'a topic' })
+    seedPost(db, {
+      jobId: 'j1',
+      channel: 'alpha',
+      platform: 'youtube',
+      url: 'https://youtube.com/shorts/j1',
+    })
+    db.close()
+
+    const res = await createApp({ config }).request('/posts')
+    expect(res.status).toBe(200)
+    const body = await res.text()
+    expect(body).toContain('a topic')
+    expect(body).toContain('alpha')
+    expect(body).toContain('https://youtube.com/shorts/j1')
+  })
+
+  it('is in the nav', async () => {
+    const config = seededConfig()
+    const res = await createApp({ config }).request('/posts')
+    const body = await res.text()
+    expect(body).toContain('<a class="active" href="/posts">posts</a>')
+  })
+})
+
 describe('POST /actions', () => {
   const TOKEN = 'test-token'
 
-  function post(config: DashboardConfig, body: Record<string, string | string[]>, headers: Record<string, string> = {}) {
+  function post(
+    config: DashboardConfig,
+    body: Record<string, string | string[]>,
+    headers: Record<string, string> = {},
+  ) {
     const form = new URLSearchParams()
     for (const [key, value] of Object.entries(body)) {
       for (const v of Array.isArray(value) ? value : [value]) form.append(key, v)
@@ -378,11 +310,19 @@ describe('POST /actions', () => {
 
   it('enqueues a pending row and redirects back', async () => {
     const config = seededConfig()
-    const res = await post(config, { kind: 'topics.reject', csrf: TOKEN, ids: '4', from: '/topics' })
+    const res = await post(config, {
+      kind: 'topics.reject',
+      csrf: TOKEN,
+      ids: '4',
+      from: '/topics',
+    })
     expect(res.status).toBe(303)
     const db = openDb(config.paths.dbPath)
     const rows = db.prepare('SELECT kind, lane, args, status FROM operator_actions').all() as {
-      kind: string; lane: string; args: string; status: string
+      kind: string
+      lane: string
+      args: string
+      status: string
     }[]
     expect(rows).toEqual([
       { kind: 'topics.reject', lane: 'fast', args: '{"ids":[4]}', status: 'pending' },
@@ -391,7 +331,12 @@ describe('POST /actions', () => {
   })
 
   it('redirects to the submitting page carrying the new action id', async () => {
-    const res = await post(seededConfig(), { kind: 'topics.reject', csrf: TOKEN, ids: '4', from: '/topics?status=candidate' })
+    const res = await post(seededConfig(), {
+      kind: 'topics.reject',
+      csrf: TOKEN,
+      ids: '4',
+      from: '/topics?status=candidate',
+    })
     expect(res.headers.get('location')).toBe('/topics?status=candidate&action=1')
   })
 
@@ -403,13 +348,21 @@ describe('POST /actions', () => {
   it('refuses an off-site redirect target', async () => {
     // `from` is operator-controlled; an absolute url would make the dashboard
     // an open redirect.
-    const res = await post(seededConfig(), { kind: 'digest.run', csrf: TOKEN, from: 'https://evil.example/x' })
+    const res = await post(seededConfig(), {
+      kind: 'digest.run',
+      csrf: TOKEN,
+      from: 'https://evil.example/x',
+    })
     expect(res.headers.get('location')).toBe('/actions?action=1')
   })
 
   it('rejects a cross-site submission without writing', async () => {
     const config = seededConfig()
-    const res = await post(config, { kind: 'topics.reject', csrf: TOKEN, ids: '4' }, { 'sec-fetch-site': 'cross-site', origin: 'http://evil.example' })
+    const res = await post(
+      config,
+      { kind: 'topics.reject', csrf: TOKEN, ids: '4' },
+      { 'sec-fetch-site': 'cross-site', origin: 'http://evil.example' },
+    )
     expect(res.status).toBe(403)
     const db = openDb(config.paths.dbPath)
     expect(db.prepare('SELECT count(*) AS n FROM operator_actions').get()).toEqual({ n: 0 })
@@ -517,30 +470,29 @@ describe('POST /actions', () => {
     db.close()
   })
 
-  it.each([
-    '/\\evil.example',
-    '/..//evil.example',
-    '/%2e%2e//evil.example',
-  ])('does not let from=%s escape the dashboard origin', async (from) => {
-    // '\' is equivalent to '/' under WHATWG URL rules for a special scheme,
-    // so a prefix-check guard (`startsWith('/') && !startsWith('//')`) would
-    // wrongly accept `/\evil.example` and the browser would resolve it
-    // off-origin. `/..//evil.example` and its percent-encoded twin are the
-    // other half of that class: they parse same-origin against the sentinel
-    // (input-side check passes), but `.pathname` normalizes the `..` away and
-    // leaves `//evil.example`, which a browser resolves as scheme-relative —
-    // this is what the output-side re-check in sameSitePath catches.
-    // Resolve the Location header the way a browser actually would, and
-    // assert on .origin rather than string-comparing — a string comparison
-    // would pass for the wrong reason (e.g. matching literal text) without
-    // proving the browser-resolved target is actually same-origin.
-    const res = await post(seededConfig(), { kind: 'digest.run', csrf: TOKEN, from })
-    expect(res.status).toBe(303)
-    const location = res.headers.get('location')
-    expect(location).not.toBeNull()
-    const resolved = new URL(location as string, 'http://127.0.0.1:8787')
-    expect(resolved.origin).toBe('http://127.0.0.1:8787')
-  })
+  it.each(['/\\evil.example', '/..//evil.example', '/%2e%2e//evil.example'])(
+    'does not let from=%s escape the dashboard origin',
+    async (from) => {
+      // '\' is equivalent to '/' under WHATWG URL rules for a special scheme,
+      // so a prefix-check guard (`startsWith('/') && !startsWith('//')`) would
+      // wrongly accept `/\evil.example` and the browser would resolve it
+      // off-origin. `/..//evil.example` and its percent-encoded twin are the
+      // other half of that class: they parse same-origin against the sentinel
+      // (input-side check passes), but `.pathname` normalizes the `..` away and
+      // leaves `//evil.example`, which a browser resolves as scheme-relative —
+      // this is what the output-side re-check in sameSitePath catches.
+      // Resolve the Location header the way a browser actually would, and
+      // assert on .origin rather than string-comparing — a string comparison
+      // would pass for the wrong reason (e.g. matching literal text) without
+      // proving the browser-resolved target is actually same-origin.
+      const res = await post(seededConfig(), { kind: 'digest.run', csrf: TOKEN, from })
+      expect(res.status).toBe(303)
+      const location = res.headers.get('location')
+      expect(location).not.toBeNull()
+      const resolved = new URL(location as string, 'http://127.0.0.1:8787')
+      expect(resolved.origin).toBe('http://127.0.0.1:8787')
+    },
+  )
 
   // A from=/topics?status=candidate query-string-preservation case is not
   // duplicated here: 'redirects to the submitting page carrying the new
@@ -583,9 +535,9 @@ describe('POST /actions', () => {
     db.prepare('DELETE FROM daemon_state').run()
     db.close()
     // Fail closed: no row means no daemon has ever run against this root.
-    expect((await post(config, { kind: 'digest.run', csrf: TOKEN, from: '/overview' })).status).toBe(
-      409,
-    )
+    expect(
+      (await post(config, { kind: 'digest.run', csrf: TOKEN, from: '/overview' })).status,
+    ).toBe(409)
   })
 
   it('refuses with the daemon-down message when operator_actions has never been created', async () => {
@@ -618,25 +570,28 @@ describe('POST /actions', () => {
 describe('GET /actions/confirm', () => {
   it('renders the interstitial for a confirmable action', async () => {
     const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
-      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+      '/actions/confirm?kind=jobs.resume&from=%2Fjobs&jobId=j1',
     )
     expect(res.status).toBe(200)
     const body = await res.text()
-    expect(body).toContain('cannot be undone')
+    // jobs.resume declares its own danger text rather than the generic
+    // "cannot be undone" fallback — pin a substring of it instead.
+    expect(body).toContain('spends real money')
     expect(body).toContain('value="j1"')
   })
 
   it('shows the daemon banner and disables the submit when the daemon heartbeat is stale', async () => {
-    // publish.markDone is the only confirm:true action and the only one
-    // reached through this route — a stale daemon here must read the same
-    // way it does on every other page rather than staying silently live.
+    // jobs.resume is one of the confirm:true actions, and the one reached
+    // through this route with a per-row jobId — a stale daemon here must
+    // read the same way it does on every other page rather than staying
+    // silently live.
     const config = seededConfig()
     const now = new Date()
     const db = openDb(config.paths.dbPath)
     seedDaemonState(db, { lastSeenAt: new Date(now.getTime() - 5 * 60_000) })
     db.close()
     const res = await createApp({ config, csrfToken: 'tok', now: () => now }).request(
-      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+      '/actions/confirm?kind=jobs.resume&from=%2Fjobs&jobId=j1',
     )
     expect(res.status).toBe(200)
     const body = await res.text()
@@ -652,7 +607,7 @@ describe('GET /actions/confirm', () => {
     db.prepare('DELETE FROM daemon_state').run()
     db.close()
     const res = await createApp({ config, csrfToken: 'tok' }).request(
-      '/actions/confirm?kind=publish.markDone&from=%2Fpublishes&jobId=j1',
+      '/actions/confirm?kind=jobs.resume&from=%2Fjobs&jobId=j1',
     )
     expect(res.status).toBe(200)
     const body = await res.text()
@@ -675,33 +630,33 @@ describe('GET /actions/confirm', () => {
     expect(res.status).toBe(400)
   })
 
-  it.each([
-    '/\\evil.example',
-    '/..//evil.example',
-  ])('rejects a hostile from=%s and renders no off-site link', async (from) => {
-    // The confirm route must apply the same sameSitePath validation the POST
-    // route does (see the it.each above), so the cancel link and the hidden
-    // `from` field can never carry an off-origin target. renderConfirmPage
-    // renders both unconditionally, so both regexes must match here — an
-    // `if (match)` guard would let a markup change silently stop checking
-    // anything but the 200. Resolve each attribute the way a browser would
-    // and assert on `.origin`, not string content.
-    const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
-      `/actions/confirm?kind=publish.markDone&from=${encodeURIComponent(from)}&jobId=j1`,
-    )
-    expect(res.status).toBe(200)
-    const body = await res.text()
+  it.each(['/\\evil.example', '/..//evil.example'])(
+    'rejects a hostile from=%s and renders no off-site link',
+    async (from) => {
+      // The confirm route must apply the same sameSitePath validation the POST
+      // route does (see the it.each above), so the cancel link and the hidden
+      // `from` field can never carry an off-origin target. renderConfirmPage
+      // renders both unconditionally, so both regexes must match here — an
+      // `if (match)` guard would let a markup change silently stop checking
+      // anything but the 200. Resolve each attribute the way a browser would
+      // and assert on `.origin`, not string content.
+      const res = await createApp({ config: seededConfig(), csrfToken: 'tok' }).request(
+        `/actions/confirm?kind=jobs.resume&from=${encodeURIComponent(from)}&jobId=j1`,
+      )
+      expect(res.status).toBe(200)
+      const body = await res.text()
 
-    const cancelHrefMatch = body.match(/class="action-link"[^>]*href="([^"]*)"/)
-    expect(cancelHrefMatch).not.toBeNull()
-    const cancelHref = unescapeHtmlAttr((cancelHrefMatch as RegExpMatchArray)[1])
-    expect(new URL(cancelHref, 'http://127.0.0.1:8787').origin).toBe('http://127.0.0.1:8787')
+      const cancelHrefMatch = body.match(/class="action-link"[^>]*href="([^"]*)"/)
+      expect(cancelHrefMatch).not.toBeNull()
+      const cancelHref = unescapeHtmlAttr((cancelHrefMatch as RegExpMatchArray)[1])
+      expect(new URL(cancelHref, 'http://127.0.0.1:8787').origin).toBe('http://127.0.0.1:8787')
 
-    const fromFieldMatch = body.match(/name="from"\s+value="([^"]*)"/)
-    expect(fromFieldMatch).not.toBeNull()
-    const fromValue = unescapeHtmlAttr((fromFieldMatch as RegExpMatchArray)[1])
-    expect(new URL(fromValue, 'http://127.0.0.1:8787').origin).toBe('http://127.0.0.1:8787')
-  })
+      const fromFieldMatch = body.match(/name="from"\s+value="([^"]*)"/)
+      expect(fromFieldMatch).not.toBeNull()
+      const fromValue = unescapeHtmlAttr((fromFieldMatch as RegExpMatchArray)[1])
+      expect(new URL(fromValue, 'http://127.0.0.1:8787').origin).toBe('http://127.0.0.1:8787')
+    },
+  )
 })
 
 describe('unbounded list truncation', () => {

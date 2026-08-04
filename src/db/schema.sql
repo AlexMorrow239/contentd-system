@@ -13,6 +13,12 @@ CREATE TABLE IF NOT EXISTS job_stages (
 );
 CREATE TABLE IF NOT EXISTS library (
   job_id TEXT PRIMARY KEY REFERENCES jobs(id), video_path TEXT NOT NULL, metadata_json TEXT NOT NULL,
+  -- 'published' is a retired state: migrate.ts rewrites every existing row to
+  -- 'ready' and nothing writes it any more. It stays in the CHECK only because
+  -- a CHECK cannot be ALTERed — tightening it would need a full table rebuild,
+  -- which isn't worth it for a constraint that is merely permissive.
+  -- src/jobs/library.ts's LibraryState type (which excludes it) is the
+  -- authoritative set of states a row can actually be in.
   state TEXT NOT NULL CHECK (state IN ('ready','needs-review','published','blocked')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -22,8 +28,8 @@ CREATE TABLE IF NOT EXISTS library_objects (
   bytes INTEGER NOT NULL,
   etag TEXT NOT NULL,
   uploaded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  -- Set when the sweep in publish/reclaim.ts deleted the object because every
-  -- platform the channel declares had a settled leg. The row itself SURVIVES
+  -- Set when the sweep in posts/reclaim.ts deleted the object because every
+  -- platform the channel declares has been posted to. The row itself SURVIVES
   -- as the record of what was there: unstoredLibraryJobs finds backfill
   -- candidates by the ABSENCE of a row, so keeping it is what stops
   -- `library backfill-store` from re-uploading what the sweep deleted.
@@ -66,42 +72,31 @@ CREATE TABLE IF NOT EXISTS topics (
 -- this file BEFORE calling migrate, so an index over the series_key/part_index
 -- columns would throw on every existing database—those columns arrive via
 -- migrate's ALTER TABLE. A failure during schema.sql wedges the whole CLI, so
--- this follows the same rule as ux_publishes_live below. Both are kept in
--- migrate.ts for cohesion even though ix_topics_job could safely live here
--- (job_id exists in all databases). They are named here so the shape reads
--- complete and migrate.ts can stay the single source of truth for column
--- creation:
+-- both are kept in migrate.ts for cohesion even though ix_topics_job could
+-- safely live here (job_id exists in all databases). They are named here so
+-- the shape reads complete and migrate.ts can stay the single source of truth
+-- for column creation:
 --   CREATE INDEX IF NOT EXISTS ix_topics_job    ON topics (job_id);
 --   CREATE INDEX IF NOT EXISTS ix_topics_series ON topics (series_key, part_index);
 CREATE TABLE IF NOT EXISTS leases (
   name TEXT PRIMARY KEY, holder TEXT NOT NULL, expires_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS publishes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  job_id TEXT NOT NULL REFERENCES jobs(id),
-  platform TEXT NOT NULL,
-  channel TEXT NOT NULL,
-  day TEXT NOT NULL,      -- local YYYY-MM-DD the attempt was made on
-  seq INTEGER NOT NULL,   -- 1-based ordinal within (channel, platform, day)
-  status TEXT NOT NULL CHECK (status IN ('claimed','done','failed','interrupted')),
-  post_id TEXT, url TEXT, error TEXT,
-  error_kind TEXT CHECK (error_kind IN ('auth','quota','rejected','transient')),  -- null unless failed
-  attempt INTEGER NOT NULL,   -- 1-based ordinal per (job_id, platform)
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  finished_at TEXT,
-  -- Bookkeeping only: seq is derived from existing rows, so two racing claims
-  -- get distinct ordinals rather than colliding. The double-publish backstop is
-  -- the partial index below.
-  UNIQUE (channel, platform, day, seq)
+-- One row per (video, platform) the operator actually posted. There is no
+-- status column on purpose: the row's EXISTENCE is the fact. Correcting a
+-- mistake is a DELETE, not a transition. `url` is nullable because pasting
+-- the link back is optional record-keeping, not a precondition.
+--
+-- `channel` is denormalized off `jobs` because every read here is
+-- channel-scoped and the join is pure overhead — the same call the deleted
+-- `publishes` table made.
+CREATE TABLE IF NOT EXISTS posts (
+  job_id    TEXT NOT NULL,
+  channel   TEXT NOT NULL,
+  platform  TEXT NOT NULL,
+  url       TEXT,
+  posted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  PRIMARY KEY (job_id, platform)
 );
--- At most one live (claimed/done/interrupted) row per (job_id, platform) — the
--- database-level double-publish guard. Created by migrate.ts, NOT here, and
--- that placement is load-bearing: openDb execs this file on every command, so a
--- CREATE UNIQUE INDEX here would throw on any database holding a pre-existing
--- violation and wedge the whole CLI. migrate.ts probes first and reports
--- instead. See ensureLivePublishIndex there for the full rationale.
---   CREATE UNIQUE INDEX ux_publishes_live ON publishes (job_id, platform)
---     WHERE status IN ('claimed','done','interrupted');
 -- Per-channel scout attempt cadence: channels are config-file entities, not DB
 -- rows, so this is the one small table keyed on channel name (mirrors
 -- `leases`' PK-keyed shape) recording when a channel was last actually
@@ -111,21 +106,13 @@ CREATE TABLE IF NOT EXISTS publishes (
 CREATE TABLE IF NOT EXISTS scout_state (
   channel TEXT PRIMARY KEY, last_attempt_at TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS oauth_tokens (
-  platform TEXT NOT NULL,
-  channel TEXT NOT NULL,
-  token_ciphertext BLOB NOT NULL,   -- iv (12B) || gcm tag (16B) || ciphertext
-  scopes TEXT NOT NULL,
-  expires_at TEXT,                  -- NULL = no expiry (YouTube's refresh token)
-  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  PRIMARY KEY (platform, channel)
-);
 
 -- The operator-action queue. The dashboard's ONLY write is an INSERT here;
 -- the daemon's actions-fast / actions-slow workers drain it and execute each
--- action in-process, under the same leases the produce/publish workers take.
--- That is what makes a dashboard-triggered mutation race-free where the
--- equivalent CLI command is not (see CLAUDE.md, "outside these leases").
+-- action in-process, under the same leases (produce, scout) the daemon's
+-- other workers take. That is what makes a dashboard-triggered mutation
+-- race-free where the equivalent CLI command is not (see CLAUDE.md, "outside
+-- these leases").
 --
 -- `notice` carries an interactive status an action wants the operator to see
 -- before it can proceed. Today the only writer is the worker's lease-blocked

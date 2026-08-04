@@ -13,7 +13,7 @@ export type QcSummary =
  * the dashboard can stream it. 'archived' — only the bucket has it; the
  * dashboard holds no bucket credentials by design, so it can name the state
  * but not play the video. 'reclaimed' — the object was deliberately deleted
- * after every declared platform settled, and the live post is all that is
+ * after every declared platform was posted, and the live post is all that is
  * left. 'unstored' — there is no local file AND no library_objects row: the
  * video was never uploaded to object storage at all, distinct from
  * 'archived' (uploaded, just not present locally). This is exactly the set
@@ -92,9 +92,10 @@ export function libraryBytes(row: {
 }
 
 /**
- * Live post urls per job, in ONE grouped read rather than a query per row.
- * Only 'done' rows with a url qualify — a failed attempt has nothing to link
- * to, and a done row without one predates url capture.
+ * Post urls per job, in ONE grouped read rather than a query per row. A post
+ * with no url is a real post the operator did not paste a link for, so it is
+ * excluded here (there is nothing to link to) while still counting everywhere
+ * else.
  */
 export function libraryLinks(db: Database, jobIds: string[]): Map<string, LibraryLink[]> {
   const byJob = new Map<string, LibraryLink[]>()
@@ -102,8 +103,8 @@ export function libraryLinks(db: Database, jobIds: string[]): Map<string, Librar
   const placeholders = jobIds.map(() => '?').join(', ')
   const rows = db
     .prepare(
-      `SELECT job_id, platform, url FROM publishes
-       WHERE job_id IN (${placeholders}) AND status = 'done' AND url IS NOT NULL
+      `SELECT job_id, platform, url FROM posts
+       WHERE job_id IN (${placeholders}) AND url IS NOT NULL
        ORDER BY job_id, platform`,
     )
     .all(...jobIds) as { job_id: string; platform: string; url: string }[]

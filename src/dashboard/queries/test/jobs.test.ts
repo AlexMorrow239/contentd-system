@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from '../jobs.js'
 import { tmpDir } from '../../../testing/tmp.js'
-import { memDb } from '../../../testing/db.js'
+import { memDb, seedPost } from '../../../testing/db.js'
 
 function seed(): Database {
   const db = memDb()
@@ -200,20 +200,14 @@ describe('getJobDetail', () => {
     db.close()
   })
 
-  it('lists live post links for the job, one per platform', () => {
+  it('lists post links for the job, one per platform', () => {
     const db = seed()
     db.prepare(
       'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'published')",
+        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
     ).run()
-    db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, seq, status, url, attempt) " +
-        "VALUES ('j2','youtube','ocean','2026-07-25',1,'done','https://youtu.be/abc',1)",
-    ).run()
-    db.prepare(
-      "INSERT INTO publishes (job_id, platform, channel, day, seq, status, url, attempt) " +
-        "VALUES ('j2','instagram','ocean','2026-07-25',2,'failed',NULL,1)",
-    ).run()
+    seedPost(db, { jobId: 'j2', channel: 'ocean', platform: 'youtube', url: 'https://youtu.be/abc' })
+    seedPost(db, { jobId: 'j2', channel: 'ocean', platform: 'instagram', url: null })
     expect(getJobDetail(db, 'j2')?.links).toEqual([{ platform: 'youtube', url: 'https://youtu.be/abc' }])
     db.close()
   })

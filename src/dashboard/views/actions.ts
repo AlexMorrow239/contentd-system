@@ -78,8 +78,8 @@ export function missingTableBanner(): SafeHtml {
  * The zero-JS confirmation step for a confirm:true action. It carries two
  * jobs at once: it states the consequence in words before anything
  * irreversible happens, and it collects any argument the calling page could
- * not supply (publish.markDone's postId, which the operator reads off the
- * platform).
+ * not supply — `opts.missing` names those fields, derived by diffing
+ * `actionArgNames` against what the calling page already had on hand.
  */
 export function renderConfirmPage(opts: {
   kind: ActionKind

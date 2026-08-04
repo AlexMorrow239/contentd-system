@@ -19,7 +19,7 @@ function entry(overrides: Partial<LibraryEntry> = {}): LibraryEntry {
     jobId: 'job-1',
     channel: 'chan-a',
     topic: 'a topic',
-    state: 'published',
+    state: 'ready',
     videoPath: '/runs/job-1/assemble/final.mp4',
     createdAt: '2026-07-26T00:00:00.000Z',
     qc: { kind: 'ok' },
@@ -184,11 +184,37 @@ describe('renderLibraryPage', () => {
     expect(out).not.toContain('name="jobIds" value="j2"')
   })
 
-  it('offers no reject control yet', () => {
-    // library.reject also deletes stored objects, so it is a slow-lane action
-    // and lands in phase 2. A control here would enqueue a kind with no handler.
+  it('offers a discard (library.reject) control on a needs-review row', () => {
+    // confirm:true, so this renders as a link to the confirm interstitial
+    // rather than a direct form.
     const out = renderLibraryPage({
       entries: [entry({ jobId: 'j1', state: 'needs-review' })],
+      total: 1,
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('kind=library.reject')
+    expect(out).toContain('jobIds=j1')
+  })
+
+  it('offers a discard (library.reject) control on a ready row too', () => {
+    const out = renderLibraryPage({
+      entries: [entry({ jobId: 'j2', state: 'ready' })],
+      total: 1,
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('kind=library.reject')
+    expect(out).toContain('jobIds=j2')
+  })
+
+  it('offers no discard control on an already-blocked row', () => {
+    const out = renderLibraryPage({
+      entries: [entry({ jobId: 'j3', state: 'blocked' })],
       total: 1,
       channels: [],
       filter: {},

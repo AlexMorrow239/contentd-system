@@ -1,11 +1,12 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
-import { BrainrotError } from '../errors.js'
+import { BrainrotError, errorMessage } from '../errors.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef } from '../jobs/types.js'
+import { RECLAIM_BATCH_LIMIT, reclaimableObjects, reclaimObjects } from '../posts/reclaim.js'
 import { claimTopic, markTopicUsedByJob } from '../scout/topics.js'
 // ./config.js, not ./s3.js: validating configuration must not drag the AWS
 // SDK onto this tick's startup path.
@@ -22,7 +23,6 @@ export interface TickResult {
     | 'claim-conflict'
     | 'resume-refused'
     | 'config-error'
-    | 'bad-env'
   jobId?: string
   topicId?: number
   status?: JobResult['status']
@@ -55,18 +55,6 @@ export async function produceNextTick(
   },
 ): Promise<TickResult> {
   const stagesFor = opts.stagesFor ?? pipelineStages
-  // Object storage is REQUIRED, not optional (design spec §3.5, decision 1:
-  // the cloud copy is the durable one). The check sits here, ahead of the
-  // lease and the render, because the `store` stage runs LAST — without it an
-  // unconfigured deployment discovers the problem only after paying for a
-  // full Remotion render, then fails the job with no library row to show for
-  // it. Same shape as publish-next's badEnvMessage(): one JSON line, exit 0,
-  // a named cause. The human-readable stderr copy is the one-shot CLI's job
-  // (src/cli.ts), not this function's — see the config-error note below.
-  const storageError = s3ConfigError()
-  if (storageError !== undefined) {
-    return { action: 'noop', reason: 'bad-env', error: storageError }
-  }
   // Config load comes BEFORE the lease: a broken channel TOML (or a missing
   // channels dir) blocks the whole tick either way, and burning a lease slot on
   // it would only mean the next firing waits on a lease that was never going to
@@ -119,6 +107,28 @@ export async function produceNextTick(
     db.prepare(
       "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
     ).run()
+    // The reclaim sweep moved here from the deleted publish tick: it needs a
+    // lease window and a channel list, and this is the only remaining worker
+    // with both. It is a sweep, not a gate — a storage failure must not stop
+    // the tick from producing, so it reports and moves on. Object storage is
+    // now optional (src/stages/store.ts), so skip the sweep entirely when
+    // unconfigured — there is nothing to reclaim when nothing was ever stored.
+    if (s3ConfigError() === undefined) {
+      for (const channel of channels) {
+        const objects = reclaimableObjects(db, {
+          channel: channel.name,
+          declared: channel.platforms,
+          limit: RECLAIM_BATCH_LIMIT,
+        })
+        if (objects.length === 0) continue
+        try {
+          const store = (await import('../storage/s3.js')).storeFromEnv()
+          await reclaimObjects({ db, objects, store })
+        } catch (err) {
+          console.log(JSON.stringify({ event: 'reclaim-error', error: errorMessage(err) }))
+        }
+      }
+    }
     const plan = planTick(db, channels)
 
     if (plan.kind === 'noop') {

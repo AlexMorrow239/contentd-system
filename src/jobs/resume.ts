@@ -20,7 +20,9 @@ import type { StageDef } from './types.js'
 export type ResumeErrorKind = 'not-found' | 'refused' | 'conflict'
 
 export class ResumeError extends BrainrotError {
-  // See PublishError: `declare` is mandatory under useDefineForClassFields.
+  // `declare` is mandatory under useDefineForClassFields — without it, the
+  // base class's field initializer runs after this one and overwrites it
+  // with `undefined`.
   declare readonly kind: ResumeErrorKind
 
   constructor(message: string, kind: ResumeErrorKind) {

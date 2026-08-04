@@ -5,7 +5,7 @@ import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
 import { actionForm, daemonBanner } from './actions.js'
 
-const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'published', 'blocked']
+const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'blocked']
 
 function option(value: string, selected: string | undefined): SafeHtml {
   return selected === value
@@ -71,14 +71,28 @@ function libraryActions(
   csrfToken: string,
   daemonStale: boolean,
 ): SafeHtml {
-  if (row.state !== 'needs-review') return html``
-  return actionForm({
-    kind: 'library.approve',
+  // 'blocked' is already the discard state — nothing left to approve or
+  // reject from there.
+  if (row.state === 'blocked') return html``
+  const approve =
+    row.state === 'needs-review'
+      ? actionForm({
+          kind: 'library.approve',
+          csrfToken,
+          from: '/library',
+          fields: { jobIds: row.jobId },
+          disabled: daemonStale,
+        })
+      : html``
+  const reject = actionForm({
+    kind: 'library.reject',
     csrfToken,
     from: '/library',
     fields: { jobIds: row.jobId },
     disabled: daemonStale,
+    subtle: true,
   })
+  return html`${approve} ${reject}`
 }
 
 export function renderLibraryPage(data: LibraryPageData): SafeHtml {
