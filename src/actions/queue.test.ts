@@ -112,4 +112,36 @@ describe('operator action queue', () => {
   it('returns null for an unknown id', () => {
     expect(getAction(memDb(), 999)).toBeNull()
   })
+
+  it('preserves notice when an action fails, so the diagnostic survives', () => {
+    const db = memDb()
+    const id = enqueueAction(db, { kind: 'digest.run', args: {}, requestedBy: 'dashboard' })
+    startAction(db, id, new Date())
+    setActionNotice(db, id, 'job abc123')
+    failAction(db, id, new Error('render died'), new Date())
+    const row = getAction(db, id)
+    expect(row?.status).toBe('failed')
+    // The whole point: an interrupted render must stay traceable to its job.
+    expect(row?.notice).toBe('job abc123')
+  })
+
+  it('preserves notice through the daemon-restart sweep', () => {
+    const db = memDb()
+    const id = enqueueAction(db, { kind: 'digest.run', args: {}, requestedBy: 'dashboard' })
+    startAction(db, id, new Date())
+    setActionNotice(db, id, 'job abc123')
+    expect(failRunningActions(db, 'fast', new Date())).toBe(1)
+    expect(getAction(db, id)?.notice).toBe('job abc123')
+  })
+
+  it('still clears notice on the claim and on success', () => {
+    const db = memDb()
+    const id = enqueueAction(db, { kind: 'digest.run', args: {}, requestedBy: 'dashboard' })
+    setActionNotice(db, id, 'waiting for the produce lease')
+    startAction(db, id, new Date())
+    expect(getAction(db, id)?.notice).toBeNull()
+    setActionNotice(db, id, 'in progress')
+    completeAction(db, id, { ok: true }, new Date())
+    expect(getAction(db, id)?.notice).toBeNull()
+  })
 })

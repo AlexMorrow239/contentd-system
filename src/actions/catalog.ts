@@ -55,6 +55,28 @@ function list<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.infer<T>[]> {
   )
 }
 
+/**
+ * A checkbox. Unchecked submits NOTHING (undefined), checked submits its
+ * value. Deliberately not `z.coerce.boolean()`, which returns true for the
+ * string "false" — a trap that would turn every dry-run toggle into a live run.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function flag(): z.ZodType<boolean> {
+  return z.preprocess((v) => v === '1' || v === 'on' || v === true, z.boolean())
+}
+
+/**
+ * An optional free-text field. A blank input submits `''`, which `.optional()`
+ * alone would happily accept as a present-but-empty value — for a channel
+ * filter that is the difference between "all channels" and "the channel named
+ * empty string". Same shape as `optionalUrl` above, without the url check.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const optionalText = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().trim().min(1).optional(),
+)
+
 const topicId = z.coerce.number().int().positive()
 const jobId = z.string().trim().min(1)
 const platform = z.enum(PLATFORMS)

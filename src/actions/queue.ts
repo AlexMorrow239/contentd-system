@@ -73,18 +73,19 @@ export function completeAction(db: Database, id: number, result: unknown, now: D
 
 export function failAction(db: Database, id: number, err: unknown, now: Date): void {
   db.prepare(
-    "UPDATE operator_actions SET status = 'failed', error = ?, error_kind = ?, finished_at = ?, notice = NULL WHERE id = ?",
+    "UPDATE operator_actions SET status = 'failed', error = ?, error_kind = ?, finished_at = ? WHERE id = ?",
   ).run(errorMessage(err), classify(err).kind, now.toISOString(), id)
 }
 
 /**
- * Publishes an interactive status for the row to show the operator. Today the
- * only caller is the worker's lease-blocked path, writing to a row that is
- * still `pending` (e.g. "waiting for the produce lease"). The planned second
- * writer is a *running* handler reporting progress through
- * `ActionContext.setNotice`. That was originally scoped for an OAuth consent
- * url; OAuth is gone with the publishing pipeline, so the live use is
- * `topics.pruneMedia`'s per-row progress over a minutes-long rate-limited run.
+ * Publishes an interactive status for the row to show the operator: the
+ * worker's lease-blocked path writes here while a row is still `pending`, and
+ * a running handler writes here through `ActionContext.setNotice`
+ * (`jobs.produce`'s job id, `topics.pruneMedia`'s per-row progress).
+ *
+ * `startAction` and `completeAction` clear it; the two FAILURE transitions
+ * deliberately do NOT. A killed `jobs.produce` must stay traceable to the job
+ * it created, and on a failure the notice is exactly the context wanted.
  */
 export function setActionNotice(db: Database, id: number, notice: string | null): void {
   db.prepare('UPDATE operator_actions SET notice = ? WHERE id = ?').run(notice, id)
@@ -114,7 +115,7 @@ export function failRunningActions(db: Database, lane: ActionLane, now: Date): n
     .prepare(
       `UPDATE operator_actions
        SET status = 'failed', error = 'interrupted by a daemon restart',
-           error_kind = 'internal', finished_at = ?, notice = NULL
+           error_kind = 'internal', finished_at = ?
        WHERE lane = ? AND status = 'running'`,
     )
     .run(now.toISOString(), lane).changes
