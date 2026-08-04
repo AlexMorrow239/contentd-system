@@ -236,16 +236,17 @@ not (see "outside these leases", above).
 pure metadata (`kind`, `lane`, label, zod arg schema, `confirm` flag, the
 lease it needs) with no heavy imports, read by **both** the dashboard (to
 render forms and validate submitted args) and the daemon; `handlers.ts` holds
-the `run` implementations for today's ten actions — it imports
+the `run` implementations for today's thirteen actions — it imports
 `approveLibrary`/`rejectLibrary`/`deleteRejectedObjects`, `buildDigest`,
 `markPosted`/`unmarkPosted` (`src/posts/posts.ts`),
-`rejectTopics`/`requeueTopic`, and `produceNextTick`, `scoutAll` and
-`resumeJob` — and is imported **only** by the daemon. Those last three are
-what make the arch lint below matter more than it did: they reach Remotion
-and the provider clients transitively, so a single import of this module
-from the dashboard would pull all of it into the unauthenticated HTTP
-process. `queue.ts` is the DAO (`enqueueAction`, `pendingActions`,
-`startAction`, `completeAction`, `failAction`, `setActionNotice`,
+`rejectTopics`/`requeueTopic`, `createJob`/`runJob`, `backfillStore`,
+`pruneMedia`, and `produceNextTick`, `scoutAll` and `resumeJob` — and is
+imported **only** by the daemon. The pipeline, scout and storage imports are
+what make the arch lint below matter more than it did: they reach Remotion,
+the provider clients or the object-storage SDK transitively, so a single
+import of this module from the dashboard would pull all of it into the
+unauthenticated HTTP process. `queue.ts` is the DAO (`enqueueAction`,
+`pendingActions`, `startAction`, `completeAction`, `failAction`, `setActionNotice`,
 `getAction`, `listRecentActions`, `failRunningActions`) — there is no
 `claimNext`; `pendingActions` plus `startAction`'s `status = 'pending'` guard
 together serve that role.
@@ -258,23 +259,58 @@ Anthropic, or credential code. An arch lint in `src/arch.test.ts`
 **transitively** — a real DFS over the module graph, not a substring grep —
 and fails if any path reaches `src/actions/handlers.ts`.
 
-Ten actions exist today, seven `fast` and three `slow`. Fast is
+Thirteen actions exist today, six `fast` and seven `slow`. Fast is
 `topics.reject`, `topics.requeue`, `library.approve`, `digest.run`,
-`post.mark`, `post.unmark` and `library.reject` — local SQLite writes plus,
-in `digest.run`'s case, a config-directory read, never a network call, a
-provider call or a render, and never a lease: no fast action leases anymore,
-since the two that used to (mutating `publishes` rows) are gone with that
-table. Slow — anything that can take seconds or minutes — is `produce.next`,
-`scout.run` and `jobs.resume`. Four route through the confirm interstitial
-(`confirm: true`): `produce.next` and `jobs.resume` — the ones that render
-and spend — plus two fast, data-losing actions: `library.reject` ("discard"),
-which frees stored bytes and pulls a video out of the posting queue for
-good, and `post.unmark`, which throws away a saved link the operator may not
-remember. Neither of those two spends money or takes seconds; the
-interstitial here is about irrecoverable data loss, not slowness. Note the
-gap the other way: `scout.run` fires on one click and does spend (scoring,
-plus generation where `generate_topics` is set) yet has `confirm: false` —
-`confirm` tracks the irreversible/data-losing, not "costs money" as such.
+`post.mark` and `post.unmark` — local SQLite writes plus, in `digest.run`'s
+case, a config-directory read, never a network call, a provider call or a
+render, and never a lease: no fast action leases anymore, since the two that
+used to (mutating `publishes` rows) are gone with that table. Slow —
+anything that can take seconds or minutes — is `produce.next`, `jobs.produce`,
+`scout.run`, `jobs.resume`, `library.reject`, `library.backfillStore` and
+`topics.pruneMedia`. `library.reject` lives here rather than in fast because
+its handler makes real network calls (a dynamic S3 import plus one
+`store.delete()` per object, sequentially) that a slow or unreachable bucket
+could stretch long enough to stall the fast lane's heartbeat and trip the
+dashboard's 409 liveness gate mid-discard.
+
+Of those seven slow actions, four declare a lease and three declare none.
+`jobs.produce` and `jobs.resume` take `produce`; `scout.run` and
+`topics.pruneMedia` take `scout`; `produce.next`, `library.reject` and
+`library.backfillStore` take none. `jobs.produce` sitting beside
+`produce.next` is the clearest statement of the lease rule in the whole file:
+`produceNextTick` acquires `produce` *inside itself*, so `produce.next`
+declaring the lease here would make the worker hold the very lease the tick
+then fails to take, turning every click into a green `lease-held` noop —
+which is why it declares none. `runJob`, by contrast, does not lease on its
+own (the CLI's `produce` command runs outside every lease on purpose, same as
+`resume`), so `jobs.produce` declaring `produce` here is what makes the
+dashboard's version race-free against the daemon's own produce worker,
+exactly where the CLI path is not.
+
+Seven route through the confirm interstitial (`confirm: true`):
+`produce.next`, `jobs.produce` and `jobs.resume` — the ones that render and
+spend — plus `library.reject` ("discard") and `post.unmark`, both
+data-losing rather than slow or costly, plus two added this phase for a
+third reason each: `library.backfillStore`, which can upload a lot of bytes
+at whatever an operator's object storage charges per byte, and
+`topics.pruneMedia`, which runs for minutes and bulk-rejects scouted topics
+(its `dryRun` flag is the safer alternative the interstitial's danger text
+points to). Note the gap the other way: `scout.run` fires on one click and
+does spend (scoring, plus generation where `generate_topics` is set) yet has
+`confirm: false` — `confirm` tracks the irreversible, data-losing or costly,
+not "costs money" or "is slow" alone.
+
+The `notice` column follows a similar asymmetry: `startAction` and
+`completeAction` clear it, but the two failure transitions (`failAction`,
+`failRunningActions`) deliberately do not. `jobs.produce` mints its job id
+*inside* the handler and publishes it through `ctx.setNotice` the instant it
+exists; if the process dies mid-render, the action row goes `failed` but the
+notice is the only place left naming the job the operator can still resume.
+`topics.pruneMedia` is the first end-to-end proof that a running handler's
+`setNotice` call reaches the row while the handler is still executing and
+survives it throwing — closing out what had been true in principle but
+untested.
+
 `actions-fast` drains up to
 `MAX_FAST_DRAIN` (50) pending rows per poll on its ~1s idle sleep so a
 checkbox click feels immediate, and also carries the daemon heartbeat
@@ -781,10 +817,9 @@ boundary. The 409 liveness gate is not a third layer: it refuses
 only when the daemon looks stale (`src/dashboard/server.ts:164-183`), so a
 cross-origin POST that already cleared CSRF still succeeds whenever the daemon
 is up — it protects the operator from queueing into the void, not the pipeline
-from an attacker. What is still CLI-only is a
-*named* topic
-(`brainrot produce --topic`), `topics prune-media` and
-`library backfill-store` — a scope boundary,
+from an attacker. What is still CLI-only after this phase is the read-only
+listing commands (`jobs`, `costs`, `topics list`, `library list`),
+`resume --force`, `produce --dev`, and `run` itself — a scope boundary,
 not a structural one.
 
 `POST /actions` is guarded by two independent layers (`src/dashboard/csrf.ts`),

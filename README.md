@@ -429,16 +429,18 @@ Every page it *reads* still opens the database through a read-only connection
 connection flag, not the mount. What changed is that the dashboard now also
 *writes*, in one narrow way: buttons on the overview, jobs, library, topics
 and post pages queue an operator action (`POST /actions`) that the daemon
-executes, rather than mutating anything itself. Ten actions are wired today.
-Seven are fast — `topics reject/requeue`, `library approve`, `run digest`,
-`post mark/unmark` and `library reject` (discard) — and three are slow,
-meaning they can run for seconds or minutes: `produce next` (`/jobs`),
-per-job `resume` (`/jobs`), and `scout now` (`/topics`). Nothing wired to the
-dashboard uploads to a platform — posting is the paste-and-click `/post`
-workflow above, not a queued action. The mutating commands still CLI-only
-are `produce` with an explicit topic, `topics prune-media` and
-`library backfill-store`. That is a scope
-boundary, not a structural limit.
+executes, rather than mutating anything itself. Thirteen actions are wired
+today. Six are fast — `topics reject/requeue`, `library approve`,
+`run digest` and `post mark/unmark` — and seven are slow, meaning they can
+run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
+`produce` with a typed channel and topic (`/jobs`), `scout now` (`/topics`),
+`library reject` (discard, `/library`), `backfill store` (`/library`) and
+`prune media` (`/topics`). Nothing wired to the dashboard uploads to a
+platform — posting is the paste-and-click `/post` workflow above, not a
+queued action. What is still CLI-only after this phase is the read-only
+listing commands (`jobs`, `costs`, `topics list`, `library list`),
+`resume --force`, `produce --dev`, and `run` itself — a scope boundary, not a
+structural limit.
 
 ### The dashboard queues renders and spends money
 
@@ -450,26 +452,35 @@ page you visit and your production pipeline are:
 2. the same-origin + CSRF-token check in `src/dashboard/csrf.ts`.
 
 Nothing wired to the dashboard posts publicly anymore — there is no upload
-adapter left to call. Two of the wired actions **spend real provider money**
-on a click, though: `produce next` runs the whole pipeline — an Anthropic
+adapter left to call. Three of the wired actions **render a video and spend
+real provider money** on a click: `produce next` and `produce` (a typed
+channel and topic, from `/jobs`) each run the whole pipeline — an Anthropic
 call for the script, ElevenLabs if the channel configures `[voice.premium]`,
 and a full Remotion render — and `resume` re-runs whichever of those stages
-the job has not finished. `scout now` also spends, on topic scoring plus,
-where `generate_topics` is set, topic generation.
+the job has not finished. `scout now` also spends real provider money without
+rendering anything, on topic scoring plus, where `generate_topics` is set,
+topic generation. A separate risk is data loss, not spend: `library reject`
+("discard") **permanently deletes** the rejected videos' stored objects —
+best-effort, so an unreachable bucket leaves them orphaned with a warning
+rather than rolling the rejection back — and pulls them out of the posting
+queue for good.
 
-Four actions route through a confirmation interstitial naming the
-consequence: `produce next` and `resume`, because they spend and render, plus
-two that lose data rather than money — `library reject` ("discard", which
-frees stored bytes and pulls a video out of the posting queue for good) and
-`post unmark` (which throws away a saved live link). The rest fire on one
+Seven actions route through a confirmation interstitial naming the
+consequence: `produce next`, `produce` and `resume`, because they spend and
+render; `library reject` and `post unmark`, because they lose data rather
+than money (`post unmark` throws away a saved live link); and `backfill
+store` and `prune media`, added this phase, because they can rack up real
+object-storage cost across every unstored video and because it runs for
+minutes bulk-rejecting scouted topics respectively. The rest fire on one
 click, `scout now` included — so a click can spend without a prompt. Spend
 still lands under a budget cap, but which one depends on the action.
-`produce next` and `resume` each have a job to meter against, so they clear
-the full chain — per-video, channel-day, and global-day. `scout now` has no
-job row: its cost is ledgered under a sentinel `scout:<channel>` id that the
-channel-day query can't see and there's no video to hang a per-video cap on,
-so only the global-day cap backs it. Either way the cap is enforced in the
-pipeline rather than at this endpoint: it's the backstop, not the gate.
+`produce next`, `produce` and `resume` each have a job to meter against, so
+they clear the full chain — per-video, channel-day, and global-day. `scout
+now` has no job row: its cost is ledgered under a sentinel `scout:<channel>`
+id that the channel-day query can't see and there's no video to hang a
+per-video cap on, so only the global-day cap backs it. Either way the cap is
+enforced in the pipeline rather than at this endpoint: it's the backstop, not
+the gate.
 
 **Do not put the dashboard behind a tunnel, reverse proxy, or `0.0.0.0`
 binding.** Doing so turns it into remote code execution against your channels
