@@ -37,12 +37,11 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 /**
  * `runsRoot` is live: the two render-triggering handlers, `produce.next` and
  * `jobs.resume`, both thread it straight through to the pipeline. `setNotice`
- * is still unused by every handler below. It was scaffolded for an OAuth
- * consent url, which is gone with the publishing pipeline; its remaining
- * purpose is a running handler publishing progress or context the operator
- * needs mid-flight — `topics.pruneMedia`'s per-row progress and
- * `jobs.produce`'s job id. Scaffolding, not dead code; don't delete it for
- * being currently uncalled.
+ * is called by handlers and the worker to publish operator-facing status:
+ * `jobs.produce` publishes its job id (for resumption if interrupted),
+ * `library.reject` publishes deletion progress, and the worker publishes when
+ * actions wait on a held lease. A planned consumer is `topics.pruneMedia` for
+ * per-row validation progress.
  */
 export interface ActionContext {
   db: Database
@@ -50,9 +49,9 @@ export interface ActionContext {
   channelsDir: string
   runsRoot: string
   /**
-   * Publishes an interactive status for the operator to see. No handler calls
-   * this yet — today the only writer of `notice` is the worker's own
-   * lease-blocked path.
+   * Publishes an interactive status for the operator to see. Called by handlers
+   * (`jobs.produce`, `library.reject`) and by the worker's lease-blocked path
+   * when actions wait on a held lease. Planned consumer: `topics.pruneMedia`.
    */
   setNotice: (text: string) => void
 }
