@@ -60,7 +60,6 @@ function list<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.infer<T>[]> {
  * value. Deliberately not `z.coerce.boolean()`, which returns true for the
  * string "false" — a trap that would turn every dry-run toggle into a live run.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function flag(): z.ZodType<boolean> {
   return z.preprocess((v) => v === '1' || v === 'on' || v === true, z.boolean())
 }
@@ -71,7 +70,6 @@ function flag(): z.ZodType<boolean> {
  * filter that is the difference between "all channels" and "the channel named
  * empty string". Same shape as `optionalUrl` above, without the url check.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const optionalText = z.preprocess(
   (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
   z.string().trim().min(1).optional(),
@@ -229,6 +227,19 @@ export const ACTIONS = {
     // such row at all — the two cannot collide on the same job.
     lease: undefined,
     args: z.object({}),
+  },
+  'topics.pruneMedia': {
+    lane: 'slow',
+    label: 'prune media',
+    confirm: true,
+    danger:
+      'Re-fetches every scouted reddit candidate and rejects the ones that ' +
+      'point at an image. Reddit rate-limits this to roughly one row every ' +
+      '20 seconds, so it runs for minutes. Tick "dry run" to preview instead.',
+    // pruneMedia mutates `topics`, which is the scout tick's table — the same
+    // reason scout.run declares this lease.
+    lease: 'scout',
+    args: z.object({ channel: optionalText, dryRun: flag() }),
   },
 } as const satisfies Record<string, ActionDescriptor>
 

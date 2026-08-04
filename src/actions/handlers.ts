@@ -14,6 +14,7 @@ import { createJob, runJob } from '../jobs/runner.js'
 import { buildDigest } from '../loop/digest.js'
 import { produceNextTick } from '../loop/produce-next.js'
 import { markPosted, unmarkPosted } from '../posts/posts.js'
+import { pruneMedia } from '../scout/prune-media.js'
 import { scoutAll } from '../scout/scout.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
 import { s3ConfigError } from '../storage/config.js'
@@ -40,9 +41,9 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
  * `jobs.resume`, both thread it straight through to the pipeline. `setNotice`
  * is called by handlers and the worker to publish operator-facing status:
  * `jobs.produce` publishes its job id (for resumption if interrupted),
- * `library.reject` publishes deletion progress, and the worker publishes when
- * actions wait on a held lease. A planned consumer is `topics.pruneMedia` for
- * per-row validation progress.
+ * `library.reject` publishes deletion progress, `topics.pruneMedia` publishes
+ * per-row validation progress, and the worker publishes when actions wait on
+ * a held lease.
  */
 export interface ActionContext {
   db: Database
@@ -51,8 +52,8 @@ export interface ActionContext {
   runsRoot: string
   /**
    * Publishes an interactive status for the operator to see. Called by handlers
-   * (`jobs.produce`, `library.reject`) and by the worker's lease-blocked path
-   * when actions wait on a held lease. Planned consumer: `topics.pruneMedia`.
+   * (`jobs.produce`, `library.reject`, `topics.pruneMedia`) and by the worker's
+   * lease-blocked path when actions wait on a held lease.
    */
   setNotice: (text: string) => void
 }
@@ -77,6 +78,7 @@ type HandlerDeps = {
    */
   storeFromEnv?: () => ObjectStore
   backfillStore?: typeof backfillStore
+  pruneMedia?: typeof pruneMedia
 }
 
 type Handler<K extends ActionKind> = (
@@ -297,6 +299,23 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'library.backfillStore': async (ctx, _args, deps) => {
     const store = deps?.storeFromEnv?.() ?? (await import('../storage/s3.js')).storeFromEnv()
     return (deps?.backfillStore ?? backfillStore)({ db: ctx.db, store })
+  },
+
+  'topics.pruneMedia': async (ctx, args, deps) => {
+    const result = await (deps?.pruneMedia ?? pruneMedia)(ctx.db, {
+      channel: args.channel,
+      dryRun: args.dryRun,
+      // The CLI writes these to stderr so stdout keeps its single-JSON-line
+      // contract; here they go to the row the page is already polling.
+      onProgress: (p) =>
+        ctx.setNotice(`checked ${p.index}/${p.total} — topic ${p.topicId}: ${p.outcome}`),
+    })
+    return {
+      dryRun: args.dryRun,
+      checked: result.checked,
+      rejected: result.rejected,
+      skipped: result.skipped.length,
+    }
   },
 }
 

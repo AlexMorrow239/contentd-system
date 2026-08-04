@@ -15,6 +15,7 @@ describe('ACTIONS catalog', () => {
       'post.unmark',
       'produce.next',
       'scout.run',
+      'topics.pruneMedia',
       'topics.reject',
       'topics.requeue',
     ])
@@ -179,5 +180,18 @@ describe('ACTIONS catalog', () => {
     expect(ACTIONS['post.mark'].lease).toBeUndefined()
     expect(ACTIONS['post.unmark'].lease).toBeUndefined()
     expect(ACTIONS['library.reject'].lease).toBeUndefined()
+  })
+
+  it('reads an unchecked checkbox as false and "1" as true', () => {
+    expect(parseActionArgs('topics.pruneMedia', { dryRun: '1' })).toMatchObject({ dryRun: true })
+    expect(parseActionArgs('topics.pruneMedia', {})).toMatchObject({ dryRun: false })
+    // The trap this exists to avoid: z.coerce.boolean()('false') === true.
+    expect(parseActionArgs('topics.pruneMedia', { dryRun: 'false' })).toMatchObject({ dryRun: false })
+  })
+
+  it('treats a blank optional text field as absent', () => {
+    expect(parseActionArgs('topics.pruneMedia', { channel: '   ', dryRun: '' })).toMatchObject({
+      channel: undefined,
+    })
   })
 })
