@@ -537,19 +537,10 @@ describe('brainrot CLI — digest', () => {
 
 describe('brainrot CLI — library', () => {
   it.concurrent(
-    '`library approve` reports 0 approved for an id migrate already blocked as reclaimed',
+    '`library approve` exits 1 when every id was refused for having been reclaimed',
     async () => {
-      // seedLibraryRow's own openDb call runs migrate(), and migrate's
-      // blockReclaimedLibraryRows step now covers 'needs-review' (not just
-      // 'ready'/'published' — see src/db/migrate.ts), so this row is already
-      // 'blocked' before `library approve` ever runs. approveLibrary's own
-      // live "already reclaimed" refusal (src/jobs/library.ts) exists for a
-      // row that becomes reclaimed later in a still-open process (e.g. the
-      // daemon) — it is covered directly in
-      // src/jobs/test/library.test.ts and does not fire here, because a
-      // fresh CLI invocation never sees a reclaimed row still sitting in
-      // 'needs-review'. An id in any other state is simply not approved,
-      // exit 0.
+      // A wrapper script reads the exit code, not the stderr line: approving
+      // nothing at all is a failed operation, not a quiet no-op.
       const root = testRoot()
       seedLibraryRow(root.dbPath, {
         jobId: 'job-gone-1',
@@ -558,14 +549,9 @@ describe('brainrot CLI — library', () => {
         reclaimed: true,
       })
       const result = await runCli(['library', 'approve', 'job-gone-1', '--root', root.root])
-      expect(result.exitCode).toBe(0)
+      expect(result.exitCode).toBe(1)
       expect(result.stdout).toContain('approved 0 of 1')
-      const db = openDb(root.dbPath)
-      const row = db.prepare('SELECT state FROM library WHERE job_id = ?').get('job-gone-1') as {
-        state: string
-      }
-      db.close()
-      expect(row.state).toBe('blocked')
+      expect(result.stderr).toContain('already reclaimed')
     },
     60000,
   )
