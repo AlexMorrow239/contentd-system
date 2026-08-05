@@ -1,26 +1,20 @@
 import { writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { z } from 'zod'
-import type Anthropic from '@anthropic-ai/sdk'
 import { structuredCompletion, visionJudgment } from '../anthropic.js'
+import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
 import { tmpDir } from '../../testing/tmp.js'
 import { errorCostUsdMicros } from '../errors.js'
 import { classify, errorMessage } from '../../errors.js'
 
 const schema = z.object({ answer: z.string(), n: z.number() })
 
-function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn().mockResolvedValue(response)
-  return { client: { messages: { create } } as unknown as Anthropic, create }
-}
-
 describe('structuredCompletion', () => {
   it('parses the emit tool input, computes cost, and passes a native JSON schema', async () => {
-    const { client, create } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
-      usage: { input_tokens: 100, output_tokens: 200 },
-    })
+    const { client, create } = fakeClient(
+      emitToolUse({ answer: 'hi', n: 3 }, { input_tokens: 100, output_tokens: 200 }),
+    )
     const { data, cost } = await structuredCompletion({
       model: 'claude-sonnet-5',
       system: 's',
@@ -39,10 +33,9 @@ describe('structuredCompletion', () => {
   })
 
   it('throws a zod error on malformed tool input', async () => {
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi' } }],
-      usage: { input_tokens: 10, output_tokens: 10 },
-    })
+    const { client } = fakeClient(
+      emitToolUse({ answer: 'hi' }, { input_tokens: 10, output_tokens: 10 }),
+    )
     await expect(
       structuredCompletion({ model: 'claude-sonnet-5', system: 's', prompt: 'p', schema, client }),
     ).rejects.toThrow(z.ZodError)
@@ -51,10 +44,9 @@ describe('structuredCompletion', () => {
   it('attaches the already-billed cost to a schema-validation failure so callers can ledger it', async () => {
     // The messages.create call is billed whether or not the tool output validates;
     // a schema failure must still carry the spend. `n` is missing -> invalid.
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi' } }],
-      usage: { input_tokens: 100, output_tokens: 200 },
-    })
+    const { client } = fakeClient(
+      emitToolUse({ answer: 'hi' }, { input_tokens: 100, output_tokens: 200 }),
+    )
     const err = await structuredCompletion({
       model: 'claude-sonnet-5',
       system: 's',
@@ -69,21 +61,16 @@ describe('structuredCompletion', () => {
 
   it('coerces a JSON-stringified nested value before validating (observed real-model behavior)', async () => {
     const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) })
-    const { client } = fakeClient({
-      content: [
-        {
-          type: 'tool_use',
-          name: 'emit',
-          id: 't1',
-          // Anthropic tool_choice does not guarantee schema-conformant output;
-          // models occasionally stringify a nested array/object instead of
-          // emitting it structurally. Reproduces a failure seen against the
-          // real API where `segments` came back as a JSON string.
-          input: { segments: JSON.stringify([{ text: 'a' }, { text: 'b' }]) },
-        },
-      ],
-      usage: { input_tokens: 10, output_tokens: 10 },
-    })
+    // Anthropic tool_choice does not guarantee schema-conformant output;
+    // models occasionally stringify a nested array/object instead of emitting
+    // it structurally. Reproduces a failure seen against the real API where
+    // `segments` came back as a JSON string.
+    const { client } = fakeClient(
+      emitToolUse(
+        { segments: JSON.stringify([{ text: 'a' }, { text: 'b' }]) },
+        { input_tokens: 10, output_tokens: 10 },
+      ),
+    )
     const { data } = await structuredCompletion({
       model: 'claude-sonnet-5',
       system: 's',
@@ -96,12 +83,9 @@ describe('structuredCompletion', () => {
 
   it('still throws on genuinely malformed input (not a JSON string, just wrong)', async () => {
     const arraySchema = z.object({ segments: z.array(z.object({ text: z.string() })) })
-    const { client } = fakeClient({
-      content: [
-        { type: 'tool_use', name: 'emit', id: 't1', input: { segments: 'not json at all' } },
-      ],
-      usage: { input_tokens: 10, output_tokens: 10 },
-    })
+    const { client } = fakeClient(
+      emitToolUse({ segments: 'not json at all' }, { input_tokens: 10, output_tokens: 10 }),
+    )
     await expect(
       structuredCompletion({
         model: 'claude-sonnet-5',
@@ -141,10 +125,9 @@ describe('structuredCompletion', () => {
   })
 
   it('rejects an unpriced model at zero spend, before the API is called', async () => {
-    const { client, create } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
-      usage: { input_tokens: 100, output_tokens: 200 },
-    })
+    const { client, create } = fakeClient(
+      emitToolUse({ answer: 'hi', n: 3 }, { input_tokens: 100, output_tokens: 200 }),
+    )
     await expect(
       structuredCompletion({
         model: 'claude-nonexistent-9',
@@ -189,17 +172,12 @@ describe('visionJudgment', () => {
 
   it('sends base64 image blocks (media_type by extension) before the text prompt and parses the emit output', async () => {
     const { pngPath, jpgPath, pngB64, jpgB64 } = writeImages()
-    const { client, create } = fakeClient({
-      content: [
-        {
-          type: 'tool_use',
-          name: 'emit',
-          id: 't1',
-          input: { pass: true, critique: 'matches the scene' },
-        },
-      ],
-      usage: { input_tokens: 1000, output_tokens: 100 },
-    })
+    const { client, create } = fakeClient(
+      emitToolUse(
+        { pass: true, critique: 'matches the scene' },
+        { input_tokens: 1000, output_tokens: 100 },
+      ),
+    )
     const { data, cost } = await visionJudgment({
       model: 'claude-sonnet-5',
       system: 's',
@@ -266,17 +244,12 @@ describe('visionJudgment', () => {
   it('coerces a JSON-stringified nested value via the shared retry path', async () => {
     const { pngPath } = writeImages()
     const listSchema = z.object({ issues: z.array(z.string()) })
-    const { client } = fakeClient({
-      content: [
-        {
-          type: 'tool_use',
-          name: 'emit',
-          id: 't1',
-          input: { issues: JSON.stringify(['caption obscures subject']) },
-        },
-      ],
-      usage: { input_tokens: 10, output_tokens: 10 },
-    })
+    const { client } = fakeClient(
+      emitToolUse(
+        { issues: JSON.stringify(['caption obscures subject']) },
+        { input_tokens: 10, output_tokens: 10 },
+      ),
+    )
     const { data } = await visionJudgment({
       model: 'claude-sonnet-5',
       system: 's',
@@ -295,10 +268,9 @@ describe('strict tool schema enforcement', () => {
     // nested arrays (the scenes format) in ~half of forced tool calls, and the
     // hand-written stringified JSON can carry typos the coercion cannot repair.
     // strict: true makes non-conformant tool input structurally impossible.
-    const { client, create } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { answer: 'hi', n: 3 } }],
-      usage: { input_tokens: 100, output_tokens: 200 },
-    })
+    const { client, create } = fakeClient(
+      emitToolUse({ answer: 'hi', n: 3 }, { input_tokens: 100, output_tokens: 200 }),
+    )
     await structuredCompletion({
       model: 'claude-sonnet-5',
       system: 's',
@@ -320,17 +292,12 @@ describe('strict tool schema enforcement', () => {
       nested: z.array(z.object({ idx: z.number().int() })),
       ratio: z.number().min(0), // non-integer bounds must survive the strip
     })
-    const { client, create } = fakeClient({
-      content: [
-        {
-          type: 'tool_use',
-          name: 'emit',
-          id: 't1',
-          input: { n: 3, nested: [{ idx: 1 }], ratio: 0.5 },
-        },
-      ],
-      usage: { input_tokens: 100, output_tokens: 200 },
-    })
+    const { client, create } = fakeClient(
+      emitToolUse(
+        { n: 3, nested: [{ idx: 1 }], ratio: 0.5 },
+        { input_tokens: 100, output_tokens: 200 },
+      ),
+    )
     await structuredCompletion({
       model: 'claude-sonnet-5',
       system: 's',

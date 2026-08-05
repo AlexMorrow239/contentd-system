@@ -1,15 +1,14 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { execa } from 'execa'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { tmpDir } from '../testing/tmp.js'
 import { cropAndLoopToDuration, cropToVertical, loopToDuration, probe } from './ffmpeg.js'
 
 let dir: string
 let fixture: string
 
 beforeAll(async () => {
-  dir = mkdtempSync(path.join(tmpdir(), 'brainrot-ffmpeg-'))
+  dir = tmpDir('brainrot-ffmpeg-')
   fixture = path.join(dir, 'fixture.mp4')
   // 2s 640x360 testsrc2 video + 440Hz sine audio, H.264 + AAC.
   await execa('ffmpeg', [
@@ -31,10 +30,6 @@ beforeAll(async () => {
     '-y',
   ])
 }, 60000)
-
-afterAll(() => {
-  rmSync(dir, { recursive: true, force: true })
-})
 
 describe('probe', () => {
   it('reports duration, dimensions, audio presence, and fps', async () => {

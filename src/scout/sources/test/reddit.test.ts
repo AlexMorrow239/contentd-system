@@ -272,7 +272,7 @@ describe('redditSource', () => {
     expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })
   })
 
-  it('carries the submitting author, normalized off reddit\'s /u/ prefix', async () => {
+  it("carries the submitting author, normalized off reddit's /u/ prefix", async () => {
     const { impl } = fakeTextFetch(
       200,
       autoModeratorFeedXml('t3_auto', 'All Space Questions thread for week of July 26, 2026'),

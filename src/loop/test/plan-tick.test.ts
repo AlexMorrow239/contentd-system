@@ -3,13 +3,20 @@ import type { Database } from 'better-sqlite3'
 import { recordCost } from '../../jobs/costs.js'
 import { testChannel } from '../../testing/channel.js'
 import { planTick, RESUME_MIN_HEADROOM_USD_MICROS } from '../plan-tick.js'
-import { memDb, seedLibrary } from '../../testing/db.js'
+import {
+  memDb,
+  seedJob as seedJobRow,
+  seedLibrary,
+  seedTopic as seedTopicRow,
+} from '../../testing/db.js'
 
 const NOOP = { kind: 'noop', reason: 'no-eligible-work' } as const
 
-// planTick only SELECTs, so raw-insert seeds control every column directly.
-// seedJob defaults created_at to now (UTC today) — the claim-pass quota only
-// counts today's rows; explicit createdAt pins ordering where it matters.
+// planTick only SELECTs, so these wrappers exist for call-shape convenience
+// (auto-numbered ids, plan-tick's own defaults) over the shared row builders in
+// src/testing/db.ts, which own the SQL. seedJob defaults created_at to now (UTC
+// today) — the claim-pass quota only counts today's rows; explicit createdAt
+// pins ordering where it matters.
 let jobSeq = 0
 function seedJob(
   db: Database,
@@ -21,17 +28,14 @@ function seedJob(
   }> = {},
 ): string {
   jobSeq += 1
-  const row = {
-    id: `job-${jobSeq}`,
-    channel: 'test',
-    status: 'done',
-    createdAt: new Date().toISOString(),
-    ...overrides,
-  }
-  db.prepare(
-    "INSERT INTO jobs (id, channel, tier, topic, status, created_at) VALUES (?, ?, 'volume', ?, ?, ?)",
-  ).run(row.id, row.channel, `topic for ${row.id}`, row.status, row.createdAt)
-  return row.id
+  const id = overrides.id ?? `job-${jobSeq}`
+  seedJobRow(db, id, {
+    channel: overrides.channel ?? 'test',
+    topic: `topic for ${id}`,
+    status: overrides.status ?? 'done',
+    createdAt: overrides.createdAt ?? new Date().toISOString(),
+  })
+  return id
 }
 
 let topicSeq = 0
@@ -47,34 +51,19 @@ function seedTopic(
   }> = {},
 ): number {
   topicSeq += 1
-  const row = {
-    channel: 'test',
-    title: `Topic ${topicSeq}`,
-    score: 80,
-    status: 'candidate',
-    jobId: null,
-    createdAt: '2026-07-01T00:00:00.000Z',
-    ...overrides,
-  }
-  const res = db
-    .prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id, created_at) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(
-      row.channel,
-      row.title,
-      `raw ${topicSeq}`,
-      'reddit:r/space',
-      `https://example.com/${topicSeq}`,
-      `hash-${topicSeq}`,
-      row.score,
-      'seeded',
-      row.status,
-      row.jobId,
-      row.createdAt,
-    )
-  return Number(res.lastInsertRowid)
+  return seedTopicRow(db, {
+    channel: overrides.channel ?? 'test',
+    title: overrides.title ?? `Topic ${topicSeq}`,
+    rawTitle: `raw ${topicSeq}`,
+    source: 'reddit:r/space',
+    url: `https://example.com/${topicSeq}`,
+    dedupeHash: `hash-${topicSeq}`,
+    score: overrides.score ?? 80,
+    reason: 'seeded',
+    status: overrides.status ?? 'candidate',
+    jobId: overrides.jobId ?? null,
+    createdAt: overrides.createdAt ?? '2026-07-01T00:00:00.000Z',
+  })
 }
 
 // The global cap reads BRAINROT_GLOBAL_DAILY_USD at call time: pin the $25

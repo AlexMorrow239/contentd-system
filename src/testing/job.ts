@@ -94,13 +94,21 @@ export function seedWordsJson(ctx: JobContext, durationMs = 1000): void {
   )
 }
 
+/**
+ * Writes `script/script.json` verbatim. `script` is deliberately `unknown`:
+ * the stage tests that assert on a malformed artifact need to write something
+ * `ScriptOutputSchema` rejects, which a `ScriptOutput`-typed writer cannot express.
+ */
+export function writeScriptJson(ctx: JobContext, script: unknown = testScript()): JobContext {
+  writeFileSync(ctx.artifactPath('script', 'script.json'), JSON.stringify(script))
+  return ctx
+}
+
 /** Writes a `script/script.json` of `sentences` total lines (hook + segments). */
 export function seedScriptJson(ctx: JobContext, sentences = 3, text = SENTENCE): void {
-  writeFileSync(
-    ctx.artifactPath('script', 'script.json'),
-    JSON.stringify(
-      testScript({ hook: text, segments: Array.from({ length: sentences - 1 }, () => text) }),
-    ),
+  writeScriptJson(
+    ctx,
+    testScript({ hook: text, segments: Array.from({ length: sentences - 1 }, () => text) }),
   )
 }
 

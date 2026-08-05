@@ -7,7 +7,7 @@ import { resolvePaths } from '../../config/paths.js'
 import type { DashboardConfig } from '../config.js'
 import { createApp } from '../server.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { seedDaemonState, seedJob, seedLibrary, seedPost } from '../../testing/db.js'
+import { seedDaemonState, seedJob, seedLibrary, seedPost, seedTopic } from '../../testing/db.js'
 import { channelToml } from '../../testing/channel.js'
 
 /** Reverses html.ts's escaping, so a value pulled out of rendered markup can be parsed as a URL. */
@@ -124,12 +124,8 @@ describe('video streaming', () => {
     writeFileSync(videoFile, bytes)
 
     const db = openDb(paths.dbPath)
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
-    ).run()
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?)',
-    ).run('j1', videoPathInDb ?? videoFile, '{}', 'ready')
+    seedJob(db, 'j1', { channel: 'space', topic: 'Venus' })
+    seedLibrary(db, 'j1', { videoPath: videoPathInDb ?? videoFile, state: 'ready' })
     db.close()
 
     return { paths, port: 8787 }
@@ -663,10 +659,7 @@ describe('unbounded list truncation', () => {
   function configWithManyJobs(count: number): DashboardConfig {
     const config = seededConfig()
     const db = openDb(config.paths.dbPath)
-    const insert = db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'space', 'volume', 'x', 'done')",
-    )
-    for (let i = 0; i < count; i++) insert.run(`j${i}`)
+    for (let i = 0; i < count; i++) seedJob(db, `j${i}`, { channel: 'space', topic: 'x' })
     db.close()
     return config
   }
@@ -674,11 +667,19 @@ describe('unbounded list truncation', () => {
   function configWithManyTopics(count: number): DashboardConfig {
     const config = seededConfig()
     const db = openDb(config.paths.dbPath)
-    const insert = db.prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status) ' +
-        "VALUES ('space', ?, ?, 'reddit', 'https://x', ?, 50, 'ok', 'candidate')",
-    )
-    for (let i = 0; i < count; i++) insert.run(`t${i}`, `t${i}`, `hash${i}`)
+    for (let i = 0; i < count; i++) {
+      seedTopic(db, {
+        channel: 'space',
+        title: `t${i}`,
+        rawTitle: `t${i}`,
+        source: 'reddit',
+        url: 'https://x',
+        dedupeHash: `hash${i}`,
+        score: 50,
+        reason: 'ok',
+        status: 'candidate',
+      })
+    }
     db.close()
     return config
   }
@@ -686,15 +687,9 @@ describe('unbounded list truncation', () => {
   function configWithManyLibraryEntries(count: number): DashboardConfig {
     const config = seededConfig()
     const db = openDb(config.paths.dbPath)
-    const insertJob = db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'space', 'volume', 'x', 'done')",
-    )
-    const insertLib = db.prepare(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, '{}', 'ready')",
-    )
     for (let i = 0; i < count; i++) {
-      insertJob.run(`j${i}`)
-      insertLib.run(`j${i}`, `runs/j${i}/assemble/final.mp4`)
+      seedJob(db, `j${i}`, { channel: 'space', topic: 'x' })
+      seedLibrary(db, `j${i}`, { videoPath: `runs/j${i}/assemble/final.mp4`, state: 'ready' })
     }
     db.close()
     return config

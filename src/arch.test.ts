@@ -20,16 +20,51 @@ import { StorageError } from './storage/types.js'
 // no amount of importing can observe.
 const SRC_ROOT = fileURLToPath(new URL('.', import.meta.url))
 
-async function srcFiles(dir: string = SRC_ROOT): Promise<string[]> {
-  const entries = await readdir(dir, { withFileTypes: true })
-  const nested = await Promise.all(
-    entries.map(async (e) => {
-      const full = join(dir, e.name)
-      if (e.isDirectory()) return srcFiles(full)
-      return e.name.endsWith('.ts') ? [full] : []
-    }),
-  )
-  return nested.flat()
+// Every lint below walks the same tree and greps the same files, so both the
+// listings and the file contents are memoized per directory/path: the whole
+// file then costs one read of src/ rather than one per lint.
+const listings = new Map<string, Promise<string[]>>()
+const contents = new Map<string, Promise<string | null>>()
+
+function srcFiles(dir: string = SRC_ROOT): Promise<string[]> {
+  const cached = listings.get(dir)
+  if (cached !== undefined) return cached
+  const walk = (async () => {
+    const entries = await readdir(dir, { withFileTypes: true })
+    const nested = await Promise.all(
+      entries.map(async (e) => {
+        const full = join(dir, e.name)
+        if (e.isDirectory()) return srcFiles(full)
+        return e.name.endsWith('.ts') ? [full] : []
+      }),
+    )
+    return nested.flat()
+  })()
+  listings.set(dir, walk)
+  return walk
+}
+
+/**
+ * The source files of one module directory: the tree minus its own tests and
+ * fixtures, which is what every "module X may not import Y" lint means by
+ * "module X".
+ */
+async function moduleFiles(dir: string): Promise<string[]> {
+  const files = await srcFiles(dir)
+  return files.filter((f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'))
+}
+
+/**
+ * A file's text, or null when it does not exist on disk — a resolved
+ * specifier that points nowhere is a dead end for the import walker, not an
+ * error to diagnose.
+ */
+function readSource(file: string): Promise<string | null> {
+  const cached = contents.get(file)
+  if (cached !== undefined) return cached
+  const read = readFile(file, 'utf8').catch(() => null)
+  contents.set(file, read)
+  return read
 }
 
 /**
@@ -58,14 +93,8 @@ async function findImportChain(startFiles: string[], target: string): Promise<st
     if (file === target) return chain
     if (visited.has(file)) return null
     visited.add(file)
-    let source: string
-    try {
-      source = await readFile(file, 'utf8')
-    } catch {
-      // A resolved specifier that doesn't exist on disk (e.g. a mis-mapped
-      // extension) is not this lint's problem to diagnose — just a dead end.
-      return null
-    }
+    const source = await readSource(file)
+    if (source === null) return null
     for (const match of source.matchAll(/from\s+'([^']+)'/g)) {
       const resolved = resolveRelativeSpecifier(file, match[1])
       if (resolved === undefined) continue
@@ -118,9 +147,7 @@ describe('dashboard action isolation', () => {
     // clients into the dashboard process. Same specifier-parsing shape as the
     // "src/stories purity" lint below.
     const target = join(SRC_ROOT, 'actions', 'handlers.ts')
-    const files = (await srcFiles(join(SRC_ROOT, 'dashboard'))).filter(
-      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
-    )
+    const files = await moduleFiles(join(SRC_ROOT, 'dashboard'))
     expect(files.length).toBeGreaterThan(0)
 
     const chain = await findImportChain(files, target)
@@ -136,9 +163,7 @@ describe('dashboard action isolation', () => {
     // nothing" instead of "checked everything and found nothing". catalog.ts
     // is real, known-reachable metadata the dashboard is expected to import.
     const target = join(SRC_ROOT, 'actions', 'catalog.ts')
-    const files = (await srcFiles(join(SRC_ROOT, 'dashboard'))).filter(
-      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
-    )
+    const files = await moduleFiles(join(SRC_ROOT, 'dashboard'))
     const chain = await findImportChain(files, target)
     expect(chain).not.toBeNull()
   })
@@ -159,7 +184,7 @@ describe('error handling conventions', () => {
     for (const file of await srcFiles()) {
       const rel = relative(SRC_ROOT, file)
       if (rel === 'errors.ts') continue
-      const src = await readFile(file, 'utf8')
+      const src = (await readSource(file)) ?? ''
       if (src.includes(BANNED_IDIOM)) offenders.push(rel)
     }
     expect(offenders).toEqual([])
@@ -196,7 +221,7 @@ describe('error handling conventions', () => {
     for (const file of await srcFiles()) {
       const rel = relative(SRC_ROOT, file)
       if (rel === 'errors.ts') continue
-      const src = await readFile(file, 'utf8')
+      const src = (await readSource(file)) ?? ''
       if (EXTENDS_BUILTIN_ERROR.test(src)) offenders.push(rel)
     }
     expect(offenders).toEqual([])
@@ -205,7 +230,7 @@ describe('error handling conventions', () => {
   it('imports nothing from src/ into the errors module', async () => {
     // Every layer imports src/errors.ts, so a dependency here becomes a
     // dependency everywhere. Only node: builtins are allowed.
-    const src = await readFile(new URL('./errors.ts', import.meta.url), 'utf8')
+    const src = (await readSource(join(SRC_ROOT, 'errors.ts'))) ?? ''
     const imports = [...src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
     expect(imports.filter((s) => s !== undefined && !s.startsWith('node:'))).toEqual([])
   })
@@ -237,7 +262,7 @@ describe('path resolution conventions', () => {
     // Every entrypoint resolves its paths through this module, so a dependency
     // here becomes a dependency everywhere — the same reason src/errors.ts has
     // its own version of this lint.
-    const src = await readFile(new URL('./config/paths.ts', import.meta.url), 'utf8')
+    const src = (await readSource(join(SRC_ROOT, 'config', 'paths.ts'))) ?? ''
     const imports = [...src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
     expect(imports.filter((s) => s !== undefined && !s.startsWith('node:'))).toEqual([])
   })
@@ -245,13 +270,11 @@ describe('path resolution conventions', () => {
 
 describe('src/stories purity', () => {
   it('imports nothing from src/ except errors.ts', async () => {
-    const files = (await srcFiles(join(SRC_ROOT, 'stories'))).filter(
-      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
-    )
+    const files = await moduleFiles(join(SRC_ROOT, 'stories'))
     expect(files.length).toBeGreaterThan(0)
     const offenders: string[] = []
     for (const file of files) {
-      const source = await readFile(file, 'utf8')
+      const source = (await readSource(file)) ?? ''
       for (const match of source.matchAll(/from\s+'(\.\.?\/[^']+)'/g)) {
         const spec = match[1]
         // Sibling imports inside stories/ are fine; anything reaching out of
@@ -265,12 +288,10 @@ describe('src/stories purity', () => {
   })
 
   it('never touches the database, filesystem, or network', async () => {
-    const files = (await srcFiles(join(SRC_ROOT, 'stories'))).filter(
-      (f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'),
-    )
+    const files = await moduleFiles(join(SRC_ROOT, 'stories'))
     const offenders: string[] = []
     for (const file of files) {
-      const source = await readFile(file, 'utf8')
+      const source = (await readSource(file)) ?? ''
       for (const banned of ['better-sqlite3', 'node:fs', 'node:http', 'fetch(']) {
         if (source.includes(banned)) offenders.push(`${relative(SRC_ROOT, file)}: ${banned}`)
       }

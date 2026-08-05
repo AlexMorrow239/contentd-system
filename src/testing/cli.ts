@@ -1,18 +1,14 @@
-import path from 'node:path'
 import { openDb } from '../db/index.js'
-import { tmpDir } from './tmp.js'
+import { seedJob, seedLibrary, seedLibraryObject } from './db.js'
 
 /**
  * Fixtures shared by the `cli.*.test.ts` files.
  *
  * These spawn the built CLI as a subprocess, so they cannot use `:memory:` or
- * `vi.stubEnv` — every one of them works through a real db file on disk.
+ * `vi.stubEnv` — every one of them works through a real db file on disk. That
+ * open-a-file-backed-db wrapper is the only thing here: the row SQL itself
+ * belongs to ./db.ts, and these delegate to it.
  */
-
-/** A path in a fresh temp dir for the CLI to create its db at. */
-export function tmpDbPath(): string {
-  return path.join(tmpDir('brainrot-cli-'), 'brainrot.db')
-}
 
 export function countJobs(dbPath: string): number {
   const db = openDb(dbPath)
@@ -30,17 +26,15 @@ export function seedLibraryRow(
   opts: { jobId: string; channel: string; state: string; reclaimed?: boolean },
 ): void {
   const db = openDb(dbPath)
-  db.prepare(
-    "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', 'test topic', 'done')",
-  ).run(opts.jobId, opts.channel)
-  db.prepare(
-    "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, '/tmp/video.mp4', '{}', ?)",
-  ).run(opts.jobId, opts.state)
+  seedJob(db, opts.jobId, { channel: opts.channel, topic: 'test topic' })
+  seedLibrary(db, opts.jobId, { videoPath: '/tmp/video.mp4', state: opts.state })
   if (opts.reclaimed === true) {
-    db.prepare(
-      "INSERT INTO library_objects (job_id, object_key, bytes, etag, reclaimed_at) " +
-        "VALUES (?, ?, 2048, 'etag', '2026-07-20T00:00:00.000Z')",
-    ).run(opts.jobId, `videos/${opts.channel}/${opts.jobId}.mp4`)
+    seedLibraryObject(db, opts.jobId, {
+      objectKey: `videos/${opts.channel}/${opts.jobId}.mp4`,
+      bytes: 2048,
+      etag: 'etag',
+      reclaimedAt: '2026-07-20T00:00:00.000Z',
+    })
   }
   db.close()
 }

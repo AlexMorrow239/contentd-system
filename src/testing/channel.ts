@@ -120,14 +120,6 @@ export function channelToml(opts: ChannelTomlOptions = {}): string {
   return channelTomlLines(opts).join('\n') + '\n'
 }
 
-/** Writes one channel TOML into a fresh temp dir and returns its path. */
-export function writeChannelToml(opts: ChannelTomlOptions = {}): string {
-  const dir = tmpDir('brainrot-chan-')
-  const file = path.join(dir, `${opts.name ?? 'example'}.toml`)
-  writeFileSync(file, channelToml(opts))
-  return file
-}
-
 /**
  * Writes a whole channels directory and returns its path. Keys are filenames.
  *

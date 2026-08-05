@@ -1,7 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../../db/index.js'
 import type { ChannelConfig } from '../../config/channel.js'
 import { createJob } from '../runner.js'
 import { testChannel } from '../../testing/channel.js'
@@ -14,12 +12,11 @@ import {
   globalDaySpentMicros,
   recordCost,
 } from '../costs.js'
-import { tmpDir } from '../../testing/tmp.js'
+import { fileDb, seedCost } from '../../testing/db.js'
 import { BrainrotError, classify } from '../../errors.js'
 
 function tempDb() {
-  const dir = tmpDir('brainrot-costs-')
-  return openDb(join(dir, 'brainrot.db'))
+  return fileDb().db
 }
 
 // Budget shorthand: testChannel() (Task 5) supplies every non-budget field.
@@ -159,9 +156,12 @@ describe('recordCost + assertBudget', () => {
       perDayUsdMicros: 5_000_000,
     })
     const jobId = seedJob(db, daily)
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, 'fal', 'video', ?, '2020-01-01T00:00:00.000Z')",
-    ).run(jobId, 4_900_000)
+    seedCost(db, jobId, {
+      provider: 'fal',
+      operation: 'video',
+      usdMicros: 4_900_000,
+      createdAt: '2020-01-01T00:00:00.000Z',
+    })
     // 4.9M spent in 2020: today's daily sums are 0, so +1M clears the 5M daily cap
     expect(() => assertBudget(db, daily, jobId, 1_000_000)).not.toThrow()
     // ...but the per-video cap is lifetime: 4.9M + 1M busts a 5M per-video cap
@@ -240,9 +240,12 @@ describe('day-spend helpers', () => {
       perDayUsdMicros: GENEROUS,
     })
     const jobId = seedJob(db, ch)
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, 'fal', 'video', ?, '2020-01-01T00:00:00.000Z')",
-    ).run(jobId, 4_000_000)
+    seedCost(db, jobId, {
+      provider: 'fal',
+      operation: 'video',
+      usdMicros: 4_000_000,
+      createdAt: '2020-01-01T00:00:00.000Z',
+    })
     // FKs are off by design: sentinel rows attach to no jobs row, so the
     // channel attribution JOIN drops them.
     recordCost(db, 'scout:chan-a', 'anthropic', 'scout-score', 15_000)
@@ -259,9 +262,12 @@ describe('day-spend helpers', () => {
     const jobId = seedJob(db, ch)
     recordCost(db, jobId, 'anthropic', 'script', 2_000_000)
     recordCost(db, 'scout:chan-a', 'anthropic', 'scout-score', 15_000)
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, 'fal', 'video', ?, '2020-01-01T00:00:00.000Z')",
-    ).run(jobId, 4_000_000)
+    seedCost(db, jobId, {
+      provider: 'fal',
+      operation: 'video',
+      usdMicros: 4_000_000,
+      createdAt: '2020-01-01T00:00:00.000Z',
+    })
     expect(globalDaySpentMicros(db)).toBe(2_015_000)
     db.close()
   })

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../../config/channel.js'
 import { testChannel } from '../../../testing/channel.js'
-import { memDb } from '../../../testing/db.js'
+import { memDb, seedCost, seedJob, seedLibrary, seedStage } from '../../../testing/db.js'
 import { buildOverview } from '../overview.js'
 
 function channel(name: string, perDayUsdMicros: number): ChannelConfig {
@@ -25,15 +25,9 @@ describe('buildOverview', () => {
   })
 
   it('counts jobs by status', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j2','space','volume','b','failed')",
-    ).run()
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j3','space','volume','c','failed')",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
+    seedJob(db, 'j2', { channel: 'space', topic: 'b', status: 'failed' })
+    seedJob(db, 'j3', { channel: 'space', topic: 'c', status: 'failed' })
     const data = buildOverview(db, [], NOW)
     expect(data.jobsByStatus).toEqual(
       expect.arrayContaining([
@@ -44,12 +38,8 @@ describe('buildOverview', () => {
   })
 
   it('lists failed and blocked jobs with the error from the failing stage', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','failed')",
-    ).run()
-    db.prepare(
-      "INSERT INTO job_stages (job_id, stage, status, error) VALUES ('j1','voice','failed','elevenlabs 401')",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'Venus', status: 'failed' })
+    seedStage(db, 'j1', 'voice', { status: 'failed', error: 'elevenlabs 401' })
     const data = buildOverview(db, [], NOW)
     expect(data.attention).toEqual([
       {
@@ -65,9 +55,7 @@ describe('buildOverview', () => {
 
   it('includes a blocked job even with no failing stage row', () => {
     // BudgetExceededError marks the job blocked; the stage may be clean.
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','blocked')",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'Venus', status: 'blocked' })
     const data = buildOverview(db, [], NOW)
     expect(data.attention).toHaveLength(1)
     expect(data.attention[0]?.status).toBe('blocked')
@@ -75,46 +63,30 @@ describe('buildOverview', () => {
   })
 
   it('ignores done and running jobs in the attention list', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j2','space','volume','b','running')",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
+    seedJob(db, 'j2', { channel: 'space', topic: 'b', status: 'running' })
     expect(buildOverview(db, [], NOW).attention).toEqual([])
   })
 
   it('counts library rows by state', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j1','p','{}','needs-review')",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
+    seedLibrary(db, 'j1', { videoPath: 'p', state: 'needs-review' })
     expect(buildOverview(db, [], NOW).libraryByState).toEqual([
       { status: 'needs-review', count: 1 },
     ])
   })
 
   it('reports global spend against the env cap', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
+    seedCost(db, 'j1', { provider: 'anthropic', operation: 'script', usdMicros: 250000 })
     const data = buildOverview(db, [], NOW)
     expect(data.globalSpend.spentUsdMicros).toBe(250000)
     expect(data.globalSpend.capUsdMicros).toBe(12_000_000)
   })
 
   it('reports per-channel spend against each channel cap', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
+    seedCost(db, 'j1', { provider: 'anthropic', operation: 'script', usdMicros: 250000 })
     const data = buildOverview(db, [channel('space', 2_000_000)], NOW)
     expect(data.channelSpend).toEqual([
       { channel: 'space', spentUsdMicros: 250000, capUsdMicros: 2_000_000 },
@@ -122,18 +94,16 @@ describe('buildOverview', () => {
   })
 
   it('attributes a scout sentinel cost row (no matching jobs row) to unattributedUsdMicros', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
+    seedCost(db, 'j1', { provider: 'anthropic', operation: 'script', usdMicros: 250000 })
     // Scout sentinel: job_id has no matching jobs row. foreign_keys is OFF
     // in this project by design, so this insert (which mirrors what the
     // real scout does) succeeds.
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('scout:space','anthropic','scout-score',15000)",
-    ).run()
+    seedCost(db, 'scout:space', {
+      provider: 'anthropic',
+      operation: 'scout-score',
+      usdMicros: 15000,
+    })
     const data = buildOverview(db, [channel('space', 2_000_000)], NOW)
     expect(data.globalSpend.spentUsdMicros).toBe(265000)
     expect(data.channelSpend).toEqual([
@@ -143,12 +113,8 @@ describe('buildOverview', () => {
   })
 
   it('reports unattributedUsdMicros as 0, not negative, when every cost row is attributed', () => {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','a','done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',250000)",
-    ).run()
+    seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
+    seedCost(db, 'j1', { provider: 'anthropic', operation: 'script', usdMicros: 250000 })
     const data = buildOverview(db, [channel('space', 2_000_000)], NOW)
     expect(data.unattributedUsdMicros).toBe(0)
   })
@@ -164,5 +130,4 @@ describe('buildOverview', () => {
     expect(data.leases.find((l) => l.name === 'produce')?.expired).toBe(true)
     expect(data.leases.find((l) => l.name === 'publish')?.expired).toBe(false)
   })
-
 })

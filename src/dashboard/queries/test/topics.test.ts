@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { countTopics, topicChannels } from '../topics.js'
-import { memDb } from '../../../testing/db.js'
+import { memDb, seedTopic as seedTopicRow } from '../../../testing/db.js'
 
 let seq = 0
 function seedTopic(
@@ -9,8 +9,8 @@ function seedTopic(
   overrides: Partial<{ channel: string; status: string }> = {},
 ): void {
   seq += 1
-  const row = {
-    channel: 'space',
+  seedTopicRow(db, {
+    channel: overrides.channel ?? 'space',
     title: `Topic ${seq}`,
     rawTitle: `Raw ${seq}`,
     source: 'reddit:r/space',
@@ -18,23 +18,8 @@ function seedTopic(
     dedupeHash: `hash-${seq}`,
     score: 50,
     reason: 'ok',
-    status: 'candidate',
-    ...overrides,
-  }
-  db.prepare(
-    'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run(
-    row.channel,
-    row.title,
-    row.rawTitle,
-    row.source,
-    row.url,
-    row.dedupeHash,
-    row.score,
-    row.reason,
-    row.status,
-  )
+    status: overrides.status ?? 'candidate',
+  })
 }
 
 describe('topicChannels', () => {

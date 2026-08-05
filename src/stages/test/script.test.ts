@@ -1,6 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { promises as fs } from 'node:fs'
-import type Anthropic from '@anthropic-ai/sdk'
 import { BudgetExceededError } from '../../jobs/costs.js'
 import {
   createScriptStage,
@@ -11,6 +10,7 @@ import {
 import type { ScriptOutput } from '../script.js'
 import { testChannel, PLATFORM_META } from '../../testing/channel.js'
 import { makeCtx } from '../../testing/job.js'
+import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
 import { splitStory, STORY_MIN_TAIL_WORDS, STORY_WORDS_PER_PART } from '../../stories/split.js'
 import { REALISTIC_STORY_BODY } from '../../stories/_stories.fixtures.js'
 
@@ -53,18 +53,12 @@ const VALID_SCRIPT = {
   },
 }
 
-function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn().mockResolvedValue(response)
-  return { client: { messages: { create } } as unknown as Anthropic, create }
-}
-
 describe('scriptStage', () => {
   it('writes script.json, records cost, and forces the emit tool with the script schema', async () => {
     const ctx = makeCtx({ channel: testChannel() })
-    const { client, create } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: VALID_SCRIPT }],
-      usage: { input_tokens: 500, output_tokens: 800 },
-    })
+    const { client, create } = fakeClient(
+      emitToolUse(VALID_SCRIPT, { input_tokens: 500, output_tokens: 800 }),
+    )
     await createScriptStage(client).run(ctx)
 
     const written = JSON.parse(await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'))
@@ -94,10 +88,7 @@ describe('scriptStage', () => {
 
   it('throws a zod error when the tool input is malformed', async () => {
     const ctx = makeCtx({ channel: testChannel() })
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { hook: 'x' } }],
-      usage: { input_tokens: 1, output_tokens: 1 },
-    })
+    const { client } = fakeClient(emitToolUse({ hook: 'x' }, { input_tokens: 1, output_tokens: 1 }))
     await expect(createScriptStage(client).run(ctx)).rejects.toThrow()
   })
 
@@ -105,10 +96,10 @@ describe('scriptStage', () => {
     // A billed call whose tool output fails validation must not lose the spend:
     // the stage catches the cost-carrying error and records it before rethrowing.
     const ctx = makeCtx({ channel: testChannel() })
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { hook: 'x' } }], // invalid ScriptOutput
-      usage: { input_tokens: 100, output_tokens: 200 },
-    })
+    // { hook: 'x' } alone is an invalid ScriptOutput
+    const { client } = fakeClient(
+      emitToolUse({ hook: 'x' }, { input_tokens: 100, output_tokens: 200 }),
+    )
     await expect(createScriptStage(client).run(ctx)).rejects.toThrow()
     const rows = ctx.db
       .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
@@ -133,26 +124,20 @@ describe('createScriptStage story mode', () => {
   // storyMetaSchema wraps the three platform entries in a `platformMeta` key —
   // the story call asks ONLY for metadata, so the narration fields of
   // ScriptOutput are absent from what the model returns.
-  const META = {
-    content: [
-      {
-        type: 'tool_use',
-        id: 't1',
-        name: 'emit',
-        input: {
-          platformMeta: {
-            youtube: PLATFORM_META.youtube,
-            tiktok: PLATFORM_META.tiktok,
-            instagram: PLATFORM_META.instagram,
-          },
-        },
+  const META = emitToolUse(
+    {
+      platformMeta: {
+        youtube: PLATFORM_META.youtube,
+        tiktok: PLATFORM_META.tiktok,
+        instagram: PLATFORM_META.instagram,
       },
-    ],
-    usage: { input_tokens: 100, output_tokens: 100 },
-  }
+    },
+    { input_tokens: 100, output_tokens: 100 },
+  )
 
   const story = {
-    bodyText: 'One month ago I hosted a movie night. She said she would kill me.\n\nThen she called my mother.',
+    bodyText:
+      'One month ago I hosted a movie night. She said she would kill me.\n\nThen she called my mother.',
     partIndex: 1,
     partCount: 3,
     sourceUrl: 'https://reddit.com/r/AmItheAsshole/comments/abc/',
@@ -264,9 +249,10 @@ describe('createScriptStage story mode', () => {
     // sanitized body, so the cut point for the `wordN` tail below has to
     // account for the prefix's own word count rather than starting at 0.
     const prefixWordCount = prefix.trim().split(/\s+/).length
-    const longBody = Array.from({ length: STORY_META_PREVIEW_WORDS + 20 }, (_, i) => `word${i}`).join(
-      ' ',
-    )
+    const longBody = Array.from(
+      { length: STORY_META_PREVIEW_WORDS + 20 },
+      (_, i) => `word${i}`,
+    ).join(' ')
     const { client, create } = fakeClient(META)
     const ctx = makeCtx({
       topic: 'AITA for X? (1/3)',
@@ -307,19 +293,12 @@ describe('createScriptStage story mode', () => {
       description: 'He said he would kill me and I believed it.',
       hashtags: ['#kill', '#drama'],
     }
-    const { client } = fakeClient({
-      content: [
-        {
-          type: 'tool_use',
-          id: 't1',
-          name: 'emit',
-          input: {
-            platformMeta: { youtube: flagged, tiktok: flagged, instagram: flagged },
-          },
-        },
-      ],
-      usage: { input_tokens: 100, output_tokens: 100 },
-    })
+    const { client } = fakeClient(
+      emitToolUse(
+        { platformMeta: { youtube: flagged, tiktok: flagged, instagram: flagged } },
+        { input_tokens: 100, output_tokens: 100 },
+      ),
+    )
     const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
     await createScriptStage(client).run(ctx)
 
@@ -371,7 +350,7 @@ describe('createScriptStage story mode', () => {
     expect(artifact.hook).toBe('Part 9.')
   })
 
-  it('does not strip a trailing ratio that is not this part\'s own suffix', async () => {
+  it("does not strip a trailing ratio that is not this part's own suffix", async () => {
     // A title can legitimately end in something that looks like a queue
     // ratio ("My rent split was (1/3)") without it being the scout's own
     // `(partIndex/partCount)` suffix. Here the part is a standalone single
@@ -422,10 +401,10 @@ describe('createScriptStage story mode', () => {
 
   it('ledgers the paid cost on a schema-invalid metadata response, then rejects', async () => {
     const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', id: 't1', name: 'emit', input: { platformMeta: {} } }], // invalid: missing platforms
-      usage: { input_tokens: 50, output_tokens: 60 },
-    })
+    // an empty platformMeta is invalid: the three platforms are required
+    const { client } = fakeClient(
+      emitToolUse({ platformMeta: {} }, { input_tokens: 50, output_tokens: 60 }),
+    )
     await expect(createScriptStage(client).run(ctx)).rejects.toThrow()
     const rows = ctx.db
       .prepare('SELECT provider, operation, usd_micros FROM costs WHERE job_id = ?')
@@ -451,7 +430,10 @@ describe('createScriptStage story mode', () => {
 
   it('omits the outro on a complete series', async () => {
     const { client } = fakeClient(META)
-    const ctx = makeCtx({ topic: 'AITA for X? (3/3)', story: { ...story, partIndex: 3, partCount: 3 } })
+    const ctx = makeCtx({
+      topic: 'AITA for X? (3/3)',
+      story: { ...story, partIndex: 3, partCount: 3 },
+    })
     await createScriptStage(client).run(ctx)
     const artifact = JSON.parse(
       await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
@@ -523,19 +505,12 @@ describe('createScriptStage story mode', () => {
     // deliberate stand-in that pins the ordering anyway.
     const sourceUrl =
       'https://reddit.com/r/AmItheAsshole/comments/abc/aita-for-saying-i-would-kill-her-cat/'
-    const { client } = fakeClient({
-      content: [
-        {
-          type: 'tool_use',
-          id: 't1',
-          name: 'emit',
-          input: {
-            platformMeta: { youtube: flagged, tiktok: flagged, instagram: flagged },
-          },
-        },
-      ],
-      usage: { input_tokens: 100, output_tokens: 100 },
-    })
+    const { client } = fakeClient(
+      emitToolUse(
+        { platformMeta: { youtube: flagged, tiktok: flagged, instagram: flagged } },
+        { input_tokens: 100, output_tokens: 100 },
+      ),
+    )
     const ctx = makeCtx({
       topic: 'AITA for X? (3/3)',
       story: { ...story, partIndex: 3, partCount: 3, truncated: true, sourceUrl },

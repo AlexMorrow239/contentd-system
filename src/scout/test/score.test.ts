@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
 import { PRICE_TABLE } from '../../providers/anthropic.js'
+import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
 import type { TrendCandidate } from '../sources/types.js'
 import {
   ESTIMATED_SCOUT_COST_MICROS,
@@ -13,13 +14,6 @@ import {
   scoreCandidates,
 } from '../score.js'
 
-// Client injection seam (script.test.ts pattern): a plain object with a
-// vi.fn() create — vitest constructor mocks are never needed here.
-function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn().mockResolvedValue(response)
-  return { client: { messages: { create } } as unknown as Anthropic, create }
-}
-
 function candidate(i: number, overrides: Partial<TrendCandidate> = {}): TrendCandidate {
   return {
     title: `Headline ${i}`,
@@ -31,10 +25,7 @@ function candidate(i: number, overrides: Partial<TrendCandidate> = {}): TrendCan
 }
 
 function emit(scores: unknown, usage = { input_tokens: 1000, output_tokens: 500 }) {
-  return {
-    content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores } }],
-    usage,
-  }
+  return emitToolUse({ scores }, usage)
 }
 
 function scoreEntries(count: number, score: number, offset = 0) {

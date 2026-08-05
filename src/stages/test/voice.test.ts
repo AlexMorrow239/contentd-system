@@ -15,7 +15,7 @@ import { voiceStage, MAX_CHUNK_WORDS, DEV_VOICE_ENV, resetKokoro } from '../voic
 import { countWords, HOOK_PAUSE_MS } from '../narration-text.js'
 import { parseWavDurationMs } from '../../media/wav.js'
 import { testChannel } from '../../testing/channel.js'
-import { makeCtx, testScript } from '../../testing/job.js'
+import { makeCtx, testScript, writeScriptJson } from '../../testing/job.js'
 import type { JobContext } from '../../jobs/types.js'
 import { estimateTtsCostMicros, synthWithTimestamps } from '../../providers/elevenlabs.js'
 import { BudgetExceededError } from '../../jobs/costs.js'
@@ -101,19 +101,12 @@ function elevenSynthResult() {
 
 // The elevenlabs branch is gated purely on ctx.channel.voice.premium being
 // configured — no tier concept is involved.
-async function premiumCtx(
-  script: unknown = SCRIPT,
-  channel = premiumChannel(),
-): Promise<JobContext> {
-  const ctx = makeCtx({ channel })
-  await fs.writeFile(ctx.artifactPath('script', 'script.json'), JSON.stringify(script))
-  return ctx
+function premiumCtx(script: unknown = SCRIPT, channel = premiumChannel()): JobContext {
+  return writeScriptJson(makeCtx({ channel }), script)
 }
 
-async function ctxWithScript(script: unknown = SCRIPT): Promise<JobContext> {
-  const ctx = makeCtx()
-  await fs.writeFile(ctx.artifactPath('script', 'script.json'), JSON.stringify(script))
-  return ctx
+function ctxWithScript(script: unknown = SCRIPT): JobContext {
+  return writeScriptJson(makeCtx(), script)
 }
 
 // Hermeticity guard: capture whatever the ambient environment actually had
@@ -144,7 +137,7 @@ describe('parseWavDurationMs', () => {
 
 describe('voiceStage', () => {
   it('uses kokoro on the happy path and writes wav + meta', async () => {
-    const ctx = await ctxWithScript()
+    const ctx = ctxWithScript()
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
@@ -169,8 +162,8 @@ describe('voiceStage', () => {
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
-    await voiceStage.run(await ctxWithScript())
-    await voiceStage.run(await ctxWithScript())
+    await voiceStage.run(ctxWithScript())
+    await voiceStage.run(ctxWithScript())
 
     expect(vi.mocked(KokoroTTS.from_pretrained)).toHaveBeenCalledTimes(1)
     expect(generate).toHaveBeenCalledTimes(4) // hook + body, twice
@@ -183,11 +176,11 @@ describe('voiceStage', () => {
     vi.mocked(MsEdgeTTS).mockImplementation(function () {
       return { setMetadata, toStream }
     })
-    await voiceStage.run(await ctxWithScript()) // falls back to edge-tts
+    await voiceStage.run(ctxWithScript()) // falls back to edge-tts
 
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
-    const ctx = await ctxWithScript()
+    const ctx = ctxWithScript()
     await voiceStage.run(ctx)
 
     const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'))
@@ -195,7 +188,7 @@ describe('voiceStage', () => {
   })
 
   it('splits long narration into multiple under-budget kokoro calls and concatenates them', async () => {
-    const ctx = await ctxWithScript(LONG_SCRIPT)
+    const ctx = ctxWithScript(LONG_SCRIPT)
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
@@ -220,7 +213,7 @@ describe('voiceStage', () => {
   })
 
   it('caps per-chunk trailing silence so concatenation has no internal gaps or dead tail', async () => {
-    const ctx = await ctxWithScript(LONG_SCRIPT)
+    const ctx = ctxWithScript(LONG_SCRIPT)
     // Each chunk: audible speech at 2 words/sec followed by 3s of pure silence —
     // the shape real kokoro output has (multi-second silent pad per generation).
     const generate = vi.fn(async (t: string) => {
@@ -246,7 +239,7 @@ describe('voiceStage', () => {
   })
 
   it('throws when synthesized audio is implausibly short for the script (truncation guard), classified as provider/invalid', async () => {
-    const ctx = await ctxWithScript(LONG_SCRIPT)
+    const ctx = ctxWithScript(LONG_SCRIPT)
     // Simulate silent truncation: every chunk comes back as 100ms of audio.
     const generate = vi.fn().mockResolvedValue({
       audio: new Float32Array(KOKORO_RATE / 10),
@@ -260,7 +253,7 @@ describe('voiceStage', () => {
   })
 
   it('falls back to edge-tts when kokoro throws', async () => {
-    const ctx = await ctxWithScript()
+    const ctx = ctxWithScript()
     vi.mocked(KokoroTTS.from_pretrained).mockRejectedValue(new Error('no model'))
     const setMetadata = vi.fn().mockResolvedValue(undefined)
     // Hook and body are now separate toStream calls: a fresh Readable per call,
@@ -284,7 +277,7 @@ describe('voiceStage', () => {
   })
 
   it('chunks and concatenates on the edge-tts path too', async () => {
-    const ctx = await ctxWithScript(LONG_SCRIPT)
+    const ctx = ctxWithScript(LONG_SCRIPT)
     vi.mocked(KokoroTTS.from_pretrained).mockRejectedValue(new Error('no model'))
     const setMetadata = vi.fn().mockResolvedValue(undefined)
     // Each edge response is its own RIFF stream: 12s per chunk keeps the total
@@ -309,7 +302,7 @@ describe('voiceStage', () => {
   })
 
   it('throws when both kokoro and edge-tts fail, classified as provider/transient', async () => {
-    const ctx = await ctxWithScript()
+    const ctx = ctxWithScript()
     vi.mocked(KokoroTTS.from_pretrained).mockRejectedValue(new Error('no model'))
     vi.mocked(MsEdgeTTS).mockImplementation(function () {
       return {
@@ -333,7 +326,7 @@ describe('voiceStage', () => {
     // error propagates to the caller at all -- it is only visible on the
     // ctx.log.warn call that logs the fallback. Capture that call to verify the
     // swallowed error still carries the right classification.
-    const ctx = await ctxWithScript()
+    const ctx = ctxWithScript()
     const warn = vi.fn()
     ctx.log = { ...ctx.log, warn }
     // sampling_rate: 0 makes synthChunked's own `sampleRate <= 0` check fire on
@@ -360,7 +353,7 @@ describe('voiceStage', () => {
 
 describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   it('synthesizes via elevenlabs: wav + timings + meta written, cost recorded, volume chain untouched', async () => {
-    const ctx = await premiumCtx()
+    const ctx = premiumCtx()
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult())
     // Kokoro is armed so that, if the implementation wrongly falls through to
     // the volume chain, this test fails on assertions instead of crashing.
@@ -399,7 +392,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   })
 
   it('strips any leaked SSML break-tag fragments out of the returned word timings', async () => {
-    const ctx = await premiumCtx()
+    const ctx = premiumCtx()
     vi.mocked(synthWithTimestamps).mockResolvedValue({
       ...elevenSynthResult(),
       // Defense in depth: if a provider ever echoes the injected break tag
@@ -422,7 +415,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   })
 
   it('falls back to kokoro when elevenlabs fails, leaving no timings.json and no cost row', async () => {
-    const ctx = await premiumCtx()
+    const ctx = premiumCtx()
     vi.mocked(synthWithTimestamps).mockRejectedValue(new Error('eleven down'))
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
@@ -442,7 +435,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   })
 
   it('fails the stage instead of falling back when a local write throws after paid audio arrived', async () => {
-    const ctx = await premiumCtx()
+    const ctx = premiumCtx()
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult())
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
@@ -474,7 +467,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   })
 
   it('removes a stale timings.json from a prior attempt when falling back', async () => {
-    const ctx = await premiumCtx()
+    const ctx = premiumCtx()
     await fs.writeFile(
       ctx.artifactPath('voice', 'timings.json'),
       JSON.stringify({ words: ELEVEN_WORDS }),
@@ -491,7 +484,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   })
 
   it('a channel with no [voice.premium] config uses the volume chain', async () => {
-    const ctx = await premiumCtx(SCRIPT, testChannel({ voice: { volume: 'af_heart' } }))
+    const ctx = premiumCtx(SCRIPT, testChannel({ voice: { volume: 'af_heart' } }))
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
@@ -506,7 +499,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
     const channel = premiumChannel()
     // estimateTtsCostMicros mock returns 40_000; cap it below that.
     channel.budget = { ...channel.budget, perVideoUsdMicros: 10_000 }
-    const ctx = await premiumCtx(SCRIPT, channel)
+    const ctx = premiumCtx(SCRIPT, channel)
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
@@ -521,7 +514,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   it('applies the implausibly-short truncation guard to elevenlabs audio too', async () => {
     // LONG_SCRIPT: 285 narration words -> >= 57000ms plausibility floor, but
     // the mock returns 1000ms of audio.
-    const ctx = await premiumCtx(LONG_SCRIPT)
+    const ctx = premiumCtx(LONG_SCRIPT)
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult())
 
     await expect(voiceStage.run(ctx)).rejects.toThrow(/truncated by provider "elevenlabs"/)
@@ -541,7 +534,7 @@ describe('voiceStage dev mode', () => {
     // skip the premium branch entirely, this would throw BudgetExceededError
     // instead of falling through to kokoro.
     channel.budget = { ...channel.budget, perVideoUsdMicros: 10_000 }
-    const ctx = await premiumCtx(SCRIPT, channel)
+    const ctx = premiumCtx(SCRIPT, channel)
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
@@ -555,7 +548,7 @@ describe('voiceStage dev mode', () => {
 
   it('BRAINROT_DEV_VOICE=1 skips elevenlabs even when the channel has no dev flag set', async () => {
     vi.stubEnv(DEV_VOICE_ENV, '1')
-    const ctx = await premiumCtx()
+    const ctx = premiumCtx()
     const generate = vi.fn(async (t: string) => chunkAudio(t))
     vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
 
@@ -568,7 +561,7 @@ describe('voiceStage dev mode', () => {
 
   it('leaves premium behavior untouched when BRAINROT_DEV_VOICE is unset or not "1"', async () => {
     vi.stubEnv(DEV_VOICE_ENV, '0')
-    const ctx = await premiumCtx()
+    const ctx = premiumCtx()
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult())
 
     await voiceStage.run(ctx)

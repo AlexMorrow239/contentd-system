@@ -60,7 +60,9 @@ describe('assembleStage', () => {
       '-f',
       'lavfi',
       '-i',
-      'testsrc2=duration=2:size=1080x1920:rate=30',
+      // 1.2s of background against 1s of narration: enough headroom for the
+      // trim without paying to encode a second of frames the render discards.
+      'testsrc2=duration=1.2:size=1080x1920:rate=30',
       '-c:v',
       'libx264',
       '-pix_fmt',

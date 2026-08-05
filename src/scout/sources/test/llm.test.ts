@@ -1,19 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import type Anthropic from '@anthropic-ai/sdk'
 import { llmSource, normalizeGeneratedTitle } from '../llm.js'
-
-// Client injection seam (score.test.ts pattern): a plain object with a
-// vi.fn() create — vitest constructor mocks are never needed here.
-function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn().mockResolvedValue(response)
-  return { client: { messages: { create } } as unknown as Anthropic, create }
-}
+import { emitToolUse, fakeClient } from '../../../testing/anthropic.js'
 
 function emit(topics: unknown, usage = { input_tokens: 1000, output_tokens: 500 }) {
-  return {
-    content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { topics } }],
-    usage,
-  }
+  return emitToolUse({ topics }, usage)
 }
 
 describe('llmSource', () => {

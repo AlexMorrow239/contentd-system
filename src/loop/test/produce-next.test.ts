@@ -1,5 +1,5 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
@@ -12,8 +12,8 @@ import type { JobContext, StageDef } from '../../jobs/types.js'
 import { claimTopic } from '../../scout/topics.js'
 import { produceNextTick } from '../produce-next.js'
 import { acquireLease, PRODUCE_LEASE_TTL_MS } from '../lease.js'
-import { memDb } from '../../testing/db.js'
-import { testRoot } from '../../testing/tmp.js'
+import { memDb, seedJob, seedLibrary, seedTopic as seedTopicRow } from '../../testing/db.js'
+import { testRoot, tmpDir } from '../../testing/tmp.js'
 
 // Both lost-claim races are single-instant windows between planning and
 // executing that no in-process seeding can open, so the two losing calls are
@@ -52,16 +52,6 @@ const CHANNEL_TOML = [
   'per_day_usd = 20.0',
 ].join('\n')
 
-const cleanupDirs: string[] = []
-function tmpDir(prefix: string): string {
-  const d = mkdtempSync(join(tmpdir(), prefix))
-  cleanupDirs.push(d)
-  return d
-}
-afterAll(() => {
-  for (const d of cleanupDirs) rmSync(d, { recursive: true, force: true })
-})
-
 // One shared read-only channels dir; each test gets a fresh db and runs root.
 const channelsDir = tmpDir('brainrot-loop-channels-')
 writeFileSync(join(channelsDir, 'loop-chan.toml'), CHANNEL_TOML)
@@ -72,25 +62,22 @@ function setup() {
   return { db, runsRoot }
 }
 
+// A loop-flavoured call shape (no arguments, unique hash per call) over the
+// shared row builder — the _digest.fixtures.ts pattern.
 let topicSeq = 0
 function seedTopic(db: Database): number {
   topicSeq += 1
-  const info = db
-    .prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(
-      'loop-chan',
-      'Venus rains molten metal',
-      'TIL Venus rains metal',
-      'reddit:r/space',
-      'https://www.reddit.com/r/space/comments/abc',
-      `hash-${topicSeq}`,
-      80,
-      'hooky and on-niche',
-      'candidate',
-    )
-  return Number(info.lastInsertRowid)
+  return seedTopicRow(db, {
+    channel: 'loop-chan',
+    title: 'Venus rains molten metal',
+    rawTitle: 'TIL Venus rains metal',
+    source: 'reddit:r/space',
+    url: 'https://www.reddit.com/r/space/comments/abc',
+    dedupeHash: `hash-${topicSeq}`,
+    score: 80,
+    reason: 'hooky and on-niche',
+    status: 'candidate',
+  })
 }
 
 // The runner's final gate reads qc/qc.json to pick ready vs needs-review, so
@@ -344,16 +331,20 @@ describe('produceNextTick — repair sweep', () => {
     // A job that committed its library row but crashed before markTopicUsedByJob:
     // its topic is stranded 'claimed' and bound to a now-'done' job (resume
     // refuses 'done', so nothing else can ever recover it).
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('landed-job', 'loop-chan', 'volume', 't', 'done')",
-    ).run()
-    db.prepare(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('landed-job', '/tmp/out.mp4', '{}', 'ready')",
-    ).run()
-    db.prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) ' +
-        "VALUES ('loop-chan', 'T', 'R', 's', 'u', 'h-repair', 80, 'r', 'claimed', 'landed-job')",
-    ).run()
+    seedJob(db, 'landed-job', { channel: 'loop-chan', topic: 't', status: 'done' })
+    seedLibrary(db, 'landed-job', { videoPath: '/tmp/out.mp4', state: 'ready' })
+    seedTopicRow(db, {
+      channel: 'loop-chan',
+      title: 'T',
+      rawTitle: 'R',
+      source: 's',
+      url: 'u',
+      dedupeHash: 'h-repair',
+      score: 80,
+      reason: 'r',
+      status: 'claimed',
+      jobId: 'landed-job',
+    })
     // queue is otherwise empty (the claimed topic is not eligible) → noop, and
     // neverStages guards that no production runs on this path
     const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })

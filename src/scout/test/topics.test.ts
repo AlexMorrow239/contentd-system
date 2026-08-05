@@ -17,71 +17,26 @@ import {
   setTopicTargetUrl,
   storyPartForJob,
 } from '../topics.js'
-import { memDb } from '../../testing/db.js'
+import { memDb, seedJob, seedTopic as kitSeedTopic } from '../../testing/db.js'
+import type { TopicRow } from '../../testing/db.js'
 
-// Raw-insert seed: the DAO only ever writes status/job_id transitions, so
-// tests control every column (created_at included) directly.
+// Local ergonomics over the shared row builder: a per-call sequence keeps
+// repeated bare seeds distinct under UNIQUE (channel, dedupe_hash), and
+// created_at is pinned so ordering assertions are not clock-dependent. Row
+// SQL is the testkit's (the _digest.fixtures.ts pattern).
 let seq = 0
-function seedTopic(
-  db: Database,
-  overrides: Partial<{
-    channel: string
-    title: string
-    rawTitle: string
-    source: string
-    url: string
-    dedupeHash: string
-    score: number
-    reason: string
-    status: string
-    jobId: string | null
-    createdAt: string
-    seriesKey: string | null
-    partIndex: number | null
-    partCount: number | null
-  }> = {},
-): number {
+function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): number {
   seq += 1
-  const row = {
-    channel: 'chan-a',
-    title: `Topic ${seq}`,
-    rawTitle: `Raw ${seq}`,
+  return kitSeedTopic(db, {
+    title: `Topic ${String(seq)}`,
+    rawTitle: `Raw ${String(seq)}`,
     source: 'reddit:r/space',
-    url: `https://example.com/${seq}`,
-    dedupeHash: `hash-${seq}`,
+    url: `https://example.com/${String(seq)}`,
+    dedupeHash: `hash-${String(seq)}`,
     score: 50,
-    reason: 'seeded',
-    status: 'candidate',
-    jobId: null,
     createdAt: '2026-07-20T00:00:00.000Z',
-    seriesKey: null,
-    partIndex: null,
-    partCount: null,
     ...overrides,
-  }
-  const res = db
-    .prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id, created_at, ' +
-        'series_key, part_index, part_count) ' +
-        'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(
-      row.channel,
-      row.title,
-      row.rawTitle,
-      row.source,
-      row.url,
-      row.dedupeHash,
-      row.score,
-      row.reason,
-      row.status,
-      row.jobId,
-      row.createdAt,
-      row.seriesKey,
-      row.partIndex,
-      row.partCount,
-    )
-  return Number(res.lastInsertRowid)
+  })
 }
 
 describe('topics table schema', () => {
@@ -430,17 +385,10 @@ describe('claimTopic / markTopicUsedByJob', () => {
 })
 
 describe('requeueTopic', () => {
-  // A job row the topic can point at; requeue's guard reads its status.
-  function seedJob(db: Database, id: string, status: string): void {
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, 'chan-a', 'volume', 'T', ?)",
-    ).run(id, status)
-  }
-
   it('returns an orphaned claimed topic to the queue and unbinds its job', () => {
     const db = memDb()
     const id = seedTopic(db, { status: 'claimed', jobId: 'job-dead' })
-    seedJob(db, 'job-dead', 'failed')
+    seedJob(db, 'job-dead', { topic: 'T', status: 'failed' })
     expect(requeueTopic(db, id)).toEqual({ ok: true })
     const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
       status: string
@@ -466,7 +414,7 @@ describe('requeueTopic', () => {
   it('requeues a topic held by a blocked job', () => {
     const db = memDb()
     const id = seedTopic(db, { status: 'claimed', jobId: 'job-blocked' })
-    seedJob(db, 'job-blocked', 'blocked')
+    seedJob(db, 'job-blocked', { topic: 'T', status: 'blocked' })
     expect(requeueTopic(db, id)).toEqual({ ok: true })
     const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
       status: string
@@ -482,7 +430,7 @@ describe('requeueTopic', () => {
   it('leaves the requeued topic alone when its old job later completes', () => {
     const db = memDb()
     const id = seedTopic(db, { status: 'claimed', jobId: 'job-blocked' })
-    seedJob(db, 'job-blocked', 'blocked')
+    seedJob(db, 'job-blocked', { topic: 'T', status: 'blocked' })
     expect(requeueTopic(db, id)).toEqual({ ok: true })
     markTopicUsedByJob(db, 'job-blocked')
     const row = db.prepare('SELECT status, job_id FROM topics WHERE id = ?').get(id) as {
@@ -498,7 +446,7 @@ describe('requeueTopic', () => {
     for (const status of ['queued', 'running'] as const) {
       const jobId = `job-${status}`
       const id = seedTopic(db, { status: 'claimed', jobId })
-      seedJob(db, jobId, status)
+      seedJob(db, jobId, { topic: 'T', status })
       expect(requeueTopic(db, id)).toEqual({
         ok: false,
         reason: 'job-active',

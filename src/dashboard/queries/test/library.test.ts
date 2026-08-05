@@ -8,25 +8,18 @@ import { tmpDir } from '../../../testing/tmp.js'
 
 function seed(): Database {
   const db = memDb()
-  db.prepare(
-    "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j1','space','volume','Venus','done')",
-  ).run()
-  db.prepare(
-    "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('j2','ocean','premium','Trench','done')",
-  ).run()
+  seedJob(db, 'j1', { channel: 'space', topic: 'Venus' })
+  seedJob(db, 'j2', { channel: 'ocean', tier: 'premium', topic: 'Trench' })
   return db
 }
 
 function addLibrary(db: Database, jobId: string, state: string, metadata: string): void {
-  db.prepare(
-    'INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(
-    jobId,
-    `runs/${jobId}/assemble/final.mp4`,
-    metadata,
+  seedLibrary(db, jobId, {
+    videoPath: `runs/${jobId}/assemble/final.mp4`,
+    metadataJson: metadata,
     state,
-    `2026-07-2${jobId.slice(1)}T00:00:00.000Z`,
-  )
+    createdAt: `2026-07-2${jobId.slice(1)}T00:00:00.000Z`,
+  })
 }
 
 describe('listLibraryEntries', () => {

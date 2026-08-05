@@ -4,18 +4,32 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from '../jobs.js'
 import { tmpDir } from '../../../testing/tmp.js'
-import { memDb, seedPost } from '../../../testing/db.js'
+import {
+  memDb,
+  seedCost,
+  seedJob,
+  seedLibrary,
+  seedLibraryObject,
+  seedPost,
+  seedStage,
+} from '../../../testing/db.js'
 
 function seed(): Database {
   const db = memDb()
-  db.prepare(
-    'INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) ' +
-      "VALUES ('j1','space','volume','Why Venus is hot','failed','2026-07-24T10:00:00.000Z',NULL)",
-  ).run()
-  db.prepare(
-    'INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) ' +
-      "VALUES ('j2','ocean','premium','Deep sea','done','2026-07-25T10:00:00.000Z','2026-07-25T10:04:00.000Z')",
-  ).run()
+  seedJob(db, 'j1', {
+    channel: 'space',
+    topic: 'Why Venus is hot',
+    status: 'failed',
+    createdAt: '2026-07-24T10:00:00.000Z',
+  })
+  seedJob(db, 'j2', {
+    channel: 'ocean',
+    tier: 'premium',
+    topic: 'Deep sea',
+    status: 'done',
+    createdAt: '2026-07-25T10:00:00.000Z',
+    finishedAt: '2026-07-25T10:04:00.000Z',
+  })
   return db
 }
 
@@ -36,12 +50,8 @@ describe('listJobs', () => {
 
   it("sums each job's lifetime spend", () => {
     const db = seed()
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','anthropic','script',12000)",
-    ).run()
-    db.prepare(
-      "INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES ('j1','elevenlabs','tts',30000)",
-    ).run()
+    seedCost(db, 'j1', { provider: 'anthropic', operation: 'script', usdMicros: 12000 })
+    seedCost(db, 'j1', { provider: 'elevenlabs', operation: 'tts', usdMicros: 30000 })
     const rows = listJobs(db)
     expect(rows.find((j) => j.id === 'j1')?.costUsdMicros).toBe(42000)
     // A job with no costs rows reports 0, not null.
@@ -89,14 +99,16 @@ describe('getJobDetail', () => {
 
   it('puts the error on the failing stage and leaves later stages pending', () => {
     const db = seed()
-    db.prepare(
-      'INSERT INTO job_stages (job_id, stage, status, started_at, finished_at) ' +
-        "VALUES ('j1','script','done','2026-07-24T10:00:00.000Z','2026-07-24T10:00:30.000Z')",
-    ).run()
-    db.prepare(
-      'INSERT INTO job_stages (job_id, stage, status, error, started_at) ' +
-        "VALUES ('j1','voice','failed','elevenlabs 401','2026-07-24T10:00:30.000Z')",
-    ).run()
+    seedStage(db, 'j1', 'script', {
+      status: 'done',
+      startedAt: '2026-07-24T10:00:00.000Z',
+      finishedAt: '2026-07-24T10:00:30.000Z',
+    })
+    seedStage(db, 'j1', 'voice', {
+      status: 'failed',
+      error: 'elevenlabs 401',
+      startedAt: '2026-07-24T10:00:30.000Z',
+    })
 
     const detail = getJobDetail(db, 'j1')
     expect(detail?.stages.map((s) => s.stage)).toEqual([...DASHBOARD_STAGE_ORDER])
@@ -111,14 +123,18 @@ describe('getJobDetail', () => {
 
   it('returns the job costs newest first', () => {
     const db = seed()
-    db.prepare(
-      'INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) ' +
-        "VALUES ('j1','anthropic','script',12000,'2026-07-24T10:00:10.000Z')",
-    ).run()
-    db.prepare(
-      'INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) ' +
-        "VALUES ('j1','elevenlabs','tts',30000,'2026-07-24T10:00:40.000Z')",
-    ).run()
+    seedCost(db, 'j1', {
+      provider: 'anthropic',
+      operation: 'script',
+      usdMicros: 12000,
+      createdAt: '2026-07-24T10:00:10.000Z',
+    })
+    seedCost(db, 'j1', {
+      provider: 'elevenlabs',
+      operation: 'tts',
+      usdMicros: 30000,
+      createdAt: '2026-07-24T10:00:40.000Z',
+    })
     const detail = getJobDetail(db, 'j1')
     expect(detail?.costs.map((c) => c.provider)).toEqual(['elevenlabs', 'anthropic'])
     db.close()
@@ -126,10 +142,7 @@ describe('getJobDetail', () => {
 
   it('reports the library row when one exists', () => {
     const db = seed()
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2','runs/j2/assemble/final.mp4','{}','ready')",
-    ).run()
+    seedLibrary(db, 'j2', { videoPath: 'runs/j2/assemble/final.mp4', state: 'ready' })
     const detail = getJobDetail(db, 'j2')
     expect(detail?.libraryState).toBe('ready')
     expect(detail?.videoPath).toBe('runs/j2/assemble/final.mp4')
@@ -151,36 +164,23 @@ describe('getJobDetail', () => {
     const dir = tmpDir('dashboard-video-')
     const file = path.join(dir, 'out.mp4')
     writeFileSync(file, 'not really a video')
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2', ?, '{}', 'ready')",
-    ).run(file)
-    db.prepare(
-      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j2','videos/ocean/j2.mp4',1,'e')",
-    ).run()
+    seedLibrary(db, 'j2', { videoPath: file, state: 'ready' })
+    seedLibraryObject(db, 'j2', { objectKey: 'videos/ocean/j2.mp4', bytes: 1, etag: 'e' })
     expect(getJobDetail(db, 'j2')?.bytes).toBe('local')
     db.close()
   })
 
   it('reports bytes archived when the local file is gone and the object is not reclaimed', () => {
     const db = seed()
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
-    ).run()
-    db.prepare(
-      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j2','videos/ocean/j2.mp4',1,'e')",
-    ).run()
+    seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
+    seedLibraryObject(db, 'j2', { objectKey: 'videos/ocean/j2.mp4', bytes: 1, etag: 'e' })
     expect(getJobDetail(db, 'j2')?.bytes).toBe('archived')
     db.close()
   })
 
   it('reports bytes unstored when there is no local file and no library_objects row', () => {
     const db = seed()
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
-    ).run()
+    seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
     // No library_objects row: this job was never uploaded to object storage.
     expect(getJobDetail(db, 'j2')?.bytes).toBe('unstored')
     db.close()
@@ -188,27 +188,30 @@ describe('getJobDetail', () => {
 
   it('reports bytes reclaimed when the stored object has been reclaimed', () => {
     const db = seed()
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
-    ).run()
-    db.prepare(
-      "INSERT INTO library_objects (job_id, object_key, bytes, etag, reclaimed_at) " +
-        "VALUES ('j2','videos/ocean/j2.mp4',1,'e','2026-07-26T00:00:00.000Z')",
-    ).run()
+    seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
+    seedLibraryObject(db, 'j2', {
+      objectKey: 'videos/ocean/j2.mp4',
+      bytes: 1,
+      etag: 'e',
+      reclaimedAt: '2026-07-26T00:00:00.000Z',
+    })
     expect(getJobDetail(db, 'j2')?.bytes).toBe('reclaimed')
     db.close()
   })
 
   it('lists post links for the job, one per platform', () => {
     const db = seed()
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
-        "VALUES ('j2', '/nonexistent/runs/j2/final.mp4', '{}', 'ready')",
-    ).run()
-    seedPost(db, { jobId: 'j2', channel: 'ocean', platform: 'youtube', url: 'https://youtu.be/abc' })
+    seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
+    seedPost(db, {
+      jobId: 'j2',
+      channel: 'ocean',
+      platform: 'youtube',
+      url: 'https://youtu.be/abc',
+    })
     seedPost(db, { jobId: 'j2', channel: 'ocean', platform: 'instagram', url: null })
-    expect(getJobDetail(db, 'j2')?.links).toEqual([{ platform: 'youtube', url: 'https://youtu.be/abc' }])
+    expect(getJobDetail(db, 'j2')?.links).toEqual([
+      { platform: 'youtube', url: 'https://youtu.be/abc' },
+    ])
     db.close()
   })
 })

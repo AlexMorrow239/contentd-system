@@ -1,75 +1,49 @@
 import { describe, expect, it, vi } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import type Anthropic from '@anthropic-ai/sdk'
 import { loadChannelsDir } from '../../config/channel.js'
 import { openDb } from '../../db/index.js'
 import { listTopics } from '../../scout/topics.js'
 import { scoutChannel } from '../../scout/scout.js'
-import type { FetchLike } from '../../scout/sources/types.js'
 import { produceNextTick } from '../../loop/produce-next.js'
 import { stubStorageEnv } from '../../testing/storage.js'
 import { STAGE_ORDER } from '../types.js'
 import type { JobContext, StageDef, StageName } from '../types.js'
 import { tmpDir } from '../../testing/tmp.js'
+import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
+import type { FakeAnthropic } from '../../testing/anthropic.js'
+import { fetchStub, redditFeedXml } from '../../testing/reddit-feed.js'
 
 // Reddit .rss fixture: the public Atom feed redditSource reads keylessly,
 // <entry><id> carrying the t3_ fullname. One post scores above the channel
 // threshold, one below.
-const REDDIT_FEED = `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <id>/r/space/.rss</id>
-  <title>/r/space</title>
-  <entry>
-    <id>t3_moon</id>
-    <link href="https://www.reddit.com/r/space/comments/t3_moon/" />
-    <title>Moon drifting away measured precisely</title>
-  </entry>
-  <entry>
-    <id>t3_ad</id>
-    <link href="https://www.reddit.com/r/space/comments/t3_ad/" />
-    <title>Buy my telescope (ad)</title>
-  </entry>
-</feed>`
+const REDDIT_FEED = redditFeedXml([
+  { id: 't3_moon', title: 'Moon drifting away measured precisely' },
+  { id: 't3_ad', title: 'Buy my telescope (ad)' },
+])
 
 // Serves only r/space's feed; any other URL is a test bug, never a
 // silent live-network hit.
-const fetchImpl: FetchLike = async (input: RequestInfo | URL) => {
-  const url = input instanceof Request ? input.url : String(input)
-  if (url.includes('/r/space/.rss')) {
-    return new Response(REDDIT_FEED, {
-      status: 200,
-      headers: { 'Content-Type': 'application/atom+xml' },
-    })
-  }
-  throw new Error(`unexpected fetch: ${url}`)
-}
+const fetchImpl = fetchStub({ '/r/space/.rss': REDDIT_FEED })
 
-// The scorer's structuredCompletion consumes a forced 'emit' tool_use; the
-// response shape mirrors fakeClient in src/providers/anthropic.test.ts.
-function scoringClient(): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn().mockResolvedValue({
-    content: [
+// The scorer's structuredCompletion consumes a forced 'emit' tool_use.
+function scoringClient(): FakeAnthropic {
+  return fakeClient(
+    emitToolUse(
       {
-        type: 'tool_use',
-        name: 'emit',
-        id: 't1',
-        input: {
-          scores: [
-            {
-              candidateIndex: 0,
-              score: 85,
-              topic: 'The Moon is escaping Earth',
-              reason: 'novel physics hook',
-            },
-            { candidateIndex: 1, score: 10, topic: 'Telescope ad', reason: 'commercial spam' },
-          ],
-        },
+        scores: [
+          {
+            candidateIndex: 0,
+            score: 85,
+            topic: 'The Moon is escaping Earth',
+            reason: 'novel physics hook',
+          },
+          { candidateIndex: 1, score: 10, topic: 'Telescope ad', reason: 'commercial spam' },
+        ],
       },
-    ],
-    usage: { input_tokens: 1000, output_tokens: 200 },
-  })
-  return { client: { messages: { create } } as unknown as Anthropic, create }
+      { input_tokens: 1000, output_tokens: 200 },
+    ),
+  )
 }
 
 // Fake happy-path stages (mirrors buildStages in runner.test.ts). runJob's

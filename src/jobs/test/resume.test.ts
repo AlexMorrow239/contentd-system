@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
@@ -9,8 +8,8 @@ import type { JobContext, StageDef } from '../types.js'
 import { pipelineStages } from '../pipeline.js'
 import { claimJobForResume, ResumeError, resumeJob } from '../resume.js'
 import { runCli } from '../../testing/run-cli.js'
-import { memDb } from '../../testing/db.js'
-import { testRoot } from '../../testing/tmp.js'
+import { memDb, seedJob as seedJobRow, seedStage, seedTopic } from '../../testing/db.js'
+import { testRoot, tmpDir } from '../../testing/tmp.js'
 import { BrainrotError, classify, errorMessage } from '../../errors.js'
 
 // Real minimal channel TOML (plan-1 shape; [scout] is optional): resumeJob
@@ -60,31 +59,24 @@ describe('resumeJob', () => {
 
   beforeEach(() => {
     db = memDb()
-    channelsDir = mkdtempSync(join(tmpdir(), 'brainrot-channels-'))
-    runsRoot = mkdtempSync(join(tmpdir(), 'brainrot-runs-'))
+    channelsDir = tmpDir('brainrot-channels-')
+    runsRoot = tmpDir('brainrot-runs-')
     writeFileSync(join(channelsDir, 'resume-test.toml'), CHANNEL_TOML)
   })
 
   afterEach(() => {
     db.close()
-    rmSync(channelsDir, { recursive: true, force: true })
-    rmSync(runsRoot, { recursive: true, force: true })
-    vi.unstubAllEnvs()
   })
 
   // Mirrors createJob's row shape: one jobs row plus seven pending stage rows.
   function seedJob(status: string, opts: { channel?: string; id?: string } = {}): string {
     const id = opts.id ?? `job-${status}`
-    db.prepare(
-      "INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, 'volume', ?, ?)",
-    ).run(id, opts.channel ?? 'resume-test', 'why the moon drifts', status)
-    for (const stage of STAGE_ORDER) {
-      db.prepare('INSERT INTO job_stages (job_id, stage, status) VALUES (?, ?, ?)').run(
-        id,
-        stage,
-        'pending',
-      )
-    }
+    seedJobRow(db, id, {
+      channel: opts.channel ?? 'resume-test',
+      topic: 'why the moon drifts',
+      status,
+    })
+    for (const stage of STAGE_ORDER) seedStage(db, id, stage, { status: 'pending' })
     return id
   }
 
@@ -163,10 +155,18 @@ describe('resumeJob', () => {
   it('resumes a failed job via the stagesFor seam and flips its claimed topic to used', async () => {
     const jobId = seedJob('failed')
     // A claimed topic bound to this job — the row claimTopic leaves behind.
-    db.prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) ' +
-        "VALUES ('resume-test', 'T', 'R', 's', 'u', 'h1', 80, 'r', 'claimed', ?)",
-    ).run(jobId)
+    seedTopic(db, {
+      channel: 'resume-test',
+      title: 'T',
+      rawTitle: 'R',
+      source: 's',
+      url: 'u',
+      dedupeHash: 'h1',
+      score: 80,
+      reason: 'r',
+      status: 'claimed',
+      jobId,
+    })
     const calls: string[] = []
     const stagesFor = vi.fn(() => fakeStages(calls))
     const result = await resumeJob(db, jobId, { runsRoot, channelsDir, stagesFor })
@@ -209,10 +209,18 @@ describe('resumeJob', () => {
 
   it('leaves the claimed topic bound when the resume fails again', async () => {
     const jobId = seedJob('failed')
-    db.prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, status, job_id) ' +
-        "VALUES ('resume-test', 'T', 'R', 's', 'u', 'h2', 80, 'r', 'claimed', ?)",
-    ).run(jobId)
+    seedTopic(db, {
+      channel: 'resume-test',
+      title: 'T',
+      rawTitle: 'R',
+      source: 's',
+      url: 'u',
+      dedupeHash: 'h2',
+      score: 80,
+      reason: 'r',
+      status: 'claimed',
+      jobId,
+    })
     const failing: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
       async run() {
@@ -340,14 +348,8 @@ describe('brainrot resume CLI', () => {
       // 'failed'. Resume skips all stages and re-runs only the final gate —
       // the one real-stage-free path a subprocess test can drive.
       const db = openDb(root.dbPath)
-      db.prepare(
-        "INSERT INTO jobs (id, channel, tier, topic, status) VALUES ('e2e-job', 'resume-test', 'volume', 't', 'failed')",
-      ).run()
-      for (const stage of STAGE_ORDER) {
-        db.prepare(
-          "INSERT INTO job_stages (job_id, stage, status) VALUES ('e2e-job', ?, 'done')",
-        ).run(stage)
-      }
+      seedJobRow(db, 'e2e-job', { channel: 'resume-test', topic: 't', status: 'failed' })
+      for (const stage of STAGE_ORDER) seedStage(db, 'e2e-job', stage, { status: 'done' })
       db.close()
       const qcDir = join(root.runsRoot, 'e2e-job', 'qc')
       mkdirSync(qcDir, { recursive: true })

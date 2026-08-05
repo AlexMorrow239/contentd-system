@@ -1,18 +1,10 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { execa } from 'execa'
-import {
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs'
-import { tmpdir } from 'node:os'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { loadChannelConfig } from '../../config/channel.js'
 import { openDb } from '../../db/index.js'
+import { tmpDir } from '../../testing/tmp.js'
 import { createJob, runJob } from '../runner.js'
 import { probe } from '../../media/ffmpeg.js'
 import { scriptStage } from '../../stages/script.js'
@@ -23,20 +15,10 @@ import { assembleStage } from '../../stages/assemble.js'
 import { qcStage } from '../../stages/qc.js'
 
 const REPO_ROOT = process.cwd()
-const cleanup: string[] = []
-function tmp(prefix: string): string {
-  const d = mkdtempSync(path.join(tmpdir(), prefix))
-  cleanup.push(d)
-  return d
-}
-
-afterAll(() => {
-  for (const d of cleanup) rmSync(d, { recursive: true, force: true })
-})
 
 describe('golden-path e2e', () => {
   it('resumes past seeded stages and produces a ready video', async () => {
-    const workspace = tmp('brainrot-e2e-')
+    const workspace = tmpDir('brainrot-e2e-')
     const bgDir = path.join(workspace, 'bg')
     const bgmDir = path.join(workspace, 'bgm')
     const runsRoot = path.join(workspace, 'runs')

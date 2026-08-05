@@ -1,13 +1,13 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import pino from 'pino'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { classify } from '../../errors.js'
-import type { JobContext, StageName } from '../../jobs/types.js'
+import type { JobContext } from '../../jobs/types.js'
 import { fakeStore } from '../../storage/fake.js'
 import type { ObjectStore } from '../../storage/types.js'
 import { testChannel } from '../../testing/channel.js'
+import { makeCtx } from '../../testing/job.js'
+import { tmpDir } from '../../testing/tmp.js'
 import { storeStage } from '../store.js'
 
 const VIDEO = Buffer.from('pretend this is an mp4', 'utf8')
@@ -17,20 +17,13 @@ describe('storeStage', () => {
   let storeRoot: string
   let store: ObjectStore
 
-  function makeCtx(): JobContext {
-    return {
+  function ctx(): JobContext {
+    return makeCtx({
       jobId: 'job-123',
-      db: null as never, // the stage never touches the database
       channel: testChannel({ name: 'example' }),
       topic: 'a topic',
       runDir,
-      artifactPath(stage: StageName, file: string): string {
-        const dir = path.join(runDir, stage)
-        mkdirSync(dir, { recursive: true })
-        return path.join(dir, file)
-      },
-      log: pino({ level: 'silent' }),
-    }
+    })
   }
 
   function writeFinalMp4(body: Buffer = VIDEO): void {
@@ -40,31 +33,24 @@ describe('storeStage', () => {
   }
 
   beforeEach(() => {
-    runDir = mkdtempSync(path.join(tmpdir(), 'brainrot-store-run-'))
-    storeRoot = mkdtempSync(path.join(tmpdir(), 'brainrot-store-obj-'))
+    runDir = tmpDir('brainrot-store-run-')
+    storeRoot = tmpDir('brainrot-store-obj-')
     store = fakeStore(storeRoot)
-  })
-
-  afterEach(() => {
-    rmSync(runDir, { recursive: true, force: true })
-    rmSync(storeRoot, { recursive: true, force: true })
   })
 
   it('uploads final.mp4 under videos/<channel>/<jobId>.mp4', async () => {
     writeFinalMp4()
-    await storeStage(store).run(makeCtx())
+    await storeStage(store).run(ctx())
     // ObjectStore has no read method any more (publishing is manual now, so
     // nothing in-process reads a stored object back) — verify the upload
     // through the fake's own on-disk file instead of the interface.
-    const got = readFileSync(
-      path.join(storeRoot, encodeURIComponent('videos/example/job-123.mp4')),
-    )
+    const got = readFileSync(path.join(storeRoot, encodeURIComponent('videos/example/job-123.mp4')))
     expect(got.equals(VIDEO)).toBe(true)
   })
 
   it('writes store.json carrying the key, byte count and etag', async () => {
     writeFinalMp4()
-    await storeStage(store).run(makeCtx())
+    await storeStage(store).run(ctx())
     const artifact = JSON.parse(readFileSync(path.join(runDir, 'store', 'store.json'), 'utf8')) as {
       objectKey: string
       bytes: number
@@ -77,14 +63,14 @@ describe('storeStage', () => {
 
   it('uploads with a video/mp4 content type', async () => {
     writeFinalMp4()
-    await storeStage(store).run(makeCtx())
+    await storeStage(store).run(ctx())
     const head = await store.head('videos/example/job-123.mp4')
     expect(head?.contentType).toBe('video/mp4')
   })
 
   it('fails when assemble produced no final.mp4', async () => {
     const err = await storeStage(store)
-      .run(makeCtx())
+      .run(ctx())
       .catch((e: unknown) => e)
     expect(err).toMatchObject({ message: expect.stringMatching(/no rendered video/) })
     expect(classify(err)).toMatchObject({ domain: 'job', kind: 'not-found' })
@@ -103,9 +89,7 @@ describe('storeStage', () => {
     // than an ENOENT, without needing a real permissions-restricted mount.
     chmodSync(finalPath, 0o000)
     try {
-      await expect(storeStage(store).run(makeCtx())).rejects.toThrow(
-        /no rendered video at.+EACCES/s,
-      )
+      await expect(storeStage(store).run(ctx())).rejects.toThrow(/no rendered video at.+EACCES/s)
     } finally {
       chmodSync(finalPath, 0o644)
     }
@@ -122,7 +106,7 @@ describe('storeStage', () => {
       },
     }
     const err = await storeStage(lying)
-      .run(makeCtx())
+      .run(ctx())
       .catch((e: unknown) => e)
     expect(err).toMatchObject({ message: expect.stringMatching(/byte count/) })
     expect(classify(err)).toMatchObject({ domain: 'storage', kind: 'transient' })
@@ -137,7 +121,7 @@ describe('storeStage', () => {
       },
     }
     const err = await storeStage(vanishing)
-      .run(makeCtx())
+      .run(ctx())
       .catch((e: unknown) => e)
     expect(err).toMatchObject({ message: expect.stringMatching(/missing immediately/) })
     expect(classify(err)).toMatchObject({ domain: 'storage', kind: 'transient' })
@@ -163,7 +147,7 @@ describe('storeStage', () => {
     writeFinalMp4()
     // No store passed: run() must fall through to storeFromEnv() and find it
     // unconfigured, rather than uploading via the fixture's store.
-    await storeStage().run(makeCtx())
+    await storeStage().run(ctx())
 
     expect(existsSync(path.join(runDir, 'store', 'store.json'))).toBe(false)
   })
@@ -183,7 +167,7 @@ describe('storeStage', () => {
       vi.stubEnv(key, '')
     }
     writeFinalMp4()
-    await storeStage(store).run(makeCtx())
+    await storeStage(store).run(ctx())
     expect(existsSync(path.join(runDir, 'store', 'store.json'))).toBe(true)
   })
 })

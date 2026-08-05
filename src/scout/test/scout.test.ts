@@ -5,7 +5,6 @@ import { BrainrotError, classify } from '../../errors.js'
 import { DEFAULT_SCOUT } from '../../config/channel.js'
 import type { ChannelConfig, ScoutConfig } from '../../config/channel.js'
 import { testChannel } from '../../testing/channel.js'
-import type { FetchLike } from '../sources/types.js'
 import { listTopics, redditCandidates } from '../topics.js'
 import { LINK_POST_CONTENT } from '../../stories/_stories.fixtures.js'
 import {
@@ -20,19 +19,17 @@ import type { ScoutChannelResult } from '../scout.js'
 import { lastScoutAttemptAt } from '../scout-state.js'
 import { SCOUT_SCORE_CHUNK_SIZE } from '../score.js'
 import { memDb, seedScoutState, seedTopic } from '../../testing/db.js'
+import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
+import { fetchStub, redditFeedXml } from '../../testing/reddit-feed.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {
   return testChannel({ name, scout: { ...DEFAULT_SCOUT, subreddits: ['space'], ...overrides } })
 }
 
-// Reddit .rss fixture: the public Atom feed redditSource reads keylessly.
-// <entry><id> is the t3_ fullname, exactly as reddit serves it. `target` adds
-// the entity-encoded `[link]` anchor reddit uses to name the submission
-// target — omit it and the candidate classifies 'link' (the fail-open path).
-// `body` adds a self-post SC_OFF/SC_ON span (see below); `content` embeds a
-// caller-supplied wire-shaped string verbatim (e.g. a `_stories.fixtures.ts`
-// constant, CDATA-wrapped) when neither derived shape fits.
+// Reddit .rss fixture over the shared wire-shape builders. `name` is this
+// file's spelling of the t3_ fullname (`<entry><id>`); everything else maps
+// straight through to RedditEntrySpec.
 function redditFeed(
   posts: {
     name: string
@@ -43,58 +40,7 @@ function redditFeed(
     content?: string
   }[],
 ): string {
-  const entries = posts
-    .map((p) => {
-      const contentInner = ((): string | undefined => {
-        if (p.content !== undefined) return p.content
-        if (p.body !== undefined) {
-          // The real wire shape: reddit entity-escapes the SC_OFF/SC_ON span's
-          // HTML inside <content>, so this exercises fast-xml-parser's decode
-          // step exactly like a live self post does, rather than bypassing it
-          // with CDATA.
-          const raw = `<!-- SC_OFF --><div class="md"><p>${p.body}</p></div><!-- SC_ON -->`
-          return raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        }
-        if (p.target !== undefined) {
-          return `&lt;a href=&quot;${p.target}&quot;&gt;[link]&lt;/a&gt;`
-        }
-        return undefined
-      })()
-      return `<entry>
-        <author><name>${p.author ?? '/u/someone'}</name></author>
-        <id>${p.name}</id>
-        <link href="https://www.reddit.com/r/space/comments/${p.name}/" />
-        <title>${p.title}</title>
-        ${contentInner === undefined ? '' : `<content type="html">${contentInner}</content>`}
-      </entry>`
-    })
-    .join('\n')
-  return `<?xml version="1.0" encoding="UTF-8"?>
-    <feed xmlns="http://www.w3.org/2005/Atom">
-      <id>/r/space/.rss</id>
-      <title>/r/space</title>
-      ${entries}
-    </feed>`
-}
-
-// URL-substring-keyed fetch stub: string body → 200 response, Error → throw.
-// Unmatched URLs throw, so a test never silently hits an unexpected source.
-function fetchStub(bodyBySubstring: Record<string, string | Error>): FetchLike {
-  return async (input: RequestInfo | URL) => {
-    const url = input instanceof Request ? input.url : String(input)
-    for (const [needle, body] of Object.entries(bodyBySubstring)) {
-      if (url.includes(needle)) {
-        if (body instanceof Error) throw body
-        return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } })
-      }
-    }
-    throw new Error(`unexpected fetch: ${url}`)
-  }
-}
-
-function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<typeof vi.fn> } {
-  const create = vi.fn().mockResolvedValue(response)
-  return { client: { messages: { create } } as unknown as Anthropic, create }
+  return redditFeedXml(posts.map(({ name, ...rest }) => ({ id: name, ...rest })))
 }
 
 // A schema-valid emit tool_use response for llmSource, mirroring emitScores'
@@ -102,17 +48,7 @@ function fakeClient(response: unknown): { client: Anthropic; create: ReturnType<
 // usd-micros at haiku list price) so a generation+scoring sum is easy to
 // eyeball in cost assertions.
 function emitTopics(titles: string[], usage = { input_tokens: 1000, output_tokens: 200 }) {
-  return {
-    content: [
-      {
-        type: 'tool_use',
-        name: 'emit',
-        id: 't1',
-        input: { topics: titles.map((title) => ({ title })) },
-      },
-    ],
-    usage,
-  }
+  return emitToolUse({ topics: titles.map((title) => ({ title })) }, usage)
 }
 
 // A schema-valid emit tool_use carrying the given scores. Default usage costs
@@ -121,7 +57,7 @@ function emitScores(
   scores: { candidateIndex: number; score: number; topic: string; reason: string }[],
   usage = { input_tokens: 1000, output_tokens: 200 },
 ) {
-  return { content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores } }], usage }
+  return emitToolUse({ scores }, usage)
 }
 
 afterEach(() => {
@@ -441,10 +377,9 @@ describe('scoutChannel', () => {
     })
     // schema-invalid emit input: structuredCompletion throws a ZodError with
     // costUsdMicros attached (the call was billed regardless)
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'not-an-array' } }],
-      usage: { input_tokens: 100, output_tokens: 50 },
-    })
+    const { client } = fakeClient(
+      emitToolUse({ scores: 'not-an-array' }, { input_tokens: 100, output_tokens: 50 }),
+    )
     await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow()
     const costs = db.prepare('SELECT job_id, operation, usd_micros FROM costs').all()
     // 100×1 + 50×5 = 350 usd-micros at the haiku list price
@@ -851,10 +786,9 @@ describe('scoutAll', () => {
     // first scoring call (bad) is paid-but-invalid; second (good) is valid
     const create = vi
       .fn()
-      .mockResolvedValueOnce({
-        content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
-        usage: { input_tokens: 10, output_tokens: 5 },
-      })
+      .mockResolvedValueOnce(
+        emitToolUse({ scores: 'nope' }, { input_tokens: 10, output_tokens: 5 }),
+      )
       .mockResolvedValueOnce(
         emitScores([{ candidateIndex: 0, score: 90, topic: 'Good topic', reason: 'strong' }]),
       )
@@ -999,10 +933,9 @@ describe('scoutAll', () => {
     // Every scoring call is paid-but-invalid (the shape an expired key or a
     // provider outage produces): sourceErrors stays empty, so nothing else
     // would flag this run as anything but healthy.
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
-      usage: { input_tokens: 10, output_tokens: 5 },
-    })
+    const { client } = fakeClient(
+      emitToolUse({ scores: 'nope' }, { input_tokens: 10, output_tokens: 5 }),
+    )
     const err = await scoutAll(db, [a, b], { client, fetchImpl }).then(
       () => null,
       (e: unknown) => e,
@@ -1066,10 +999,9 @@ describe('scoutAll', () => {
     // gate and then dies on a paid-but-invalid response, whose ledgered spend
     // leaves "b" short of a reservation and blocked on the global-day budget.
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0.02')
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
-      usage: { input_tokens: 10, output_tokens: 5 },
-    })
+    const { client } = fakeClient(
+      emitToolUse({ scores: 'nope' }, { input_tokens: 10, output_tokens: 5 }),
+    )
     const err = await scoutAll(db, [a, b], { client, fetchImpl }).then(
       () => null,
       (e: unknown) => e,
@@ -1172,10 +1104,9 @@ describe('scoutAll', () => {
     }
     const broken = scoutedChannel({ subreddits: ['two'] }, 'b')
     const fetchImpl = fetchStub({ '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]) })
-    const { client } = fakeClient({
-      content: [{ type: 'tool_use', name: 'emit', id: 't1', input: { scores: 'nope' } }],
-      usage: { input_tokens: 10, output_tokens: 5 },
-    })
+    const { client } = fakeClient(
+      emitToolUse({ scores: 'nope' }, { input_tokens: 10, output_tokens: 5 }),
+    )
 
     const err = await scoutAll(db, [full, broken], { client, fetchImpl }).then(
       () => null,

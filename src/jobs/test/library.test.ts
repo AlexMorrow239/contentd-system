@@ -14,10 +14,17 @@ import {
 import type { LibraryState } from '../library.js'
 import { runCli } from '../../testing/run-cli.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { memDb, seedJob as seedJobRow, seedLibraryObject, seedPost } from '../../testing/db.js'
+import {
+  memDb,
+  seedJob as seedJobRow,
+  seedLibrary as seedLibraryRow,
+  seedLibraryObject,
+  seedPost,
+} from '../../testing/db.js'
 
-// Raw-insert seed: the DAO only ever writes library.state, so tests control
-// every other column — the owning jobs row included — directly.
+// Auto-numbered call shapes over the shared row builders in src/testing/db.ts,
+// which own the SQL. The DAO only ever writes library.state, so tests still
+// control every other column — the owning jobs row included — directly.
 let seq = 0
 
 function seedJob(
@@ -25,21 +32,14 @@ function seedJob(
   overrides: Partial<{ id: string; channel: string; tier: string; topic: string }> = {},
 ): string {
   seq += 1
-  const row = {
-    id: `job-${seq}`,
-    channel: 'chan-a',
-    tier: 'volume',
-    topic: `Topic ${seq}`,
-    ...overrides,
-  }
-  db.prepare('INSERT INTO jobs (id, channel, tier, topic, status) VALUES (?, ?, ?, ?, ?)').run(
-    row.id,
-    row.channel,
-    row.tier,
-    row.topic,
-    'done',
-  )
-  return row.id
+  const id = overrides.id ?? `job-${seq}`
+  seedJobRow(db, id, {
+    channel: overrides.channel ?? 'chan-a',
+    tier: overrides.tier ?? 'volume',
+    topic: overrides.topic ?? `Topic ${seq}`,
+    status: 'done',
+  })
+  return id
 }
 
 function seedLibrary(
@@ -52,16 +52,12 @@ function seedLibrary(
     createdAt: string
   }> = {},
 ): void {
-  const row = {
-    videoPath: `runs/${jobId}/final.mp4`,
-    metadataJson: '{}',
-    state: 'needs-review' as LibraryState,
-    createdAt: '2026-07-20T00:00:00.000Z',
-    ...overrides,
-  }
-  db.prepare(
-    'INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(jobId, row.videoPath, row.metadataJson, row.state, row.createdAt)
+  seedLibraryRow(db, jobId, {
+    videoPath: overrides.videoPath ?? `runs/${jobId}/final.mp4`,
+    metadataJson: overrides.metadataJson ?? '{}',
+    state: overrides.state ?? 'needs-review',
+    createdAt: overrides.createdAt ?? '2026-07-20T00:00:00.000Z',
+  })
 }
 
 describe('listLibrary', () => {
@@ -199,9 +195,11 @@ describe('libraryObjectKeys', () => {
     const db = memDb()
     const jobId = seedJob(db, { id: 'job-1' })
     seedLibrary(db, jobId, { state: 'ready' })
-    db.prepare(
-      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('job-1','videos/example/job-1.mp4',1,'e')",
-    ).run()
+    seedLibraryObject(db, 'job-1', {
+      objectKey: 'videos/example/job-1.mp4',
+      bytes: 1,
+      etag: 'e',
+    })
     expect(libraryObjectKeys(db, ['job-1', 'job-missing'])).toEqual([
       { jobId: 'job-1', objectKey: 'videos/example/job-1.mp4' },
     ])
@@ -238,9 +236,7 @@ function storeThatFailsToDelete(store: ObjectStore, failingKey: string): ObjectS
 
 describe('deleteRejectedObjects', () => {
   function seedObjectRow(db: Database, jobId: string, objectKey: string): void {
-    db.prepare(
-      'INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES (?, ?, 1, ?)',
-    ).run(jobId, objectKey, `etag-${jobId}`)
+    seedLibraryObject(db, jobId, { objectKey, bytes: 1, etag: `etag-${jobId}` })
   }
 
   it('is a no-op for an empty object list', async () => {
