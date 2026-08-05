@@ -241,11 +241,14 @@ the `run` implementations for today's thirteen actions — it imports
 `markPosted`/`unmarkPosted` (`src/posts/posts.ts`),
 `rejectTopics`/`requeueTopic`, `createJob`/`runJob`, `backfillStore`,
 `pruneMedia`, and `produceNextTick`, `scoutAll` and `resumeJob` — and is
-imported **only** by the daemon. The pipeline, scout and storage imports are
-what make the arch lint below matter more than it did: they reach Remotion,
-the provider clients or the object-storage SDK transitively, so a single
-import of this module from the dashboard would pull all of it into the
-unauthenticated HTTP process. `queue.ts` is the DAO (`enqueueAction`,
+imported **only** by the daemon. The pipeline and scout imports are
+what make the arch lint below matter more than it did: they reach Remotion
+and the provider clients transitively, so a single import of this module from
+the dashboard would pull both into the unauthenticated HTTP process. The
+object-storage SDK is the deliberate exception: `handlers.ts` reaches
+`storage/s3.js` only through `await import(...)`, the same lazy-load `store.ts`
+uses for the identical reason, so a static import of `handlers.ts` alone does
+not pull in the AWS SDK. `queue.ts` is the DAO (`enqueueAction`,
 `pendingActions`, `startAction`, `completeAction`, `failAction`, `setActionNotice`,
 `getAction`, `listRecentActions`, `failRunningActions`) — there is no
 `claimNext`; `pendingActions` plus `startAction`'s `status = 'pending'` guard
@@ -289,8 +292,10 @@ exactly where the CLI path is not.
 
 Seven route through the confirm interstitial (`confirm: true`):
 `produce.next`, `jobs.produce` and `jobs.resume` — the ones that render and
-spend — plus `library.reject` ("discard") and `post.unmark`, both
-data-losing rather than slow or costly, plus two added this phase for a
+spend — plus `library.reject` ("discard") and `post.unmark`, both confirmed
+because they lose data, not because of which lane each sits in (`library.reject`'s
+own slow-lane placement above is about network latency risk, an unrelated
+reason), plus two added this phase for a
 third reason each: `library.backfillStore`, which can upload a lot of bytes
 at whatever an operator's object storage charges per byte, and
 `topics.pruneMedia`, which runs for minutes and bulk-rejects scouted topics
@@ -306,10 +311,13 @@ The `notice` column follows a similar asymmetry: `startAction` and
 *inside* the handler and publishes it through `ctx.setNotice` the instant it
 exists; if the process dies mid-render, the action row goes `failed` but the
 notice is the only place left naming the job the operator can still resume.
-`topics.pruneMedia` is the first end-to-end proof that a running handler's
-`setNotice` call reaches the row while the handler is still executing and
-survives it throwing — closing out what had been true in principle but
-untested.
+`src/loop/test/actions-notice.test.ts` proves that a running handler's
+`setNotice` call reaches the row through the worker's real `ActionContext`
+while the handler is still executing, and survives it throwing — using
+`topics.pruneMedia` only as the enqueued kind, against a stubbed `run` (the
+handler's own `onProgress` → `setNotice` wiring is covered separately, in
+`src/actions/handlers.test.ts`, against a stubbed `pruneMedia`) — closing out
+what had been true in principle but untested.
 
 `actions-fast` drains up to
 `MAX_FAST_DRAIN` (50) pending rows per poll on its ~1s idle sleep so a
@@ -372,27 +380,18 @@ and pushes it out every `SLOW_ACTION_HEARTBEAT_MS` (60s) from a `setInterval`
 that lives exactly as long as the handler — five beats per TTL, which is the
 tolerance for a synchronous stretch that starves the event loop, and the timer
 is `unref`'d so a pending beat can never hold the process open past SIGTERM.
-The mitigation covers only the two slow actions that declare a lease at all —
-`jobs.resume` (`produce`) and `scout.run` (`scout`), below: a SIGKILL
-mid-render heals the action row (`failRunningActions`) but not the lease, and
-`produce`'s own TTL is 90 minutes, so without this short window `jobs.resume`
+The mitigation covers every slow action that declares a lease — four of the
+seven, per "Of those seven slow actions" above: `jobs.produce` and
+`jobs.resume` (`produce`), `scout.run` and `topics.pruneMedia` (`scout`). A
+SIGKILL mid-run heals the action row (`failRunningActions`) but not the
+lease, and `produce`'s own TTL is 90 minutes, so without this short window a
+SIGKILL during `jobs.produce` — which both renders and declares `produce` —
 would stall the daemon's produce worker for 90 minutes rather than 5.
 `produce.next` — what an operator would call "the render button" — declares
-**no** lease here (see below): `produceNextTick` self-acquires `produce`
+**no** lease here (see above): `produceNextTick` self-acquires `produce`
 with that lease's own 90-minute TTL, so a SIGKILL mid-tick still orphans the
-lease for the full duration. The short TTL mitigates 2 of the 3 slow
+lease for the full duration. The short TTL mitigates 4 of the 7 slow
 actions, not the slow lane as a whole.
-
-Which slow actions declare a lease is deliberately **not** uniform.
-`scout.run` declares `scout` and `jobs.resume` declares `produce`, because
-neither `scoutAll` nor `resumeJob` leases on its own — the CLI's `scout` and
-the daemon's `scoutUnit` each wrap `scoutAll` in the lease themselves, and the
-CLI's `resume` runs outside every lease on purpose, which is exactly the race
-the dashboard path must not have. `produce.next` declares **none**, and that
-is the interesting case: `produceNextTick` acquires `produce` internally, so
-declaring the lease here would make the worker hold the very lease the tick
-then fails to take — every click would record a
-`{action:'noop',reason:'lease-held'}` result and call it a success.
 
 Two slow-handler behaviours are worth knowing before reading a result row.
 `produce.next` (the one tick action left) records the tick's own result
@@ -809,18 +808,23 @@ render needs live only in the daemon — though there is now nothing left for
 the dashboard to hold a credential FOR either way, since no queued action
 ends in a platform upload anymore (`BRAINROT_TOKEN_KEY` itself is gone,
 along with the encrypted credential store it protected). Queueing a
-*render* is still not prospective, though: `produce.next` and `jobs.resume`
-both end in a real Remotion render and real provider spend, and `scout.run`
-in real provider calls — all from an unauthenticated POST, which is why the
+*render* is still not prospective, though: `produce.next`, `jobs.produce` and
+`jobs.resume` all end in a real Remotion render and real provider spend
+(`jobs.produce` calls `runJob` with the full `pipelineStages()`, same as the
+CLI's `produce`), and `scout.run` in real provider calls — all from an
+unauthenticated POST, which is why the
 loopback binding and the two CSRF layers below are the whole of the
 boundary. The 409 liveness gate is not a third layer: it refuses
 only when the daemon looks stale (`src/dashboard/server.ts:164-183`), so a
 cross-origin POST that already cleared CSRF still succeeds whenever the daemon
 is up — it protects the operator from queueing into the void, not the pipeline
-from an attacker. What is still CLI-only after this phase is the read-only
-listing commands (`jobs`, `costs`, `topics list`, `library list`),
-`resume --force`, `produce --dev`, and `run` itself — a scope boundary,
-not a structural one.
+from an attacker. What is still CLI-only after this phase is `costs`, which
+has no dashboard page at all (`jobs`, `topics list` and `library list` do —
+the `/jobs`, `/topics` and `/library` pages — just not in the CLI's own
+listing format), plus `resume --force`, `--dev` on both `produce` and
+`resume`, `produce --channel` taking a path where `jobs.produce`'s own field
+deliberately takes a name, and `run` itself — a scope boundary, not a
+structural one.
 
 `POST /actions` is guarded by two independent layers (`src/dashboard/csrf.ts`),
 either of which alone would stop the classic cross-site-form attack: proof the

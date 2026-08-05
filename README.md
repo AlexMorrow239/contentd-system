@@ -437,9 +437,12 @@ run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
 `library reject` (discard, `/library`), `backfill store` (`/library`) and
 `prune media` (`/topics`). Nothing wired to the dashboard uploads to a
 platform — posting is the paste-and-click `/post` workflow above, not a
-queued action. What is still CLI-only after this phase is the read-only
-listing commands (`jobs`, `costs`, `topics list`, `library list`),
-`resume --force`, `produce --dev`, and `run` itself — a scope boundary, not a
+queued action. What is still CLI-only after this phase is `costs`, which has
+no dashboard page at all (`jobs`, `topics list` and `library list` do — the
+`/jobs`, `/topics` and `/library` pages — just not in the CLI's own listing
+format), plus `resume --force`, `--dev` on both `produce` and `resume`,
+`produce --channel` taking a path where `jobs.produce`'s own field
+deliberately takes a name, and `run` itself — a scope boundary, not a
 structural limit.
 
 ### The dashboard queues renders and spends money
@@ -468,10 +471,10 @@ queue for good.
 Seven actions route through a confirmation interstitial naming the
 consequence: `produce next`, `produce` and `resume`, because they spend and
 render; `library reject` and `post unmark`, because they lose data rather
-than money (`post unmark` throws away a saved live link); and `backfill
-store` and `prune media`, added this phase, because they can rack up real
-object-storage cost across every unstored video and because it runs for
-minutes bulk-rejecting scouted topics respectively. The rest fire on one
+than money (`post unmark` throws away a saved live link); and, added this
+phase, `backfill store`, because it can rack up real object-storage cost
+across every unstored video, and `prune media`, because it runs for minutes
+bulk-rejecting scouted topics. The rest fire on one
 click, `scout now` included — so a click can spend without a prompt. Spend
 still lands under a budget cap, but which one depends on the action.
 `produce next`, `produce` and `resume` each have a job to meter against, so
