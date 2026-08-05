@@ -189,9 +189,10 @@ async function executeOne(
   let beat: ReturnType<typeof setInterval> | undefined
   if (lease !== undefined) {
     holder = `pid:${process.pid}:action:${row.id}`
-    // Every kind that declares a lease (`scout.run`, `jobs.resume`) is
-    // slow-lane, so this always resolves to the slow TTL in practice — there
-    // is no separate fast-lane TTL any more, since no fast action leases.
+    // Every kind that declares a lease (`jobs.produce`, `scout.run`,
+    // `jobs.resume`, `topics.pruneMedia`) is slow-lane, so this always
+    // resolves to the slow TTL in practice — there is no separate fast-lane
+    // TTL any more, since no fast action leases.
     if (!acquireLease(db, lease, holder, SLOW_ACTION_LEASE_TTL_MS)) {
       // Guarded on the text actually changing: the fast lane polls every 1s,
       // so an unconditional write here is one WAL write per second per

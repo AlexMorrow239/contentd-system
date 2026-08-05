@@ -246,10 +246,11 @@ what make the arch lint below matter more than it did: they reach Remotion
 and the provider clients transitively, so a single import of this module from
 the dashboard would pull both into the unauthenticated HTTP process. The
 object-storage SDK is the deliberate exception: `handlers.ts` reaches
-`storage/s3.js` only through `await import(...)`, the same lazy-load `store.ts`
-uses for the identical reason, so a static import of `handlers.ts` alone does
-not pull in the AWS SDK. `queue.ts` is the DAO (`enqueueAction`,
-`pendingActions`, `startAction`, `completeAction`, `failAction`, `setActionNotice`,
+`storage/s3.js` only through `await import(...)`, the same lazy-load
+`store.ts` uses for the identical reason, so a static import of
+`handlers.ts` alone does not pull in the AWS SDK. `queue.ts` is the DAO
+(`enqueueAction`, `pendingActions`, `startAction`, `completeAction`,
+`failAction`, `setActionNotice`,
 `getAction`, `listRecentActions`, `failRunningActions`) — there is no
 `claimNext`; `pendingActions` plus `startAction`'s `status = 'pending'` guard
 together serve that role.
@@ -288,15 +289,19 @@ which is why it declares none. `runJob`, by contrast, does not lease on its
 own (the CLI's `produce` command runs outside every lease on purpose, same as
 `resume`), so `jobs.produce` declaring `produce` here is what makes the
 dashboard's version race-free against the daemon's own produce worker,
-exactly where the CLI path is not.
+exactly where the CLI path is not. `scout.run` and `topics.pruneMedia` take
+`scout` for the mirror reason: `scoutAll` does not lease itself either — the
+CLI's `scout` command and the daemon's `scoutUnit` each wrap it in the lease
+themselves — so both actions have to declare it here to get the same
+race-free property against the daemon's own scout worker.
 
 Seven route through the confirm interstitial (`confirm: true`):
 `produce.next`, `jobs.produce` and `jobs.resume` — the ones that render and
 spend — plus `library.reject` ("discard") and `post.unmark`, both confirmed
-because they lose data, not because of which lane each sits in (`library.reject`'s
-own slow-lane placement above is about network latency risk, an unrelated
-reason), plus two added this phase for a
-third reason each: `library.backfillStore`, which can upload a lot of bytes
+because they lose data — a separate concern from `library.reject`'s
+slow-lane placement above, which is about network latency risk, not data
+loss — plus two added this phase for a third reason each:
+`library.backfillStore`, which can upload a lot of bytes
 at whatever an operator's object storage charges per byte, and
 `topics.pruneMedia`, which runs for minutes and bulk-rejects scouted topics
 (its `dryRun` flag is the safer alternative the interstitial's danger text
@@ -818,11 +823,13 @@ boundary. The 409 liveness gate is not a third layer: it refuses
 only when the daemon looks stale (`src/dashboard/server.ts:164-183`), so a
 cross-origin POST that already cleared CSRF still succeeds whenever the daemon
 is up — it protects the operator from queueing into the void, not the pipeline
-from an attacker. What is still CLI-only after this phase is `costs`, which
-has no dashboard page at all (`jobs`, `topics list` and `library list` do —
-the `/jobs`, `/topics` and `/library` pages — just not in the CLI's own
-listing format), plus `resume --force`, `--dev` on both `produce` and
-`resume`, `produce --channel` taking a path where `jobs.produce`'s own field
+from an attacker. What is still CLI-only after this phase is `costs`' own
+seven-day breakdown — the overview page already shows spend against all
+three budget caps (`src/dashboard/queries/overview.ts:113-131`), just not
+that day-by-day table — plus `jobs`, `topics list` and `library list`'s own
+listing format (the `/jobs`, `/topics` and `/library` pages cover the same
+data), `resume --force`, `--dev` on both `produce` and `resume`,
+`produce --channel` taking a path where `jobs.produce`'s own field
 deliberately takes a name, and `run` itself — a scope boundary, not a
 structural one.
 

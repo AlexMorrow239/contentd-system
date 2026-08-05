@@ -433,17 +433,19 @@ executes, rather than mutating anything itself. Thirteen actions are wired
 today. Six are fast — `topics reject/requeue`, `library approve`,
 `run digest` and `post mark/unmark` — and seven are slow, meaning they can
 run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
-`produce` with a typed channel and topic (`/jobs`), `scout now` (`/topics`),
-`library reject` (discard, `/library`), `backfill store` (`/library`) and
-`prune media` (`/topics`). Nothing wired to the dashboard uploads to a
-platform — posting is the paste-and-click `/post` workflow above, not a
-queued action. What is still CLI-only after this phase is `costs`, which has
-no dashboard page at all (`jobs`, `topics list` and `library list` do — the
-`/jobs`, `/topics` and `/library` pages — just not in the CLI's own listing
-format), plus `resume --force`, `--dev` on both `produce` and `resume`,
-`produce --channel` taking a path where `jobs.produce`'s own field
-deliberately takes a name, and `run` itself — a scope boundary, not a
-structural limit.
+`produce` with a channel you pick and a topic you type (`/jobs`),
+`scout now` (`/topics`), `library reject` (discard, `/library`),
+`backfill store` (`/library`) and `prune media` (`/topics`). Nothing
+wired to the dashboard uploads to a platform — posting is the
+paste-and-click `/post` workflow above, not a queued action. What is
+still CLI-only after this phase is `costs`' own seven-day breakdown —
+the overview page already shows spend against all three budget caps,
+just not that day-by-day table — plus `jobs`,
+`topics list` and `library list`'s own listing format (the `/jobs`,
+`/topics` and `/library` pages cover the same data), `resume --force`,
+`--dev` on both `produce` and `resume`, `produce --channel` taking a path
+where `jobs.produce`'s own field deliberately takes a name, and `run`
+itself — a scope boundary, not a structural limit.
 
 ### The dashboard queues renders and spends money
 
@@ -456,15 +458,16 @@ page you visit and your production pipeline are:
 
 Nothing wired to the dashboard posts publicly anymore — there is no upload
 adapter left to call. Three of the wired actions **render a video and spend
-real provider money** on a click: `produce next` and `produce` (a typed
-channel and topic, from `/jobs`) each run the whole pipeline — an Anthropic
-call for the script, ElevenLabs if the channel configures `[voice.premium]`,
-and a full Remotion render — and `resume` re-runs whichever of those stages
-the job has not finished. `scout now` also spends real provider money without
-rendering anything, on topic scoring plus, where `generate_topics` is set,
-topic generation. A separate risk is data loss, not spend: `library reject`
-("discard") **permanently deletes** the rejected videos' stored objects —
-best-effort, so an unreachable bucket leaves them orphaned with a warning
+real provider money** on a click: `produce next` and `produce` (a channel
+you pick and a topic you type, from `/jobs`) each run the whole pipeline —
+an Anthropic call for the script, ElevenLabs if the channel configures
+`[voice.premium]`, and a full Remotion render — and `resume` re-runs
+whichever of those stages the job has not finished. `scout now` also
+spends real provider money without rendering anything, on topic scoring
+plus, where `generate_topics` is set, topic generation. A separate risk
+is data loss, not spend: `library reject` ("discard") **permanently
+deletes** the rejected videos' stored objects — best-effort, so an
+unreachable bucket leaves them orphaned with a warning
 rather than rolling the rejection back — and pulls them out of the posting
 queue for good.
 
