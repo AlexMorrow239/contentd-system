@@ -37,7 +37,7 @@ pnpm brainrot scout | produce-next | digest  # one manual/debug unit of each, ou
 pnpm brainrot jobs | costs
 pnpm brainrot topics list|reject <ids...>
 pnpm brainrot topics requeue <id>   # orphaned 'claimed' topic -> 'candidate'; refuses while a live job holds it
-pnpm brainrot topics prune-media [--channel <name>] [--dry-run]  # re-check reddit candidates, reject image-sourced ones
+pnpm brainrot topics prune-media [--channel <name>] [--dry-run]  # re-check pre-target_url reddit candidates, reject image-sourced ones
 pnpm brainrot library list|approve|reject <jobIds...>
 pnpm brainrot library backfill-store   # upload finished videos with no stored object yet
 
@@ -134,9 +134,12 @@ cadence, but the tick function's own shape is unchanged. It:
   `produce-next` heartbeats its lease at every stage start (`runJob`'s
   `heartbeat` option, threaded through `resumeJob` as well) so a render
   longer than the TTL is not taken over mid-flight.
-- runs an idempotent **repair sweep** at the top of the lease window to heal
-  state left inconsistent by a crash between two writes that should have been
-  atomic — a topic left `claimed` after its job already landed in `library`.
+- runs an idempotent **repair sweep** at the top of the lease window for a
+  topic left `claimed` after its job already landed in `library`. The crash
+  window it was written for is closed — `runJob`'s final gate now flips the
+  topic to `used` inside the same transaction as the library row, so the two
+  writes commit together — and the sweep survives only to heal rows written
+  before that change.
 - reads `channels/*.toml` fresh every unit — via `tryLoadChannelsDir`, before
   the lease: a broken TOML is reported as a `config-error` noop line rather
   than thrown, because a unit that throws logs a `worker-error` line, not a
@@ -145,14 +148,19 @@ cadence, but the tick function's own shape is unchanged. It:
   object storage isn't configured (`s3ConfigError() === undefined` gates it):
   `posts/reclaim.ts`'s `reclaimableObjects` finds every video in the channel
   whose stored object is still in the bucket but has already been posted to
-  every platform the channel declares (a plain `COUNT(*) FROM posts ... >=
-  declared.length` correlated subquery — no age clause, no "settled" state
+  every platform the channel declares — a plain `COUNT(*) FROM posts ... >=
+  declared.length` correlated subquery, no age clause, no "settled" state
   machine; see "Config" below for why the old aged-out horizon needed none of
-  that either), and `reclaimObjects` deletes the object and stamps
-  `reclaimed_at`. The `library_objects` row survives reclaim so
-  `unstoredLibraryJobs` can still tell "reclaimed" from "never stored" by row
-  absence, which is what stops `library backfill-store` from re-uploading
-  what this sweep just deleted.
+  that either. That predicate is written once, not per site:
+  `fullyPostedClause` (`src/posts/posts.ts`) hands the same fragment to all
+  four readers that must agree on what "consumed" means — this sweep,
+  `pendingInventory`, `listPostQueue` and the digest's unposted-age column —
+  and carries the empty-`platforms` asymmetry (nothing is fully posted;
+  everything still counts as inventory) with it. Then `reclaimObjects`
+  deletes the object and stamps `reclaimed_at`. The `library_objects` row
+  survives reclaim so `unstoredLibraryJobs` can still tell "reclaimed" from
+  "never stored" by row absence, which is what stops `library backfill-store`
+  from re-uploading what this sweep just deleted.
 
 Object storage itself is **optional**, not required to produce. The `store`
 stage (`src/stages/store.ts`), which runs last in the pipeline, no-ops and
@@ -237,7 +245,7 @@ pure metadata (`kind`, `lane`, label, zod arg schema, `confirm` flag, the
 lease it needs) with no heavy imports, read by **both** the dashboard (to
 render forms and validate submitted args) and the daemon; `handlers.ts` holds
 the `run` implementations for today's thirteen actions — it imports
-`approveLibrary`/`rejectLibrary`/`deleteRejectedObjects`, `buildDigest`,
+`approveLibrary`/`rejectLibraryAndFreeObjects`, `buildDigest`,
 `markPosted`/`unmarkPosted` (`src/posts/posts.ts`),
 `rejectTopics`/`requeueTopic`, `createJob`/`runJob`, `backfillStore`,
 `pruneMedia`, and `produceNextTick`, `scoutAll` and `resumeJob` — and is
@@ -770,18 +778,19 @@ dashboard's `/post` page.
 ['youtube', 'instagram', 'tiktok']` and the `Platform` union; `meta.ts` holds
 `platformEntrySchema` (title/description/hashtags), written into
 `library.metadata_json` by the script stage and read back by the dashboard's
-`/post` query, plus per-platform char/hashtag limits and
-`normalizePlatformMeta`, which composes YouTube's title+description+tags into
-separate paste fields but folds the others into one caption block (Instagram
-and TikTok have no separate title field, so their body is
-`title. description #tags`); `posts.ts` is the DAO for the `posts` table — a
-row exists **iff** the operator posted that video to that platform, full
-stop. No status, no attempt count, no error kind, because nothing here talks
-to a platform and there is no failure mode to model. `markPosted` is
-idempotent on the `(job_id, platform)` primary key and deliberately does
-**not** refresh `posted_at` on a second call (a typo'd-url correction must
-not restamp when the video actually went out) but does overwrite `url`
-(the later value is the correction); `unmarkPosted` deletes the row.
+`/post` query, plus per-platform char/hashtag limits
+(`normalizePlatformMeta`) and `PASTE_FIELDS`, which composes YouTube's
+title+description+tags into separate paste fields but folds the others into
+one caption block (Instagram and TikTok have no separate title field, so
+their body is `title. description #tags`); `posts.ts` is the DAO for the
+`posts` table — a row exists **iff** the operator posted that video to that
+platform, full stop. No status, no attempt count, no error kind, because
+nothing here talks to a platform and there is no failure mode to model.
+`markPosted` is idempotent on the `(job_id, platform)` primary key and
+deliberately does **not** refresh `posted_at` on a second call (a typo'd-url
+correction must not restamp when the video actually went out) but does
+overwrite `url` (the later value is the correction); `unmarkPosted` deletes
+the row.
 `reclaim.ts` (covered in the daemon section above) is the read that decides
 when a video's stored bytes can be freed: "posted to every platform the
 channel declares."
@@ -820,12 +829,12 @@ CLI's `produce`), and `scout.run` in real provider calls — all from an
 unauthenticated POST, which is why the
 loopback binding and the two CSRF layers below are the whole of the
 boundary. The 409 liveness gate is not a third layer: it refuses
-only when the daemon looks stale (`src/dashboard/server.ts:164-183`), so a
+only when the daemon looks stale (`src/dashboard/server.ts:181-200`), so a
 cross-origin POST that already cleared CSRF still succeeds whenever the daemon
 is up — it protects the operator from queueing into the void, not the pipeline
 from an attacker. What is still CLI-only after this phase is `costs`' own
 seven-day breakdown — the overview page already shows spend against the
-global-day and per-channel-day caps (`src/dashboard/queries/overview.ts:113-131`),
+global-day and per-channel-day caps (`src/dashboard/queries/overview.ts:113-135`),
 just not that day-by-day table — plus `jobs`, `topics list` and `library list`'s own
 listing format (the `/jobs`, `/topics` and `/library` pages cover the same
 data), `resume --force`, `--dev` on both `produce` and `resume`,
@@ -955,14 +964,17 @@ fixtures locally:
   for cleanup; `setup.ts` sweeps after each file. Thirteen files used to
   `mkdtempSync` and never clean up, and on macOS those are not auto-reaped.
 - `channel.ts` — `testChannel(overrides)` for the parsed config;
-  `channelToml`/`writeChannelToml`/`writeChannelsDir` for the on-disk TOML.
+  `channelToml`/`channelTomlLines`/`writeChannelsDir` for the on-disk TOML.
   In `channelToml`, `bg_dir`/`bgm_dir` must stay ahead of every `[section]`
   header or TOML nests them under the last table and the values vanish.
 - `job.ts` — `makeCtx(opts)`, `testScript`, `seedVoiceJson`/`seedWordsJson`/
   `seedScriptJson`.
 - `db.ts` — `memDb()`/`fileDb()` (both auto-closed) and one seed builder per
   table, each `(db, id?, overrides?)`.
-- `cli.ts`, `run-cli.ts`, `storage.ts` — subprocess and object-storage scaffolding.
+- `cli.ts`, `run-cli.ts`, `storage.ts` — subprocess and object-storage
+  scaffolding; `anthropic.ts`, `reddit-feed.ts` — the fake Anthropic client
+  and the reddit Atom wire shape, each re-derived in four or five files before
+  it landed here.
 
 Conventions:
 
@@ -999,16 +1011,18 @@ Conventions:
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** The suite runs ~23s wall for 1127 tests (plus 1 skipped)
-across 85 files (warm; a first run after `pnpm install` is slower while the
+**Performance.** The suite runs ~21s wall for 1175 tests
+across 86 files (warm; a first run after `pnpm install` is slower while the
 Remotion webpack cache in `node_modules/.cache` fills, and any measurement
 taken while something else is loading the machine can read 3x high). Wall
-clock is set by the slowest single file, not by the total —
-`src/jobs/test/golden-path.test.ts` is the floor at ~14s, one indivisible
-e2e render: the whole suite finishing within about 10s of that same number
-is the sign everything else is fully parallel behind it. That also means CPU spent anywhere shows up
-everywhere: cutting ~48s of CPU out of `visuals-volume` and `qc` roughly halved
-`golden-path`, `assemble` and `remotion` too, purely by ending the contention.
+clock is set by the slowest single file plus whatever contention the rest of
+the run creates — `src/jobs/test/golden-path.test.ts`, one indivisible e2e
+render, was the ~14s floor; `qc` decoding once instead of three times and
+`visuals-volume` cropping and looping in a single ffmpeg pass took it to ~7s,
+so no one file pins the wall on its own anymore. That also means CPU spent
+anywhere shows up everywhere: cutting ~48s of CPU out of the `visuals-volume`
+and `qc` fixtures roughly halved `golden-path`, `assemble` and `remotion` too,
+purely by ending the contention.
 
 `scripts/vitest-sequencer.ts` starts the known-slow files first because Vitest
 orders by byte size, which is uncorrelated with runtime here —

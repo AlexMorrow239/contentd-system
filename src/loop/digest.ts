@@ -329,8 +329,8 @@ export function buildDigest(
     // wedge: every job state that can hold a topic claimed already has its
     // own digest line if it stalls — blocked, failed, zombie-running (past
     // ZOMBIE_RUNNING_MS), stranded-queued (past STRANDED_QUEUED_MS) — and a
-    // job that finishes flips its topic to 'used' via the repair sweep, so it
-    // can't linger here as a false "still moving" signal.
+    // job that finishes flips its topic to 'used' inside runJob's final-gate
+    // transaction, so it can't linger here as a false "still moving" signal.
     if (claimed > 0 || inFlight > 0) continue
     lines.push(
       `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)`,
