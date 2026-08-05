@@ -183,6 +183,53 @@ describe('renderConfirmPage', () => {
     expect(out).toContain('type="text"')
   })
 
+  it('renders a boolean argument as a checkbox, not a required text input', () => {
+    // topics.pruneMedia supplies neither of its own arguments from the
+    // calling page, so both dryRun and channel land in `missing`. Before this
+    // fix both rendered as `<input type="text" required>`, which made the
+    // danger text's "Tick dry run to preview instead" false — there was no
+    // checkbox to tick, and an operator typing anything other than the
+    // literal "1"/"on" that flag() recognizes got a live run.
+    const out = renderConfirmPage({
+      kind: 'topics.pruneMedia',
+      csrfToken: 'tok',
+      from: '/topics',
+      fields: {},
+      missing: ['channel', 'dryRun'],
+      daemonStale: false,
+    }).value
+    expect(out).toMatch(/<input type="checkbox" name="dryRun" value="1">/)
+    expect(out).not.toMatch(/name="dryRun"[^>]*type="text"/)
+  })
+
+  it('renders an optional argument without the required attribute', () => {
+    const out = renderConfirmPage({
+      kind: 'topics.pruneMedia',
+      csrfToken: 'tok',
+      from: '/topics',
+      fields: {},
+      missing: ['channel', 'dryRun'],
+      daemonStale: false,
+    }).value
+    const channelInput = out.match(/<input type="text" name="channel"[^>]*>/)?.[0]
+    expect(channelInput).toBeDefined()
+    expect(channelInput).not.toContain('required')
+  })
+
+  it('keeps the required text input for a required string argument', () => {
+    const out = renderConfirmPage({
+      kind: 'jobs.produce',
+      csrfToken: 'tok',
+      from: '/jobs',
+      fields: {},
+      missing: ['channel', 'topic'],
+      daemonStale: false,
+    }).value
+    const topicInput = out.match(/<input type="text" name="topic"[^>]*>/)?.[0]
+    expect(topicInput).toBeDefined()
+    expect(topicInput).toContain('required')
+  })
+
   it('escapes hostile characters in field values', () => {
     // Field values come from query parameters (operator-controlled but still
     // untrusted input rendered into the form). The html template must escape

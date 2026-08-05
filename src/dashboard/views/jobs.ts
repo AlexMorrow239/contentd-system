@@ -37,7 +37,17 @@ export interface JobsPageData {
   jobs: JobListRow[]
   /** Total rows matching the filter, before the 200-row cap. Undefined skips the notice. */
   total?: number
+  /** Distinct channels that have ever produced a job — feeds the filter dropdown only. */
   channels: string[]
+  /**
+   * Channels configured in `channels/*.toml` right now — feeds the produce
+   * form's channel picker. Deliberately not `channels` above: a freshly
+   * configured channel with zero jobs must still be producible (that's the
+   * whole point of `jobs.produce`, the dashboard's answer to the CLI's
+   * `produce --channel … --topic`), and a channel whose TOML was since
+   * deleted must stop being offered even though its old jobs still are.
+   */
+  configuredChannels: string[]
   filter: { channel?: string; status?: JobStatus }
   csrfToken: string
   daemonStale: boolean
@@ -116,7 +126,7 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
       fields: {},
       disabled: data.daemonStale,
     }),
-    produceForm(data.channels, data.daemonStale),
+    produceForm(data.configuredChannels, data.daemonStale),
   ])
 
   if (data.jobs.length === 0) {

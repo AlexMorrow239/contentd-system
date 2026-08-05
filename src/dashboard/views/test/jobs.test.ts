@@ -28,6 +28,7 @@ describe('renderJobsPage', () => {
     const out = renderJobsPage({
       jobs: [job],
       channels: ['space'],
+      configuredChannels: ['space'],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -42,6 +43,7 @@ describe('renderJobsPage', () => {
     const out = renderJobsPage({
       jobs: [{ ...job, topic: '<script>alert(1)</script>' }],
       channels: ['space'],
+      configuredChannels: ['space'],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -54,6 +56,7 @@ describe('renderJobsPage', () => {
     const out = renderJobsPage({
       jobs: [],
       channels: [],
+      configuredChannels: [],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -65,6 +68,7 @@ describe('renderJobsPage', () => {
     const out = renderJobsPage({
       jobs: [],
       channels: ['space', 'ocean'],
+      configuredChannels: ['space', 'ocean'],
       filter: { channel: 'ocean', status: 'failed' },
       csrfToken: 'tok',
       daemonStale: false,
@@ -78,6 +82,7 @@ describe('renderJobsPage', () => {
       jobs: [job],
       total: 1432,
       channels: [],
+      configuredChannels: [],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -90,6 +95,7 @@ describe('renderJobsPage', () => {
       jobs: [job],
       total: 1,
       channels: [],
+      configuredChannels: [],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -104,6 +110,7 @@ describe('renderJobsPage', () => {
         { ...job, id: 'j2', status: 'done' },
       ],
       channels: ['space'],
+      configuredChannels: ['space'],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -117,6 +124,7 @@ describe('renderJobsPage', () => {
     const out = renderJobsPage({
       jobs: [],
       channels: [],
+      configuredChannels: [],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -127,7 +135,11 @@ describe('renderJobsPage', () => {
   it('offers a produce form that lands on the confirm page with both arguments', () => {
     const out = renderJobsPage({
       jobs: [],
-      channels: ['alpha', 'beta'],
+      // Deliberately empty, distinct from configuredChannels: the produce
+      // form's picker must come from configured channels, not the jobs
+      // table's own distinct-channel list.
+      channels: [],
+      configuredChannels: ['alpha', 'beta'],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,
@@ -141,10 +153,30 @@ describe('renderJobsPage', () => {
     expect(out).toContain('name="topic"')
   })
 
-  it('renders no produce form when the channels list is empty', () => {
+  it('offers a configured channel with no jobs yet in the produce form', () => {
+    // A newly configured channel has never produced a job, so it is absent
+    // from `channels` (jobChannels' distinct-channel-from-jobs list) but
+    // present in `configuredChannels`. The dashboard must still be able to
+    // produce that channel's first video — the whole point of jobs.produce.
     const out = renderJobsPage({
       jobs: [],
       channels: [],
+      configuredChannels: ['brand-new'],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('value="jobs.produce"')
+    expect(out).toContain('<option value="brand-new">brand-new</option>')
+  })
+
+  it('renders no produce form when the configured-channels list is empty', () => {
+    const out = renderJobsPage({
+      jobs: [],
+      // Non-empty on purpose: a channel that has produced jobs before but
+      // whose TOML was since deleted must not be offered either.
+      channels: ['deleted-channel'],
+      configuredChannels: [],
       filter: {},
       csrfToken: 'tok',
       daemonStale: false,

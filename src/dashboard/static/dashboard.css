@@ -244,6 +244,14 @@ video {
   display: block;
   margin: 0.5rem 0;
 }
+.field.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.field.checkbox input {
+  margin: 0;
+}
 
 /* The /post manual posting queue: one card per finished video, oldest first. */
 .post-queue {

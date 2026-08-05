@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { BrainrotError } from '../errors.js'
-import { ACTIONS, actionArgNames, formToArgs, isActionKind, parseActionArgs } from './catalog.js'
+import {
+  ACTIONS,
+  actionArgFieldKind,
+  actionArgNames,
+  formToArgs,
+  isActionKind,
+  parseActionArgs,
+} from './catalog.js'
 
 describe('ACTIONS catalog', () => {
   it('declares exactly the phase-1 fast actions plus the phase-2 slow ones and the posts trio', () => {
@@ -74,6 +81,25 @@ describe('ACTIONS catalog', () => {
   it('derives argument names from the schema so the two cannot drift', () => {
     expect(actionArgNames('jobs.resume')).toEqual(['jobId'])
     expect(actionArgNames('digest.run')).toEqual([])
+  })
+
+  it("derives the confirm interstitial control from each argument's zod shape", () => {
+    // topics.pruneMedia is the worked example this was written for: dryRun is
+    // built with flag() (a boolean) and channel with optionalText (an
+    // optional string) — rendering both as required text inputs is what made
+    // dryRun a trap (an operator typing "true" produced a live run, since
+    // flag() only recognizes the literal strings "1"/"on").
+    expect(actionArgFieldKind('topics.pruneMedia', 'dryRun')).toBe('checkbox')
+    expect(actionArgFieldKind('topics.pruneMedia', 'channel')).toBe('optional-text')
+    // A required string argument (jobs.resume's jobId) keeps the interstitial's
+    // original required text input.
+    expect(actionArgFieldKind('jobs.resume', 'jobId')).toBe('text')
+    // post.mark's optional url uses the same optionalUrl preprocess shape as
+    // optionalText, so it renders the same non-required control.
+    expect(actionArgFieldKind('post.mark', 'url')).toBe('optional-text')
+    // An argument name the action does not declare falls back to the
+    // interstitial's original required-text behavior rather than throwing.
+    expect(actionArgFieldKind('jobs.resume', 'noSuchField')).toBe('text')
   })
 
   it('never declares an argument named kind, csrf or from', () => {

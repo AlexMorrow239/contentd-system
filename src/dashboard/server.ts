@@ -319,6 +319,13 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
     const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
     const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
+    // configuredChannels feeds jobs.produce's picker, not the filter dropdown
+    // above (jobChannels(db)): a channel with zero jobs must still be
+    // producible, and a deleted channel's TOML must stop being offered even
+    // though its old jobs remain filterable. A broken channels directory
+    // degrades to an empty picker (produceForm's existing disabled-span
+    // treatment) rather than 500ing the whole jobs page.
+    const { channels: configuredChannels } = tryLoadChannelsDir(deps.config.paths.channelsDir)
 
     return c.html(
       layout({
@@ -330,6 +337,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
           jobs: listJobs(db, { channel, status }),
           total: countJobs(db, { channel, status }),
           channels: jobChannels(db),
+          configuredChannels: configuredChannels.map((c) => c.name),
           filter: { channel, status },
           csrfToken,
           daemonStale,

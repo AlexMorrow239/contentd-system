@@ -407,8 +407,8 @@ open http://127.0.0.1:8787
 ```
 
 Seven pages: `/post`, the manual posting queue described above; an overview
-(job health, spend against all three budget caps, held leases); jobs with a
-per-stage timeline and the raw error text; the library with inline video
+(job health, spend against the global-day and per-channel-day budget caps,
+held leases); jobs with a per-stage timeline and the raw error text; the library with inline video
 playback; `/posts`, a reverse-chronological log of what has actually gone
 out (posted-at, channel, platform, topic, link); the scout topic queue; and
 an action history page (`/actions`) listing every operator action that has
@@ -439,8 +439,8 @@ run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
 wired to the dashboard uploads to a platform — posting is the
 paste-and-click `/post` workflow above, not a queued action. What is
 still CLI-only after this phase is `costs`' own seven-day breakdown —
-the overview page already shows spend against all three budget caps,
-just not that day-by-day table — plus `jobs`,
+the overview page already shows spend against the global-day and
+per-channel-day budget caps, just not that day-by-day table — plus `jobs`,
 `topics list` and `library list`'s own listing format (the `/jobs`,
 `/topics` and `/library` pages cover the same data), `resume --force`,
 `--dev` on both `produce` and `resume`, `produce --channel` taking a path

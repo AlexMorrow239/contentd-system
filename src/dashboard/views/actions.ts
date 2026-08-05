@@ -1,4 +1,4 @@
-import { ACTIONS, type ActionKind } from '../../actions/catalog.js'
+import { ACTIONS, actionArgFieldKind, type ActionKind } from '../../actions/catalog.js'
 import type { ActionRow } from '../../actions/queue.js'
 import type { ActionsPageData } from '../queries/actions.js'
 import { html, SafeHtml } from '../html.js'
@@ -93,11 +93,26 @@ export function renderConfirmPage(opts: {
   const hidden = Object.entries(opts.fields).map(
     ([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`,
   )
-  const inputs = opts.missing.map(
-    (name) => html`<label class="field">${name}
-      <input type="text" name="${name}" required autocomplete="off">
-    </label>`,
-  )
+  // The control matches the argument's zod shape, not a blanket required text
+  // input: a boolean (e.g. topics.pruneMedia's dryRun) renders as a checkbox
+  // so "leave it unchecked" is an actual, visible option rather than a typed
+  // word flag() then silently discards as falsy; an optional field (e.g. its
+  // channel) renders without `required` so leaving it blank reaches
+  // parseActionArgs as `undefined`, matching the CLI's "prune every channel"
+  // default.
+  const inputs = opts.missing.map((name) => {
+    const fieldKind = actionArgFieldKind(opts.kind, name)
+    if (fieldKind === 'checkbox') {
+      return html`<label class="field checkbox">
+        <input type="checkbox" name="${name}" value="1">
+        ${name}
+      </label>`
+    }
+    const requiredAttr = fieldKind === 'optional-text' ? '' : new SafeHtml('required')
+    return html`<label class="field">${name}
+      <input type="text" name="${name}" ${requiredAttr} autocomplete="off">
+    </label>`
+  })
   const known = Object.entries(opts.fields).map(
     ([name, value]) => html`<li><span class="muted">${name}</span> <code>${value}</code></li>`,
   )

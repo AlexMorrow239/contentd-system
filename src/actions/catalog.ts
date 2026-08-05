@@ -68,7 +68,7 @@ function flag(): z.ZodType<boolean> {
  * An optional free-text field. A blank input submits `''`, which `.optional()`
  * alone would happily accept as a present-but-empty value — for a channel
  * filter that is the difference between "all channels" and "the channel named
- * empty string". Same shape as `optionalUrl` above, without the url check.
+ * empty string". Same shape as `optionalUrl` below, without the url check.
  */
 const optionalText = z.preprocess(
   (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
@@ -264,6 +264,40 @@ export function isActionKind(value: unknown): value is ActionKind {
 export function actionArgNames(kind: ActionKind): string[] {
   const schema: z.ZodTypeAny = ACTIONS[kind].args
   return schema instanceof z.ZodObject ? Object.keys(schema.shape) : []
+}
+
+/**
+ * The HTML control an argument should render as on the confirm interstitial.
+ * `checkbox` for a boolean (built by `flag()` above — the dry-run toggle
+ * this exists for), `optional-text` for a field that may be omitted (built
+ * by `optionalText`/`optionalUrl`'s `.optional()`), `text` (the previous,
+ * only behaviour) for everything else. Rendering every missing field as a
+ * required text input made `topics.pruneMedia`'s `dryRun` a trap: an operator
+ * typing "true" into a text box does not satisfy `flag()`, which accepts only
+ * the literal strings `1`/`on`, so the box silently produced a live run.
+ *
+ * `.type` and `.def` are zod4's own public discriminator and definition
+ * object (replacing zod3's underscored `_def`) — the same public surface
+ * `actionArgNames` already relies on via `instanceof z.ZodObject` and
+ * `.shape`, not a reach into internals.
+ */
+export type ActionArgFieldKind = 'checkbox' | 'optional-text' | 'text'
+
+function fieldKind(field: z.ZodTypeAny): ActionArgFieldKind {
+  if (field.type === 'optional') return 'optional-text'
+  // flag()/optionalText/optionalUrl are all built with z.preprocess(...),
+  // which zod4 implements as a pipe from a transform to the real output
+  // schema — unwrap to that output schema to see what it actually validates.
+  if (field instanceof z.ZodPipe) return fieldKind(field.def.out as z.ZodTypeAny)
+  if (field.type === 'boolean') return 'checkbox'
+  return 'text'
+}
+
+export function actionArgFieldKind(kind: ActionKind, name: string): ActionArgFieldKind {
+  const schema: z.ZodTypeAny = ACTIONS[kind].args
+  if (!(schema instanceof z.ZodObject)) return 'text'
+  const field = (schema.shape as Record<string, z.ZodTypeAny | undefined>)[name]
+  return field === undefined ? 'text' : fieldKind(field)
 }
 
 /**

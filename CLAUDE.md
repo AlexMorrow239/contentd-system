@@ -824,9 +824,9 @@ only when the daemon looks stale (`src/dashboard/server.ts:164-183`), so a
 cross-origin POST that already cleared CSRF still succeeds whenever the daemon
 is up — it protects the operator from queueing into the void, not the pipeline
 from an attacker. What is still CLI-only after this phase is `costs`' own
-seven-day breakdown — the overview page already shows spend against all
-three budget caps (`src/dashboard/queries/overview.ts:113-131`), just not
-that day-by-day table — plus `jobs`, `topics list` and `library list`'s own
+seven-day breakdown — the overview page already shows spend against the
+global-day and per-channel-day caps (`src/dashboard/queries/overview.ts:113-131`),
+just not that day-by-day table — plus `jobs`, `topics list` and `library list`'s own
 listing format (the `/jobs`, `/topics` and `/library` pages cover the same
 data), `resume --force`, `--dev` on both `produce` and `resume`,
 `produce --channel` taking a path where `jobs.produce`'s own field
