@@ -59,6 +59,38 @@ describe('listPostQueue', () => {
     expect(listPostQueue(db, [alpha])).toEqual([])
   })
 
+  // One read across every channel, so each channel's own declared-platform set
+  // has to survive being OR'd in beside the others': a shared clause would let
+  // beta's single platform decide when an alpha card is fully posted.
+  it('interleaves channels oldest-first, each against its own declared platforms', () => {
+    const db = memDb()
+    const beta = testChannel({ name: 'beta', platforms: ['youtube'] })
+    seedReady(db, 'a-old', '2026-01-01T00:00:00.000Z')
+    seedReady(db, 'a-new', '2026-03-01T00:00:00.000Z')
+    seedJob(db, 'b-mid', { channel: 'beta', topic: 'topic b-mid' })
+    seedLibrary(db, 'b-mid', { state: 'ready', createdAt: '2026-02-01T00:00:00.000Z' })
+
+    expect(listPostQueue(db, [alpha, beta]).map((c) => c.jobId)).toEqual([
+      'a-old',
+      'b-mid',
+      'a-new',
+    ])
+
+    // One youtube post consumes beta's whole checklist but only half alpha's.
+    seedPost(db, { jobId: 'b-mid', channel: 'beta', platform: 'youtube' })
+    seedPost(db, { jobId: 'a-old', channel: 'alpha', platform: 'youtube' })
+    expect(listPostQueue(db, [alpha, beta]).map((c) => c.jobId)).toEqual(['a-old', 'a-new'])
+  })
+
+  it('caps the page, not each channel, at the limit', () => {
+    const db = memDb()
+    const beta = testChannel({ name: 'beta', platforms: ['youtube'] })
+    seedReady(db, 'a1', '2026-01-01T00:00:00.000Z')
+    seedJob(db, 'b1', { channel: 'beta', topic: 'topic b1' })
+    seedLibrary(db, 'b1', { state: 'ready', createdAt: '2026-02-01T00:00:00.000Z' })
+    expect(listPostQueue(db, [alpha, beta], { limit: 1 }).map((c) => c.jobId)).toEqual(['a1'])
+  })
+
   it('excludes channels that declare no platforms', () => {
     const db = memDb()
     seedReady(db, 'j1', '2026-01-01T00:00:00.000Z')

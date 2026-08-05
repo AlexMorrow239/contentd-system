@@ -507,7 +507,8 @@ describe('runJob', () => {
       ]
       const result = await runJob(db, channel, jobId, stages, { runsRoot })
       expect(result.status).toBe('blocked')
-      const row = db.prepare('SELECT error FROM job_stages WHERE job_id = ? AND stage = ?')
+      const row = db
+        .prepare('SELECT error FROM job_stages WHERE job_id = ? AND stage = ?')
         .get(jobId, 'script') as { error: string }
       expect(row.error).toBe('global day cap reached')
     })
@@ -591,6 +592,72 @@ describe('final gate: library_objects', () => {
     expect(
       row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library_objects WHERE job_id = ?', jobId),
     ).toEqual({ n: 1 })
+  })
+})
+
+// The topic flip belongs to the write that makes it true, not to each
+// caller's postlude — produce-next and resume no longer do it themselves, so
+// the runner is the only place that still can.
+describe('final gate: claimed topic', () => {
+  const claimedTopicJob = (db: Database, channel: ReturnType<typeof testChannel>): string => {
+    insertTopics(db, [
+      {
+        channel: channel.name,
+        title: 'a scouted topic',
+        rawTitle: 'a scouted topic',
+        source: 'reddit:r/space',
+        url: 'https://reddit.com/c/abc/',
+        dedupeHash: 'h-used',
+        score: 90,
+        reason: 'r',
+        status: 'candidate',
+      },
+    ])
+    const jobId = createJob(db, channel, { topic: 'a scouted topic' })
+    const [topic] = redditCandidates(db, channel.name)
+    claimTopic(db, topic.id, jobId)
+    return jobId
+  }
+
+  const topicStatus = (db: Database, jobId: string): string =>
+    row<{ status: string }>(db, 'SELECT status FROM topics WHERE job_id = ?', jobId).status
+
+  it('flips the claimed topic to used when the job lands in the library', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = claimedTopicJob(db, channel)
+
+    await runJob(db, channel, jobId, buildStages([]), { runsRoot })
+
+    expect(topicStatus(db, jobId)).toBe('used')
+  })
+
+  // needs-review is library-landed too: the video exists and cost money, so
+  // its topic is consumed exactly as a passing one's is.
+  it('flips the topic on a needs-review outcome as well', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = claimedTopicJob(db, channel)
+
+    await runJob(db, channel, jobId, buildStages([], { qcPassed: false }), { runsRoot })
+
+    expect(topicStatus(db, jobId)).toBe('used')
+  })
+
+  // A failed job keeps its topic 'claimed' and bound to the job — the resume
+  // path owns recovery, so the topic is never re-claimed or lost.
+  it('leaves the topic claimed when a stage fails', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = claimedTopicJob(db, channel)
+    const stages = buildStages([]).map((s) =>
+      s.name === 'voice' ? { name: s.name, run: () => Promise.reject(new Error('boom')) } : s,
+    )
+
+    const result = await runJob(db, channel, jobId, stages, { runsRoot })
+
+    expect(result.status).toBe('failed')
+    expect(topicStatus(db, jobId)).toBe('claimed')
   })
 })
 

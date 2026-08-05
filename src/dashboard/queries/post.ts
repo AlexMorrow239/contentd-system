@@ -2,13 +2,11 @@ import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../config/channel.js'
 import {
   normalizePlatformMeta,
+  PASTE_FIELDS,
   platformEntrySchema,
-  renderCaption,
-  renderDescription,
-  renderTags,
   type PlatformMeta,
 } from '../../posts/meta.js'
-import { postedPlatforms } from '../../posts/posts.js'
+import { fullyPostedClause, postedPlatforms } from '../../posts/posts.js'
 import type { Platform } from '../../posts/types.js'
 import { libraryBytes, type LibraryBytes } from './library.js'
 
@@ -49,10 +47,10 @@ interface DbPostQueueRow {
 }
 
 /**
- * One platform's paste blocks. YouTube is the only platform with a separate
- * title field and a tags array; Instagram and TikTok take one composed
- * caption. Everything here goes through the same normalizers the deleted
- * adapters used, so what the page shows is what the platform will accept.
+ * One platform's paste blocks: bounded by the platform's own normalizer, then
+ * composed by its PASTE_FIELDS entry — which platform has a title field and
+ * which takes one composed caption is a fact about the platform, owned beside
+ * those bounds in posts/meta.ts rather than re-decided by a branch here.
  *
  * A missing or malformed entry yields an empty body rather than throwing —
  * the same containment summarizeQc applies to one bad metadata blob, so a
@@ -69,17 +67,7 @@ function cardPlatform(
     return { platform, posted, url, title: null, body: '', tags: null }
   }
   const meta: PlatformMeta = normalizePlatformMeta(parsed.data, platform)
-  if (platform === 'youtube') {
-    return {
-      platform,
-      posted,
-      url,
-      title: meta.title,
-      body: renderDescription(meta.description, meta.hashtags),
-      tags: renderTags(meta.hashtags).join(', '),
-    }
-  }
-  return { platform, posted, url, title: null, body: renderCaption(meta), tags: null }
+  return { platform, posted, url, ...PASTE_FIELDS[platform](meta) }
 }
 
 /**
@@ -90,8 +78,8 @@ function cardPlatform(
  * order, and working down the page in the order it renders is what makes that
  * happen without the operator tracking it.
  *
- * The fully-posted exclusion is the SAME correlated-subquery shape
- * pendingInventory uses. Those two must agree on what "fully posted" means:
+ * The fully-posted exclusion is fullyPostedClause, the same fragment
+ * pendingInventory builds. Those two must agree on what "fully posted" means:
  * a card that vanishes from this page while still counting as inventory would
  * halt production with nothing on screen to explain it.
  */
@@ -104,65 +92,67 @@ export function listPostQueue(
   if (withPlatforms.length === 0) return []
   const declaredBy = new Map(withPlatforms.map((c) => [c.name, c.platforms]))
 
-  const cards: PostCard[] = []
+  // One read across every channel, not one per channel: each channel declares
+  // its own platform set, so its own fully-posted test is OR'd in beside its
+  // name. `limit` is consequently a cap on the PAGE, not per channel — which
+  // is what the oldest-first ordering above already implies it should be.
+  const params: unknown[] = []
+  const perChannel = withPlatforms.map((channel) => {
+    const unposted = fullyPostedClause(channel.platforms, { alias: 'l', match: 'not-fully' })
+    params.push(channel.name, ...unposted.params)
+    return `(j.channel = ? AND ${unposted.sql})`
+  })
   const limit = opts?.limit ?? 200
-  for (const channel of withPlatforms) {
-    const marks = channel.platforms.map(() => '?').join(', ')
-    const rows = db
-      .prepare(
-        `SELECT l.job_id, j.channel, j.topic, l.created_at, l.video_path, l.metadata_json,
-                lo.object_key, lo.reclaimed_at,
-                t.series_key, t.part_index, t.part_count
-         FROM library l
-         JOIN jobs j ON j.id = l.job_id
-         LEFT JOIN library_objects lo ON lo.job_id = l.job_id
-         LEFT JOIN topics t ON t.job_id = l.job_id
-         WHERE j.channel = ? AND l.state = 'ready'
-           AND (SELECT COUNT(*) FROM posts p
-                WHERE p.job_id = l.job_id AND p.platform IN (${marks})) < ?
-         ORDER BY l.created_at ASC, l.job_id ASC
-         LIMIT ?`,
-      )
-      .all(channel.name, ...channel.platforms, channel.platforms.length, limit) as DbPostQueueRow[]
+  params.push(limit)
 
-    // One grouped read carrying both the posted set and each post's url.
-    const posted = postedPlatforms(
-      db,
-      rows.map((r) => r.job_id),
+  const rows = db
+    .prepare(
+      `SELECT l.job_id, j.channel, j.topic, l.created_at, l.video_path, l.metadata_json,
+              lo.object_key, lo.reclaimed_at,
+              t.series_key, t.part_index, t.part_count
+       FROM library l
+       JOIN jobs j ON j.id = l.job_id
+       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
+       LEFT JOIN topics t ON t.job_id = l.job_id
+       WHERE l.state = 'ready' AND (${perChannel.join(' OR ')})
+       ORDER BY l.created_at ASC, l.job_id ASC
+       LIMIT ?`,
     )
+    .all(...params) as DbPostQueueRow[]
 
-    for (const row of rows) {
-      let meta: Record<string, unknown> = {}
-      try {
-        const parsed: unknown = JSON.parse(row.metadata_json)
-        if (typeof parsed === 'object' && parsed !== null) meta = parsed as Record<string, unknown>
-      } catch {
-        // Contained to this row, exactly as summarizeQc does.
-      }
-      const declared = declaredBy.get(row.channel) ?? []
-      cards.push({
-        jobId: row.job_id,
-        channel: row.channel,
-        topic: row.topic,
-        createdAt: row.created_at,
-        bytes: libraryBytes(row),
-        seriesLabel:
-          row.part_index !== null && row.part_count !== null && row.part_count > 1
-            ? `part ${row.part_index}/${row.part_count}`
-            : null,
-        platforms: declared.map((p) =>
-          cardPlatform(
-            p,
-            meta[p],
-            posted.get(row.job_id)?.has(p) ?? false,
-            posted.get(row.job_id)?.get(p) ?? null,
-          ),
-        ),
-      })
+  // One grouped read carrying both the posted set and each post's url.
+  const posted = postedPlatforms(
+    db,
+    rows.map((r) => r.job_id),
+  )
+
+  return rows.map((row) => {
+    let meta: Record<string, unknown> = {}
+    try {
+      const parsed: unknown = JSON.parse(row.metadata_json)
+      if (typeof parsed === 'object' && parsed !== null) meta = parsed as Record<string, unknown>
+    } catch {
+      // Contained to this row, exactly as summarizeQc does.
     }
-  }
-  // Oldest first ACROSS channels — the per-channel queries above each order
-  // their own rows, and a page that grouped by channel would hide the oldest
-  // video behind whichever channel happened to sort first.
-  return cards.sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0))
+    const declared = declaredBy.get(row.channel) ?? []
+    return {
+      jobId: row.job_id,
+      channel: row.channel,
+      topic: row.topic,
+      createdAt: row.created_at,
+      bytes: libraryBytes(row),
+      seriesLabel:
+        row.part_index !== null && row.part_count !== null && row.part_count > 1
+          ? `part ${row.part_index}/${row.part_count}`
+          : null,
+      platforms: declared.map((p) =>
+        cardPlatform(
+          p,
+          meta[p],
+          posted.get(row.job_id)?.has(p) ?? false,
+          posted.get(row.job_id)?.get(p) ?? null,
+        ),
+      ),
+    }
+  })
 }

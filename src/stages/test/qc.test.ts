@@ -30,7 +30,8 @@ function qcCtx(channelOverrides: Partial<ChannelConfig> = {}): JobContext {
  * used once each and stay inline.
  *
  * The five tests share content but not the file, and none of them mutates it
- * — qcStage only reads final.mp4 (three ffprobe/ffmpeg analysis passes).
+ * — qcStage only reads final.mp4 (one ffprobe probe plus one ffmpeg analysis
+ * pass carrying every filter).
  */
 let goodSource: string
 

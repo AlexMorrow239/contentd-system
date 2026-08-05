@@ -14,7 +14,7 @@ import {
 import { BrainrotError } from '../errors.js'
 import type { UnitResult } from './daemon.js'
 import { DAEMON_HEARTBEAT_MS, stampDaemonSeen } from './daemon-state.js'
-import { acquireLease, extendLease, releaseLease } from './lease.js'
+import { acquireLease, extendLease, leaseHolder, releaseLease } from './lease.js'
 
 // Same construction as src/jobs/runner.ts:62 — inert by default (LOG_LEVEL
 // unset means 'silent'), so this stays a no-op for every deployment that
@@ -149,7 +149,8 @@ export function actionsUnit(
       done.push(row.id)
     }
 
-    if (done.length > 0) return { worked: true, line: { action: 'actions', lane, ran: done.length } }
+    if (done.length > 0)
+      return { worked: true, line: { action: 'actions', lane, ran: done.length } }
     if (blockedLease !== undefined) {
       return { worked: false, line: { action: 'noop', reason: 'lease-held', lease: blockedLease } }
     }
@@ -188,7 +189,7 @@ async function executeOne(
   let holder: string | undefined
   let beat: ReturnType<typeof setInterval> | undefined
   if (lease !== undefined) {
-    holder = `pid:${process.pid}:action:${row.id}`
+    holder = leaseHolder(`action:${row.id}`)
     // Every kind that declares a lease (`jobs.produce`, `scout.run`,
     // `jobs.resume`, `topics.pruneMedia`) is slow-lane, so this always
     // resolves to the slow TTL in practice — there is no separate fast-lane

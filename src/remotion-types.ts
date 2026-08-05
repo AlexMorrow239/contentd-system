@@ -12,7 +12,6 @@ export type ShortVideoProps = {
   audioSrc: string
   backgroundSrc: string
   bgmSrc?: string
-  bgmVolume?: number // default 0.12
   words: WordTiming[]
   style: CaptionStyle
   durationMs: number

@@ -1,6 +1,8 @@
 import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
+import { whereClause } from '../../db/sql.js'
 import type { LibraryState } from '../../jobs/library.js'
+import { postedPlatforms } from '../../posts/posts.js'
 
 export type QcSummary =
   | { kind: 'ok' }
@@ -92,45 +94,40 @@ export function libraryBytes(row: {
 }
 
 /**
- * Post urls per job, in ONE grouped read rather than a query per row. A post
- * with no url is a real post the operator did not paste a link for, so it is
- * excluded here (there is nothing to link to) while still counting everywhere
- * else.
+ * Post urls per job, derived from the DAO's own grouped read (postedPlatforms)
+ * rather than a second query over the same rows — the two answered "which
+ * platforms carry this job" from independently written SQL, and a job present
+ * in one but not the other is a link column that disagrees with the posting
+ * queue beside it.
+ *
+ * A post with no url is a real post the operator did not paste a link for, so
+ * it is dropped here (there is nothing to link to) while still counting
+ * everywhere else — and a job whose every post lacks a url is ABSENT from the
+ * map, not present with an empty list. Platform order is stable so the column
+ * does not reshuffle between renders.
  */
 export function libraryLinks(db: Database, jobIds: string[]): Map<string, LibraryLink[]> {
   const byJob = new Map<string, LibraryLink[]>()
-  if (jobIds.length === 0) return byJob
-  const placeholders = jobIds.map(() => '?').join(', ')
-  const rows = db
-    .prepare(
-      `SELECT job_id, platform, url FROM posts
-       WHERE job_id IN (${placeholders}) AND url IS NOT NULL
-       ORDER BY job_id, platform`,
-    )
-    .all(...jobIds) as { job_id: string; platform: string; url: string }[]
-  for (const row of rows) {
-    const links = byJob.get(row.job_id) ?? []
-    links.push({ platform: row.platform, url: row.url })
-    byJob.set(row.job_id, links)
+  for (const [jobId, byPlatform] of postedPlatforms(db, jobIds)) {
+    const links: LibraryLink[] = []
+    for (const [platform, url] of byPlatform) {
+      if (url !== null) links.push({ platform, url })
+    }
+    if (links.length === 0) continue
+    links.sort((a, b) => (a.platform < b.platform ? -1 : a.platform > b.platform ? 1 : 0))
+    byJob.set(jobId, links)
   }
   return byJob
 }
 
 function libraryWhereClause(filter?: { state?: LibraryState; channel?: string }): {
   clause: string
-  params: string[]
+  params: unknown[]
 } {
-  const where: string[] = []
-  const params: string[] = []
-  if (filter?.state !== undefined) {
-    where.push('library.state = ?')
-    params.push(filter.state)
-  }
-  if (filter?.channel !== undefined) {
-    where.push('jobs.channel = ?')
-    params.push(filter.channel)
-  }
-  return { clause: where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '', params }
+  return whereClause([
+    ['library.state = ?', filter?.state],
+    ['jobs.channel = ?', filter?.channel],
+  ])
 }
 
 // limit defaults to 200, matching listJobs's shape — nothing prunes the

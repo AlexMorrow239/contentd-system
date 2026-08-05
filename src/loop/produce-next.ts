@@ -7,11 +7,18 @@ import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef } from '../jobs/types.js'
 import { RECLAIM_BATCH_LIMIT, reclaimableObjects, reclaimObjects } from '../posts/reclaim.js'
-import { claimTopic, markTopicUsedByJob } from '../scout/topics.js'
+import { claimTopic } from '../scout/topics.js'
 // ./config.js, not ./s3.js: validating configuration must not drag the AWS
-// SDK onto this tick's startup path.
-import { s3ConfigError } from '../storage/config.js'
-import { acquireLease, extendLease, PRODUCE_LEASE_TTL_MS, releaseLease } from './lease.js'
+// SDK onto this tick's startup path. loadStoreFromEnv lives there too and
+// keeps the SDK import dynamic inside itself.
+import { loadStoreFromEnv, s3ConfigError } from '../storage/config.js'
+import {
+  acquireLease,
+  extendLease,
+  leaseHolder,
+  PRODUCE_LEASE_TTL_MS,
+  releaseLease,
+} from './lease.js'
 import { planTick } from './plan-tick.js'
 
 export interface TickResult {
@@ -83,7 +90,7 @@ export async function produceNextTick(
   // instead (src/cli.ts), which is the surface that ever had a reader for it.
   const loaded = tryLoadChannelsDir(opts.channelsDir)
   if (loaded.error !== undefined) {
-    return { action: 'noop', reason: 'config-error', error: loaded.error }
+    return configErrorNoop(loaded.error)
   }
   const channels = loaded.channels
   // A held lease is the NORMAL case while a long render from the previous
@@ -96,10 +103,11 @@ export async function produceNextTick(
   // branch, `holder` uniquely identified one caller and lease.ts:43-44's
   // evicted-holder guarantee held exactly. It no longer does: a stalled
   // in-process caller's `finally`-release can now delete a live caller's
-  // lease. Not fixed here (needs an optional holder suffix threaded through
-  // both ticks) — currently bounded because topic claiming is transactional,
-  // so this collision cannot double-claim a topic.
-  const holder = `pid:${process.pid}`
+  // lease. Not fixed here (leaseHolder takes the suffix that would fix it,
+  // but it has to be threaded through both ticks) — currently bounded because
+  // topic claiming is transactional, so this collision cannot double-claim a
+  // topic.
+  const holder = leaseHolder()
   if (!acquireLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)) {
     return { action: 'noop', reason: 'lease-held' }
   }
@@ -113,11 +121,13 @@ export async function produceNextTick(
     const heartbeat = (): void => {
       extendLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)
     }
-    // Repair sweep (heals the crash window between runJob committing the library
-    // row and markTopicUsedByJob running): a topic left 'claimed' but bound to a
-    // job that already landed in the library would stay claimed forever — resume
-    // refuses a 'done' job, so nothing else can recover it. Idempotent and cheap;
-    // run it inside the lease before planning this tick.
+    // Repair sweep. The crash window it was written for is closed: runJob's
+    // final gate now flips the topic to 'used' inside the same transaction as
+    // the library row, so the two writes commit together. It is kept for the
+    // rows produced BEFORE that change — a topic left 'claimed' but bound to a
+    // job already in the library stays claimed forever, since resume refuses a
+    // 'done' job and nothing else can recover it. Idempotent and cheap; run it
+    // inside the lease before planning this tick.
     db.prepare(
       "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
     ).run()
@@ -127,19 +137,35 @@ export async function produceNextTick(
     // the tick from producing, so it reports and moves on. Object storage is
     // now optional (src/stages/store.ts), so skip the sweep entirely when
     // unconfigured — there is nothing to reclaim when nothing was ever stored.
+    // One client for the whole sweep: storeFromEnv() builds a fresh S3Client
+    // (credential resolution, endpoint config, middleware stack), and doing
+    // that per channel bought nothing. The per-channel try/catch stays where
+    // it is — one channel's failed deletes must not stop the next channel's.
     if (s3ConfigError() === undefined) {
-      for (const channel of channels) {
-        const objects = reclaimableObjects(db, {
-          channel: channel.name,
-          declared: channel.platforms,
-          limit: RECLAIM_BATCH_LIMIT,
-        })
-        if (objects.length === 0) continue
-        try {
-          const store = (await import('../storage/s3.js')).storeFromEnv()
-          await reclaimObjects({ db, objects, store })
-        } catch (err) {
-          console.log(JSON.stringify({ event: 'reclaim-error', error: errorMessage(err) }))
+      const batches = channels
+        .map((channel) =>
+          reclaimableObjects(db, {
+            channel: channel.name,
+            declared: channel.platforms,
+            limit: RECLAIM_BATCH_LIMIT,
+          }),
+        )
+        .filter((objects) => objects.length > 0)
+      // Still acquired only when there is something to delete, so a tick with
+      // an empty sweep pays neither the client construction nor a reclaim-error
+      // line for storage it never needed.
+      if (batches.length > 0) {
+        const store = await loadStoreFromEnv()
+        if ('error' in store) {
+          console.log(JSON.stringify({ event: 'reclaim-error', error: store.error }))
+        } else {
+          for (const objects of batches) {
+            try {
+              await reclaimObjects({ db, objects, store: store.store })
+            } catch (err) {
+              console.log(JSON.stringify({ event: 'reclaim-error', error: errorMessage(err) }))
+            }
+          }
         }
       }
     }
@@ -210,16 +236,14 @@ export async function produceNextTick(
       }
       throw err
     }
+    // Library-landed is the only used-flip, and it is runJob's final-gate
+    // transaction that makes it: a failed/blocked job keeps its topic
+    // 'claimed' and bound to the job — the resume path owns recovery, so the
+    // topic is never re-claimed or lost.
     const result = await runJob(db, channel, jobId, stagesFor(), {
       runsRoot: opts.runsRoot,
       heartbeat,
     })
-    if (result.status === 'ready' || result.status === 'needs-review') {
-      // Library-landed is the only used-flip: a failed/blocked job keeps its
-      // topic 'claimed' and bound to the job — the resume path owns recovery,
-      // so the topic is never re-claimed or lost.
-      markTopicUsedByJob(db, jobId)
-    }
     return { action: 'produced', jobId, topicId: plan.topicId, status: result.status }
   } finally {
     releaseLease(db, 'produce', holder)

@@ -1,7 +1,7 @@
 import type Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { structuredCompletion } from '../../providers/anthropic.js'
-import { SCOUT_MODEL } from '../score.js'
+import { formatRecentTitles, SCOUT_MODEL } from '../score.js'
 import type { TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
 
 // Same reservation shape as ESTIMATED_SCOUT_COST_MICROS: gated against the
@@ -51,8 +51,9 @@ export function llmSource(opts: LlmSourceOpts): TrendSource {
     // (score.ts), so nothing here is unbounded.
     async fetch(fetchOpts: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
       const count = Math.min(opts.count, fetchOpts.limit)
-      const recent =
-        opts.recentTitles.length > 0 ? opts.recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
+      // Same rendering the scorer's prompt uses (score.ts owns it): the two
+      // are given the same window and must show it identically.
+      const recent = formatRecentTitles(opts.recentTitles)
       const { data, cost } = await structuredCompletion({
         model: SCOUT_MODEL,
         system:

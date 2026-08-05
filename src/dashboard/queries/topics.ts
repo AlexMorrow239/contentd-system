@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { whereClause } from '../../db/sql.js'
 import type { TopicStatus } from '../../scout/topics.js'
 
 /**
@@ -21,17 +22,10 @@ export function countTopics(
   db: Database,
   filter?: { channel?: string; status?: TopicStatus },
 ): number {
-  const where: string[] = []
-  const params: string[] = []
-  if (filter?.channel !== undefined) {
-    where.push('channel = ?')
-    params.push(filter.channel)
-  }
-  if (filter?.status !== undefined) {
-    where.push('status = ?')
-    params.push(filter.status)
-  }
-  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  const { clause, params } = whereClause([
+    ['channel = ?', filter?.channel],
+    ['status = ?', filter?.status],
+  ])
   const row = db.prepare(`SELECT COUNT(*) AS count FROM topics${clause}`).get(...params) as {
     count: number
   }

@@ -6,8 +6,8 @@ import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from '../scout/scou
 import type { ScoutChannelResult } from '../scout/scout.js'
 import { FAST_IDLE_SLEEP_MS, actionsUnit } from './actions-worker.js'
 import { buildDigest } from './digest.js'
-import { acquireLease, releaseLease } from './lease.js'
-import { produceNextTick } from './produce-next.js'
+import { acquireLease, leaseHolder, releaseLease } from './lease.js'
+import { configErrorNoop, produceNextTick } from './produce-next.js'
 
 export const IDLE_SLEEP_MS = 30_000
 export const ERROR_SLEEP_MS = 60_000
@@ -120,13 +120,10 @@ export function scoutUnit(
     const now = opts.now?.() ?? new Date()
     const loaded = tryLoadChannelsDir(opts.channelsDir)
     if (loaded.error !== undefined) {
-      return {
-        worked: false,
-        line: { action: 'noop', reason: 'config-error', error: loaded.error },
-      }
+      return { worked: false, line: { ...configErrorNoop(loaded.error) } }
     }
     if (loaded.channels.length === 0) return { worked: false }
-    const holder = `pid:${process.pid}`
+    const holder = leaseHolder()
     if (!acquireLease(db, 'scout', holder, SCOUT_LEASE_TTL_MS)) {
       return { worked: false, line: { action: 'noop', reason: 'lease-held' } }
     }

@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { BrainrotError } from '../errors.js'
-import { cropToVertical, loopToDuration, probe } from '../media/ffmpeg.js'
+import { cropAndLoopToDuration, loopToDuration, probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
+import { VIDEO_WIDTH, VIDEO_HEIGHT } from '../remotion-types.js'
+import { recentBackgrounds, recordBackgroundUse } from './bg-usage.js'
+import type { VoiceMeta } from './voice.js'
 
 const PAD_MS = 500
 
@@ -36,9 +38,9 @@ function listMp4sRecursively(dirs: string[]): string[] {
 export const visualsVolumeStage: StageDef = {
   name: 'visuals',
   async run(ctx: JobContext): Promise<void> {
-    const voice = JSON.parse(readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8')) as {
-      durationMs: number
-    }
+    const voice = JSON.parse(
+      readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
+    ) as VoiceMeta
 
     const bgDirs = ctx.channel.bgDir
     const all = listMp4sRecursively(bgDirs)
@@ -49,12 +51,7 @@ export const visualsVolumeStage: StageDef = {
       )
     }
 
-    const recent = (
-      ctx.db
-        .prepare('SELECT file FROM bg_usage WHERE channel = ? ORDER BY used_at DESC LIMIT 5')
-        .all(ctx.channel.name) as { file: string }[]
-    ).map((r) => r.file)
-    const recentSet = new Set(recent)
+    const recentSet = new Set(recentBackgrounds(ctx.db, ctx.channel.name))
     let candidates = all.filter((f) => !recentSet.has(f))
     if (candidates.length === 0) candidates = all // don't empty the pool
 
@@ -63,24 +60,13 @@ export const visualsVolumeStage: StageDef = {
     const p = await probe(chosenPath)
     const targetMs = voice.durationMs + PAD_MS
     const out = ctx.artifactPath('visuals', 'background.mp4')
-    if (p.width === 1080 && p.height === 1920) {
+    if (p.width === VIDEO_WIDTH && p.height === VIDEO_HEIGHT) {
       await loopToDuration(chosenPath, out, targetMs)
     } else {
-      // Temp dir exists only for the cropped intermediate; always removed once
-      // loopToDuration has consumed it (or the crop/loop failed).
-      const tmp = mkdtempSync(path.join(tmpdir(), 'brainrot-visuals-'))
-      try {
-        const cropped = path.join(tmp, 'cropped.mp4')
-        await cropToVertical(chosenPath, cropped)
-        await loopToDuration(cropped, out, targetMs)
-      } finally {
-        rmSync(tmp, { recursive: true, force: true })
-      }
+      await cropAndLoopToDuration(chosenPath, out, targetMs)
     }
 
-    ctx.db
-      .prepare('INSERT INTO bg_usage (channel, file, used_at) VALUES (?, ?, ?)')
-      .run(ctx.channel.name, chosenPath, new Date().toISOString())
+    recordBackgroundUse(ctx.db, ctx.channel.name, chosenPath)
 
     ctx.log.info({ chosen: chosenPath, targetMs, out }, 'visuals: background prepared')
   },

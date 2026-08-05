@@ -178,13 +178,44 @@ async function synthHookAndBody(
   )
 }
 
+/**
+ * The loaded kokoro model, memoized for the process. `from_pretrained` reads
+ * and initializes the ONNX weights, and it used to run once per job even though
+ * the model is immutable and every synth is a `generate` call against it. One
+ * instance is also what the sequential-chunk discipline in synthChunked assumes
+ * — chunks contend on a single model either way, so caching it changes cost,
+ * not concurrency.
+ *
+ * Same memo shape as assemble.ts's getBundle: a rejected load must not poison
+ * the memo for the process lifetime, or one transient model-load failure would
+ * send every later job down the edge-tts fallback. Callers still see the
+ * original rejection; the identity guard keeps a newer in-flight load from
+ * being wiped by an older failure.
+ */
+let kokoroPromise: Promise<KokoroTTS> | undefined
+function getKokoro(): Promise<KokoroTTS> {
+  if (!kokoroPromise) {
+    const inFlight = KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype: 'q8' })
+    inFlight.catch(() => {
+      if (kokoroPromise === inFlight) kokoroPromise = undefined
+    })
+    kokoroPromise = inFlight
+  }
+  return kokoroPromise
+}
+
+/** Drops the memoized model, freeing its weights (and letting a test reload). */
+export function resetKokoro(): void {
+  kokoroPromise = undefined
+}
+
 async function synthKokoro(
   hook: string,
   body: string,
   voiceId: string,
   wavPath: string,
 ): Promise<void> {
-  const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL_ID, { dtype: 'q8' })
+  const tts = await getKokoro()
   const synth = async (chunk: string): Promise<PcmChunk> => {
     // ctx.channel.voice.volume is a runtime-configured string; kokoro-js types the
     // `voice` option as a narrow union of built-in voice names. Narrow the config

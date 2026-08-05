@@ -7,6 +7,7 @@ import { assertBudget, recordCost } from '../jobs/costs.js'
 import { structuredCompletion } from '../providers/anthropic.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { platformEntrySchema } from '../posts/meta.js'
+import { PLATFORMS, type Platform } from '../posts/types.js'
 import { sanitizeStory } from '../stories/sanitize.js'
 import { wordTruncate } from '../stories/body.js'
 import type { StoryPart } from '../stories/types.js'
@@ -22,11 +23,17 @@ import type { StoryPart } from '../stories/types.js'
 // caps, it just parks the job 'blocked' one stage later.
 export const ESTIMATED_SCRIPT_COST_MICROS = 20_000
 
-const platformMetaSchema = z.object({
-  youtube: platformEntrySchema,
-  tiktok: platformEntrySchema,
-  instagram: platformEntrySchema,
-})
+// Built from PLATFORMS so adding a platform there cannot leave the script
+// stage writing metadata for the old set — the /post page reads these entries
+// per declared platform.
+const platformMetaSchema = z.object(
+  Object.fromEntries(PLATFORMS.map((p) => [p, platformEntrySchema])) as {
+    [K in Platform]: typeof platformEntrySchema
+  },
+)
+
+// The same list, as the prompts spell it out to the model.
+const PLATFORM_LIST = PLATFORMS.join(', ')
 
 // Mirrors the contract's ScriptOutput exactly (no length constraints — those
 // are enforced by the prompt, keeping the tool input_schema constraint-free).
@@ -141,7 +148,7 @@ This is part ${part.partIndex} of ${part.partCount}.
 Story opening (for context only — do NOT write or summarize the story itself, the narration is fixed and is not your job):
 ${storyOpeningPreview(sanitizedBody)}
 
-platformMeta: provide entries for youtube, tiktok, and instagram. For each entry:
+platformMeta: provide entries for ${PLATFORM_LIST}. For each entry:
 - title: at most 90 characters. No emojis.${
     part.partCount > 1 ? ` End the title with " (${part.partIndex}/${part.partCount})".` : ''
   }
@@ -170,7 +177,7 @@ Story-format requirements:
 - segments: 4 to 8 segments forming one narrative arc. Each segment has:
   - text: 1 to 3 sentences of spoken narration. Plain and conversational, no stage directions.
   - visualDirection: a short phrase (3 to 8 words) naming the on-screen background visual for that segment.
-- platformMeta: provide entries for youtube, tiktok, and instagram. For each entry:
+- platformMeta: provide entries for ${PLATFORM_LIST}. For each entry:
   - title: at most 90 characters. No emojis.
   - description: 1 to 2 plain-spoken sentences. No emojis.
   - hashtags: at most 5 hashtags, each starting with "#", lowercase, no spaces.
@@ -196,27 +203,49 @@ export function createScriptStage(client?: Anthropic): StageDef {
 
 export const scriptStage = createScriptStage()
 
+/**
+ * One paid script-stage model call, ledgered whichever way it ends. A
+ * schema-invalid response is still a paid call: the adapter attaches the billed
+ * cost to the thrown error, so it is recorded before the rethrow and the spend
+ * is never lost, while the stage fails exactly as it would have. Both call
+ * paths below go through here so neither can drift from that rule (pattern:
+ * scoreWithLedger in scout/scout.ts).
+ */
+async function completionWithLedger<T>(
+  ctx: JobContext,
+  opts: {
+    model: string
+    system: string
+    prompt: string
+    schema: z.ZodType<T>
+    maxTokens?: number
+  },
+  client?: Anthropic,
+): Promise<T> {
+  try {
+    const { data, cost } = await structuredCompletion({ ...opts, client })
+    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros)
+    return data
+  } catch (err) {
+    const paid = errorCostUsdMicros(err)
+    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
+    throw err
+  }
+}
+
 async function runTopicScript(ctx: JobContext, client?: Anthropic): Promise<ScriptArtifact> {
   assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS)
-  try {
-    const { data, cost } = await structuredCompletion({
+  return await completionWithLedger(
+    ctx,
+    {
       model: ctx.channel.scriptModel,
       system: buildSystem(ctx.channel.niche),
       prompt: buildPrompt(ctx.topic, ctx.channel.niche),
       schema: ScriptOutputSchema,
       maxTokens: 4096,
-      client,
-    })
-    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros)
-    return data
-  } catch (err) {
-    // A schema-invalid response is still a paid call: the adapter attaches the
-    // billed cost to the thrown error, so ledger it here before rethrowing so
-    // the spend is never lost, then let the stage fail as before.
-    const paid = errorCostUsdMicros(err)
-    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
-    throw err
-  }
+    },
+    client,
+  )
 }
 
 /**
@@ -234,9 +263,9 @@ async function runStoryScript(
 ): Promise<ScriptArtifact> {
   assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_STORY_META_COST_MICROS)
   const sanitizedBody = sanitizeStory(part.bodyText)
-  let platformMeta: ScriptOutput['platformMeta']
-  try {
-    const { data, cost } = await structuredCompletion({
+  const { platformMeta } = await completionWithLedger(
+    ctx,
+    {
       model: STORY_META_MODEL,
       system:
         'You write publishing metadata for short vertical videos that narrate reddit stories. ' +
@@ -244,15 +273,9 @@ async function runStoryScript(
       prompt: buildStoryMetaPrompt(ctx.topic, part, sanitizedBody),
       schema: storyMetaSchema,
       maxTokens: 1024,
-      client,
-    })
-    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros)
-    platformMeta = data.platformMeta
-  } catch (err) {
-    const paid = errorCostUsdMicros(err)
-    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
-    throw err
-  }
+    },
+    client,
+  )
 
   // Published metadata and spoken audio must agree: title/description ship on
   // YouTube/Instagram as text a viewer reads, so a raw flagged word here while

@@ -1,8 +1,9 @@
+import { formatUsdMicros } from '../../money.js'
 import { html, SafeHtml } from '../html.js'
 import type { OverviewData, SpendAgainstCap, StatusCount } from '../queries/overview.js'
-import { formatTime, formatUsd } from './jobs.js'
+import { formatTime } from './jobs.js'
 import { href } from './layout.js'
-import { actionForm, daemonBanner } from './actions.js'
+import { actionForm, configErrorBanner, daemonBanner } from './actions.js'
 
 function countList(counts: StatusCount[]): SafeHtml {
   if (counts.length === 0) return html`<p class="empty">none</p>`
@@ -24,7 +25,7 @@ function spendLine(label: string, spend: SpendAgainstCap): SafeHtml {
   return html`<tr>
     <th>${label}</th>
     <td class="${over ? 'status-failed' : ''}">
-      ${formatUsd(spend.spentUsdMicros)} / ${formatUsd(spend.capUsdMicros)}${marker}
+      ${formatUsdMicros(spend.spentUsdMicros)} / ${formatUsdMicros(spend.capUsdMicros)}${marker}
     </td>
   </tr>`
 }
@@ -34,7 +35,7 @@ function unattributedSpendLine(usdMicros: number): SafeHtml {
   return html`<tr>
     <th>unattributed</th>
     <td class="muted">
-      ${formatUsd(usdMicros)} — scout spend and any channel with no current TOML
+      ${formatUsdMicros(usdMicros)} — scout spend and any channel with no current TOML
     </td>
   </tr>`
 }
@@ -49,10 +50,7 @@ export function renderOverviewPage(
   configError: string | undefined,
   opts: OverviewPageOptions,
 ): SafeHtml {
-  const warning =
-    configError === undefined
-      ? html``
-      : html`<p class="warning">channel config error: ${configError}</p>`
+  const warning = configErrorBanner(configError)
 
   const controls = html`<div class="page-actions">
     ${actionForm({

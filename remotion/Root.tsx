@@ -1,6 +1,7 @@
 import React from 'react'
 import { Composition } from 'remotion'
 import { ShortVideo, type ShortVideoProps } from './ShortVideo'
+import { VIDEO_WIDTH, VIDEO_HEIGHT } from '../src/remotion-types'
 
 const FPS = 30
 
@@ -23,8 +24,8 @@ export const RemotionRoot: React.FC = () => {
     <Composition
       id="ShortVideo"
       component={ShortVideo}
-      width={1080}
-      height={1920}
+      width={VIDEO_WIDTH}
+      height={VIDEO_HEIGHT}
       fps={FPS}
       durationInFrames={FPS} // placeholder; calculateMetadata overrides it
       defaultProps={defaultProps}

@@ -1,9 +1,8 @@
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
-import { loadChannelConfig } from '../config/channel.js'
-import { BrainrotError } from '../errors.js'
-import { markTopicUsedByJob } from '../scout/topics.js'
+import { loadChannelByName } from '../config/channel.js'
+import type { ChannelConfig } from '../config/channel.js'
+import { BrainrotError, errorMessage } from '../errors.js'
+import { sqlPlaceholders } from '../db/sql.js'
 import { pipelineStages } from './pipeline.js'
 import { runJob } from './runner.js'
 import type { JobResult } from './runner.js'
@@ -43,7 +42,7 @@ export function claimJobForResume(db: Database, jobId: string, force: boolean): 
   const statuses = force
     ? ['failed', 'blocked', 'queued', 'running']
     : ['failed', 'blocked', 'queued']
-  const placeholders = statuses.map(() => '?').join(', ')
+  const placeholders = sqlPlaceholders(statuses.length)
   const info = db
     .prepare(`UPDATE jobs SET status = 'running' WHERE id = ? AND status IN (${placeholders})`)
     .run(jobId, ...statuses)
@@ -88,11 +87,18 @@ export async function resumeJob(
       'conflict',
     )
   }
-  const channelPath = join(opts.channelsDir, `${job.channel}.toml`)
-  if (!existsSync(channelPath)) {
-    throw new ResumeError(`channel config not found: ${channelPath}`, 'not-found')
+  // loadChannelByName owns the resolution AND the filename==name invariant
+  // this path depends on: resume keys the TOML by the job's channel name, so
+  // a file whose declared name disagrees with its basename would silently
+  // resume against the wrong config. Its throws are config errors; they wear
+  // ResumeError('not-found') here because every refusal this function makes
+  // must reach the CLI and produce-next through one type.
+  let channel: ChannelConfig
+  try {
+    channel = loadChannelByName(opts.channelsDir, job.channel)
+  } catch (err) {
+    throw new ResumeError(errorMessage(err), 'not-found')
   }
-  const channel = loadChannelConfig(channelPath)
   // The runner's skip-done-stages resume recovers the sunk cost; the stage
   // list is the exact produce wiring unless a test injects its own.
   const stages = opts.stagesFor?.() ?? pipelineStages()
@@ -104,14 +110,10 @@ export async function resumeJob(
   if (!claimJobForResume(db, jobId, opts.force ?? false)) {
     throw new ResumeError(`job ${jobId} was picked up by another process`, 'conflict')
   }
-  const result = await runJob(db, channel, jobId, stages, {
+  // Consuming the claimed topic is runJob's own final-gate write now, in the
+  // same transaction as the library row — nothing to do here.
+  return runJob(db, channel, jobId, stages, {
     runsRoot: opts.runsRoot,
     heartbeat: opts.heartbeat,
   })
-  // Library-landed (ready | needs-review) consumes the claimed topic; a
-  // manual produce job has no claimed topic and this is a silent no-op.
-  if (result.status === 'ready' || result.status === 'needs-review') {
-    markTopicUsedByJob(db, jobId)
-  }
-  return result
 }

@@ -52,6 +52,17 @@ const ScoresSchema = z.object({
   ),
 })
 
+/**
+ * The recently-covered block as the models see it: one `- title` per line, or
+ * the literal `(none)`. Exported because the generator (sources/llm.ts) is
+ * given the SAME window for the opposite purpose — the scorer scores
+ * near-duplicates 0, the generator is told not to invent them — and a drift
+ * between the two renderings would be invisible in both prompts.
+ */
+export function formatRecentTitles(titles: string[]): string {
+  return titles.length > 0 ? titles.map((t) => `- ${t}`).join('\n') : '(none)'
+}
+
 function buildSystem(niche: string[]): string {
   return [
     `You are a trend scout for a short-form video channel in the "${niche.join(', ')}" niche.`,
@@ -188,8 +199,7 @@ export async function scoreCandidates(opts: {
   let totalCostUsdMicros = 0
   const story = opts.story === true
   const system = story ? buildStorySystem(opts.niche) : buildSystem(opts.niche)
-  const recent =
-    opts.recentTitles.length > 0 ? opts.recentTitles.map((t) => `- ${t}`).join('\n') : '(none)'
+  const recent = formatRecentTitles(opts.recentTitles)
 
   try {
     for (let offset = 0; offset < opts.candidates.length; offset += SCOUT_SCORE_CHUNK_SIZE) {

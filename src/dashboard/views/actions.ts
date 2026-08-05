@@ -1,7 +1,7 @@
 import { ACTIONS, actionArgFieldKind, type ActionKind } from '../../actions/catalog.js'
 import type { ActionRow } from '../../actions/queue.js'
 import type { ActionsPageData } from '../queries/actions.js'
-import { html, SafeHtml } from '../html.js'
+import { attrIf, html, SafeHtml } from '../html.js'
 import { href } from './layout.js'
 
 export interface ActionFormOptions {
@@ -15,6 +15,40 @@ export interface ActionFormOptions {
   disabled?: boolean
   /** Renders as a link-styled control rather than a button. */
   subtle?: boolean
+  /**
+   * Editable controls rendered between the transport fields and the submit
+   * button — an argument the operator types at the point of clicking (post.mark's
+   * live link). Meaningful only for a confirm:false action: a confirm:true one
+   * takes the GET-link branch below, where there is no form to put them in, and
+   * the interstitial is where its free-text arguments are collected instead.
+   */
+  extra?: SafeHtml
+  /** Appended to the form's own class, for a page that styles its control. */
+  formClass?: string
+}
+
+/**
+ * Every hidden field a POST to /actions must carry: the action kind, the
+ * boot-minted CSRF token under the exact field name csrf.ts reads it back
+ * from, the same-site return path, and the caller's already-stringified
+ * arguments. One owner, because the POST route strips these three by NAME
+ * (TRANSPORT_FIELDS in server.ts) before handing the rest to the catalog's zod
+ * schema — a form that spelled the token field differently would be refused,
+ * and one that omitted `from` would silently redirect the operator to /actions.
+ */
+function actionFields(
+  kind: ActionKind,
+  csrfToken: string,
+  from: string,
+  fields: Record<string, string>,
+): SafeHtml {
+  const hidden = Object.entries(fields).map(
+    ([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`,
+  )
+  return html`<input type="hidden" name="kind" value="${kind}">
+    <input type="hidden" name="csrf" value="${csrfToken}">
+    <input type="hidden" name="from" value="${from}">
+    ${hidden}`
 }
 
 /**
@@ -38,15 +72,11 @@ export function actionForm(opts: ActionFormOptions): SafeHtml {
     return html`<a class="${cls}" href="${href('/actions/confirm', query)}">${label}…</a>`
   }
 
-  const hidden = Object.entries(opts.fields).map(
-    ([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`,
-  )
-  return html`<form class="action" method="post" action="/actions">
-    <input type="hidden" name="kind" value="${opts.kind}">
-    <input type="hidden" name="csrf" value="${opts.csrfToken}">
-    <input type="hidden" name="from" value="${opts.from}">
-    ${hidden}
-    <button class="${cls}" type="submit" ${opts.disabled === true ? new SafeHtml('disabled') : ''}>
+  const formClass = opts.formClass === undefined ? 'action' : `action ${opts.formClass}`
+  return html`<form class="${formClass}" method="post" action="/actions">
+    ${actionFields(opts.kind, opts.csrfToken, opts.from, opts.fields)}
+    ${opts.extra ?? html``}
+    <button class="${cls}" type="submit" ${attrIf(opts.disabled === true, 'disabled')}>
       ${label}
     </button>
   </form>`
@@ -65,6 +95,12 @@ export function daemonBanner(stale: boolean): SafeHtml {
   return html`<p class="banner error">
     daemon not running — queued actions will not execute until it is back up.
   </p>`
+}
+
+/** A channels-directory load error, shown without hiding what the page can still draw. */
+export function configErrorBanner(error: string | undefined): SafeHtml {
+  if (error === undefined) return html``
+  return html`<p class="warning">channel config error: ${error}</p>`
 }
 
 export function missingTableBanner(): SafeHtml {
@@ -90,9 +126,6 @@ export function renderConfirmPage(opts: {
   daemonStale: boolean
 }): SafeHtml {
   const desc = ACTIONS[opts.kind]
-  const hidden = Object.entries(opts.fields).map(
-    ([name, value]) => html`<input type="hidden" name="${name}" value="${value}">`,
-  )
   // The control matches the argument's zod shape, not a blanket required text
   // input: a boolean (e.g. topics.pruneMedia's dryRun) renders as a checkbox
   // so "leave it unchecked" is an actual, visible option rather than a typed
@@ -108,9 +141,8 @@ export function renderConfirmPage(opts: {
         ${name}
       </label>`
     }
-    const requiredAttr = fieldKind === 'optional-text' ? '' : new SafeHtml('required')
     return html`<label class="field">${name}
-      <input type="text" name="${name}" ${requiredAttr} autocomplete="off">
+      <input type="text" name="${name}" ${attrIf(fieldKind !== 'optional-text', 'required')} autocomplete="off">
     </label>`
   })
   const known = Object.entries(opts.fields).map(
@@ -122,14 +154,11 @@ export function renderConfirmPage(opts: {
     <p class="danger">${desc.danger ?? 'This action cannot be undone.'}</p>
     <ul class="args">${known}</ul>
     <form method="post" action="/actions">
-      <input type="hidden" name="kind" value="${opts.kind}">
-      <input type="hidden" name="csrf" value="${opts.csrfToken}">
-      <input type="hidden" name="from" value="${opts.from}">
-      ${hidden} ${inputs}
+      ${actionFields(opts.kind, opts.csrfToken, opts.from, opts.fields)} ${inputs}
       <button
         class="action-button danger"
         type="submit"
-        ${opts.daemonStale ? new SafeHtml('disabled') : ''}
+        ${attrIf(opts.daemonStale, 'disabled')}
       >${desc.label}</button>
       <a class="action-link" href="${opts.from === '' ? '/actions' : opts.from}">cancel</a>
     </form>`

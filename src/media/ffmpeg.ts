@@ -1,4 +1,9 @@
 import { execa } from 'execa'
+import { VIDEO_WIDTH, VIDEO_HEIGHT } from '../remotion-types.js'
+
+// The one 9:16 scale+crop filter every path here shares, derived from the same
+// constants the Remotion composition is built at.
+const VERTICAL_FILTER = `scale=${VIDEO_WIDTH}:${VIDEO_HEIGHT}:force_original_aspect_ratio=increase,crop=${VIDEO_WIDTH}:${VIDEO_HEIGHT}`
 
 export interface MediaProbe {
   durationMs: number
@@ -46,16 +51,7 @@ export async function probe(file: string): Promise<MediaProbe> {
 }
 
 export async function cropToVertical(input: string, output: string): Promise<void> {
-  await execa('ffmpeg', [
-    '-i',
-    input,
-    '-vf',
-    'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920',
-    '-c:a',
-    'copy',
-    '-y',
-    output,
-  ])
+  await execa('ffmpeg', ['-i', input, '-vf', VERTICAL_FILTER, '-c:a', 'copy', '-y', output])
 }
 
 export async function loopToDuration(
@@ -63,14 +59,33 @@ export async function loopToDuration(
   output: string,
   durationMs: number,
 ): Promise<void> {
-  const seconds = (durationMs / 1000).toFixed(3)
-  await execa('ffmpeg', [
+  await execa('ffmpeg', loopArgs(input, output, durationMs))
+}
+
+/**
+ * Loop, trim and crop in ONE encode. Cropping first and looping second means
+ * re-encoding the whole source at 1080x1920 only to keep the first `durationMs`
+ * of it — a multi-minute stock clip backing a 45s narration pays for the whole
+ * clip. Fusing the filter into the looping encode pays for the output length
+ * only, and needs no intermediate file.
+ */
+export async function cropAndLoopToDuration(
+  input: string,
+  output: string,
+  durationMs: number,
+): Promise<void> {
+  await execa('ffmpeg', loopArgs(input, output, durationMs, VERTICAL_FILTER))
+}
+
+function loopArgs(input: string, output: string, durationMs: number, filter?: string): string[] {
+  return [
     '-stream_loop',
     '-1',
     '-i',
     input,
     '-t',
-    seconds,
+    (durationMs / 1000).toFixed(3),
+    ...(filter ? ['-vf', filter] : []),
     '-c:v',
     'libx264',
     '-pix_fmt',
@@ -78,5 +93,5 @@ export async function loopToDuration(
     '-an',
     '-y',
     output,
-  ])
+  ]
 }

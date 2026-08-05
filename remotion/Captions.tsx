@@ -3,7 +3,10 @@ import { useCurrentFrame, useVideoConfig } from 'remotion'
 import type { CaptionStyle } from '../src/config/channel'
 import type { WordTiming } from '../src/providers/whisperx'
 
-export function chunkWords(words: WordTiming[], size = 4): WordTiming[][] {
+// How many words share one on-screen caption page.
+export const WORDS_PER_PAGE = 4
+
+export function chunkWords(words: WordTiming[], size: number): WordTiming[][] {
   const pages: WordTiming[][] = []
   for (let i = 0; i < words.length; i += size) pages.push(words.slice(i, i + size))
   return pages
@@ -26,7 +29,10 @@ export const Captions: React.FC<{ words: WordTiming[]; style: CaptionStyle }> = 
   const { fps } = useVideoConfig()
   const currentTimeMs = (frame / fps) * 1000
 
-  const pages = chunkWords(words, 4)
+  // Memoized on `words`: the paging is identical for every frame of a render,
+  // and rebuilding it in the component body re-sliced the whole word list on
+  // each of a short's ~1800 frames.
+  const pages = React.useMemo(() => chunkWords(words, WORDS_PER_PAGE), [words])
   const page = pages.find(
     (p) => currentTimeMs >= p[0].startMs && currentTimeMs <= p[p.length - 1].endMs,
   )

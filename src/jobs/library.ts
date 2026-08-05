@@ -1,6 +1,8 @@
 import type { StoreArtifact } from '../stages/store.js'
 import type { Database } from 'better-sqlite3'
+import { sqlPlaceholders, whereClause } from '../db/sql.js'
 import { errorMessage } from '../errors.js'
+import { fullyPostedClause } from '../posts/posts.js'
 // ./config.js, not ./s3.js: this module is reachable from the produce tick and
 // the dashboard's queries, neither of which may drag the AWS SDK in.
 import { loadStoreFromEnv } from '../storage/config.js'
@@ -53,17 +55,10 @@ export function listLibrary(
   db: Database,
   filter?: { state?: LibraryState; channel?: string },
 ): LibraryRow[] {
-  const where: string[] = []
-  const params: string[] = []
-  if (filter?.state !== undefined) {
-    where.push('library.state = ?')
-    params.push(filter.state)
-  }
-  if (filter?.channel !== undefined) {
-    where.push('jobs.channel = ?')
-    params.push(filter.channel)
-  }
-  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
+  const { clause, params } = whereClause([
+    ['library.state = ?', filter?.state],
+    ['jobs.channel = ?', filter?.channel],
+  ])
   const rows = db
     .prepare(
       `SELECT ${LIBRARY_COLUMNS} FROM library JOIN jobs ON library.job_id = jobs.id${clause} ` +
@@ -99,7 +94,7 @@ export interface ApproveResult {
  */
 export function approveLibrary(db: Database, jobIds: string[]): ApproveResult {
   if (jobIds.length === 0) return { approved: 0, reclaimed: [] }
-  const placeholders = jobIds.map(() => '?').join(', ')
+  const placeholders = sqlPlaceholders(jobIds.length)
   // Named BEFORE the update, and scoped to rows the update would otherwise
   // have taken — an id already 'ready' or unknown is not a reclaimed refusal.
   const reclaimed = (
@@ -130,7 +125,7 @@ export function approveLibrary(db: Database, jobIds: string[]): ApproveResult {
 // `posts`, not in `library.state`.
 export function rejectLibrary(db: Database, jobIds: string[]): number {
   if (jobIds.length === 0) return 0
-  const placeholders = jobIds.map(() => '?').join(', ')
+  const placeholders = sqlPlaceholders(jobIds.length)
   return db
     .prepare(
       `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready')`,
@@ -177,37 +172,27 @@ export function unstoredLibraryJobs(db: Database): UnstoredLibraryJob[] {
  * How many finished videos this channel is still holding — the number
  * plan-tick compares against backlogCap.
  *
- * "Unconsumed" is now simply "not posted to every declared platform".
+ * "Unconsumed" is now simply "not posted to every declared platform", which
+ * `fullyPostedClause` owns for every reader of that predicate — including the
+ * zero-declared-platforms asymmetry, where a channel that has not decided
+ * where its videos go still counts all of them as inventory rather than
+ * producing without bound.
+ *
  * 'needs-review' counts too: the video exists, it cost money, and it is
  * waiting on the operator either way.
- *
- * The zero-declared-platforms case needs its own branch, not a clever
- * subquery: with `declared` empty the comparison below reads `0 < 0` for
- * every row, nothing would ever count, and a channel that has not yet
- * decided where its videos go would produce without bound.
  */
 export function pendingInventory(
   db: Database,
   opts: { channel: string; declared: readonly Platform[] },
 ): number {
-  if (opts.declared.length === 0) {
-    const row = db
-      .prepare(
-        `SELECT COUNT(*) AS n FROM library l JOIN jobs j ON j.id = l.job_id
-         WHERE j.channel = ? AND l.state IN ('needs-review', 'ready')`,
-      )
-      .get(opts.channel) as { n: number }
-    return row.n
-  }
-  const placeholders = opts.declared.map(() => '?').join(', ')
+  const unposted = fullyPostedClause(opts.declared, { alias: 'l', match: 'not-fully' })
   const row = db
     .prepare(
       `SELECT COUNT(*) AS n FROM library l JOIN jobs j ON j.id = l.job_id
        WHERE j.channel = ? AND l.state IN ('needs-review', 'ready')
-         AND (SELECT COUNT(*) FROM posts p
-              WHERE p.job_id = l.job_id AND p.platform IN (${placeholders})) < ?`,
+         AND ${unposted.sql}`,
     )
-    .get(opts.channel, ...opts.declared, opts.declared.length) as { n: number }
+    .get(opts.channel, ...unposted.params) as { n: number }
   return row.n
 }
 
@@ -242,7 +227,7 @@ export function libraryObjectKeys(
   jobIds: string[],
 ): { jobId: string; objectKey: string }[] {
   if (jobIds.length === 0) return []
-  const placeholders = jobIds.map(() => '?').join(', ')
+  const placeholders = sqlPlaceholders(jobIds.length)
   return db
     .prepare(
       `SELECT job_id AS jobId, object_key AS objectKey FROM library_objects

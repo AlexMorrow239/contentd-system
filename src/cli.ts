@@ -1,37 +1,41 @@
 import 'dotenv/config'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { Database } from 'better-sqlite3'
 import { Command } from 'commander'
 import { errorMessage } from './errors.js'
-import { createJob, runJob } from './jobs/runner.js'
-import { resumeJob } from './jobs/resume.js'
 import { loadChannelConfig, tryLoadChannelsDir } from './config/channel.js'
-import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from './scout/scout.js'
-import { acquireLease, releaseLease } from './loop/lease.js'
-import { produceNextTick } from './loop/produce-next.js'
-import { buildDigest } from './loop/digest.js'
-import { runDaemon } from './loop/daemon.js'
+import { acquireLease, leaseHolder, releaseLease } from './loop/lease.js'
 import { openDb } from './db/index.js'
 import { pruneMedia } from './scout/prune-media.js'
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
-import { pipelineStages } from './jobs/pipeline.js'
-import {
-  approveLibrary,
-  deleteRejectedObjects,
-  libraryObjectKeys,
-  listLibrary,
-  rejectLibrary,
-} from './jobs/library.js'
+import { daySpendBreakdown } from './jobs/costs.js'
+import { formatUsdMicros } from './money.js'
+import { approveLibrary, listLibrary, rejectLibraryAndFreeObjects } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
-import { backfillStore } from './jobs/backfill-store.js'
-// storage/s3.js is imported dynamically at the three commands that need it —
-// a static import puts the AWS SDK on the startup path of every command.
+// storage/s3.js is imported dynamically at the commands that need it — a
+// static import puts the AWS SDK on the startup path of every command.
 // storage/config.js carries no SDK import, so this one is free.
 import { s3ConfigError } from './storage/config.js'
-import type { ObjectStore } from './storage/types.js'
-import { DEV_VOICE_ENV } from './stages/voice.js'
+import { DEV_VOICE_ENV } from './config/dev-voice.js'
 import { resolveBrainrotPaths } from './config/paths.js'
+import type { BrainrotPaths } from './config/paths.js'
+
+/**
+ * The pipeline, the runner, resume, the two loop ticks, the daemon and the
+ * scout are all reached through `await import(...)` inside the actions that
+ * need them, never statically at the top of this file. Between them they pull
+ * Remotion, kokoro/edge-tts and the Anthropic client, which is ~310ms of
+ * startup an operator running `brainrot jobs` or `brainrot topics list` would
+ * otherwise pay to read three rows out of SQLite. Commander resolves one
+ * action per invocation, so each command loads exactly the graph it runs.
+ *
+ * Keep it that way: a static import of any of those specifiers here silently
+ * re-imposes the cost on every other command, and nothing fails to make it
+ * visible. `DEV_VOICE_ENV` living in config/dev-voice.ts rather than
+ * stages/voice.ts is the same rule applied to a single string.
+ */
 
 /**
  * Validate `topics reject`/`requeue` id arguments. Throws naming the FIRST bad
@@ -68,17 +72,14 @@ export function parseLibraryJobIds(raw: string[]): string[] {
 // compose pins BRAINROT_ROOT=/app/state, the host .env sets `local`, and an
 // unset value means development — so a command can never reach production by
 // omission, and "dev db + prod runs" is not a representable state.
-const ROOT_OPTION_DESC = 'mode root holding db/, runs/ and channels/ (default: $BRAINROT_ROOT or local)'
-
-// Moved to src/jobs/pipeline.ts so the loop code (resume, produce-next) shares
-// the exact produce wiring; re-exported so in-process importers (cli.test.ts)
-// keep their import path.
-export { pipelineStages } from './jobs/pipeline.js'
+const ROOT_OPTION_DESC =
+  'mode root holding db/, runs/ and channels/ (default: $BRAINROT_ROOT or local)'
 
 // Re-exported so in-process importers (cli.test.ts) can assert against the
-// same constant applyDevFlag uses, without a second import path into
-// src/stages/voice.ts.
-export { DEV_VOICE_ENV } from './stages/voice.js'
+// same constant applyDevFlag uses. config/dev-voice.ts is a leaf module (it
+// imports nothing), so unlike the stage that reads it this re-export costs
+// nothing at startup.
+export { DEV_VOICE_ENV } from './config/dev-voice.js'
 
 /**
  * Sets BRAINROT_DEV_VOICE for the current process when --dev is passed, so
@@ -87,6 +88,31 @@ export { DEV_VOICE_ENV } from './stages/voice.js'
  */
 export function applyDevFlag(dev?: boolean): void {
   if (dev) process.env[DEV_VOICE_ENV] = '1'
+}
+
+/**
+ * The one resolve → open → work → close sequence every db-touching command
+ * runs. Half of them used to leak the handle (no close at all) and the other
+ * half spelled the try/finally out again; both are this wrapper's job now.
+ *
+ * The finally is guarded rather than unconditional because `produce` closes
+ * mid-action on purpose (see its comment) — a command may hand the handle
+ * back already closed, and that must not be a double-close error.
+ *
+ * A command whose work must precede the db handle — `scout` loads its
+ * channels first, deliberately — resolves paths itself and calls this after.
+ */
+async function withDb<T>(
+  opts: { root?: string },
+  fn: (db: Database, paths: BrainrotPaths) => T | Promise<T>,
+): Promise<T> {
+  const paths = resolveBrainrotPaths(opts.root)
+  const db = openDb(paths.dbPath)
+  try {
+    return await fn(db, paths)
+  } finally {
+    if (db.open) db.close()
+  }
 }
 
 /**
@@ -122,20 +148,22 @@ program
     '--dev',
     'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
   )
-  .action(
-    async (opts: { channel: string; topic: string; root?: string; dev?: boolean }) => {
-      applyDevFlag(opts.dev)
-      // Object storage is optional (src/stages/store.ts): warn, don't refuse.
-      // The `store` stage runs last and simply no-ops with no S3 config, so an
-      // unconfigured deployment still produces a normal ready/needs-review job
-      // — it just has no cloud copy to hand to the (now manual) publish step.
-      const storageError = s3ConfigError()
-      if (storageError !== undefined) {
-        console.error(`produce: ${storageError}`)
-      }
-      const paths = resolveBrainrotPaths(opts.root)
-      const channel = loadChannelConfig(opts.channel)
-      const db = openDb(paths.dbPath)
+  .action(async (opts: { channel: string; topic: string; root?: string; dev?: boolean }) => {
+    applyDevFlag(opts.dev)
+    // Object storage is optional (src/stages/store.ts): warn, don't refuse.
+    // The `store` stage runs last and simply no-ops with no S3 config, so an
+    // unconfigured deployment still produces a normal ready/needs-review job
+    // — it just has no cloud copy to hand to the (now manual) publish step.
+    const storageError = s3ConfigError()
+    if (storageError !== undefined) {
+      console.error(`produce: ${storageError}`)
+    }
+    // Both before the db handle, as they were: a bad --channel path must
+    // exit 1 without having opened (or created) a database.
+    const channel = loadChannelConfig(opts.channel)
+    const { pipelineStages } = await import('./jobs/pipeline.js')
+    const { createJob, exitCodeFor, runJob } = await import('./jobs/runner.js')
+    await withDb(opts, async (db, paths) => {
       const jobId = createJob(db, channel, { topic: opts.topic })
       const result = await runJob(db, channel, jobId, pipelineStages(), {
         runsRoot: paths.runsRoot,
@@ -147,9 +175,9 @@ program
       // Set exitCode (not process.exit) so a piped stdout flushes fully before exit —
       // process.exit can truncate the JSON line mid-write. exit 0 for ready/needs-review;
       // exit 1 for failed AND blocked (the JSON line carries the finer distinction).
-      process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
-    },
-  )
+      process.exitCode = exitCodeFor(result)
+    })
+  })
 
 program
   .command('scout')
@@ -162,7 +190,8 @@ program
     // and letting it throw meant exit 1 with NO JSON line every
     // firing — the one shape the cron log's every-tick-prints-a-line contract
     // cannot survive. The message also goes to stderr, since a line grepped
-    // only for `action` would otherwise carry the cause silently.
+    // only for `action` would otherwise carry the cause silently. This is why
+    // the load sits here rather than inside the withDb callback below.
     const loaded = tryLoadChannelsDir(paths.channelsDir)
     if (loaded.error !== undefined) {
       console.error(`scout: ${loaded.error}`)
@@ -172,34 +201,34 @@ program
       return
     }
     const channels = loaded.channels
-    const db = openDb(paths.dbPath)
-    // Same lease discipline as the produce loop: two overlapping scout
-    // runs would race the global-budget check and double-spend. A held lease is
-    // a benign no-op, exit 0. The pid-tagged holder means an expiry takeover can
-    // never be released by the evicted process (releaseLease matches on holder).
-    const holder = `pid:${process.pid}`
-    if (!acquireLease(db, 'scout', holder, SCOUT_LEASE_TTL_MS)) {
-      process.stdout.write(JSON.stringify({ action: 'noop', reason: 'lease-held' }) + '\n')
-      db.close()
-      return
-    }
-    try {
-      const results = await scoutAll(db, channels, { force: opts.force })
-      // One cron-greppable JSON line; diagnostics went to stderr.
-      process.stdout.write(JSON.stringify({ channels: results }) + '\n')
-    } catch (err) {
-      if (!(err instanceof ScoutRunFailedError)) throw err
-      // A systemic run failure — every source dead (network down, Reddit
-      // blocking) or every channel dead in scoring (expired key, provider
-      // outage). Still one JSON line — the contract holds on failure outcomes —
-      // then exit 1 so cron flags the run.
-      process.stdout.write(JSON.stringify({ channels: err.results }) + '\n')
-      console.error(err.message)
-      process.exitCode = 1
-    } finally {
-      releaseLease(db, 'scout', holder)
-      db.close()
-    }
+    const { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } = await import('./scout/scout.js')
+    await withDb(opts, async (db) => {
+      // Same lease discipline as the produce loop: two overlapping scout
+      // runs would race the global-budget check and double-spend. A held lease is
+      // a benign no-op, exit 0. The pid-tagged holder means an expiry takeover can
+      // never be released by the evicted process (releaseLease matches on holder).
+      const holder = leaseHolder()
+      if (!acquireLease(db, 'scout', holder, SCOUT_LEASE_TTL_MS)) {
+        process.stdout.write(JSON.stringify({ action: 'noop', reason: 'lease-held' }) + '\n')
+        return
+      }
+      try {
+        const results = await scoutAll(db, channels, { force: opts.force })
+        // One cron-greppable JSON line; diagnostics went to stderr.
+        process.stdout.write(JSON.stringify({ channels: results }) + '\n')
+      } catch (err) {
+        if (!(err instanceof ScoutRunFailedError)) throw err
+        // A systemic run failure — every source dead (network down, Reddit
+        // blocking) or every channel dead in scoring (expired key, provider
+        // outage). Still one JSON line — the contract holds on failure outcomes —
+        // then exit 1 so cron flags the run.
+        process.stdout.write(JSON.stringify({ channels: err.results }) + '\n')
+        console.error(err.message)
+        process.exitCode = 1
+      } finally {
+        releaseLease(db, 'scout', holder)
+      }
+    })
   })
 
 program
@@ -221,9 +250,9 @@ program
       },
     ) => {
       applyDevFlag(opts.dev)
-      const paths = resolveBrainrotPaths(opts.root)
-      const db = openDb(paths.dbPath)
-      try {
+      const { resumeJob } = await import('./jobs/resume.js')
+      const { exitCodeFor } = await import('./jobs/runner.js')
+      await withDb(opts, async (db, paths) => {
         const result = await resumeJob(db, jobId, {
           runsRoot: paths.runsRoot,
           channelsDir: paths.channelsDir,
@@ -232,48 +261,44 @@ program
         process.stdout.write(JSON.stringify(result) + '\n')
         // Mirror produce: 0 for ready/needs-review, 1 for failed AND blocked.
         // A ResumeError skips the write and reaches the parseAsync catch (exit 1).
-        process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
-      } finally {
-        db.close()
-      }
+        process.exitCode = exitCodeFor(result)
+      })
     },
   )
 
 program
   .command('jobs')
   .option('--root <path>', ROOT_OPTION_DESC)
-  .action((opts: { root?: string }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    const rows = db
-      .prepare('SELECT id, channel, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 20')
-      .all()
-    console.table(rows)
+  .action(async (opts: { root?: string }) => {
+    await withDb(opts, (db) => {
+      const rows = db
+        .prepare(
+          'SELECT id, channel, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 20',
+        )
+        .all()
+      console.table(rows)
+    })
   })
 
 program
   .command('costs')
   .option('--root <path>', ROOT_OPTION_DESC)
-  .action((opts: { root?: string }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    const rows = db
-      .prepare(
-        `SELECT substr(created_at, 1, 10) AS day, SUM(usd_micros) AS micros
-         FROM costs
-         WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')
-         GROUP BY day
-         ORDER BY day DESC`,
-      )
-      .all() as { day: string; micros: number }[]
-    console.table(rows.map((r) => ({ day: r.day, usd: `$${(r.micros / 1e6).toFixed(2)}` })))
+  .action(async (opts: { root?: string }) => {
+    await withDb(opts, (db) => {
+      // The window and its SQL belong to the ledger module; what stays here is
+      // the presentation — money formatting and the table.
+      const rows = daySpendBreakdown(db, 7)
+      console.table(rows.map((r) => ({ day: r.day, usd: formatUsdMicros(r.micros) })))
+    })
   })
 
 program
   .command('produce-next')
   .option('--root <path>', ROOT_OPTION_DESC)
   .action(async (opts: { root?: string }) => {
-    const paths = resolveBrainrotPaths(opts.root)
-    const db = openDb(paths.dbPath)
-    try {
+    const { produceNextTick } = await import('./loop/produce-next.js')
+    const { exitCodeFor } = await import('./jobs/runner.js')
+    await withDb(opts, async (db, paths) => {
       const result = await produceNextTick(db, {
         channelsDir: paths.channelsDir,
         runsRoot: paths.runsRoot,
@@ -282,12 +307,13 @@ program
       // One cron-greppable JSON line. Exit mirrors produce: 0 for
       // ready/needs-review and benign no-ops, 1 for failed AND blocked (the
       // JSON line carries the finer distinction). status is undefined on
-      // noops, so the ternary lands on 0 for them.
+      // noops, which is what the undefined check below lands on 0.
       process.stdout.write(JSON.stringify(result) + '\n')
-      process.exitCode = result.status === 'failed' || result.status === 'blocked' ? 1 : 0
-    } finally {
-      db.close()
-    }
+      process.exitCode =
+        result.status === undefined
+          ? 0
+          : exitCodeFor({ jobId: result.jobId ?? '', status: result.status })
+    })
   })
 
 program
@@ -295,13 +321,10 @@ program
   .description('run the demand-driven daemon: produce and scout workers plus the daily digest')
   .option('--root <path>', ROOT_OPTION_DESC)
   .action(async (opts: { root?: string }) => {
-    const paths = resolveBrainrotPaths(opts.root)
-    const db = openDb(paths.dbPath)
-    try {
-      await runDaemon(db, { channelsDir: paths.channelsDir, runsRoot: paths.runsRoot })
-    } finally {
-      db.close()
-    }
+    const { runDaemon } = await import('./loop/daemon.js')
+    await withDb(opts, (db, paths) =>
+      runDaemon(db, { channelsDir: paths.channelsDir, runsRoot: paths.runsRoot }),
+    )
   })
 
 // Operator veto (reject) and repair (requeue) over the scouted topic queue.
@@ -314,46 +337,47 @@ topics
   .option('--root <path>', ROOT_OPTION_DESC)
   .option('--channel <name>', 'filter by channel')
   .option('--status <status>', 'filter by topic status')
-  .action((opts: { root?: string; channel?: string; status?: string }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    // An unknown --status matches no rows (the DAO filters verbatim), so the
-    // operator sees an empty table rather than an error.
-    const rows = listTopics(db, {
-      channel: opts.channel,
-      status: opts.status as TopicStatus | undefined,
+  .action(async (opts: { root?: string; channel?: string; status?: string }) => {
+    await withDb(opts, (db) => {
+      // An unknown --status matches no rows (the DAO filters verbatim), so the
+      // operator sees an empty table rather than an error.
+      const rows = listTopics(db, {
+        channel: opts.channel,
+        status: opts.status as TopicStatus | undefined,
+      })
+      console.table(
+        rows.map((r) => ({
+          id: r.id,
+          channel: r.channel,
+          score: r.score,
+          status: r.status,
+          title: r.title,
+          reason: r.reason,
+        })),
+      )
     })
-    console.table(
-      rows.map((r) => ({
-        id: r.id,
-        channel: r.channel,
-        score: r.score,
-        status: r.status,
-        title: r.title,
-        reason: r.reason,
-      })),
-    )
   })
 
 topics
   .command('reject <ids...>')
   .option('--root <path>', ROOT_OPTION_DESC)
-  .action((rawIds: string[], opts: { root?: string }) => {
+  .action(async (rawIds: string[], opts: { root?: string }) => {
     const ids = parseTopicIds(rawIds)
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    const changed = rejectTopics(db, ids)
-    // reject takes candidate only; claimed/used rows are skipped.
-    console.log(`rejected ${changed} of ${ids.length}`)
+    await withDb(opts, (db) => {
+      const changed = rejectTopics(db, ids)
+      // reject takes candidate only; claimed/used rows are skipped.
+      console.log(`rejected ${changed} of ${ids.length}`)
+    })
   })
 
 topics
   .command('requeue <id>')
   .option('--root <path>', ROOT_OPTION_DESC)
-  .action((rawId: string, opts: { root?: string }) => {
+  .action(async (rawId: string, opts: { root?: string }) => {
     // Same pre-db id validation as reject: a bad token throws to the
     // parseAsync .catch (message on stderr, exit 1) with no writes.
     const [id] = parseTopicIds([rawId])
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    try {
+    await withDb(opts, (db) => {
       const outcome = requeueTopic(db, id)
       if (outcome.ok) {
         process.stdout.write(JSON.stringify({ action: 'requeued', topicId: id }) + '\n')
@@ -377,9 +401,7 @@ topics
         console.error(`unknown topic id ${id}`)
       }
       process.exitCode = 1
-    } finally {
-      db.close()
-    }
+    })
   })
 
 topics
@@ -389,8 +411,7 @@ topics
   .option('--channel <name>', 'limit to one channel (default: all)')
   .option('--dry-run', 'report what would change without writing')
   .action(async (opts: { root?: string; channel?: string; dryRun?: boolean }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    try {
+    await withDb(opts, async (db) => {
       const dryRun = opts.dryRun === true
       // Reddit's rate limit forces ~20s per row, so this runs for minutes.
       // Report each row as it resolves — on stderr, so stdout keeps its single
@@ -410,9 +431,7 @@ topics
           skipped: result.skipped.length,
         }) + '\n',
       )
-    } finally {
-      db.close()
-    }
+    })
   })
 
 // Operator gate over the produced-video library. Actions are thin: id
@@ -424,51 +443,53 @@ library
   .option('--root <path>', ROOT_OPTION_DESC)
   .option('--state <state>', 'filter by library state')
   .option('--channel <name>', 'filter by channel')
-  .action((opts: { root?: string; state?: string; channel?: string }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    // An unknown --state matches no rows (the DAO filters verbatim), so the
-    // operator sees an empty table rather than an error.
-    const rows = listLibrary(db, {
-      state: opts.state as LibraryState | undefined,
-      channel: opts.channel,
+  .action(async (opts: { root?: string; state?: string; channel?: string }) => {
+    await withDb(opts, (db) => {
+      // An unknown --state matches no rows (the DAO filters verbatim), so the
+      // operator sees an empty table rather than an error.
+      const rows = listLibrary(db, {
+        state: opts.state as LibraryState | undefined,
+        channel: opts.channel,
+      })
+      console.table(
+        rows.map((r) => ({
+          jobId: r.jobId,
+          channel: r.channel,
+          state: r.state,
+          topic: r.topic,
+          createdAt: r.createdAt,
+        })),
+      )
     })
-    console.table(
-      rows.map((r) => ({
-        jobId: r.jobId,
-        channel: r.channel,
-        state: r.state,
-        topic: r.topic,
-        createdAt: r.createdAt,
-      })),
-    )
   })
 
 library
   .command('approve <jobIds...>')
   .option('--root <path>', ROOT_OPTION_DESC)
-  .action((rawIds: string[], opts: { root?: string }) => {
+  .action(async (rawIds: string[], opts: { root?: string }) => {
     // jobIds parse BEFORE the db opens: an empty/whitespace token throws to
     // the parseAsync .catch (message on stderr, exit 1) with no writes.
     const jobIds = parseLibraryJobIds(rawIds)
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    const { approved, reclaimed } = approveLibrary(db, jobIds)
-    // approved < jobIds.length flags ids that were not in 'needs-review' state.
-    console.log(`approved ${approved} of ${jobIds.length}`)
-    // A distinct diagnostic, because it is a distinct condition: the row was
-    // approvable in every way except that its bytes are gone, so approving it
-    // would have put an unpublishable video into the pool.
-    if (reclaimed.length > 0) {
-      console.error(
-        `not approved — stored object already reclaimed, nothing left to publish: ${reclaimed.join(', ')} ` +
-          `— retire with brainrot library reject ${reclaimed.join(' ')}`,
-      )
-      // Refusal is an outcome a wrapper has to see. exitCode rather than
-      // process.exit for the same reason every other command here uses it: a
-      // piped stdout must flush the line above first. Ids that were simply in
-      // the wrong state stay exit 0 — `approved N of M` already says so, and
-      // re-approving an already-approved id is a no-op, not a failure.
-      process.exitCode = 1
-    }
+    await withDb(opts, (db) => {
+      const { approved, reclaimed } = approveLibrary(db, jobIds)
+      // approved < jobIds.length flags ids that were not in 'needs-review' state.
+      console.log(`approved ${approved} of ${jobIds.length}`)
+      // A distinct diagnostic, because it is a distinct condition: the row was
+      // approvable in every way except that its bytes are gone, so approving it
+      // would have put an unpublishable video into the pool.
+      if (reclaimed.length > 0) {
+        console.error(
+          `not approved — stored object already reclaimed, nothing left to publish: ${reclaimed.join(', ')} ` +
+            `— retire with brainrot library reject ${reclaimed.join(' ')}`,
+        )
+        // Refusal is an outcome a wrapper has to see. exitCode rather than
+        // process.exit for the same reason every other command here uses it: a
+        // piped stdout must flush the line above first. Ids that were simply in
+        // the wrong state stay exit 0 — `approved N of M` already says so, and
+        // re-approving an already-approved id is a no-op, not a failure.
+        process.exitCode = 1
+      }
+    })
   })
 
 library
@@ -476,37 +497,27 @@ library
   .option('--root <path>', ROOT_OPTION_DESC)
   .action(async (rawIds: string[], opts: { root?: string }) => {
     const jobIds = parseLibraryJobIds(rawIds)
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    // Read the keys before the state change: rejecting is the operator's
-    // explicit statement that the video is worthless, and it is the one
-    // deletion that is unambiguously safe.
-    const objects = libraryObjectKeys(db, jobIds)
-    const changed = rejectLibrary(db, jobIds)
-    // reject takes needs-review AND ready; those are the only two states a
-    // row can be pulled back from — there is no 'published' state any more.
-    console.log(`rejected ${changed} of ${jobIds.length}`)
-
-    // Best-effort: the reject itself must not depend on network reachability.
-    // A failure here leaves an orphaned object, which this warning line — not
-    // an ObjectStore.list() sweep — is how you find.
-    if (objects.length > 0) {
-      let store: ObjectStore | null = null
-      try {
-        store = (await import('./storage/s3.js')).storeFromEnv()
-      } catch (err) {
+    await withDb(opts, async (db) => {
+      // The whole sequence — keys read before the state change, best-effort
+      // deletes after — lives in the library module, shared with the
+      // dashboard's `library.reject` action so the two cannot drift. What is
+      // this command's own is where the warnings go and what prints.
+      const result = await rejectLibraryAndFreeObjects({
+        db,
+        jobIds,
+        warn: (message) => console.warn(message),
+      })
+      // reject takes needs-review AND ready; those are the only two states a
+      // row can be pulled back from — there is no 'published' state any more.
+      console.log(`rejected ${result.rejected} of ${result.requested}`)
+      // A failure here leaves an orphaned object, which this warning line —
+      // not an ObjectStore.list() sweep — is how you find.
+      if (result.storageUnavailable !== undefined) {
         console.warn(
-          `object storage unavailable, ${objects.length} object(s) left in place: ${errorMessage(err)}`,
+          `object storage unavailable, ${result.objects} object(s) left in place: ${result.storageUnavailable}`,
         )
       }
-      if (store !== null) {
-        await deleteRejectedObjects({
-          db,
-          objects,
-          store,
-          warn: (message) => console.warn(message),
-        })
-      }
-    }
+    })
   })
 
 library
@@ -514,46 +525,45 @@ library
   .description('upload finished videos that have no stored object yet')
   .option('--root <path>', ROOT_OPTION_DESC)
   .action(async (opts: { root?: string }) => {
-    const db = openDb(resolveBrainrotPaths(opts.root).dbPath)
-    const res = await backfillStore({
-      db,
-      store: (await import('./storage/s3.js')).storeFromEnv(),
+    const { backfillStore } = await import('./jobs/backfill-store.js')
+    await withDb(opts, async (db) => {
+      const res = await backfillStore({
+        db,
+        store: (await import('./storage/s3.js')).storeFromEnv(),
+      })
+      console.log(`uploaded ${res.uploaded.length}, skipped ${res.skipped.length}`)
+      for (const jobId of res.skipped) {
+        console.log(`  skipped ${jobId}: local video file is gone, nothing to upload`)
+      }
     })
-    console.log(`uploaded ${res.uploaded.length}, skipped ${res.skipped.length}`)
-    for (const jobId of res.skipped) {
-      console.log(`  skipped ${jobId}: local video file is gone, nothing to upload`)
-    }
   })
 
 program
   .command('digest')
   .option('--root <path>', ROOT_OPTION_DESC)
-  .action((opts: { root?: string }) => {
+  .action(async (opts: { root?: string }) => {
     // A report, not a check: nothing here may set a non-zero exit — cron
     // MAILTO should deliver whatever printed, so even a config/db error is
     // reported on stderr and the process still exits 0.
     try {
+      const { buildDigest } = await import('./loop/digest.js')
       // A channels dir that fails to load used to take the entire report with
       // it (one stderr line, nothing else) — exactly when the operator needs
       // the report. Every sqlite-derived section still renders; the config
       // failure becomes the first action item instead. The catch below stays
       // for genuinely unexpected digest failures (a db that will not open).
-      const paths = resolveBrainrotPaths(opts.root)
-      const loaded = tryLoadChannelsDir(paths.channelsDir)
-      const db = openDb(paths.dbPath)
-      try {
+      await withDb(opts, (db, paths) => {
+        const loaded = tryLoadChannelsDir(paths.channelsDir)
         process.stdout.write(
           buildDigest(db, loaded.channels, { channelsError: loaded.error }) + '\n',
         )
-      } finally {
-        db.close()
-      }
+      })
     } catch (err) {
       console.error(errorMessage(err))
     }
   })
 
-// cli.test.ts imports pipelineStages/parseTopicIds in-process, which must not
+// cli.test.ts imports parseTopicIds/applyDevFlag in-process, which must not
 // fire the argv parser. Node (and tsx) set argv[1] to the executed script's
 // resolved path, so this comparison is true exactly when cli.ts IS the entry
 // script.

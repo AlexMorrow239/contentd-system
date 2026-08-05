@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { whereClause } from '../../db/sql.js'
 import { libraryBytes, libraryLinks } from './library.js'
 
 // A tuple, not a bare union: the filter dropdowns need the values at runtime,
@@ -69,19 +70,12 @@ function toJobRow(row: DbJobRow): JobListRow {
 
 function jobsWhereClause(filter?: { channel?: string; status?: JobStatus }): {
   clause: string
-  params: string[]
+  params: unknown[]
 } {
-  const where: string[] = []
-  const params: string[] = []
-  if (filter?.channel !== undefined) {
-    where.push('jobs.channel = ?')
-    params.push(filter.channel)
-  }
-  if (filter?.status !== undefined) {
-    where.push('jobs.status = ?')
-    params.push(filter.status)
-  }
-  return { clause: where.length > 0 ? ` WHERE ${where.join(' AND ')}` : '', params }
+  return whereClause([
+    ['jobs.channel = ?', filter?.channel],
+    ['jobs.status = ?', filter?.status],
+  ])
 }
 
 export function listJobs(

@@ -3,7 +3,11 @@ import { writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { applyDevFlag, DEV_VOICE_ENV, parseTopicIds, pipelineStages } from './cli.js'
+import { applyDevFlag, DEV_VOICE_ENV, parseTopicIds } from './cli.js'
+// Straight from the module that owns it: cli.ts reaches pipelineStages through
+// a dynamic import inside the commands that render, so it no longer re-exports
+// it — a static re-export would put Remotion back on every command's startup.
+import { pipelineStages } from './jobs/pipeline.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 import { openDb } from './db/index.js'
 import { runCli } from './testing/run-cli.js'
@@ -135,15 +139,7 @@ describe('brainrot CLI — jobs and produce', () => {
       // channel file, so without this the assertion below depends on whether
       // the machine happens to have a .env.
       const result = await runCli(
-        [
-          'produce',
-          '--channel',
-          '/no/such/channel.toml',
-          '--topic',
-          'venus',
-          '--root',
-          root.root,
-        ],
+        ['produce', '--channel', '/no/such/channel.toml', '--topic', 'venus', '--root', root.root],
         { env: storageEnvVars() },
       )
       expect(result.exitCode).toBe(1)
@@ -167,15 +163,7 @@ describe('brainrot CLI — jobs and produce', () => {
     async () => {
       const root = testRoot()
       const result = await runCli(
-        [
-          'produce',
-          '--channel',
-          '/no/such/channel.toml',
-          '--topic',
-          'venus',
-          '--root',
-          root.root,
-        ],
+        ['produce', '--channel', '/no/such/channel.toml', '--topic', 'venus', '--root', root.root],
         // Empty, not absent: dotenv does not override a key already present in
         // the child env, so this holds whether or not the machine has a .env
         // with real R2 credentials in it.

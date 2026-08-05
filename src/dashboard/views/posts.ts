@@ -1,4 +1,4 @@
-import { html, httpUrlOrNull, SafeHtml } from '../html.js'
+import { html, safeLink, SafeHtml } from '../html.js'
 import type { PostLogEntry } from '../queries/posts.js'
 import { formatTime } from './jobs.js'
 import { href } from './layout.js'
@@ -9,11 +9,7 @@ export interface PostLogPageData {
 
 function renderUrl(url: string | null): SafeHtml {
   if (url === null) return html`<span class="muted">—</span>`
-  const safeUrl = httpUrlOrNull(url)
-  if (safeUrl === null) {
-    return html`<span class="warning" title="blocked unsafe link scheme">${url}</span>`
-  }
-  return html`<a href="${safeUrl}" rel="noreferrer noopener" target="_blank">${url}</a>`
+  return safeLink(url, url)
 }
 
 export function renderPostLogPage(data: PostLogPageData): SafeHtml {

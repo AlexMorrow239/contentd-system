@@ -1,18 +1,13 @@
 import type { Database } from 'better-sqlite3'
 import { loadChannelsDir, tryLoadChannelsDir } from '../config/channel.js'
-import { errorMessage, BrainrotError } from '../errors.js'
-import {
-  approveLibrary,
-  deleteRejectedObjects,
-  libraryObjectKeys,
-  rejectLibrary,
-} from '../jobs/library.js'
+import { BrainrotError } from '../errors.js'
+import { approveLibrary, rejectLibraryAndFreeObjects } from '../jobs/library.js'
 import { backfillStore } from '../jobs/backfill-store.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
 import { buildDigest } from '../loop/digest.js'
-import { produceNextTick } from '../loop/produce-next.js'
+import { configErrorNoop, produceNextTick } from '../loop/produce-next.js'
 import { markPosted, unmarkPosted } from '../posts/posts.js'
 import { pruneMedia } from '../scout/prune-media.js'
 import { scoutAll } from '../scout/scout.js'
@@ -73,8 +68,12 @@ type HandlerDeps = {
    * Test seam standing in for `(await import('../storage/s3.js')).storeFromEnv()`
    * in `library.reject` and `library.backfillStore` — keeps the AWS SDK's
    * ~35ms/~10MB startup cost off every other path that imports this module,
-   * mirroring the CLI's `reject` command. A thrown error here is treated
-   * exactly like a real `storeFromEnv()` throw: nothing to delete.
+   * mirroring the CLI's `reject` command. It substitutes for the acquisition
+   * only: `library.reject` routes it through the same
+   * `rejectLibraryAndFreeObjects` the CLI calls, whose production path reports
+   * an unreachable store as `storageUnavailable` rather than throwing, while a
+   * throw from THIS seam (like one from `library.backfillStore`'s) surfaces as
+   * a failed action.
    */
   storeFromEnv?: () => ObjectStore
   backfillStore?: typeof backfillStore
@@ -195,8 +194,10 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       // {action:'noop',reason:'config-error'} — and the CLI's `scout` exits 0
       // on it, reserving exit 1 for a ScoutRunFailedError thrown by scoutAll
       // itself. The operator sees the cause either way; what a lone `failed`
-      // would add is inconsistency, not information.
-      return { action: 'noop', reason: 'config-error', error: loaded.error }
+      // would add is inconsistency, not information. The shape comes from the
+      // tick module that owns it, so the row this records stays byte-identical
+      // to the one produce.next passes through.
+      return configErrorNoop(loaded.error)
     }
     // force:true unconditionally — an operator clicking "scout now" means now,
     // and SCOUT_RECHECK_MS (20 min) would otherwise swallow the click.
@@ -222,20 +223,11 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
 
   // eslint-disable-next-line @typescript-eslint/require-await
   'post.mark': async (ctx, args) => {
-    // The channel is resolved here rather than taken from the form: the
-    // dashboard only has a job id, and a mismatched channel would misfile the
-    // row in every channel-scoped read (pendingInventory, reclaim, the digest).
-    const row = ctx.db.prepare('SELECT channel FROM jobs WHERE id = ?').get(args.jobId) as
-      { channel: string } | undefined
-    if (row === undefined) {
-      throw new BrainrotError(`no such job: ${args.jobId}`, { domain: 'job', kind: 'not-found' })
-    }
-    markPosted(ctx.db, {
-      jobId: args.jobId,
-      channel: row.channel,
-      platform: args.platform,
-      url: args.url,
-    })
+    // No channel is passed: the form only has a job id, and markPosted
+    // resolves the channel from the job itself (throwing not-found for an
+    // unknown id), which is what makes a misfiled row structurally impossible
+    // rather than something each caller has to remember.
+    markPosted(ctx.db, { jobId: args.jobId, platform: args.platform, url: args.url })
     return { jobId: args.jobId, platform: args.platform, posted: true }
   },
 
@@ -248,51 +240,29 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     removed: unmarkPosted(ctx.db, args.jobId, args.platform),
   }),
 
-  // Mirrors the CLI's `library reject` command (src/cli.ts): keys are read
-  // BEFORE the state change, and the object delete is best-effort AFTER it —
-  // the reject itself must not depend on network reachability, and a storage
-  // failure must not roll back (or fail) the state change. See that
-  // command's comment for why: a failure here leaves an orphaned object, and
-  // the warning is how an operator finds it.
+  // Shares the whole sequence with the CLI's `library reject` command through
+  // the library module: keys are read BEFORE the state change, and the object
+  // delete is best-effort AFTER it — the reject itself must not depend on
+  // network reachability, and a storage failure must not roll back (or fail)
+  // the state change. A failure there leaves an orphaned object, and the
+  // notice this routes `warn` into is how an operator finds it. The
+  // `storeFromEnv` test seam rides through the helper's own override, so the
+  // AWS SDK stays behind a dynamic import on the production path.
   'library.reject': async (ctx, args, deps) => {
-    const objects = libraryObjectKeys(ctx.db, args.jobIds)
-    const rejected = rejectLibrary(ctx.db, args.jobIds)
-
-    let deleted: string[] = []
-    let failed: string[] = []
-    let storageUnavailable: string | undefined
-    if (objects.length > 0) {
-      let store: ObjectStore | null = null
-      const configError = s3ConfigError()
-      if (configError !== undefined) {
-        storageUnavailable = configError
-      } else {
-        try {
-          store = deps?.storeFromEnv
-            ? deps.storeFromEnv()
-            : (await import('../storage/s3.js')).storeFromEnv()
-        } catch (err) {
-          storageUnavailable = errorMessage(err)
-        }
-      }
-      if (store !== null) {
-        const outcome = await deleteRejectedObjects({
-          db: ctx.db,
-          objects,
-          store,
-          warn: (message) => ctx.setNotice(message),
-        })
-        deleted = outcome.deleted
-        failed = outcome.failed
-      }
-    }
-
+    const result = await rejectLibraryAndFreeObjects({
+      db: ctx.db,
+      jobIds: args.jobIds,
+      warn: (message) => ctx.setNotice(message),
+      storeFromEnv: deps?.storeFromEnv,
+    })
     return {
-      rejected,
-      requested: args.jobIds.length,
-      objectsDeleted: deleted.length,
-      objectsFailed: failed.length,
-      ...(storageUnavailable !== undefined ? { storageUnavailable } : {}),
+      rejected: result.rejected,
+      requested: result.requested,
+      objectsDeleted: result.deleted.length,
+      objectsFailed: result.failed.length,
+      ...(result.storageUnavailable !== undefined
+        ? { storageUnavailable: result.storageUnavailable }
+        : {}),
     }
   },
 

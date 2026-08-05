@@ -1,8 +1,9 @@
 import type { PostCard, PostCardPlatform } from '../queries/post.js'
-import { html, httpUrlOrNull, SafeHtml } from '../html.js'
+import { html, safeLink, SafeHtml } from '../html.js'
+import { bytesCell } from './bytes.js'
 import { formatTime } from './jobs.js'
 import { href } from './layout.js'
-import { actionForm, daemonBanner } from './actions.js'
+import { actionForm, configErrorBanner, daemonBanner } from './actions.js'
 
 export interface PostPageData {
   cards: PostCard[]
@@ -16,24 +17,6 @@ function seriesBadge(label: string | null): SafeHtml {
   return label === null ? html`` : html`<span class="badge series">${label}</span>`
 }
 
-/**
- * The dashboard holds no bucket credentials by design, so 'archived',
- * 'reclaimed' and 'unstored' each render a plain label instead of a player —
- * the same four states /library draws, reused here rather than reinvented.
- */
-function renderBytes(card: PostCard): SafeHtml {
-  switch (card.bytes) {
-    case 'local':
-      return html`<video controls preload="metadata" src="${href(`/library/${card.jobId}/video`)}"></video>`
-    case 'archived':
-      return html`<span class="muted">archived to object storage</span>`
-    case 'reclaimed':
-      return html`<span class="muted">reclaimed — already posted everywhere it was going</span>`
-    case 'unstored':
-      return html`<span class="muted">not stored — run <code>library backfill-store</code></span>`
-  }
-}
-
 /** One paste block: a readonly textarea (never <pre> — selecting 2200 chars by hand is miserable)
  * plus a copy button that degrades to manual selection when clipboard access is unavailable. */
 function pasteField(label: string, value: string, rows: number): SafeHtml {
@@ -45,6 +28,12 @@ function pasteField(label: string, value: string, rows: number): SafeHtml {
   </label>`
 }
 
+/**
+ * post.mark with its url field: the one action whose argument is typed at the
+ * point of clicking rather than carried as a hidden field, which is what
+ * actionForm's `extra` slot is for — the transport fields (kind, token, return
+ * path) stay owned by actionForm rather than respelled here.
+ */
 function markForm(
   jobId: string,
   p: PostCardPlatform,
@@ -52,17 +41,17 @@ function markForm(
   from: string,
   disabled: boolean,
 ): SafeHtml {
-  return html`<form class="action post-mark" method="post" action="/actions">
-    <input type="hidden" name="kind" value="post.mark">
-    <input type="hidden" name="csrf" value="${csrfToken}">
-    <input type="hidden" name="from" value="${from}">
-    <input type="hidden" name="jobId" value="${jobId}">
-    <input type="hidden" name="platform" value="${p.platform}">
-    <label class="field">link
+  return actionForm({
+    kind: 'post.mark',
+    csrfToken,
+    from,
+    fields: { jobId, platform: p.platform },
+    disabled,
+    formClass: 'post-mark',
+    extra: html`<label class="field">link
       <input type="url" name="url" placeholder="paste the live link (optional)" autocomplete="off">
-    </label>
-    <button class="action-button" type="submit" ${disabled ? new SafeHtml('disabled') : ''}>mark posted</button>
-  </form>`
+    </label>`,
+  })
 }
 
 function postedBlock(
@@ -72,13 +61,10 @@ function postedBlock(
   from: string,
   disabled: boolean,
 ): SafeHtml {
-  const safeUrl = p.url === null ? null : httpUrlOrNull(p.url)
   const link =
     p.url === null
       ? html`<p class="muted">no link saved</p>`
-      : safeUrl === null
-        ? html`<span class="warning" title="blocked unsafe link scheme">${p.url}</span>`
-        : html`<p><a href="${safeUrl}" rel="noreferrer noopener" target="_blank">${p.url}</a></p>`
+      : html`<p>${safeLink(p.url, p.url)}</p>`
   return html`<div class="post-platform posted">
     <h3>${p.platform} — posted</h3>
     ${link}
@@ -104,6 +90,10 @@ function platformBlock(
 
   const title = p.title === null ? html`` : pasteField('title', p.title, 2)
   const tags = p.tags === null ? html`` : pasteField('tags', p.tags, 2)
+  // The platform's real paste shape decides the wording: a platform with a
+  // title field of its own takes a `description` beside it, one without takes
+  // a single composed `caption`. Both come from posts/meta.ts's PASTE_FIELDS,
+  // so the label can never disagree with the fields actually rendered.
   const bodyLabel = p.title === null ? 'caption' : 'description'
 
   return html`<div class="post-platform">
@@ -125,7 +115,9 @@ function renderCard(card: PostCard, csrfToken: string, daemonStale: boolean): Sa
         ${formatTime(card.createdAt)}
       </p>
     </header>
-    ${renderBytes(card)}
+    ${bytesCell(card.bytes, card.jobId, {
+      reclaimed: 'reclaimed — already posted everywhere it was going',
+    })}
     <div class="post-platforms">
       ${card.platforms.map((p) => platformBlock(card.jobId, p, csrfToken, from, daemonStale))}
     </div>
@@ -157,10 +149,7 @@ document.querySelectorAll('[data-copy-target]').forEach((btn) => {
 </script>`
 
 export function renderPostQueuePage(data: PostPageData): SafeHtml {
-  const banner =
-    data.configError === undefined
-      ? html``
-      : html`<p class="warning">channel config error: ${data.configError}</p>`
+  const banner = configErrorBanner(data.configError)
 
   if (data.cards.length === 0) {
     return html`${daemonBanner(data.daemonStale)}

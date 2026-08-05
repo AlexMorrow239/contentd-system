@@ -1,8 +1,15 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
-import { channelDaySpentMicros, globalDailyCapMicros, globalDaySpentMicros } from '../jobs/costs.js'
+import {
+  channelDaySpentMicrosByChannel,
+  globalDailyCapMicros,
+  globalDaySpentMicros,
+  jobSpentMicros,
+} from '../jobs/costs.js'
 import { pendingInventory, unstoredLibraryJobs } from '../jobs/library.js'
-import { candidateTopicCount } from '../scout/topics.js'
+import { formatUsdMicros } from '../money.js'
+import { candidateTopicCount, claimedTopicCount } from '../scout/topics.js'
+import { fullyPostedClause } from '../posts/posts.js'
 import type { Platform } from '../posts/types.js'
 // ./config.js, not ./s3.js: this must not drag the AWS SDK onto the digest's
 // startup path, same reasoning as produce-next.ts's own import of this.
@@ -26,11 +33,6 @@ export const STRANDED_QUEUED_MS = 3_600_000 // 1 h
 // has already seen. The remainder is still counted, never silently dropped.
 export const FAILED_JOBS_LIMIT = 10
 
-// Display-only conversion — everything upstream stays integer micro-USD.
-function usd(micros: number): string {
-  return `$${(micros / 1e6).toFixed(2)}`
-}
-
 // Every list section prints its rows or a single placeholder line. Callers
 // pass the placeholder verbatim rather than an indent depth, because the
 // exact strings are pinned by digest.test.ts.
@@ -48,20 +50,19 @@ function formatAge(ms: number): string {
 }
 
 /**
- * How long the oldest unposted video in this channel has been waiting.
- * Same predicate as pendingInventory, deliberately — the count and the age
- * must describe the same set of rows.
+ * How long the oldest unposted video in this channel has been waiting. The
+ * count (pendingInventory) and this age describe the same set of rows because
+ * both take the predicate from `fullyPostedClause`.
  */
 function oldestUnpostedAge(db: Database, channel: string, declared: readonly Platform[]): string {
-  const marks = declared.map(() => '?').join(', ')
+  const unposted = fullyPostedClause(declared, { alias: 'l', match: 'not-fully' })
   const row = db
     .prepare(
       `SELECT MIN(l.created_at) AS oldest FROM library l JOIN jobs j ON j.id = l.job_id
        WHERE j.channel = ? AND l.state IN ('needs-review', 'ready')
-         AND (SELECT COUNT(*) FROM posts p
-              WHERE p.job_id = l.job_id AND p.platform IN (${marks})) < ?`,
+         AND ${unposted.sql}`,
     )
-    .get(channel, ...declared, declared.length) as { oldest: string | null }
+    .get(channel, ...unposted.params) as { oldest: string | null }
   return row.oldest === null ? '—' : formatAge(Date.now() - Date.parse(row.oldest))
 }
 
@@ -141,12 +142,17 @@ export function buildDigest(
   pushNoneIfEmpty(lines, jobsStart, '  none')
 
   lines.push('', 'Spend today (UTC)')
+  // One GROUP BY for the whole set rather than a SUM per channel. A channel
+  // with no spend today is ABSENT from the map, not zero — hence the ?? 0.
+  const spentByChannel = channelDaySpentMicrosByChannel(db)
   for (const channel of channels) {
     lines.push(
-      `  ${channel.name}: ${usd(channelDaySpentMicros(db, channel.name))} of ${usd(channel.budget.perDayUsdMicros)}`,
+      `  ${channel.name}: ${formatUsdMicros(spentByChannel.get(channel.name) ?? 0)} of ${formatUsdMicros(channel.budget.perDayUsdMicros)}`,
     )
   }
-  lines.push(`  global: ${usd(globalDaySpentMicros(db))} of ${usd(globalDailyCapMicros())}`)
+  lines.push(
+    `  global: ${formatUsdMicros(globalDaySpentMicros(db))} of ${formatUsdMicros(globalDailyCapMicros())}`,
+  )
 
   // Posting: the manual operator's whole action list. A channel at its backlog
   // cap has stopped producing and will stay stopped until videos are posted or
@@ -154,13 +160,21 @@ export function buildDigest(
   // since every other section is windowed to the last 24h and a halted channel
   // simply disappears from them.
   lines.push('', 'Posting')
+  // Read once per channel and shared with the topic-starvation check below —
+  // it is the same correlated count over library x jobs x posts, and the two
+  // sections must agree about what "unposted" means anyway.
+  const pendingByChannel = new Map<string, number>()
+  for (const channel of channels) {
+    if (channel.platforms.length === 0) continue
+    pendingByChannel.set(
+      channel.name,
+      pendingInventory(db, { channel: channel.name, declared: channel.platforms }),
+    )
+  }
   const sectionStart = lines.length
   for (const channel of channels) {
     if (channel.platforms.length === 0) continue
-    const pending = pendingInventory(db, {
-      channel: channel.name,
-      declared: channel.platforms,
-    })
+    const pending = pendingByChannel.get(channel.name) ?? 0
     if (pending === 0) continue
     const oldest = oldestUnpostedAge(db, channel.name, channel.platforms)
     const held = pending >= backlogCap(channel) ? ' — production held' : ''
@@ -247,11 +261,6 @@ export function buildDigest(
     .all() as { id: string; channel: string }[]
   if (blockedJobs.length > 0) {
     const byName = new Map(channels.map((c) => [c.name, c]))
-    // Lifetime spend, mirroring the per-video check in assertBudget: the cap
-    // is never reset by a day boundary, so a spent-out job never self-heals.
-    const jobSpent = db.prepare(
-      'SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?',
-    )
     // The other half of every dead-end remedy below: a blocked job usually
     // still holds the topic it claimed, and `topics requeue` (which now
     // accepts a blocked job's topic) puts that trend back in the queue for a
@@ -277,15 +286,19 @@ export function buildDigest(
         continue
       }
       const capMicros = channel.budget.perVideoUsdMicros
-      const spentMicros = (jobSpent.get(j.id) as { total: number }).total
+      // The DAO's read, not a copy of it: this advice must agree with what
+      // assertBudget actually enforces and what planTick plans against. The
+      // per-video cap is lifetime — never reset by a day boundary — so a
+      // spent-out job never self-heals.
+      const spentMicros = jobSpentMicros(db, j.id)
       if (spentMicros >= capMicros) {
         lines.push(
-          `${head} — per-video budget spent (${usd(spentMicros)} of ${usd(capMicros)}) — raise the cap in ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
+          `${head} — per-video budget spent (${formatUsdMicros(spentMicros)} of ${formatUsdMicros(capMicros)}) — raise the cap in ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
         )
         continue
       }
       lines.push(
-        `${head} — ${usd(capMicros - spentMicros)} of its ${usd(capMicros)} per-video budget left — awaiting the resume pass`,
+        `${head} — ${formatUsdMicros(capMicros - spentMicros)} of its ${formatUsdMicros(capMicros)} per-video budget left — awaiting the resume pass`,
       )
     }
   }
@@ -294,9 +307,6 @@ export function buildDigest(
   // last scheduled video goes out — and every other line in this digest would
   // stay quiet about it. Channels with no scout sources are excluded: they
   // are fed by manual `brainrot produce`, where an empty queue is normal.
-  const claimedTopicCount = db.prepare(
-    "SELECT COUNT(*) AS n FROM topics WHERE channel = ? AND status = 'claimed'",
-  )
   const inFlightJobCount = db.prepare(
     "SELECT COUNT(*) AS n FROM jobs WHERE channel = ? AND status IN ('running', 'queued')",
   )
@@ -305,10 +315,7 @@ export function buildDigest(
       c.scout.subreddits.length + c.scout.rss.length + c.scout.generateTopics > 0
     if (!scoutsAnything || c.platforms.length === 0) continue
     const candidates = candidateTopicCount(db, c.name)
-    const inventory = pendingInventory(db, {
-      channel: c.name,
-      declared: c.platforms,
-    })
+    const inventory = pendingByChannel.get(c.name) ?? 0
     if (candidates !== 0 || inventory !== 0) continue
     // 0 candidates and 0 inventory can still mean supply is moving, not
     // stopped: a claimed topic means a job is producing from it right now,
@@ -316,7 +323,7 @@ export function buildDigest(
     // claim isn't visible yet. Flagging either as starvation would be a false
     // alarm the first time it fires, which is what makes an operator start
     // ignoring the whole line.
-    const claimed = (claimedTopicCount.get(c.name) as { n: number }).n
+    const claimed = claimedTopicCount(db, c.name)
     const inFlight = (inFlightJobCount.get(c.name) as { n: number }).n
     // Safe to defer to a more specific alert here rather than hiding a real
     // wedge: every job state that can hold a topic claimed already has its

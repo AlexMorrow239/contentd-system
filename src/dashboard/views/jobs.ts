@@ -1,12 +1,17 @@
+import { formatUsdMicros } from '../../money.js'
 import { html, SafeHtml } from '../html.js'
-import type { JobDetail, JobListRow, JobStatus, StageRow } from '../queries/jobs.js'
+import {
+  JOB_STATUSES,
+  type JobDetail,
+  type JobListRow,
+  type JobStatus,
+  type StageRow,
+} from '../queries/jobs.js'
+import { bytesCell } from './bytes.js'
+import { filterForm } from './filters.js'
 import { href } from './layout.js'
 import { renderLinks } from './library.js'
 import { actionForm, daemonBanner, pageActions } from './actions.js'
-
-export function formatUsd(usdMicros: number): string {
-  return `$${(usdMicros / 1_000_000).toFixed(2)}`
-}
 
 /** Container-local rendering of a UTC ISO timestamp. */
 export function formatTime(iso: string | null): string {
@@ -23,14 +28,6 @@ export function formatDuration(startedAt: string | null, finishedAt: string | nu
   const seconds = Math.round(ms / 1000)
   if (seconds < 60) return `${seconds}s`
   return `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, '0')}s`
-}
-
-const JOB_STATUSES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
-
-function option(value: string, selected: string | undefined): SafeHtml {
-  return selected === value
-    ? html`<option value="${value}" selected>${value}</option>`
-    : html`<option value="${value}">${value}</option>`
 }
 
 export interface JobsPageData {
@@ -106,17 +103,20 @@ function produceForm(channels: string[], daemonStale: boolean): SafeHtml {
 }
 
 export function renderJobsPage(data: JobsPageData): SafeHtml {
-  const filters = html`<form class="filters" method="get" action="/jobs">
-    <select name="channel">
-      <option value="">all channels</option>
-      ${data.channels.map((channel) => option(channel, data.filter.channel))}
-    </select>
-    <select name="status">
-      <option value="">all statuses</option>
-      ${JOB_STATUSES.map((status) => option(status, data.filter.status))}
-    </select>
-    <button type="submit">filter</button>
-  </form>`
+  const filters = filterForm('/jobs', [
+    {
+      name: 'channel',
+      allLabel: 'all channels',
+      values: data.channels,
+      selected: data.filter.channel,
+    },
+    {
+      name: 'status',
+      allLabel: 'all statuses',
+      values: JOB_STATUSES,
+      selected: data.filter.status,
+    },
+  ])
 
   const controls = pageActions([
     actionForm({
@@ -146,7 +146,7 @@ export function renderJobsPage(data: JobsPageData): SafeHtml {
       <td class="status-${job.status}">${job.status}</td>
       <td>${formatTime(job.createdAt)}</td>
       <td>${formatDuration(job.createdAt, job.finishedAt)}</td>
-      <td>${formatUsd(job.costUsdMicros)}</td>
+      <td>${formatUsdMicros(job.costUsdMicros)}</td>
       <td>${jobActions(job, data.csrfToken, data.daemonStale)}</td>
     </tr>`,
   )
@@ -185,13 +185,10 @@ export function renderJobDetailPage(detail: JobDetail, runsRoot: string): SafeHt
       ? html``
       : html`<div class="panel">
           <h2>video</h2>
-          ${detail.bytes === 'local'
-            ? html`<video controls preload="metadata" src="${href(`/library/${job.id}/video`)}"></video>`
-            : detail.bytes === 'archived'
-              ? html`<p class="muted">archived to object storage — not available locally</p>`
-              : detail.bytes === 'reclaimed'
-                ? html`<p class="muted">reclaimed — the stored object was deleted after every platform was posted to</p>`
-                : html`<p class="muted">not stored — run <code>library backfill-store</code></p>`}
+          ${bytesCell(detail.bytes, job.id, {
+            archived: 'archived to object storage — not available locally',
+            reclaimed: 'reclaimed — the stored object was deleted after every platform was posted to',
+          })}
           ${renderLinks(detail.links, html``)}
         </div>`
 
@@ -205,7 +202,7 @@ export function renderJobDetailPage(detail: JobDetail, runsRoot: string): SafeHt
               (cost) => html`<tr>
                 <td>${cost.provider}</td>
                 <td>${cost.operation}</td>
-                <td>${formatUsd(cost.usdMicros)}</td>
+                <td>${formatUsdMicros(cost.usdMicros)}</td>
                 <td>${formatTime(cost.createdAt)}</td>
               </tr>`,
             )}
@@ -227,7 +224,7 @@ export function renderJobDetailPage(detail: JobDetail, runsRoot: string): SafeHt
           <tr><th>status</th><td class="status-${job.status}">${job.status}</td></tr>
           <tr><th>created</th><td>${formatTime(job.createdAt)}</td></tr>
           <tr><th>finished</th><td>${formatTime(job.finishedAt)}</td></tr>
-          <tr><th>total spend</th><td>${formatUsd(job.costUsdMicros)}</td></tr>
+          <tr><th>total spend</th><td>${formatUsdMicros(job.costUsdMicros)}</td></tr>
           <tr><th>library</th><td>${libraryState}</td></tr>
           <tr><th>artifacts</th><td><code>${runsRoot}/${job.id}/</code></td></tr>
         </tbody>

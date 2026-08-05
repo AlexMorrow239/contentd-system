@@ -1,16 +1,9 @@
-import type { TopicRow, TopicStatus } from '../../scout/topics.js'
-import { html, httpUrlOrNull, SafeHtml } from '../html.js'
+import { TOPIC_STATUSES, type TopicRow, type TopicStatus } from '../../scout/topics.js'
+import { html, safeLink, SafeHtml } from '../html.js'
+import { filterForm } from './filters.js'
 import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
 import { actionForm, daemonBanner, pageActions } from './actions.js'
-
-const TOPIC_STATUSES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
-
-function option(value: string, selected: string | undefined): SafeHtml {
-  return selected === value
-    ? html`<option value="${value}" selected>${value}</option>`
-    : html`<option value="${value}">${value}</option>`
-}
 
 export interface TopicsPageData {
   topics: TopicRow[]
@@ -50,17 +43,20 @@ function topicActions(
 }
 
 export function renderTopicsPage(data: TopicsPageData): SafeHtml {
-  const filters = html`<form class="filters" method="get" action="/topics">
-    <select name="channel">
-      <option value="">all channels</option>
-      ${data.channels.map((channel) => option(channel, data.filter.channel))}
-    </select>
-    <select name="status">
-      <option value="">all statuses</option>
-      ${TOPIC_STATUSES.map((status) => option(status, data.filter.status))}
-    </select>
-    <button type="submit">filter</button>
-  </form>`
+  const filters = filterForm('/topics', [
+    {
+      name: 'channel',
+      allLabel: 'all channels',
+      values: data.channels,
+      selected: data.filter.channel,
+    },
+    {
+      name: 'status',
+      allLabel: 'all statuses',
+      values: TOPIC_STATUSES,
+      selected: data.filter.status,
+    },
+  ])
 
   const controls = pageActions([
     actionForm({
@@ -105,12 +101,7 @@ export function renderTopicsPage(data: TopicsPageData): SafeHtml {
         }
       </td>
       <td>
-        ${(() => {
-          const safeUrl = httpUrlOrNull(topic.url)
-          return safeUrl === null
-            ? html`<span class="warning" title="blocked unsafe link scheme">${topic.source}</span>`
-            : html`<a href="${safeUrl}" rel="noreferrer">${topic.source}</a>`
-        })()}
+        ${safeLink(topic.url, topic.source)}
       </td>
       <td class="muted">${topic.reason}</td>
       <td>${formatTime(topic.createdAt)}</td>

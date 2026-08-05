@@ -3,7 +3,9 @@ import { join } from 'node:path'
 import { execa } from 'execa'
 import { probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
+import { VIDEO_WIDTH, VIDEO_HEIGHT } from '../remotion-types.js'
 import type { ScriptArtifact } from './script.js'
+import type { VoiceMeta } from './voice.js'
 import { narrationWordCount, minPlausibleNarrationMs } from './narration-text.js'
 
 export interface QcResult {
@@ -22,10 +24,19 @@ export function readQcResult(runDir: string): QcResult {
   return JSON.parse(readFileSync(join(runDir, 'qc', 'qc.json'), 'utf8')) as QcResult
 }
 
+// Audio level, black runs and freezes all come from ONE decode of the finished
+// video: the audio filter and the chained video filter write their markers into
+// the same stderr, and the three parsers below are independent scans over it.
+// Three separate `-f null -` invocations decoded a 15-180s 1080x1920 short three
+// times over for the same numbers. probe() stays its own cheap ffprobe call.
+const ANALYSIS_VF = 'blackdetect=d=1.0:pix_th=0.10,freezedetect=n=-60dB:d=2'
+
 const MB = 1024 * 1024
 const MAX_SIZE_BYTES = 256 * MB
 
-// Optional artifacts: a missing or unreadable one is a failed check, not a crash.
+// Artifact reads that tolerate absence. For the optional ones (captions,
+// script) a missing or unreadable file is a failed check rather than a crash;
+// voice.json is required and its caller turns `undefined` into a throw.
 function readJson<T>(path: string): T | undefined {
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as T
@@ -79,8 +90,9 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
     name: 'qc',
     async run(ctx: JobContext): Promise<void> {
       const finalPath = ctx.artifactPath('assemble', 'final.mp4')
-      const voice = JSON.parse(readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8')) as {
-        durationMs: number
+      const voice = readJson<VoiceMeta>(ctx.artifactPath('voice', 'voice.json'))
+      if (voice === undefined) {
+        throw new Error(`qc: unreadable voice artifact ${ctx.artifactPath('voice', 'voice.json')}`)
       }
       const p = await probe(finalPath)
       const checks: QcResult['checks'] = []
@@ -92,7 +104,7 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
       })
       checks.push({
         name: 'resolution',
-        passed: p.width === 1080 && p.height === 1920,
+        passed: p.width === VIDEO_WIDTH && p.height === VIDEO_HEIGHT,
         detail: `${p.width}x${p.height}`,
       })
       checks.push({
@@ -101,12 +113,13 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
         detail: p.hasAudio ? 'audio stream present' : 'no audio stream',
       })
 
-      const { stderr: volStderr } = await execa(
+      const { stderr: analysis } = await execa(
         'ffmpeg',
-        ['-i', finalPath, '-af', 'volumedetect', '-vn', '-f', 'null', '-'],
+        ['-i', finalPath, '-af', 'volumedetect', '-vf', ANALYSIS_VF, '-f', 'null', '-'],
         { reject: false },
       )
-      const meanDb = parseMeanVolumeDb(volStderr)
+
+      const meanDb = parseMeanVolumeDb(analysis)
       checks.push({
         name: 'audio-level',
         passed: Number.isFinite(meanDb) && meanDb >= -50,
@@ -140,24 +153,14 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
         detail: `${narrationWords} words; voice ${voice.durationMs}ms; minimum ${minNarrationMs}ms`,
       })
 
-      const { stderr } = await execa(
-        'ffmpeg',
-        ['-i', finalPath, '-vf', 'blackdetect=d=1.0:pix_th=0.10', '-an', '-f', 'null', '-'],
-        { reject: false },
-      )
-      const maxBlack = longestBlackRunSeconds(stderr)
+      const maxBlack = longestBlackRunSeconds(analysis)
       checks.push({
         name: 'black-frames',
         passed: maxBlack < 1.0,
         detail: `longest black run ${maxBlack.toFixed(2)}s`,
       })
 
-      const { stderr: freezeStderr } = await execa(
-        'ffmpeg',
-        ['-i', finalPath, '-vf', 'freezedetect=n=-60dB:d=2', '-an', '-f', 'null', '-'],
-        { reject: false },
-      )
-      const maxFreezeMs = longestFreezeMs(freezeStderr, p.durationMs)
+      const maxFreezeMs = longestFreezeMs(analysis, p.durationMs)
       checks.push({
         name: 'frozen-frames',
         passed: maxFreezeMs < 2000,

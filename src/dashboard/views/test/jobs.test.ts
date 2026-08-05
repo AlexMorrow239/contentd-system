@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { JobDetail, JobListRow } from '../../queries/jobs.js'
-import { formatUsd, renderJobDetailPage, renderJobsPage } from '../jobs.js'
+import { formatUsdMicros } from '../../../money.js'
+import { renderJobDetailPage, renderJobsPage } from '../jobs.js'
 
 const job: JobListRow = {
   id: 'j1',
@@ -15,11 +16,11 @@ const job: JobListRow = {
 
 const RUNS_ROOT = '/app/state/runs'
 
-describe('formatUsd', () => {
+describe('formatUsdMicros', () => {
   it('renders micros as dollars', () => {
-    expect(formatUsd(42000)).toBe('$0.04')
-    expect(formatUsd(1_500_000)).toBe('$1.50')
-    expect(formatUsd(0)).toBe('$0.00')
+    expect(formatUsdMicros(42000)).toBe('$0.04')
+    expect(formatUsdMicros(1_500_000)).toBe('$1.50')
+    expect(formatUsdMicros(0)).toBe('$0.00')
   })
 })
 

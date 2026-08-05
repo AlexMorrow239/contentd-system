@@ -1,11 +1,15 @@
-import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import pino from 'pino'
 import type { ChannelConfig } from '../config/channel.js'
 import { classify } from '../errors.js'
-import { storyPartForJob } from '../scout/topics.js'
+import { markTopicUsedByJob, storyPartForJob } from '../scout/topics.js'
+import { finalVideoPath } from '../stages/assemble.js'
+import { readQcResult } from '../stages/qc.js'
+import { readScriptArtifact } from '../stages/script.js'
+import { readStoreArtifact } from '../stages/store.js'
 import type { StoreArtifact } from '../stages/store.js'
 import { upsertLibraryObject } from './library.js'
 import { STAGE_ORDER } from './types.js'
@@ -17,6 +21,11 @@ export interface JobResult {
   jobId: string
   status: 'ready' | 'needs-review' | 'failed' | 'blocked'
   videoPath?: string
+}
+
+/** The one JobResult -> process exit code rule, shared by every CLI command that runs a job. */
+export function exitCodeFor(result: JobResult): 0 | 1 {
+  return result.status === 'failed' || result.status === 'blocked' ? 1 : 0
 }
 
 export function createJob(db: Database, channel: ChannelConfig, opts: { topic: string }): string {
@@ -136,27 +145,18 @@ export async function runJob(
   // error here (corrupt/missing qc.json or script.json, a failed transaction)
   // must not leave the job stuck 'running': mark it failed and report that.
   try {
-    const qc = JSON.parse(readFileSync(join(runDir, 'qc', 'qc.json'), 'utf8')) as {
-      passed: boolean
-    }
-    const state: 'ready' | 'needs-review' = qc.passed ? 'ready' : 'needs-review'
+    // Each artifact is read through its own stage's reader, so a stage that
+    // renames its output file cannot leave this gate reading a path no module
+    // writes. Their tolerance rules differ deliberately: qc.json is required
+    // (its absence means the gate cannot decide a state at all), while
+    // script.json and store.json are optional — store.json is absent for jobs
+    // produced before object storage existed, and for every job on a
+    // deployment with no bucket.
+    const state: 'ready' | 'needs-review' = readQcResult(runDir).passed ? 'ready' : 'needs-review'
 
-    const videoPath = join(runDir, 'assemble', 'final.mp4')
-    const scriptPath = join(runDir, 'script', 'script.json')
-    let metadataJson = '{}'
-    if (existsSync(scriptPath)) {
-      const script = JSON.parse(readFileSync(scriptPath, 'utf8')) as { platformMeta?: unknown }
-      metadataJson = JSON.stringify(script.platformMeta ?? {})
-    }
-
-    // store.json is written by the store stage. Absent for jobs produced
-    // before object storage existed — the gate stays survivable for them, the
-    // same way it already tolerates a missing script.json.
-    const storePath = join(runDir, 'store', 'store.json')
-    let storeArtifact: StoreArtifact | undefined
-    if (existsSync(storePath)) {
-      storeArtifact = JSON.parse(readFileSync(storePath, 'utf8')) as StoreArtifact
-    }
+    const videoPath = finalVideoPath(runDir)
+    const metadataJson = JSON.stringify(readScriptArtifact(runDir)?.platformMeta ?? {})
+    const storeArtifact: StoreArtifact | undefined = readStoreArtifact(runDir)
 
     // Idempotent: a resume that reaches this final window again (all stages already
     // 'done') upserts the same library row and re-marks the job done without a
@@ -176,6 +176,13 @@ export async function runJob(
         // Same idempotency story as libraryUpsert above, keyed on the FK to library.
         upsertLibraryObject(db, jobId, storeArtifact)
       }
+      // "Library-landed consumes the claimed topic" belongs to the write that
+      // makes it true, not to each caller's postlude: this is the only place
+      // that knows first-hand the final gate ran, and inside the transaction
+      // the two writes commit together — there is no window in which a topic
+      // is left 'claimed' behind a job already in the library. A no-op for a
+      // job holding no claimed topic (a hand-run `produce`).
+      markTopicUsedByJob(db, jobId)
       markJobDone.run('done', nowIso(), jobId)
     })()
 

@@ -14,9 +14,9 @@ import { tmpDir } from '../../testing/tmp.js'
 /**
  * Two cost profiles, because these tests ask two different questions.
  *
- * The stage always crops the WHOLE source clip to 1080x1920 and then loops it
- * to narration+PAD_MS, so runtime scales with source duration and target
- * duration, not with the assertion. Only `crops+loops ...` actually inspects
+ * The stage loops and crops in one encode bounded by narration+PAD_MS, so
+ * runtime scales with the target duration, not with the assertion. Only
+ * `crops+loops ...` actually inspects
  * the encoded output; every other test asserts which clip landed in bg_usage
  * and would pass against a one-frame video. Giving the selection tests a
  * 0.2s 320x180 source and a 100ms narration cuts them from ~3-13s each to

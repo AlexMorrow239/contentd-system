@@ -11,7 +11,7 @@ vi.mock('../../providers/elevenlabs.js', () => ({
 
 import { KokoroTTS } from 'kokoro-js'
 import { MsEdgeTTS } from 'msedge-tts'
-import { voiceStage, MAX_CHUNK_WORDS, DEV_VOICE_ENV } from '../voice.js'
+import { voiceStage, MAX_CHUNK_WORDS, DEV_VOICE_ENV, resetKokoro } from '../voice.js'
 import { countWords, HOOK_PAUSE_MS } from '../narration-text.js'
 import { parseWavDurationMs } from '../../media/wav.js'
 import { testChannel } from '../../testing/channel.js'
@@ -124,6 +124,9 @@ async function ctxWithScript(script: unknown = SCRIPT): Promise<JobContext> {
 // test below silently skip the elevenlabs branch it exists to exercise.
 beforeEach(() => {
   vi.clearAllMocks()
+  // The stage memoizes the loaded kokoro model for the process; each test arms
+  // its own from_pretrained mock, so the memo is dropped between them.
+  resetKokoro()
   // Stubbing (not deleting) is what lets setup.ts's global vi.unstubAllEnvs()
   // hand the developer's real BRAINROT_DEV_VOICE back after the file.
   vi.stubEnv(DEV_VOICE_ENV, undefined)
@@ -160,6 +163,35 @@ describe('voiceStage', () => {
       voiceId: 'af_heart',
       durationMs: 2000 + HOOK_PAUSE_MS,
     })
+  })
+
+  it('loads the kokoro model once and reuses it across jobs', async () => {
+    const generate = vi.fn(async (t: string) => chunkAudio(t))
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
+
+    await voiceStage.run(await ctxWithScript())
+    await voiceStage.run(await ctxWithScript())
+
+    expect(vi.mocked(KokoroTTS.from_pretrained)).toHaveBeenCalledTimes(1)
+    expect(generate).toHaveBeenCalledTimes(4) // hook + body, twice
+  })
+
+  it('reloads the kokoro model after a failed load instead of poisoning the memo', async () => {
+    vi.mocked(KokoroTTS.from_pretrained).mockRejectedValueOnce(new Error('no model'))
+    const setMetadata = vi.fn().mockResolvedValue(undefined)
+    const toStream = vi.fn(() => ({ audioStream: Readable.from([ONE_SECOND_WAV]) }))
+    vi.mocked(MsEdgeTTS).mockImplementation(function () {
+      return { setMetadata, toStream }
+    })
+    await voiceStage.run(await ctxWithScript()) // falls back to edge-tts
+
+    const generate = vi.fn(async (t: string) => chunkAudio(t))
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
+    const ctx = await ctxWithScript()
+    await voiceStage.run(ctx)
+
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'))
+    expect(meta.provider).toBe('kokoro')
   })
 
   it('splits long narration into multiple under-budget kokoro calls and concatenates them', async () => {

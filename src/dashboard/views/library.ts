@@ -1,17 +1,11 @@
-import type { LibraryState } from '../../jobs/library.js'
-import { html, httpUrlOrNull, SafeHtml } from '../html.js'
+import { LIBRARY_STATES, type LibraryState } from '../../jobs/library.js'
+import { html, safeLink, SafeHtml } from '../html.js'
 import type { LibraryEntry, QcSummary } from '../queries/library.js'
+import { bytesCell } from './bytes.js'
+import { filterForm } from './filters.js'
 import { formatTime, truncationNotice } from './jobs.js'
 import { href } from './layout.js'
 import { actionForm, daemonBanner, pageActions } from './actions.js'
-
-const LIBRARY_STATES: LibraryState[] = ['ready', 'needs-review', 'blocked']
-
-function option(value: string, selected: string | undefined): SafeHtml {
-  return selected === value
-    ? html`<option value="${value}" selected>${value}</option>`
-    : html`<option value="${value}">${value}</option>`
-}
 
 function renderQc(qc: QcSummary): SafeHtml {
   switch (qc.kind) {
@@ -28,31 +22,13 @@ function renderQc(qc: QcSummary): SafeHtml {
   }
 }
 
-function renderBytes(entry: LibraryEntry): SafeHtml {
-  switch (entry.bytes) {
-    case 'local':
-      return html`<video controls preload="metadata" src="${href(`/library/${entry.jobId}/video`)}"></video>`
-    case 'archived':
-      return html`<span class="muted">archived to object storage</span>`
-    case 'reclaimed':
-      return html`<span class="muted">reclaimed — ${formatTime(entry.createdAt)}</span>`
-    case 'unstored':
-      return html`<span class="muted">not stored — run <code>library backfill-store</code></span>`
-  }
-}
-
 export function renderLinks(
   links: LibraryEntry['links'],
   emptyMarkup: SafeHtml = html`<span class="muted">—</span>`,
 ): SafeHtml {
   if (links.length === 0) return emptyMarkup
   return html`<ul class="links">
-    ${links.map((l) => {
-      const safeUrl = httpUrlOrNull(l.url)
-      return safeUrl === null
-        ? html`<li><span class="warning" title="blocked unsafe link scheme">${l.platform}</span></li>`
-        : html`<li><a href="${safeUrl}" rel="noreferrer noopener" target="_blank">${l.platform} ↗</a></li>`
-    })}
+    ${links.map((l) => html`<li>${safeLink(l.url, l.platform, { linkSuffix: '↗' })}</li>`)}
   </ul>`
 }
 
@@ -96,17 +72,15 @@ function libraryActions(
 }
 
 export function renderLibraryPage(data: LibraryPageData): SafeHtml {
-  const filters = html`<form class="filters" method="get" action="/library">
-    <select name="state">
-      <option value="">all states</option>
-      ${LIBRARY_STATES.map((state) => option(state, data.filter.state))}
-    </select>
-    <select name="channel">
-      <option value="">all channels</option>
-      ${data.channels.map((channel) => option(channel, data.filter.channel))}
-    </select>
-    <button type="submit">filter</button>
-  </form>`
+  const filters = filterForm('/library', [
+    { name: 'state', allLabel: 'all states', values: LIBRARY_STATES, selected: data.filter.state },
+    {
+      name: 'channel',
+      allLabel: 'all channels',
+      values: data.channels,
+      selected: data.filter.channel,
+    },
+  ])
 
   const controls = pageActions([
     actionForm({
@@ -128,7 +102,11 @@ export function renderLibraryPage(data: LibraryPageData): SafeHtml {
 
   const rows = data.entries.map(
     (entry) => html`<tr>
-      <td>${renderBytes(entry)}</td>
+      <td>
+        ${bytesCell(entry.bytes, entry.jobId, {
+          reclaimed: `reclaimed — ${formatTime(entry.createdAt)}`,
+        })}
+      </td>
       <td>
         <a href="${href(`/jobs/${entry.jobId}`)}">${entry.jobId}</a>
         <div class="muted">${entry.channel}</div>

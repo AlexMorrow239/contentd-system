@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url'
 import { bundle } from '@remotion/bundler'
 import { renderMedia, selectComposition } from '@remotion/renderer'
 import type { JobContext, StageDef } from '../jobs/types.js'
-import type { WordTiming } from '../providers/whisperx.js'
 import type { ShortVideoProps } from '../remotion-types.js'
+import type { CaptionsArtifact } from './captions.js'
+import type { VoiceMeta } from './voice.js'
 
 // Resolved relative to THIS module, not process.cwd(): the CLI may be invoked
 // from any directory (pnpm -C, cron, a wrapper script), and a cwd-relative
@@ -41,12 +42,12 @@ function getBundle(): Promise<string> {
 export const assembleStage: StageDef = {
   name: 'assemble',
   async run(ctx: JobContext): Promise<void> {
-    const voice = JSON.parse(readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8')) as {
-      durationMs: number
-    }
+    const voice = JSON.parse(
+      readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
+    ) as VoiceMeta
     const captions = JSON.parse(
       readFileSync(ctx.artifactPath('captions', 'words.json'), 'utf8'),
-    ) as { words: WordTiming[] }
+    ) as CaptionsArtifact
 
     // Optional BGM: first *.mp3 in channel.bgmDir (deterministic: sorted).
     let bgmFile: string | undefined

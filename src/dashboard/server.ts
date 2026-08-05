@@ -5,7 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { Hono } from 'hono'
 import { openDbActions, openDbReadonly } from '../db/index.js'
 import { errorMessage } from '../errors.js'
-import type { LibraryState } from '../jobs/library.js'
+import { LIBRARY_STATES } from '../jobs/library.js'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { enqueueAction, getAction } from '../actions/queue.js'
 import {
@@ -18,7 +18,6 @@ import {
 import { daemonIsStale, readDaemonState } from '../loop/daemon-state.js'
 import { CSRF_FIELD, csrfFailure, mintCsrfToken } from './csrf.js'
 import type { DashboardConfig } from './config.js'
-import { html } from './html.js'
 import { actionsTableExists, buildActionsPage } from './queries/actions.js'
 import {
   countLibraryEntries,
@@ -26,16 +25,22 @@ import {
   libraryChannels,
   listLibraryEntries,
 } from './queries/library.js'
-import { countJobs, getJobDetail, jobChannels, listJobs } from './queries/jobs.js'
-import type { JobStatus } from './queries/jobs.js'
+import { countJobs, getJobDetail, jobChannels, JOB_STATUSES, listJobs } from './queries/jobs.js'
 import { buildOverview } from './queries/overview.js'
 import { listPostQueue } from './queries/post.js'
 import { listPostLog } from './queries/posts.js'
 import { countTopics, topicChannels } from './queries/topics.js'
-import { listTopics } from '../scout/topics.js'
-import type { TopicStatus } from '../scout/topics.js'
+import { listTopics, TOPIC_STATUSES } from '../scout/topics.js'
 import { parseRange, resolveVideoPath } from './video.js'
 import { missingTableBanner, renderActionsPage, renderConfirmPage } from './views/actions.js'
+import {
+  actionErrorPage,
+  corruptDbPage,
+  jobNotFoundPage,
+  missingDbPage,
+  notFoundPage,
+  unhandledErrorPage,
+} from './views/errors.js'
 import { renderLibraryPage } from './views/library.js'
 import { renderJobDetailPage, renderJobsPage } from './views/jobs.js'
 import { layout } from './views/layout.js'
@@ -58,9 +63,19 @@ export interface DashboardDeps {
 
 const cssPath = fileURLToPath(new URL('./static/dashboard.css', import.meta.url))
 
-const JOB_STATUS_VALUES: JobStatus[] = ['queued', 'running', 'failed', 'done', 'blocked']
-const LIBRARY_STATE_VALUES: LibraryState[] = ['ready', 'needs-review', 'blocked']
-const TOPIC_STATUS_VALUES: TopicStatus[] = ['candidate', 'claimed', 'used', 'rejected']
+/**
+ * A query param narrowed to one of the values it is allowed to take, or
+ * undefined. Unrecognized filter values are DROPPED rather than rejected: a
+ * viewer must not 400 on a hand-edited URL.
+ */
+function pick<T extends string>(allowed: readonly T[], raw: string | undefined): T | undefined {
+  return raw !== undefined && (allowed as readonly string[]).includes(raw) ? (raw as T) : undefined
+}
+
+/** A free-text query param, with the empty string reading as absent. */
+function nonEmpty(raw: string | undefined): string | undefined {
+  return raw !== undefined && raw !== '' ? raw : undefined
+}
 
 export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars }> {
   const app = new Hono<{ Variables: DashboardVars }>()
@@ -71,6 +86,8 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   // compare treats two empty strings as a match. `||` also treats '' as
   // absent, which is exactly the fallback wanted here.
   const csrfToken = deps.csrfToken || mintCsrfToken()
+  /** The injectable clock, resolved per call so a test's fixed now() still moves when it wants to. */
+  const now = (): Date => deps.now?.() ?? new Date()
 
   // Registered BEFORE the db middleware on purpose: Hono dispatches matching
   // handlers in registration order, so the stylesheet is served even when the
@@ -165,7 +182,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     try {
       const probe = openDbReadonly(deps.config.paths.dbPath)
       try {
-        daemonStale = daemonStaleFor(probe, deps.now?.() ?? new Date())
+        daemonStale = daemonStaleFor(probe, now())
       } finally {
         probe.close()
       }
@@ -254,7 +271,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   app.get('/post', (c) => {
     const db = c.get('db')
     const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
-    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+    const daemonStale = daemonStaleFor(db, now())
 
     return c.html(
       layout({
@@ -288,9 +305,9 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/', (c) => {
     const db = c.get('db')
-    const now = deps.now?.() ?? new Date()
+    const at = now()
     const { channels, error } = tryLoadChannelsDir(deps.config.paths.channelsDir)
-    const daemonStale = daemonStaleFor(db, now)
+    const daemonStale = daemonStaleFor(db, at)
 
     return c.html(
       layout({
@@ -298,7 +315,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         root: deps.config.paths.root,
         activeNav: 'overview',
         refreshSeconds: actionPollSeconds(db, c.req.query('action')) ?? 30,
-        body: renderOverviewPage(buildOverview(db, channels, now), error, {
+        body: renderOverviewPage(buildOverview(db, channels, at), error, {
           csrfToken,
           daemonStale,
         }),
@@ -308,16 +325,10 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/jobs', (c) => {
     const db = c.get('db')
-    // Unrecognized filter values are dropped rather than rejected: a viewer
-    // must not 400 on a hand-edited URL.
-    const rawStatus = c.req.query('status')
-    const status = JOB_STATUS_VALUES.includes(rawStatus as JobStatus)
-      ? (rawStatus as JobStatus)
-      : undefined
-    const rawChannel = c.req.query('channel')
-    const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
+    const status = pick(JOB_STATUSES, c.req.query('status'))
+    const channel = nonEmpty(c.req.query('channel'))
 
-    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+    const daemonStale = daemonStaleFor(db, now())
     const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
     // configuredChannels feeds jobs.produce's picker, not the filter dropdown
     // above (jobChannels(db)): a channel with zero jobs must still be
@@ -350,16 +361,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     const db = c.get('db')
     const detail = getJobDetail(db, c.req.param('id'))
     if (detail === null) {
-      return c.html(
-        layout({
-          title: 'job not found',
-          root: deps.config.paths.root,
-          activeNav: 'jobs',
-          body: html`<h1>no such job</h1>
-            <p class="muted">${c.req.param('id')} is not in this database.</p>`,
-        }),
-        404,
-      )
+      return c.html(jobNotFoundPage(deps.config.paths.root, c.req.param('id')), 404)
     }
     return c.html(
       layout({
@@ -373,14 +375,10 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/library', (c) => {
     const db = c.get('db')
-    const rawState = c.req.query('state')
-    const state = LIBRARY_STATE_VALUES.includes(rawState as LibraryState)
-      ? (rawState as LibraryState)
-      : undefined
-    const rawChannel = c.req.query('channel')
-    const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
+    const state = pick(LIBRARY_STATES, c.req.query('state'))
+    const channel = nonEmpty(c.req.query('channel'))
 
-    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+    const daemonStale = daemonStaleFor(db, now())
     const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
 
     return c.html(
@@ -447,14 +445,10 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/topics', (c) => {
     const db = c.get('db')
-    const rawStatus = c.req.query('status')
-    const status = TOPIC_STATUS_VALUES.includes(rawStatus as TopicStatus)
-      ? (rawStatus as TopicStatus)
-      : undefined
-    const rawChannel = c.req.query('channel')
-    const channel = rawChannel !== undefined && rawChannel !== '' ? rawChannel : undefined
+    const status = pick(TOPIC_STATUSES, c.req.query('status'))
+    const channel = nonEmpty(c.req.query('channel'))
 
-    const daemonStale = daemonStaleFor(db, deps.now?.() ?? new Date())
+    const daemonStale = daemonStaleFor(db, now())
     const refreshSeconds = actionPollSeconds(db, c.req.query('action'))
 
     return c.html(
@@ -479,8 +473,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/actions/confirm', (c) => {
     const db = c.get('db')
-    const now = deps.now?.() ?? new Date()
-    const daemonStale = daemonStaleFor(db, now)
+    const daemonStale = daemonStaleFor(db, now())
 
     const kind = c.req.query('kind') ?? ''
     if (!isActionKind(kind) || !ACTIONS[kind].confirm) {
@@ -519,7 +512,6 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
 
   app.get('/actions', (c) => {
     const db = c.get('db')
-    const now = deps.now?.() ?? new Date()
     if (!actionsTableExists(db)) {
       return c.html(
         layout({
@@ -530,7 +522,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
         }),
       )
     }
-    const data = buildActionsPage(db, now)
+    const data = buildActionsPage(db, now())
     const rawId = Number(c.req.query('action') ?? '')
     const highlightId = Number.isInteger(rawId) && rawId > 0 ? rawId : undefined
     return c.html(
@@ -550,16 +542,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
   })
 
   app.notFound((c) => {
-    return c.html(
-      layout({
-        title: 'not found',
-        root: deps.config.paths.root,
-        activeNav: 'overview',
-        body: html`<h1>not found</h1>
-          <p class="muted">no route for ${c.req.path}</p>`,
-      }),
-      404,
-    )
+    return c.html(notFoundPage(deps.config.paths.root, c.req.path), 404)
   })
 
   app.onError((err, c) => {
@@ -568,16 +551,7 @@ export function createApp(deps: DashboardDeps): Hono<{ Variables: DashboardVars 
     // Also logged: rendering it to the browser was the only record before
     // this, and `docker compose logs dashboard` had nothing for an incident.
     console.error(`dashboard: unhandled error on ${c.req.method} ${c.req.path}:`, err)
-    return c.html(
-      layout({
-        title: 'error',
-        root: deps.config.paths.root,
-        activeNav: 'overview',
-        body: html`<h1>error</h1>
-          <p class="error">${errorMessage(err)}</p>`,
-      }),
-      500,
-    )
+    return c.html(unhandledErrorPage(deps.config.paths.root, errorMessage(err)), 500)
   })
 
   return app
@@ -661,40 +635,6 @@ function sameSitePath(from: string): string | null {
   // output-side prefix check is sound where the input-side one was not.
   if (!path.startsWith('/') || path.startsWith('//')) return null
   return path
-}
-
-function actionErrorPage(root: string, message: string): string {
-  return layout({
-    title: 'action refused',
-    root,
-    activeNav: 'actions',
-    body: html`<h1>action refused</h1>
-      <p class="error">${message}</p>
-      <p class="muted"><a href="/actions">back to actions</a></p>`,
-  })
-}
-
-function missingDbPage(dbPath: string, root: string): string {
-  return layout({
-    title: 'no database',
-    root,
-    activeNav: 'overview',
-    body: html`<h1>no database at <code>${dbPath}</code></h1>
-      <p class="muted">
-        The database does not exist. The dashboard never creates it — that is the pipeline's job.
-      </p>`,
-  })
-}
-
-function corruptDbPage(dbPath: string, root: string, message: string): string {
-  return layout({
-    title: 'database could not be opened',
-    root,
-    activeNav: 'overview',
-    body: html`<h1>database could not be opened</h1>
-      <p class="muted">The database at <code>${dbPath}</code> is present but could not be opened:</p>
-      <p class="error">${message}</p>`,
-  })
 }
 
 // Entrypoint: `pnpm exec tsx src/dashboard/server.ts`. Guarded so importing

@@ -3,7 +3,7 @@ import { execa } from 'execa'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { cropToVertical, loopToDuration, probe } from './ffmpeg.js'
+import { cropAndLoopToDuration, cropToVertical, loopToDuration, probe } from './ffmpeg.js'
 
 let dir: string
 let fixture: string
@@ -66,5 +66,17 @@ describe('loopToDuration', () => {
     const p = await probe(out)
     expect(p.durationMs).toBeGreaterThan(2000) // longer than the 2s source
     expect(p.durationMs).toBeGreaterThanOrEqual(4900) // reached ~5s target (ffmpeg -t trims to <= requested; one-frame tolerance)
+  })
+})
+
+describe('cropAndLoopToDuration', () => {
+  it('matches crop-then-loop in one encode: 1080x1920 at the requested duration', async () => {
+    const out = path.join(dir, 'cropped-looped.mp4')
+    await cropAndLoopToDuration(fixture, out, 5000)
+    const p = await probe(out)
+    expect(p.width).toBe(1080)
+    expect(p.height).toBe(1920)
+    expect(p.durationMs).toBeGreaterThan(2000) // longer than the 2s source
+    expect(p.durationMs).toBeGreaterThanOrEqual(4900)
   })
 })

@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../../db/index.js'
-import { pipelineStages as cliStages } from '../../cli.js'
 import { STAGE_ORDER } from '../types.js'
 import type { JobContext, StageDef } from '../types.js'
 import { pipelineStages } from '../pipeline.js'
@@ -39,10 +38,9 @@ const CHANNEL_TOML = [
 ].join('\n')
 
 describe('jobs/pipeline', () => {
-  it('cli.ts re-exports the moved helper with identical identity', () => {
-    // Re-export, not copy: the loop code and the CLI must share ONE wiring.
-    expect(cliStages).toBe(pipelineStages)
-    // The move is verbatim: the seven-stage produce order is unchanged.
+  it('is the seven-stage produce order', () => {
+    // One wiring for every caller (CLI produce, resume, produce-next): they
+    // all import this function, so the order below is the whole contract.
     expect(pipelineStages().map((s) => s.name)).toEqual([
       'script',
       'voice',

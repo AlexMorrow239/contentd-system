@@ -51,6 +51,10 @@ describe('renderTopicsPage', () => {
     }).value
     expect(out).toContain('href="https://reddit.com/r/space/1"')
     expect(out).toContain('reddit:r/space')
+    // A scraped source url is an external hop like every other link on the
+    // dashboard: this page had drifted to rel="noreferrer" with no opener
+    // protection and no new tab, which safeLink now owns for all of them.
+    expect(out).toContain('rel="noreferrer noopener" target="_blank"')
   })
 
   it('links a claimed topic to the job that took it', () => {

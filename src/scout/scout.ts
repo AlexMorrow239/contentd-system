@@ -62,9 +62,17 @@ export interface ScoutChannelResult {
   skipped?: 'queue-full' | 'recheck-not-due'
 }
 
-function emptySkippedResult(
+/**
+ * The all-zero result, in one place. Every field of ScoutChannelResult is a
+ * count or a list, so "nothing happened" has exactly one spelling — and the
+ * three surfaces that need it (the two skip gates and scoutAll's fallback for
+ * a channel that threw before building its own result) each spelled out all
+ * eleven fields, which is eleven chances for a new field to be forgotten in
+ * two of them.
+ */
+function emptyChannelResult(
   channel: string,
-  skipped: NonNullable<ScoutChannelResult['skipped']>,
+  overrides: Partial<ScoutChannelResult> = {},
 ): ScoutChannelResult {
   return {
     channel,
@@ -78,7 +86,7 @@ function emptySkippedResult(
     rejected: 0,
     sourceErrors: [],
     costUsdMicros: 0,
-    skipped,
+    ...overrides,
   }
 }
 
@@ -143,7 +151,7 @@ export async function scoutChannel(
   if (!opts.force) {
     const last = lastScoutAttemptAt(db, channel.name)
     if (last !== null && now.getTime() - last.getTime() < SCOUT_RECHECK_MS) {
-      return emptySkippedResult(channel.name, 'recheck-not-due')
+      return emptyChannelResult(channel.name, { skipped: 'recheck-not-due' })
     }
   }
   // The attempt is recorded as soon as the channel clears the recheck gate —
@@ -159,7 +167,7 @@ export async function scoutChannel(
   // almost nothing.
   const queueCap = Math.ceil(channel.videosPerDay * channel.scout.queueDays)
   if (candidateTopicCount(db, channel.name) >= queueCap) {
-    return emptySkippedResult(channel.name, 'queue-full')
+    return emptyChannelResult(channel.name, { skipped: 'queue-full' })
   }
 
   // Iterate DESCRIPTORS, not pre-built sources: rssSource runs `new URL(url)`
@@ -479,19 +487,8 @@ export async function scoutAll(
       const message = info.message
       if (info.kind === 'budget') budgetBlocked.add(channel.name)
       console.error(`scout: channel "${channel.name}" scoring failed: ${message}`)
-      const partial = (info.context.partial as ScoutChannelResult | undefined) ?? {
-        channel: channel.name,
-        fetched: 0,
-        droppedMedia: 0,
-        droppedAutomated: 0,
-        droppedBodyless: 0,
-        alreadyKnown: 0,
-        scored: 0,
-        queued: 0,
-        rejected: 0,
-        sourceErrors: [],
-        costUsdMicros: 0,
-      }
+      const partial =
+        (info.context.partial as ScoutChannelResult | undefined) ?? emptyChannelResult(channel.name)
       failedSources += partial.sourceErrors.length
       // queued/rejected are 0 on the error path by contract — nothing was inserted.
       results.push({ ...partial, queued: 0, rejected: 0, scoringError: message })

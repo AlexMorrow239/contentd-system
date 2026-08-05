@@ -1,4 +1,9 @@
 import type { ScriptArtifact } from './script.js'
+// stories/ may not import from src/ outside errors.ts, but importing INTO it is
+// free — so the word count both sides need lives there, once.
+import { countWords } from '../stories/body.js'
+
+export { countWords }
 
 /**
  * Narration text fed to TTS and to caption alignment: the hook followed by the
@@ -21,10 +26,6 @@ export function bodyText(script: ScriptArtifact): string {
 // segment with no more of a pause than an ordinary sentence break, which
 // undersells the hook. 500ms is audible as a distinct beat without dragging.
 export const HOOK_PAUSE_MS = 500
-
-export function countWords(text: string): number {
-  return text.trim().split(/\s+/).filter(Boolean).length
-}
 
 export function narrationWordCount(script: ScriptArtifact): number {
   return countWords(narrationText(script))

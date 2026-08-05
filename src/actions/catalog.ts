@@ -65,26 +65,31 @@ function flag(): z.ZodType<boolean> {
 }
 
 /**
- * An optional free-text field. A blank input submits `''`, which `.optional()`
- * alone would happily accept as a present-but-empty value — for a channel
- * filter that is the difference between "all channels" and "the channel named
- * empty string". Same shape as `optionalUrl` below, without the url check.
+ * A form submits an untouched text field as `''`. That means "not provided",
+ * not "the value is the empty string", and `.optional()` alone would happily
+ * accept it as a present-but-empty value — for a channel filter that is the
+ * difference between "all channels" and "the channel named empty string"; for
+ * a url it is an empty `<a href>` on the library page.
+ *
+ * It stays a `z.preprocess` wrapper around the real schema rather than a
+ * `.transform()` on it because `fieldKind` unwraps exactly this shape (zod4
+ * compiles preprocess to a ZodPipe) to decide which control the confirm
+ * interstitial renders.
  */
-const optionalText = z.preprocess(
-  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
-  z.string().trim().min(1).optional(),
-)
+// Return type deliberately inferred rather than annotated: `z.preprocess`
+// preserves the wrapped schema's optionality, which is what makes an omitted
+// field an OPTIONAL key on the parsed args object rather than a required one
+// whose value may be undefined.
+function blankToUndefined<T extends z.ZodTypeAny>(inner: T) {
+  return z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), inner)
+}
+
+const optionalText = blankToUndefined(z.string().trim().min(1).optional())
 
 const topicId = z.coerce.number().int().positive()
 const jobId = z.string().trim().min(1)
 const platform = z.enum(PLATFORMS)
-// A form submits an untouched text field as ''. That means "not provided",
-// not "the url is the empty string", so it must become undefined before the
-// DAO stores it — otherwise the library page would render an empty <a href>.
-const optionalUrl = z.preprocess(
-  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
-  z.string().trim().url().optional(),
-)
+const optionalUrl = blankToUndefined(z.string().trim().url().optional())
 
 export const ACTIONS = {
   'topics.reject': {

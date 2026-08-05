@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../config/channel.js'
 import {
-  channelDaySpentMicros,
+  channelDaySpentMicrosByChannel,
   globalDailyCapMicros,
   globalDaySpentMicros,
 } from '../../jobs/costs.js'
@@ -111,9 +111,13 @@ export function buildOverview(db: Database, channels: ChannelConfig[], now: Date
   }))
 
   const globalSpentUsdMicros = globalDaySpentMicros(db)
+  // One GROUP BY for every channel rather than a SUM per channel: this page
+  // renders the whole set every refresh. A channel with no spend today has no
+  // entry, hence the 0 default.
+  const spentByChannel = channelDaySpentMicrosByChannel(db)
   const channelSpend = channels.map((channel) => ({
     channel: channel.name,
-    spentUsdMicros: channelDaySpentMicros(db, channel.name),
+    spentUsdMicros: spentByChannel.get(channel.name) ?? 0,
     capUsdMicros: channel.budget.perDayUsdMicros,
   }))
   const attributedUsdMicros = channelSpend.reduce((sum, entry) => sum + entry.spentUsdMicros, 0)
