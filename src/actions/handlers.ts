@@ -37,13 +37,13 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
  */
 
 /**
- * `runsRoot` is live: the two render-triggering handlers, `produce.next` and
- * `jobs.resume`, both thread it straight through to the pipeline. `setNotice`
- * is called by handlers and the worker to publish operator-facing status:
- * `jobs.produce` publishes its job id (for resumption if interrupted),
- * `library.reject` publishes deletion progress, `topics.pruneMedia` publishes
- * per-row validation progress, and the worker publishes when actions wait on
- * a held lease.
+ * `runsRoot` is live: all three render-triggering handlers — `produce.next`,
+ * `jobs.resume` and `jobs.produce` — thread it straight through to the
+ * pipeline. `setNotice` is called by handlers and the worker to publish
+ * operator-facing status: `jobs.produce` publishes its job id (for
+ * resumption if interrupted), `library.reject` publishes deletion failures,
+ * `topics.pruneMedia` publishes per-row validation progress, and the worker
+ * publishes when actions wait on a held lease.
  */
 export interface ActionContext {
   db: Database
@@ -71,10 +71,10 @@ type HandlerDeps = {
   runJob?: typeof runJob
   /**
    * Test seam standing in for `(await import('../storage/s3.js')).storeFromEnv()`
-   * in `library.reject` — keeps the AWS SDK's ~35ms/~10MB startup cost off
-   * every other path that imports this module, mirroring the CLI's `reject`
-   * command. A thrown error here is treated exactly like a real
-   * `storeFromEnv()` throw: nothing to delete.
+   * in `library.reject` and `library.backfillStore` — keeps the AWS SDK's
+   * ~35ms/~10MB startup cost off every other path that imports this module,
+   * mirroring the CLI's `reject` command. A thrown error here is treated
+   * exactly like a real `storeFromEnv()` throw: nothing to delete.
    */
   storeFromEnv?: () => ObjectStore
   backfillStore?: typeof backfillStore

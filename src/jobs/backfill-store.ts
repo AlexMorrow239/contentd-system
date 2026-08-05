@@ -10,9 +10,13 @@ import { unstoredLibraryJobs, upsertLibraryObject } from './library.js'
  * once its local runs/ file is cleaned up, the operator has no way to
  * download it for manual posting to any platform.
  *
- * Operator command, run outside the publish lease like the others. Rows whose
- * local file has already been reclaimed are unrecoverable and reported as
- * skipped rather than failing the whole run.
+ * `backfillStore` itself takes no lease — the CLI's `library backfill-store`
+ * runs outside every lease on purpose, same as the other manual operator
+ * commands (the publish lease this used to be compared against is gone along
+ * with the publishing pipeline). The dashboard's `library.backfillStore`
+ * action also declares none: it races no worker. Rows whose local file has
+ * already been reclaimed are unrecoverable and reported as skipped rather
+ * than failing the whole run.
  *
  * The set it uploads is `unstoredLibraryJobs` (./library.ts), shared with the
  * digest line that tells the operator to run this command — so the count

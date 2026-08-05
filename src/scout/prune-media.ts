@@ -57,8 +57,12 @@ function permalinkFeedUrl(url: string): string {
  * on positive evidence that its target is media AND that the feed describes
  * the same submission the row does.
  *
- * Runs outside the scout lease, like the other manual `topics` subcommands —
- * an operator action that can race a live cron tick.
+ * `pruneMedia` itself does not lease — the CLI's `topics prune-media` runs
+ * outside every lease on purpose, same as the other manual `topics`
+ * subcommands. The dashboard's `topics.pruneMedia` action wraps this call in
+ * the `scout` lease itself (the same reason `scout.run` does), which is what
+ * makes that path race-free against a live scout tick where the CLI path is
+ * not.
  */
 export async function pruneMedia(
   db: Database,
