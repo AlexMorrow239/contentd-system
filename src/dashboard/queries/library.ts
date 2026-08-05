@@ -44,26 +44,33 @@ export interface LibraryEntry {
 }
 
 /**
- * metadata_json is the script stage's per-platform meta map; the qc stage adds
- * a `qc` block to it. Every failure mode of that JSON is contained to the one
- * row: a corrupt blob renders as 'unparseable' beside its neighbours rather
- * than taking the page down.
+ * qc_json is runs/<jobId>/qc/qc.json (stages/qc.ts's QcResult), persisted
+ * whole by the runner's final gate. NULL — a row finalized before the
+ * column existed — is 'absent'. Every failure mode of the blob is contained
+ * to the one row: a corrupt verdict renders as 'unparseable' beside its
+ * neighbours rather than taking the page down.
  */
-export function summarizeQc(metadataJson: string): QcSummary {
+export function summarizeQc(qcJson: string | null): QcSummary {
+  if (qcJson === null) return { kind: 'absent' }
   let parsed: unknown
   try {
-    parsed = JSON.parse(metadataJson)
+    parsed = JSON.parse(qcJson)
   } catch {
     return { kind: 'unparseable' }
   }
   if (typeof parsed !== 'object' || parsed === null) return { kind: 'unparseable' }
-  const qc = (parsed as { qc?: unknown }).qc
-  if (qc === undefined) return { kind: 'absent' }
-  if (typeof qc !== 'object' || qc === null) return { kind: 'unparseable' }
-  const issues = (qc as { issues?: unknown }).issues
-  if (!Array.isArray(issues)) return { kind: 'unparseable' }
-  const strings = issues.map((issue) => String(issue))
-  return strings.length === 0 ? { kind: 'ok' } : { kind: 'issues', issues: strings }
+  const checks = (parsed as { checks?: unknown }).checks
+  if (!Array.isArray(checks)) return { kind: 'unparseable' }
+  const issues: string[] = []
+  for (const check of checks) {
+    if (typeof check !== 'object' || check === null) return { kind: 'unparseable' }
+    const { name, passed, detail } = check as { name?: unknown; passed?: unknown; detail?: unknown }
+    if (typeof name !== 'string' || typeof passed !== 'boolean' || typeof detail !== 'string') {
+      return { kind: 'unparseable' }
+    }
+    if (!passed) issues.push(`${name}: ${detail}`)
+  }
+  return issues.length === 0 ? { kind: 'ok' } : { kind: 'issues', issues }
 }
 
 interface DbLibraryEntry {
@@ -72,7 +79,7 @@ interface DbLibraryEntry {
   topic: string
   state: LibraryState
   video_path: string
-  metadata_json: string
+  qc_json: string | null
   created_at: string
   object_key: string | null
   reclaimed_at: string | null
@@ -142,7 +149,7 @@ export function listLibraryEntries(
     .prepare(
       'SELECT library.job_id AS job_id, jobs.channel AS channel, jobs.topic AS topic, ' +
         'library.state AS state, library.video_path AS video_path, ' +
-        'library.metadata_json AS metadata_json, library.created_at AS created_at, ' +
+        'library.qc_json AS qc_json, library.created_at AS created_at, ' +
         'library_objects.object_key AS object_key, library_objects.reclaimed_at AS reclaimed_at ' +
         'FROM library JOIN jobs ON library.job_id = jobs.id ' +
         `LEFT JOIN library_objects ON library_objects.job_id = library.job_id${clause} ` +
@@ -162,7 +169,7 @@ export function listLibraryEntries(
     state: row.state,
     videoPath: row.video_path,
     createdAt: row.created_at,
-    qc: summarizeQc(row.metadata_json),
+    qc: summarizeQc(row.qc_json),
     bytes: libraryBytes(row),
     links: links.get(row.job_id) ?? [],
   }))

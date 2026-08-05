@@ -25,7 +25,7 @@ export interface LibraryRow {
   createdAt: string
 }
 
-// library only carries job_id/video_path/metadata_json/state/created_at;
+// library only carries job_id/video_path/metadata_json/state/qc_json/created_at;
 // channel/topic live on the owning job row, hence the JOIN.
 const LIBRARY_COLUMNS =
   'library.job_id AS job_id, jobs.channel AS channel, jobs.topic AS topic, ' +

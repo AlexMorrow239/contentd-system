@@ -64,7 +64,18 @@ describe('renderLibraryPage', () => {
       csrfToken: 'tok',
       daemonStale: false,
     }).value
-    expect(out).toContain('unparseable metadata')
+    expect(out).toContain('unparseable qc verdict')
+  })
+
+  it('names a missing verdict plainly on a row that predates qc_json', () => {
+    const out = renderLibraryPage({
+      entries: [{ ...baseEntry, qc: { kind: 'absent' } }],
+      channels: [],
+      filter: {},
+      csrfToken: 'tok',
+      daemonStale: false,
+    }).value
+    expect(out).toContain('no qc verdict')
   })
 
   it('links back to the job drill-in', () => {

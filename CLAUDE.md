@@ -79,10 +79,12 @@ script -> voice -> captions -> visuals -> assemble -> qc -> store
 `queued` job just re-invokes `runJob` with the same stage list, and completed
 stages are free. The final gate (after all stages succeed) reads `qc.json`,
 `script.json`, and `store.json`, upserts a `library` row (`ready` or
-`needs-review` depending on QC) plus its `library_objects` row, and marks the
-job `done` — this final window is itself re-run-safe on resume (upsert, not
-insert). A missing `store.json` is tolerated, which is what keeps the gate
-survivable for jobs produced before object storage existed.
+`needs-review` depending on QC, with the whole `qc.json` verdict persisted
+in `library.qc_json` so the dashboard can name the failing checks without
+reading `runs/`) plus its `library_objects` row, and marks the job `done` —
+this final window is itself re-run-safe on resume (upsert, not insert). A
+missing `store.json` is tolerated, which is what keeps the gate survivable
+for jobs produced before object storage existed.
 
 A stage failure marks the job `failed`, _except_ a thrown `BudgetExceededError`
 (from `src/jobs/costs.ts`) which marks it `blocked` instead — this is an
@@ -703,9 +705,11 @@ One deploy-order note: the dashboard opens the database through
 `openDbReadonly`, which never runs `migrate` (it must stay write-free). A
 dashboard process reaching a database that no `openDb` call has touched since
 this change lands will 500 on `/topics` with `no such column: body_text`. The
-property is pre-existing — `target_url` has the identical failure mode — and
-this merely widens it; bring the daemon (or any CLI command) up at least once
-before relying on the dashboard's topics page.
+property is pre-existing — `target_url` has the identical failure mode, and
+`library.qc_json` (the qc verdict the library page's qc column reads; NULL on
+rows finalized before it existed, rendered "no qc verdict") widens it to
+`/library` — bring the daemon (or any CLI command) up at least once before
+relying on the dashboard's topics or library pages.
 
 ### Budget enforcement is layered, not a single check
 

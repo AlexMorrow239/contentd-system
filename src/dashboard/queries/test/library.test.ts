@@ -2,6 +2,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
+import type { QcResult } from '../../../stages/qc.js'
 import { countLibraryEntries, libraryChannels, listLibraryEntries } from '../library.js'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPost } from '../../../testing/db.js'
 import { tmpDir } from '../../../testing/tmp.js'
@@ -42,38 +43,76 @@ describe('listLibraryEntries', () => {
     db.close()
   })
 
-  it('summarizes a qc block with no issues as ok', () => {
+  it('summarizes a fully passing qc verdict as ok', () => {
     const db = seed()
-    addLibrary(db, 'j1', 'ready', JSON.stringify({ qc: { issues: [] } }))
+    seedLibrary(db, 'j1', {
+      qcJson: JSON.stringify({
+        passed: true,
+        checks: [{ name: 'duration-bounds', passed: true, detail: 'duration 30000ms' }],
+      }),
+    })
     expect(listLibraryEntries(db)[0]?.qc).toEqual({ kind: 'ok' })
     db.close()
   })
 
-  it('surfaces qc issues', () => {
+  it('surfaces each failing check as a name: detail issue', () => {
     const db = seed()
-    addLibrary(db, 'j1', 'needs-review', JSON.stringify({ qc: { issues: ['duration 71s > 60s'] } }))
+    // `satisfies QcResult` pins this fixture to the writer's real shape: a
+    // rename in stages/qc.ts would otherwise degrade every row to
+    // 'unparseable' with no failing test.
+    const verdict = {
+      passed: false,
+      checks: [
+        { name: 'resolution', passed: true, detail: '1080x1920' },
+        {
+          name: 'duration-bounds',
+          passed: false,
+          detail: 'duration 14200ms; bounds [15000,180000]; voice 14100ms',
+        },
+        { name: 'has-audio', passed: false, detail: 'no audio stream' },
+      ],
+    } satisfies QcResult
+    seedLibrary(db, 'j1', { state: 'needs-review', qcJson: JSON.stringify(verdict) })
     expect(listLibraryEntries(db)[0]?.qc).toEqual({
       kind: 'issues',
-      issues: ['duration 71s > 60s'],
+      issues: [
+        'duration-bounds: duration 14200ms; bounds [15000,180000]; voice 14100ms',
+        'has-audio: no audio stream',
+      ],
     })
     db.close()
   })
 
-  it('reports absent qc rather than inventing a verdict', () => {
+  it('reports a row with no recorded verdict as absent rather than inventing one', () => {
+    // NULL qc_json is every row finalized before the column existed.
     const db = seed()
-    addLibrary(db, 'j1', 'ready', '{}')
+    seedLibrary(db, 'j1')
     expect(listLibraryEntries(db)[0]?.qc).toEqual({ kind: 'absent' })
     db.close()
   })
 
-  it('degrades one malformed metadata row without failing the others', () => {
+  it('degrades one malformed qc verdict without failing the others', () => {
     const db = seed()
-    addLibrary(db, 'j1', 'ready', 'not json{{')
-    addLibrary(db, 'j2', 'ready', JSON.stringify({ qc: { issues: [] } }))
+    seedLibrary(db, 'j1', { qcJson: 'not json{{' })
+    seedLibrary(db, 'j2', { qcJson: JSON.stringify({ passed: true, checks: [] }) })
     const entries = listLibraryEntries(db)
     expect(entries).toHaveLength(2)
     expect(entries.find((e) => e.jobId === 'j1')?.qc).toEqual({ kind: 'unparseable' })
     expect(entries.find((e) => e.jobId === 'j2')?.qc).toEqual({ kind: 'ok' })
+    db.close()
+  })
+
+  it('treats a verdict missing its checks array as unparseable', () => {
+    const db = seed()
+    seedLibrary(db, 'j1', { qcJson: JSON.stringify({ passed: true }) })
+    expect(listLibraryEntries(db)[0]?.qc).toEqual({ kind: 'unparseable' })
+    db.close()
+  })
+
+  it('treats a malformed check entry as unparseable rather than inventing an issue', () => {
+    const db = seed()
+    seedLibrary(db, 'j1', { qcJson: JSON.stringify({ passed: true, checks: [{}] }) })
+    expect(listLibraryEntries(db)[0]?.qc).toEqual({ kind: 'unparseable' })
     db.close()
   })
 

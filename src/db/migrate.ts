@@ -110,6 +110,13 @@ export function migrate(db: Database): void {
   if (tableExists(db, 'library_objects') && !hasColumn(db, 'library_objects', 'reclaimed_at')) {
     db.exec('ALTER TABLE library_objects ADD COLUMN reclaimed_at TEXT')
   }
+  // The qc stage's verdict, persisted whole by the runner's final gate so
+  // the dashboard's library page can name the failing checks. NULL is the
+  // correct reading for every pre-existing row: finalized before the verdict
+  // was recorded, rendered as 'absent'.
+  if (tableExists(db, 'library') && !hasColumn(db, 'library', 'qc_json')) {
+    db.exec('ALTER TABLE library ADD COLUMN qc_json TEXT')
+  }
   migratePublishesToPosts(db)
   addTopicStoryColumns(db)
 }

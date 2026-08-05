@@ -5,7 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import { openDb } from './index.js'
 import { migrate } from './migrate.js'
-import { memDb, seedJob, seedLibrary, seedLibraryObject } from '../testing/db.js'
+import { memDb, seedJob, seedLibrary } from '../testing/db.js'
 import { tmpDir } from '../testing/tmp.js'
 
 // The CURRENT canonical schema — the same text openDb hands migrate(). Read
@@ -132,6 +132,64 @@ describe('migrate — topics.target_url', () => {
     // in production. The probe is what keeps a caller holding a bare handle —
     // every fixture above — from hitting "no such table".
     const db = topicsDb(OLD_JOBS)
+    expect(() => migrate(db)).not.toThrow()
+  })
+})
+
+// The library shape before qc_json existed. Frozen for the same reason as
+// OLD_TOPICS above: it must keep describing the OLD shape as schema.sql
+// moves on.
+const OLD_LIBRARY = `
+CREATE TABLE IF NOT EXISTS library (
+  job_id TEXT PRIMARY KEY, video_path TEXT NOT NULL, metadata_json TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('ready','needs-review','published','blocked')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+`
+
+describe('migrate — library.qc_json', () => {
+  // Bare handle, same rationale as the topics fixtures above.
+  function bareDb(ddl: string): Database {
+    const dir = tmpDir('brainrot-migrate-')
+    cleanupDirs.push(dir)
+    const db = new BetterSqlite3(join(dir, 'test.db'))
+    db.pragma('foreign_keys = OFF')
+    db.exec(ddl)
+    return db
+  }
+
+  it('adds qc_json to a library table that predates it', () => {
+    const db = bareDb(OLD_LIBRARY)
+    expect(colNames(db, 'library')).not.toContain('qc_json')
+
+    migrate(db)
+
+    expect(colNames(db, 'library')).toContain('qc_json')
+  })
+
+  it('preserves existing rows, leaving the new column null', () => {
+    const db = bareDb(OLD_LIBRARY)
+    db.exec(
+      "INSERT INTO library (job_id, video_path, metadata_json, state) " +
+        "VALUES ('job-1', '/runs/job-1/assemble/final.mp4', '{}', 'ready')",
+    )
+
+    migrate(db)
+
+    expect(db.prepare('SELECT job_id, qc_json FROM library').all()).toEqual([
+      { job_id: 'job-1', qc_json: null },
+    ])
+  })
+
+  it('is idempotent: a second run adds no duplicate column', () => {
+    const db = bareDb(OLD_LIBRARY)
+    migrate(db)
+    expect(() => migrate(db)).not.toThrow()
+    expect(colNames(db, 'library').filter((n) => n === 'qc_json')).toHaveLength(1)
+  })
+
+  it('skips the step entirely when there is no library table', () => {
+    const db = bareDb(OLD_JOBS)
     expect(() => migrate(db)).not.toThrow()
   })
 })

@@ -53,7 +53,7 @@ interface DbPostQueueRow {
  * those bounds in posts/meta.ts rather than re-decided by a branch here.
  *
  * A missing or malformed entry yields an empty body rather than throwing —
- * the same containment summarizeQc applies to one bad metadata blob, so a
+ * the same containment summarizeQc applies to one bad qc verdict, so a
  * single corrupt row cannot take the whole queue down.
  */
 function cardPlatform(

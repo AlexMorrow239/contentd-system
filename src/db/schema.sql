@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS library (
   -- src/jobs/library.ts's LibraryState type (which excludes it) is the
   -- authoritative set of states a row can actually be in.
   state TEXT NOT NULL CHECK (state IN ('ready','needs-review','published','blocked')),
+  -- The qc stage's verdict (runs/<jobId>/qc/qc.json, persisted whole by the
+  -- final gate) so the dashboard can name the failing checks without reading
+  -- runs/. NULL is a row finalized before this column existed.
+  qc_json TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE TABLE IF NOT EXISTS library_objects (

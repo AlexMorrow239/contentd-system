@@ -16,9 +16,9 @@ function renderQc(qc: QcSummary): SafeHtml {
         ${qc.issues.map((issue) => html`<li>${issue}</li>`)}
       </ul>`
     case 'unparseable':
-      return html`<span class="warning">unparseable metadata</span>`
+      return html`<span class="warning">unparseable qc verdict</span>`
     case 'absent':
-      return html`<span class="muted">no qc block</span>`
+      return html`<span class="muted">no qc verdict</span>`
   }
 }
 

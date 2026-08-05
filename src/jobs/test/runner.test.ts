@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { BudgetExceededError } from '../costs.js'
@@ -122,6 +122,20 @@ describe('runJob', () => {
     expect(lib.state).toBe('ready')
     expect(lib.video_path).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
     expect(JSON.parse(lib.metadata_json).youtube.title).toBe('Space')
+  })
+
+  it('persists the whole qc verdict into library.qc_json', async () => {
+    const { db, runsRoot } = setup()
+    const channel = testChannel()
+    const jobId = createJob(db, channel, { topic: 'space' })
+    await runJob(db, channel, jobId, buildStages([], { qcPassed: false }), { runsRoot })
+
+    const raw = readFileSync(join(runsRoot, jobId, 'qc', 'qc.json'), 'utf8')
+    const lib = row<{ qc_json: string }>(db, 'SELECT qc_json FROM library WHERE job_id = ?', jobId)
+    // Re-serialized from the gate's own read, so content — not bytes — is the
+    // contract: everything qc.json carries lands in the column.
+    expect(JSON.parse(lib.qc_json)).toEqual(JSON.parse(raw))
+    expect(JSON.parse(lib.qc_json)).toEqual({ passed: false, checks: [] })
   })
 
   it('qc fail → library needs-review, job still done', async () => {
@@ -352,13 +366,16 @@ describe('runJob', () => {
 
     const result = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
     expect(result.status).toBe('ready')
-    const lib = row<{ n: number; state: string }>(
+    const lib = row<{ n: number; state: string; qc_json: string | null }>(
       db,
-      'SELECT COUNT(*) AS n, MAX(state) AS state FROM library WHERE job_id = ?',
+      'SELECT COUNT(*) AS n, MAX(state) AS state, MAX(qc_json) AS qc_json FROM library WHERE job_id = ?',
       jobId,
     )
     expect(lib.n).toBe(1)
     expect(lib.state).toBe('ready') // upsert overwrote the stale 'needs-review'
+    // The DO UPDATE arm must write qc_json too, or exactly these crash-window
+    // resumes would show "no qc verdict" forever.
+    expect(lib.qc_json).toBe(JSON.stringify({ passed: true, checks: [] }))
     expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId).status).toBe(
       'done',
     )

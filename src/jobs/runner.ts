@@ -152,26 +152,31 @@ export async function runJob(
     // script.json and store.json are optional — store.json is absent for jobs
     // produced before object storage existed, and for every job on a
     // deployment with no bucket.
-    const state: 'ready' | 'needs-review' = readQcResult(runDir).passed ? 'ready' : 'needs-review'
+    const qcResult = readQcResult(runDir)
+    const state: 'ready' | 'needs-review' = qcResult.passed ? 'ready' : 'needs-review'
 
     const videoPath = finalVideoPath(runDir)
     const metadataJson = JSON.stringify(readScriptArtifact(runDir)?.platformMeta ?? {})
     const storeArtifact: StoreArtifact | undefined = readStoreArtifact(runDir)
 
+    // The whole verdict rides along into library.qc_json (re-serialized from
+    // the same read that decided `state`): the dashboard names the failing
+    // checks from it, and runs/ may not outlive the row.
+    //
     // Idempotent: a resume that reaches this final window again (all stages already
     // 'done') upserts the same library row and re-marks the job done without a
     // PRIMARY KEY conflict. The upsert + job-done update run in one transaction so
     // the two writes commit together.
     const libraryUpsert = db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?) ' +
-        'ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path, metadata_json=excluded.metadata_json, state=excluded.state',
+      'INSERT INTO library (job_id, video_path, metadata_json, state, qc_json) VALUES (?, ?, ?, ?, ?) ' +
+        'ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path, metadata_json=excluded.metadata_json, state=excluded.state, qc_json=excluded.qc_json',
     )
     const markJobDone = db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?')
     db.transaction(() => {
       // library must be upserted first: library_objects.job_id references it,
       // and object storage is written after the library row so the FK is
       // satisfied even on the very first insert.
-      libraryUpsert.run(jobId, videoPath, metadataJson, state)
+      libraryUpsert.run(jobId, videoPath, metadataJson, state, JSON.stringify(qcResult))
       if (storeArtifact !== undefined) {
         // Same idempotency story as libraryUpsert above, keyed on the FK to library.
         upsertLibraryObject(db, jobId, storeArtifact)

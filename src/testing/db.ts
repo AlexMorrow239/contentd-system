@@ -93,6 +93,7 @@ export interface LibraryRow {
   videoPath: string
   metadataJson: string
   state: string
+  qcJson: string | null
   createdAt: string | null
 }
 
@@ -105,17 +106,18 @@ export function seedLibrary(
     videoPath: `/runs/${jobId}/assemble/final.mp4`,
     metadataJson: '{}',
     state: 'ready',
+    qcJson: null,
     createdAt: null,
     ...overrides,
   }
   if (row.createdAt === null) {
     db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state) VALUES (?, ?, ?, ?)',
-    ).run(jobId, row.videoPath, row.metadataJson, row.state)
+      'INSERT INTO library (job_id, video_path, metadata_json, state, qc_json) VALUES (?, ?, ?, ?, ?)',
+    ).run(jobId, row.videoPath, row.metadataJson, row.state, row.qcJson)
   } else {
     db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(jobId, row.videoPath, row.metadataJson, row.state, row.createdAt)
+      'INSERT INTO library (job_id, video_path, metadata_json, state, qc_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).run(jobId, row.videoPath, row.metadataJson, row.state, row.qcJson, row.createdAt)
   }
 }
 
