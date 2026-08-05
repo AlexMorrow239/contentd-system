@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { escapeHtml, html, httpUrlOrNull, raw, SafeHtml } from '../html.js'
+import { attrIf, escapeHtml, html, httpUrlOrNull, safeLink, SafeHtml } from '../html.js'
 
 describe('escapeHtml', () => {
   it('escapes every character that can break out of markup or an attribute', () => {
@@ -39,12 +39,6 @@ describe('html', () => {
   })
 })
 
-describe('raw', () => {
-  it('marks a trusted string as already-safe', () => {
-    expect(html`${raw('<hr>')}`.value).toBe('<hr>')
-  })
-})
-
 describe('httpUrlOrNull', () => {
   it('accepts a plain http url', () => {
     expect(httpUrlOrNull('http://example.com/a')).toBe('http://example.com/a')
@@ -80,5 +74,46 @@ describe('httpUrlOrNull', () => {
 
   it('rejects an unparseable string', () => {
     expect(httpUrlOrNull('not a url at all')).toBeNull()
+  })
+})
+
+describe('safeLink', () => {
+  it('renders an anchor with both rel tokens and target for an http url', () => {
+    expect(safeLink('https://example.com/a', 'youtube').value).toBe(
+      '<a href="https://example.com/a" rel="noreferrer noopener" target="_blank">youtube</a>',
+    )
+  })
+
+  it('appends linkSuffix in the anchor branch only', () => {
+    expect(safeLink('https://example.com/a', 'youtube', { linkSuffix: '↗' }).value).toBe(
+      '<a href="https://example.com/a" rel="noreferrer noopener" target="_blank">youtube ↗</a>',
+    )
+    expect(safeLink('javascript:alert(1)', 'youtube', { linkSuffix: '↗' }).value).toBe(
+      '<span class="warning" title="blocked unsafe link scheme">youtube</span>',
+    )
+  })
+
+  it('renders a non-clickable warning span for a blocked scheme', () => {
+    expect(safeLink('javascript:alert(1)', 'reddit').value).toBe(
+      '<span class="warning" title="blocked unsafe link scheme">reddit</span>',
+    )
+  })
+
+  it('escapes the label in both branches', () => {
+    const label = '<script>alert(1)</script>'
+    expect(safeLink('https://example.com/a', label).value).toContain('&lt;script&gt;')
+    expect(safeLink('javascript:alert(1)', label).value).toContain('&lt;script&gt;')
+  })
+})
+
+describe('attrIf', () => {
+  it('emits the bare attribute when the condition holds', () => {
+    expect(html`<button ${attrIf(true, 'disabled')}>x</button>`.value).toBe(
+      '<button disabled>x</button>',
+    )
+  })
+
+  it('emits nothing when it does not', () => {
+    expect(html`<button ${attrIf(false, 'disabled')}>x</button>`.value).toBe('<button >x</button>')
   })
 })

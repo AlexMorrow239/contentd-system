@@ -4,6 +4,20 @@ import type { Database } from 'better-sqlite3'
 // expiry instead of wedging the loop forever.
 export const PRODUCE_LEASE_TTL_MS = 5_400_000 // 90 min
 
+/**
+ * The holder string every acquire/extend/release must agree on. It is a
+ * contract, not a label: `extendLease` and `releaseLease` match on it exactly,
+ * so a second spelling of it is one typo away from a lease that cannot be
+ * released and an evicted holder that frees its successor's.
+ *
+ * `suffix` distinguishes two callers inside ONE process — the actions worker's
+ * lanes call the same ticks the daemon's own workers do, and a bare pid no
+ * longer identifies a single caller there.
+ */
+export function leaseHolder(suffix?: string): string {
+  return suffix === undefined ? `pid:${process.pid}` : `pid:${process.pid}:${suffix}`
+}
+
 // Acquire-if-free-or-expired in one synchronous transaction. BEGIN IMMEDIATE
 // takes the write lock up front so a concurrent process cannot interleave
 // between the read and the upsert. ISO-8601 UTC strings compare correctly

@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { BrainrotError } from '../errors.js'
 import type { Platform } from './types.js'
 
 /**
@@ -13,19 +14,74 @@ import type { Platform } from './types.js'
  */
 
 /**
+ * `posts.channel` is denormalized from `jobs.channel`, so the resolution is a
+ * fact about this table's own schema rather than something each caller should
+ * re-derive: a mismatched channel misfiles the row in every channel-scoped
+ * read (pendingInventory, reclaim, the digest) with nothing to flag it.
+ */
+function jobChannel(db: Database, jobId: string): string {
+  const row = db.prepare('SELECT channel FROM jobs WHERE id = ?').get(jobId) as
+    { channel: string } | undefined
+  if (row === undefined) {
+    throw new BrainrotError(`no such job: ${jobId}`, { domain: 'job', kind: 'not-found' })
+  }
+  return row.channel
+}
+
+/**
  * Idempotent on the composite primary key. `posted_at` is deliberately NOT
  * refreshed on conflict — the fact being recorded is when the video went out,
  * and a second click correcting a typo'd url must not restamp it. `url` IS
  * overwritten, since the later value is the correction.
+ *
+ * `channel` is optional and resolved from the job when absent, which is what
+ * makes the misfiling above structurally impossible rather than merely
+ * commented against. A caller that already holds the channel may still pass
+ * it and save the read.
  */
 export function markPosted(
   db: Database,
-  opts: { jobId: string; channel: string; platform: Platform; url?: string },
+  opts: { jobId: string; channel?: string; platform: Platform; url?: string },
 ): void {
+  const channel = opts.channel ?? jobChannel(db, opts.jobId)
   db.prepare(
     'INSERT INTO posts (job_id, channel, platform, url) VALUES (?, ?, ?, ?) ' +
       'ON CONFLICT(job_id, platform) DO UPDATE SET url = excluded.url',
-  ).run(opts.jobId, opts.channel, opts.platform, opts.url ?? null)
+  ).run(opts.jobId, channel, opts.platform, opts.url ?? null)
+}
+
+/**
+ * The "posted to every declared platform" predicate as data, for the readers
+ * that must agree on what "consumed" means: `pendingInventory` (the
+ * production depth cap), `reclaimableObjects` (which bytes are deleted),
+ * `listPostQueue` (what the operator sees) and the digest's unposted-age
+ * column. Each failure mode of a drifted copy is silent — production halts,
+ * bytes are freed early, the digest lies.
+ *
+ * `alias` is the row alias the correlated subquery joins against (`l` where
+ * the caller selects from `library l`), so a caller's own FROM naming stays
+ * its business.
+ *
+ * The comparison and its bound length are part of what is returned rather
+ * than appended by the caller, because the empty-`declared` case is not
+ * symmetric and cannot be expressed as one count fragment two ways: a channel
+ * with no platforms has not decided where to post yet, so nothing is fully
+ * posted ('fully' -> `0`, reclaim frees nothing) while everything still
+ * counts as inventory ('not-fully' -> `1`).
+ */
+export function fullyPostedClause(
+  declared: readonly Platform[],
+  opts: { alias: string; match: 'fully' | 'not-fully' },
+): { sql: string; params: (Platform | number)[] } {
+  if (declared.length === 0) return { sql: opts.match === 'fully' ? '0' : '1', params: [] }
+  const placeholders = declared.map(() => '?').join(', ')
+  const comparison = opts.match === 'fully' ? '>=' : '<'
+  return {
+    sql:
+      `(SELECT COUNT(*) FROM posts p WHERE p.job_id = ${opts.alias}.job_id ` +
+      `AND p.platform IN (${placeholders})) ${comparison} ?`,
+    params: [...declared, declared.length],
+  }
 }
 
 /** True when a row was actually removed — the caller reports "nothing to unmark" from false. */

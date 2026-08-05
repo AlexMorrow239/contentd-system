@@ -3,6 +3,7 @@ import {
   INSTAGRAM_CAPTION_MAX_CHARS,
   INSTAGRAM_MAX_HASHTAGS,
   normalizePlatformMeta,
+  PASTE_FIELDS,
   normalizeTitle,
   platformEntrySchema,
   renderCaption,
@@ -12,6 +13,7 @@ import {
   tagsPayloadLength,
   TIKTOK_CAPTION_MAX_CHARS,
 } from '../meta.js'
+import { PLATFORMS } from '../types.js'
 
 describe('normalizePlatformMeta', () => {
   describe('platformEntrySchema', () => {
@@ -230,5 +232,33 @@ describe('normalizePlatformMeta', () => {
       const out = normalizePlatformMeta({ title: 'T', description: '', hashtags }, 'tiktok')
       expect(out.hashtags).toHaveLength(35)
     })
+  })
+})
+
+describe('PASTE_FIELDS', () => {
+  const meta = { title: 'A title', description: 'A body', hashtags: ['#one', '#two'] }
+
+  it('gives YouTube its own title and a separate tags list, stripped of the #', () => {
+    expect(PASTE_FIELDS.youtube(meta)).toEqual({
+      title: 'A title',
+      body: renderDescription(meta.description, meta.hashtags),
+      tags: 'one, two',
+    })
+  })
+
+  // A Reel and a TikTok post have one caption field and no tags list, so the
+  // title rides inside the body or it never reaches the post at all.
+  it('composes one caption for the platforms with no title field', () => {
+    for (const platform of ['instagram', 'tiktok'] as const) {
+      expect(PASTE_FIELDS[platform](meta)).toEqual({
+        title: null,
+        body: renderCaption(meta),
+        tags: null,
+      })
+    }
+  })
+
+  it('covers every platform, so a new one cannot inherit a shape silently', () => {
+    expect(Object.keys(PASTE_FIELDS).sort()).toEqual([...PLATFORMS].sort())
   })
 })

@@ -307,12 +307,11 @@ describe('globalDailyCapMicros + assertGlobalDayBudget', () => {
 })
 
 describe('BudgetExceededError classification', () => {
-  it('is a BrainrotError classified job/budget, keeping its reason field', () => {
+  it('is a BrainrotError classified job/budget, carrying the reason as its message', () => {
     const err = new BudgetExceededError('per-video cap 500000 exceeded')
     expect(err).toBeInstanceOf(BrainrotError)
     expect(err).toBeInstanceOf(BudgetExceededError)
     expect(err.name).toBe('BudgetExceededError')
-    expect(err.reason).toBe('per-video cap 500000 exceeded')
     expect(err.message).toBe('per-video cap 500000 exceeded')
     expect(classify(err)).toMatchObject({
       domain: 'job',

@@ -1,7 +1,11 @@
 import type { Database } from 'better-sqlite3'
 import { libraryBytes, libraryLinks } from './library.js'
 
-export type JobStatus = 'queued' | 'running' | 'failed' | 'done' | 'blocked'
+// A tuple, not a bare union: the filter dropdowns need the values at runtime,
+// and a hand-maintained second copy beside the type is what they used to be.
+export const JOB_STATUSES = ['queued', 'running', 'failed', 'done', 'blocked'] as const
+
+export type JobStatus = (typeof JOB_STATUSES)[number]
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed'
 
 /**

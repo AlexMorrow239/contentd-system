@@ -12,6 +12,15 @@ import type { ShortVideoProps } from '../remotion-types.js'
 // path.resolve('remotion/index.ts') would point bundling at a nonexistent tree.
 const REMOTION_ENTRY = fileURLToPath(new URL('../../remotion/index.ts', import.meta.url))
 
+/**
+ * Where this stage puts the finished video, given a run directory. Exported so
+ * the runner's final gate does not have to know assemble's own file layout —
+ * every stage owns the name of what it writes.
+ */
+export function finalVideoPath(runDir: string): string {
+  return path.join(runDir, 'assemble', 'final.mp4')
+}
+
 let bundlePromise: Promise<string> | undefined
 function getBundle(): Promise<string> {
   if (!bundlePromise) {

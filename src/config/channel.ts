@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
@@ -334,6 +334,37 @@ export function parseChannelToml(text: string, filename: string): ChannelConfig 
 export function loadChannelConfig(path: string): ChannelConfig {
   const text = readFileSync(path, 'utf8')
   return parseChannelToml(text, path)
+}
+
+/**
+ * The single-file form of `loadChannelsDir`'s filename==name invariant: resume
+ * and the `jobs.produce` action both want one named channel, and each used to
+ * get it a different way — resume by joining `<name>.toml` and trusting an
+ * invariant it never verified, the action by parsing the whole directory to
+ * `.find` one entry. This verifies what resume assumed without the
+ * whole-directory parse the action paid for.
+ *
+ * Throws a config error naming the file for both a missing file and a
+ * mismatch; callers wanting a softer outcome (resume's `ResumeError`) catch
+ * and translate.
+ */
+export function loadChannelByName(channelsDir: string, name: string): ChannelConfig {
+  const path = join(channelsDir, `${name}.toml`)
+  if (!existsSync(path)) {
+    throw configInvalid(`channel config not found: ${path}`)
+  }
+  let cfg: ChannelConfig
+  try {
+    cfg = loadChannelConfig(path)
+  } catch (err) {
+    throw configInvalid(`failed to load channel config ${path}: ${(err as Error).message}`)
+  }
+  if (cfg.name !== name) {
+    throw configInvalid(
+      `channel config ${path}: filename basename "${name}" must equal channel name "${cfg.name}" (rename to ${cfg.name}.toml)`,
+    )
+  }
+  return cfg
 }
 
 /**

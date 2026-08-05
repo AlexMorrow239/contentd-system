@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs'
 import { KokoroTTS, type GenerateOptions } from 'kokoro-js'
 import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts'
 import type { StageDef, JobContext } from '../jobs/types.js'
+import { DEV_VOICE_ENV } from '../config/dev-voice.js'
 import type { ScriptArtifact } from './script.js'
 import { assertBudget, recordCost } from '../jobs/costs.js'
 import { BrainrotError } from '../errors.js'
@@ -45,10 +46,9 @@ const EDGE_FORMAT = 'riff-24khz-16bit-mono-pcm' as unknown as OUTPUT_FORMAT
 // leaves headroom for phoneme-dense words.
 export const MAX_CHUNK_WORDS = 60
 
-// Single source of truth for the dev-voice-mode env var name, so the gate
-// below, the `--dev` CLI flag (src/cli.ts), and both test files can never
-// drift apart by hardcoding independent copies of the same literal.
-export const DEV_VOICE_ENV = 'BRAINROT_DEV_VOICE'
+// Re-exported for the existing importers; the constant itself lives in a leaf
+// module so reading the name does not cost a caller the TTS backends.
+export { DEV_VOICE_ENV }
 
 // Break any piece still over budget on `boundary`; leave the rest alone.
 function refine(pieces: string[], boundary: RegExp): string[] {

@@ -3,9 +3,11 @@ import type { Logger } from 'pino'
 import type { ChannelConfig } from '../config/channel.js'
 import type { StoryPart } from '../stories/types.js'
 
-export type StageName = 'script' | 'voice' | 'captions' | 'visuals' | 'assemble' | 'qc' | 'store'
-
-export const STAGE_ORDER: StageName[] = [
+// One list, type derived (the pattern posts/types.ts sets for PLATFORMS):
+// reordering or renaming a stage here cannot leave a stale union behind.
+// Unrelated to DASHBOARD_STAGE_ORDER, which is a deliberate second copy the
+// dashboard keeps so a viewer never loads the pipeline module.
+export const STAGE_ORDER = [
   'script',
   'voice',
   'captions',
@@ -13,7 +15,9 @@ export const STAGE_ORDER: StageName[] = [
   'assemble',
   'qc',
   'store',
-]
+] as const
+
+export type StageName = (typeof STAGE_ORDER)[number]
 
 export interface JobContext {
   jobId: string

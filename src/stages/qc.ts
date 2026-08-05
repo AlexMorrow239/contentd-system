@@ -1,4 +1,5 @@
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { execa } from 'execa'
 import { probe } from '../media/ffmpeg.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
@@ -8,6 +9,17 @@ import { narrationWordCount, minPlausibleNarrationMs } from './narration-text.js
 export interface QcResult {
   passed: boolean
   checks: { name: string; passed: boolean; detail: string }[]
+}
+
+/**
+ * Reads this stage's artifact out of a run directory. Exported so the runner's
+ * final gate does not have to know qc's own file layout — every stage owns the
+ * name and shape of what it writes. Missing or corrupt is thrown, not
+ * tolerated: a job that reached the gate has a `done` qc stage, so an
+ * unreadable qc.json is a real failure and not a legacy shape.
+ */
+export function readQcResult(runDir: string): QcResult {
+  return JSON.parse(readFileSync(join(runDir, 'qc', 'qc.json'), 'utf8')) as QcResult
 }
 
 const MB = 1024 * 1024

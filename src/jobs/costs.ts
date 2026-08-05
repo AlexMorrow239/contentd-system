@@ -6,14 +6,9 @@ import { BrainrotError } from '../errors.js'
 const DEFAULT_GLOBAL_DAILY_USD = 25
 
 export class BudgetExceededError extends BrainrotError {
-  // Not a `declare`: `reason` is a genuinely new own field, not a narrowing of
-  // a base one. It duplicates `message` by design — callers read it by name.
-  readonly reason: string
-
   constructor(reason: string) {
     super(reason, { domain: 'job', kind: 'budget' })
     this.name = 'BudgetExceededError'
-    this.reason = reason
   }
 }
 
@@ -64,10 +59,35 @@ export function channelDaySpentMicros(db: Database, channel: string): number {
   return row.total
 }
 
+/**
+ * `channelDaySpentMicros` for every channel at once — one GROUP BY instead of
+ * one SUM per channel, for the surfaces that report the whole set (the
+ * overview page, the digest). Same JOIN and therefore the same sentinel-row
+ * blindness as the singular form.
+ *
+ * A channel with no spend today has NO entry: a caller reading the map must
+ * default to 0 rather than treat absence as missing data.
+ *
+ * `day` is a 'YYYY-MM-DD' UTC date; omitted means today, resolved by the same
+ * strftime expression the singular form uses so the two can never disagree
+ * about where the day boundary falls.
+ */
+export function channelDaySpentMicrosByChannel(db: Database, day?: string): Map<string, number> {
+  const rows = db
+    .prepare(
+      'SELECT j.channel AS channel, COALESCE(SUM(c.usd_micros), 0) AS total FROM costs c ' +
+        'JOIN jobs j ON c.job_id = j.id ' +
+        `WHERE substr(c.created_at, 1, 10) = ${day === undefined ? "strftime('%Y-%m-%d','now')" : '?'} ` +
+        'GROUP BY j.channel',
+    )
+    .all(...(day === undefined ? [] : [day])) as { channel: string; total: number }[]
+  return new Map(rows.map((row) => [row.channel, row.total]))
+}
+
 // One job's LIFETIME spend — the quantity the per-video caps are measured
-// against (assertBudget uses the same SUM inline). No day filter: a job's
-// per-video budget never resets, so a job parked overnight resumes against
-// everything it already spent.
+// against, and the single read assertBudget enforces them through. No day
+// filter: a job's per-video budget never resets, so a job parked overnight
+// resumes against everything it already spent.
 export function jobSpentMicros(db: Database, jobId: string): number {
   const row = db
     .prepare('SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?')
@@ -84,6 +104,29 @@ export function globalDaySpentMicros(db: Database): number {
     )
     .get() as { total: number }
   return row.total
+}
+
+export interface DaySpend {
+  day: string
+  micros: number
+}
+
+/**
+ * Spend per UTC day over a trailing window, newest first — the `brainrot
+ * costs` report. Like `globalDaySpentMicros` there is no jobs JOIN, so
+ * sentinel scout rows are included; unlike it, a day with no rows is simply
+ * absent rather than reported as zero.
+ */
+export function daySpendBreakdown(db: Database, days: number): DaySpend[] {
+  return db
+    .prepare(
+      `SELECT substr(created_at, 1, 10) AS day, SUM(usd_micros) AS micros
+       FROM costs
+       WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+       GROUP BY day
+       ORDER BY day DESC`,
+    )
+    .all(`-${days} days`) as DaySpend[]
 }
 
 // The global-day check extracted from assertBudget so the scout — which has
@@ -119,10 +162,7 @@ export function assertBudget(
   upcomingUsdMicros: number,
 ): void {
   const perVideoCap = channel.budget.perVideoUsdMicros
-  const jobRow = db
-    .prepare('SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?')
-    .get(jobId) as { total: number }
-  const jobProjected = jobRow.total + upcomingUsdMicros
+  const jobProjected = jobSpentMicros(db, jobId) + upcomingUsdMicros
   if (jobProjected > perVideoCap) {
     throw new BudgetExceededError(
       `per-video budget exceeded: ${jobProjected} > ${perVideoCap} usdMicros`,

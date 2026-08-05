@@ -1,10 +1,18 @@
 import type { StoreArtifact } from '../stages/store.js'
 import type { Database } from 'better-sqlite3'
 import { errorMessage } from '../errors.js'
+// ./config.js, not ./s3.js: this module is reachable from the produce tick and
+// the dashboard's queries, neither of which may drag the AWS SDK in.
+import { loadStoreFromEnv } from '../storage/config.js'
 import type { ObjectStore } from '../storage/types.js'
 import type { Platform } from '../posts/types.js'
 
-export type LibraryState = 'ready' | 'needs-review' | 'blocked'
+// One list, type derived (the pattern posts/types.ts sets for PLATFORMS), so
+// the dashboard's filter allowlist and its dropdown options can share the
+// vocabulary the DAO owns instead of each spelling it out.
+export const LIBRARY_STATES = ['ready', 'needs-review', 'blocked'] as const
+
+export type LibraryState = (typeof LIBRARY_STATES)[number]
 
 export interface LibraryRow {
   jobId: string
@@ -297,4 +305,62 @@ export async function deleteRejectedObjects(opts: {
     },
     warn: opts.warn ?? (() => {}),
   })
+}
+
+export interface RejectAndFreeResult {
+  /** Rows actually moved to 'blocked' — an id in the wrong state is not one. */
+  rejected: number
+  requested: number
+  /** Objects the reject found to delete, before any of them were attempted. */
+  objects: number
+  deleted: string[]
+  failed: string[]
+  /** Set when storage could not be reached at all; the objects are untouched. */
+  storageUnavailable?: string
+}
+
+/**
+ * "Reject, then free the bytes" — the whole sequence, in the module that owns
+ * both halves, so the CLI's `library reject` and the dashboard's
+ * `library.reject` action cannot drift on the part that matters.
+ *
+ * The ordering is load-bearing: the keys are read BEFORE the state change
+ * (rejectLibrary does not touch library_objects, but a later reader would see
+ * a retired row and could not tell which objects were its), and the deletes
+ * run AFTER it and are best-effort — the reject itself must not depend on
+ * network reachability, and a storage failure must neither roll it back nor
+ * fail it. An object left behind is reported through `warn` (and `failed`),
+ * which is how an orphan is found; there is no list() sweep.
+ *
+ * Callers keep only what is genuinely theirs: where `warn` goes (a console
+ * line vs an action notice) and what the outcome means for an exit code.
+ * `storeFromEnv` overrides the acquisition for tests against a fake store.
+ */
+export async function rejectLibraryAndFreeObjects(opts: {
+  db: Database
+  jobIds: string[]
+  warn: (message: string) => void
+  storeFromEnv?: () => ObjectStore
+}): Promise<RejectAndFreeResult> {
+  const objects = libraryObjectKeys(opts.db, opts.jobIds)
+  const rejected = rejectLibrary(opts.db, opts.jobIds)
+  const base = { rejected, requested: opts.jobIds.length, objects: objects.length }
+  if (objects.length === 0) return { ...base, deleted: [], failed: [] }
+
+  let store: ObjectStore
+  if (opts.storeFromEnv !== undefined) {
+    store = opts.storeFromEnv()
+  } else {
+    const loaded = await loadStoreFromEnv()
+    if ('error' in loaded)
+      return { ...base, deleted: [], failed: [], storageUnavailable: loaded.error }
+    store = loaded.store
+  }
+  const outcome = await deleteRejectedObjects({
+    db: opts.db,
+    objects,
+    store,
+    warn: opts.warn,
+  })
+  return { ...base, ...outcome }
 }

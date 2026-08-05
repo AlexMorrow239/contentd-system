@@ -1,4 +1,5 @@
-import { promises as fs } from 'node:fs'
+import { promises as fs, existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { z } from 'zod'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { StageDef, JobContext } from '../jobs/types.js'
@@ -37,6 +38,19 @@ export const ScriptOutputSchema = z.object({
 
 export type ScriptOutput = z.infer<typeof ScriptOutputSchema>
 export type ScriptArtifact = ScriptOutput
+
+/**
+ * Reads this stage's artifact out of a run directory, `undefined` when the run
+ * predates it. Exported so the runner's final gate does not have to know
+ * script's own file layout. Absent is tolerated (that is the gate's documented
+ * rule); corrupt still throws, since a written-but-unparseable artifact is a
+ * failure rather than an older shape.
+ */
+export function readScriptArtifact(runDir: string): ScriptArtifact | undefined {
+  const path = join(runDir, 'script', 'script.json')
+  if (!existsSync(path)) return undefined
+  return JSON.parse(readFileSync(path, 'utf8')) as ScriptArtifact
+}
 
 // Story mode makes ONE model call, and it writes only platformMeta — narration
 // is assembled deterministically, so verbatim is guaranteed by construction

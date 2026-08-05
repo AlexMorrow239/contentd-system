@@ -170,3 +170,33 @@ const NORMALIZERS: Record<Platform, (meta: PlatformMeta) => PlatformMeta> = {
 export function normalizePlatformMeta(meta: PlatformMeta, platform: Platform): PlatformMeta {
   return NORMALIZERS[platform](meta)
 }
+
+/**
+ * One platform's paste blocks: a `title` only where the platform has a title
+ * field of its own, the body it takes, and `tags` only where it takes a
+ * separate tags list. Null is the field's absence, not an empty value — the
+ * dashboard reads it to decide what to render and what to call the body.
+ */
+export interface PasteFields {
+  title: string | null
+  body: string
+  tags: string | null
+}
+
+// Exhaustive for the same reason NORMALIZERS is, and it is the same decision:
+// paste SHAPE and paste BOUNDS both answer "what fields does this platform
+// have". Adding a platform to PLATFORMS without giving it a shape here is a
+// compile error rather than a silent inheritance of the composed-caption one.
+//
+// Composed from the render helpers above, so the pasted form stays the form
+// the bounds were measured against. `meta` is expected already normalized
+// (normalizePlatformMeta) — these compose, they do not bound.
+export const PASTE_FIELDS: Record<Platform, (meta: PlatformMeta) => PasteFields> = {
+  youtube: (meta) => ({
+    title: meta.title,
+    body: renderDescription(meta.description, meta.hashtags),
+    tags: renderTags(meta.hashtags).join(', '),
+  }),
+  instagram: (meta) => ({ title: null, body: renderCaption(meta), tags: null }),
+  tiktok: (meta) => ({ title: null, body: renderCaption(meta), tags: null }),
+}

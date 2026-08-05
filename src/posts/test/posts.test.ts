@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { memDb, seedJob, seedPost } from '../../testing/db.js'
-import { markPosted, postedPlatforms, unmarkPosted } from '../posts.js'
+import { memDb, seedJob, seedLibrary, seedPost } from '../../testing/db.js'
+import { fullyPostedClause, markPosted, postedPlatforms, unmarkPosted } from '../posts.js'
 
 // Raw read against the `posts` table, standing in for the deleted
 // postsForJob DAO helper: nothing in production reads a single job's posts
@@ -93,5 +93,63 @@ describe('posts', () => {
     const row = rowsForJob(db, 'j1')[0]
     expect(row?.url).toBe('https://y/1')
     expect(row?.postedAt).toBe('2020-01-01T00:00:00.000Z')
+  })
+
+  it('resolves the channel from the job when the caller omits it', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    markPosted(db, { jobId: 'j1', platform: 'youtube' })
+    const row = db.prepare('SELECT channel FROM posts WHERE job_id = ?').get('j1') as {
+      channel: string
+    }
+    expect(row.channel).toBe('alpha')
+  })
+
+  it('refuses an unknown job rather than filing the row under nothing', () => {
+    const db = memDb()
+    expect(() => markPosted(db, { jobId: 'nope', platform: 'youtube' })).toThrow(/no such job/)
+  })
+})
+
+describe('fullyPostedClause', () => {
+  // The four readers of this predicate compose it into their own FROM, so the
+  // alias travels with it rather than being assumed.
+  it('binds the declared platforms and their count, against the given alias', () => {
+    const clause = fullyPostedClause(['youtube', 'tiktok'], { alias: 'l', match: 'not-fully' })
+    expect(clause.sql).toContain('p.job_id = l.job_id')
+    expect(clause.sql).toContain('p.platform IN (?, ?)')
+    expect(clause.sql.endsWith(') < ?')).toBe(true)
+    expect(clause.params).toEqual(['youtube', 'tiktok', 2])
+  })
+
+  it('inverts to >= for the reclaim direction', () => {
+    const clause = fullyPostedClause(['youtube'], { alias: 'l', match: 'fully' })
+    expect(clause.sql.endsWith(') >= ?')).toBe(true)
+    expect(clause.params).toEqual(['youtube', 1])
+  })
+
+  // An undecided channel: everything still counts as inventory, nothing is
+  // reclaimable. The two directions are deliberately not each other's negation
+  // here, which is why the helper owns the case.
+  it('resolves an empty platform list per direction, with no bindings', () => {
+    expect(fullyPostedClause([], { alias: 'l', match: 'not-fully' })).toEqual({
+      sql: '1',
+      params: [],
+    })
+    expect(fullyPostedClause([], { alias: 'l', match: 'fully' })).toEqual({ sql: '0', params: [] })
+  })
+
+  it('runs as real SQL against the library shape its callers select from', () => {
+    const db = memDb()
+    seedJob(db, 'j1', { channel: 'alpha' })
+    seedJob(db, 'j2', { channel: 'alpha' })
+    seedLibrary(db, 'j1')
+    seedLibrary(db, 'j2')
+    markPosted(db, { jobId: 'j1', platform: 'youtube' })
+    const unposted = fullyPostedClause(['youtube'], { alias: 'l', match: 'not-fully' })
+    const rows = db
+      .prepare(`SELECT l.job_id AS jobId FROM library l WHERE ${unposted.sql}`)
+      .all(...unposted.params) as { jobId: string }[]
+    expect(rows.map((r) => r.jobId)).toEqual(['j2'])
   })
 })

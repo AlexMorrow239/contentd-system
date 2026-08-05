@@ -7,7 +7,8 @@
  * client.
  */
 
-import { BrainrotError } from '../errors.js'
+import { BrainrotError, errorMessage } from '../errors.js'
+import type { ObjectStore } from './types.js'
 
 export interface S3Config {
   endpoint: string
@@ -76,4 +77,27 @@ export function s3ConfigFromEnv(): S3Config {
 export function s3ConfigError(): string | undefined {
   const { missing } = readConfig()
   return missing.length > 0 ? missingMessage(missing) : undefined
+}
+
+/**
+ * The acquisition half every store-using caller repeats: config check, then
+ * the client, then a caught construction failure — reported as a message
+ * rather than thrown, because none of these callers treats missing storage as
+ * a crash. How the reason surfaces (a warn line, a notice, a result field) is
+ * deliberately left to the caller; only the acquisition is shared.
+ *
+ * The `./s3.js` import MUST stay dynamic and MUST stay inside this function.
+ * This module's whole purpose is being reachable without the AWS SDK (~60ms,
+ * ~10MB at startup); a static import here would pull the SDK into every
+ * process that only wanted `s3ConfigError`, which is the produce tick, the
+ * `produce` CLI command and the store stage.
+ */
+export async function loadStoreFromEnv(): Promise<{ store: ObjectStore } | { error: string }> {
+  const configError = s3ConfigError()
+  if (configError !== undefined) return { error: configError }
+  try {
+    return { store: (await import('./s3.js')).storeFromEnv() }
+  } catch (err) {
+    return { error: errorMessage(err) }
+  }
 }

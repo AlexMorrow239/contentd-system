@@ -29,6 +29,20 @@ export interface TickResult {
   error?: string
 }
 
+/**
+ * The one spelling of "the channels directory would not load" for every
+ * unattended surface — both loop ticks, the `scout.run` and `digest.run`
+ * actions, the one-shot CLI commands. All of them must report a broken TOML
+ * identically (a noop with a named cause, exit 0, never a throw); the shape
+ * lived as a literal in each, cross-referenced by prose.
+ *
+ * Callers that print or wrap add that themselves — this owns the JSON shape
+ * only.
+ */
+export function configErrorNoop(error: string): TickResult {
+  return { action: 'noop', reason: 'config-error', error }
+}
+
 // The topic slipped away between planning and claiming. Its own class so the
 // claim transaction's rollback throw stays distinguishable from a real crash.
 // Module-private by design, so its `job`/`conflict` classification is

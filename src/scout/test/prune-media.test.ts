@@ -4,7 +4,7 @@ import { memDb, seedTopic } from '../../testing/db.js'
 import { permalinkFeedXml } from '../sources/test/_post-kind.fixtures.js'
 import { dedupeHash } from '../sources/types.js'
 import type { FetchLike } from '../sources/types.js'
-import { listTopics } from '../topics.js'
+import { listTopics, setTopicTargetUrl } from '../topics.js'
 import { PRUNE_REJECT_REASON, pruneMedia } from '../prune-media.js'
 
 describe('pruneMedia', () => {
@@ -209,6 +209,24 @@ describe('pruneMedia', () => {
     const result = await pruneMedia(db, { fetchImpl: impl, delayMs: 0 })
 
     expect(result).toEqual({ checked: 0, rejected: 0, skipped: [] })
+    db.close()
+  })
+
+  // A row annotated at insert time was already classified there, and its
+  // image-kind siblings were dropped before insert — re-fetching it can only
+  // cost the 20s inter-row sleep and one rate-limited request.
+  it('ignores a row whose target is already recorded', async () => {
+    const db = memDb()
+    const known = seedRedditTopic(db)
+    setTopicTargetUrl(db, known, 'https://www.theguardian.com/science/x')
+    const impl: FetchLike = async () => {
+      throw new Error('must not fetch')
+    }
+
+    const result = await pruneMedia(db, { fetchImpl: impl, delayMs: 0 })
+
+    expect(result).toEqual({ checked: 0, rejected: 0, skipped: [] })
+    expect(only(db).status).toBe('candidate')
     db.close()
   })
 

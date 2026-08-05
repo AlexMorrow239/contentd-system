@@ -1,7 +1,13 @@
 import type { Database } from 'better-sqlite3'
 import type { StoryPart } from '../stories/types.js'
 
-export type TopicStatus = 'candidate' | 'claimed' | 'used' | 'rejected'
+// The tuple is the declaration and the union derives from it (the pattern
+// posts/types.ts's PLATFORMS follows), so a surface that must enumerate the
+// vocabulary — the dashboard's route guard, its status dropdown — reads this
+// one list instead of keeping a copy the compiler cannot check against it.
+export const TOPIC_STATUSES = ['candidate', 'claimed', 'used', 'rejected'] as const
+
+export type TopicStatus = (typeof TOPIC_STATUSES)[number]
 
 export interface TopicRow {
   id: number
@@ -222,6 +228,16 @@ export function candidateTopicCount(db: Database, channel: string): number {
   return row.n
 }
 
+// The sibling read the digest's topic-starvation check needs: a 'claimed'
+// topic is spoken for by a live job, so a channel holding only claimed rows
+// has an empty queue for scouting purposes but is not yet starved.
+export function claimedTopicCount(db: Database, channel: string): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS n FROM topics WHERE channel = ? AND status = 'claimed'")
+    .get(channel) as { n: number }
+  return row.n
+}
+
 // Operator veto. The status guard in the WHERE clause makes this idempotent
 // and blind to ids in the wrong state — the returned count is what actually
 // changed, which the CLI reports against ids.length.
@@ -238,8 +254,14 @@ export function rejectTopics(db: Database, ids: number[]): number {
 // Candidates the prune pass can re-check: reddit only (an RSS item has no
 // submission target) and 'candidate' only — a used or claimed topic is
 // already spoken for, and rejecting it would strand a live job.
+//
+// `target_url IS NULL` is what scopes this to the rows the pass exists to
+// recover. A row carrying a target was annotated at insert time and its
+// image-kind siblings were dropped before insert, so re-checking it cannot
+// change the verdict — it only pays the pass's 20s inter-row sleep and one
+// rate-limited fetch per row, while holding the scout lease.
 export function redditCandidates(db: Database, channel?: string): TopicRow[] {
-  const where = ["status = 'candidate'", "source LIKE 'reddit:%'"]
+  const where = ["status = 'candidate'", "source LIKE 'reddit:%'", 'target_url IS NULL']
   const params: string[] = []
   if (channel !== undefined) {
     where.push('channel = ?')

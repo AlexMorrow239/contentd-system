@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import {
   candidateTopicCount,
+  claimedTopicCount,
   claimTopic,
   eligibleTopic,
   insertTopics,
@@ -13,6 +14,7 @@ import {
   redditCandidates,
   rejectTopics,
   requeueTopic,
+  setTopicTargetUrl,
   storyPartForJob,
 } from '../topics.js'
 import { memDb } from '../../testing/db.js'
@@ -319,6 +321,42 @@ describe('candidateTopicCount', () => {
     expect(candidateTopicCount(db, 'chan-a')).toBe(2)
     expect(candidateTopicCount(db, 'chan-b')).toBe(1)
     expect(candidateTopicCount(db, 'chan-c')).toBe(0)
+    db.close()
+  })
+})
+
+describe('claimedTopicCount', () => {
+  it('counts only claimed rows for that channel', () => {
+    const db = memDb()
+    seedTopic(db, { channel: 'chan-a', status: 'claimed', dedupeHash: 'k1', jobId: 'job-1' })
+    seedTopic(db, { channel: 'chan-a', status: 'claimed', dedupeHash: 'k2', jobId: 'job-2' })
+    seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: 'k3' })
+    seedTopic(db, { channel: 'chan-a', status: 'used', dedupeHash: 'k4', jobId: 'job-3' })
+    seedTopic(db, { channel: 'chan-b', status: 'claimed', dedupeHash: 'k5', jobId: 'job-4' })
+    expect(claimedTopicCount(db, 'chan-a')).toBe(2)
+    expect(claimedTopicCount(db, 'chan-b')).toBe(1)
+    expect(claimedTopicCount(db, 'chan-c')).toBe(0)
+    db.close()
+  })
+})
+
+describe('redditCandidates', () => {
+  it('takes reddit candidates with no target yet, in id order', () => {
+    const db = memDb()
+    const first = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r1' })
+    const second = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r2' })
+    seedTopic(db, { source: 'rss:phys.org', dedupeHash: 'r3' })
+    seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r4', status: 'used', jobId: 'job-1' })
+    expect(redditCandidates(db, 'chan-a').map((r) => r.id)).toEqual([first, second])
+    db.close()
+  })
+
+  it('skips a row already carrying a target, which the prune pass cannot re-verdict', () => {
+    const db = memDb()
+    const untargeted = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r1' })
+    const targeted = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r2' })
+    setTopicTargetUrl(db, targeted, 'https://www.theguardian.com/science/x')
+    expect(redditCandidates(db, 'chan-a').map((r) => r.id)).toEqual([untargeted])
     db.close()
   })
 })

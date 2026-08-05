@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { BrainrotError, errorMessage } from '../errors.js'
 import type { JobContext, StageDef } from '../jobs/types.js'
 // ./config.js, not ./s3.js: checking whether storage is configured must not
@@ -10,6 +11,19 @@ export interface StoreArtifact {
   objectKey: string
   bytes: number
   etag: string
+}
+
+/**
+ * Reads this stage's artifact out of a run directory, `undefined` when there
+ * is none. Exported so the runner's final gate does not have to know store's
+ * own file layout. Absent is the normal shape for a job produced before object
+ * storage existed, or one run with storage unconfigured — the stage writes no
+ * store.json in either case.
+ */
+export function readStoreArtifact(runDir: string): StoreArtifact | undefined {
+  const path = join(runDir, 'store', 'store.json')
+  if (!existsSync(path)) return undefined
+  return JSON.parse(readFileSync(path, 'utf8')) as StoreArtifact
 }
 
 export function objectKeyFor(channel: string, jobId: string): string {

@@ -10,10 +10,6 @@ export class SafeHtml {
   }
 }
 
-export function raw(value: string): SafeHtml {
-  return new SafeHtml(value)
-}
-
 const ESCAPES: Record<string, string> = {
   '&': '&amp;',
   '<': '&lt;',
@@ -68,9 +64,8 @@ function render(value: unknown): string {
 
 /**
  * Escape-by-default HTML template. Anything interpolated is escaped unless it
- * is SafeHtml (from another `html` call or from `raw`). Opting IN to raw
- * output is a visible three-character call; opting out of escaping by
- * accident is impossible.
+ * is SafeHtml — which only another `html` call or one of the helpers in this
+ * module produces. Opting out of escaping by accident is impossible.
  */
 export function html(strings: TemplateStringsArray, ...values: unknown[]): SafeHtml {
   let out = strings[0]
@@ -78,4 +73,34 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): SafeH
     out += render(values[i]) + strings[i + 1]
   }
   return new SafeHtml(out)
+}
+
+/**
+ * The one rendering of "an external url the operator may click": an anchor
+ * when `httpUrlOrNull` accepts the scheme, a non-clickable warning span when
+ * it does not. Both branches live here so the XSS-relevant decision is made in
+ * one place — spelled out per view, it drifted, and one copy lost `noopener`
+ * and `target` while the others kept them.
+ *
+ * `label` is what the operator reads in EITHER branch: a blocked url still has
+ * to say which row it belongs to. `linkSuffix` is appended in the anchor
+ * branch only — it marks an external hop (`↗`), which a blocked link did not
+ * take.
+ */
+export function safeLink(url: string, label: string, opts?: { linkSuffix?: string }): SafeHtml {
+  const safeUrl = httpUrlOrNull(url)
+  if (safeUrl === null) {
+    return html`<span class="warning" title="blocked unsafe link scheme">${label}</span>`
+  }
+  const text = opts?.linkSuffix === undefined ? label : `${label} ${opts.linkSuffix}`
+  return html`<a href="${safeUrl}" rel="noreferrer noopener" target="_blank">${text}</a>`
+}
+
+/**
+ * A bare boolean attribute (`disabled`, `required`) or nothing. Views wrote
+ * `cond ? new SafeHtml('disabled') : ''`, which is the escape hatch this
+ * module exists to keep out of call sites.
+ */
+export function attrIf(cond: boolean, name: string): SafeHtml {
+  return new SafeHtml(cond ? name : '')
 }
