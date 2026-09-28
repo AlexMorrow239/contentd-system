@@ -11,7 +11,7 @@ import type { TestSpecification } from 'vitest/node'
  * Ordered by measured wall time, slowest first. Re-measure with:
  *   pnpm vitest run --reporter=json --outputFile=/tmp/t.json
  *
- * This list had gone stale: it was missing remotion/remotion.test.ts — 36
+ * This list had gone stale: it was missing integrations/remotion/remotion.test.ts — 36
  * lines holding a real Remotion bundle, so byte-size ordering scheduled it
  * dead last, the exact failure this sequencer exists to prevent — along with
  * golden-path-loop and every CLI-spawning file. src/testing/sequencer.test.ts
@@ -25,7 +25,7 @@ export const SLOW_FIRST = [
   'src/stages/test/assemble.test.ts', // real Remotion render
   'src/stages/test/visuals-volume.test.ts', // ffmpeg crop+loop
   'src/stages/test/qc.test.ts', // ffmpeg analysis passes
-  'remotion/remotion.test.ts', // bundle() + selectComposition
+  'integrations/remotion/remotion.test.ts', // bundle() + selectComposition
   'src/jobs/test/golden-path-loop.test.ts', // scout -> produce e2e
   // Every CLI-spawning file: a cold `node dist/cli.js` costs seconds, not the
   // ~0.34s the runCli docstring once claimed, because the entry point pulls in

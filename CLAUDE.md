@@ -14,7 +14,7 @@ upload adapter, no OAuth grant and no scheduler in this codebase. Single
 Node/TypeScript package — not a multi-package monorepo
 (`pnpm-workspace.yaml` here only configures
 `allowBuilds`/`minimumReleaseAgeExclude`, it declares no `packages:` list).
-`remotion/` has its own `tsconfig.json` and is type-checked separately but is
+`integrations/remotion/` has its own `tsconfig.json` and is type-checked separately but is
 built from the same root and `pnpm install`.
 
 ## Commands
@@ -46,8 +46,8 @@ pnpm test:contract           # real provider calls (paid ones key-gated); run de
 ```
 
 `pnpm check` does not run Python tests, paid contracts, or image
-builds. The sidecar tests live in `sidecar/whisperx/test_app.py`; run them with
-`python -m pytest sidecar/whisperx/test_app.py` in an environment containing
+builds. The sidecar tests live in `integrations/whisperx/test_app.py`; run them with
+`python -m pytest integrations/whisperx/test_app.py` in an environment containing
 its runtime dependencies plus pytest and httpx. Test dependencies are not yet
 declared separately; see [development audit](docs/development-audit.md).
 
@@ -403,7 +403,7 @@ The library's QC verdict comes from `library.qc_json`.
 
 ### Remotion rendering
 
-`remotion/` is the actual video composition (React components rendered to
+`integrations/remotion/` is the actual video composition (React components rendered to
 frames by `@remotion/renderer`), driven by `src/stages/assemble.ts` and
 `src/stages/captions.ts`. It has its own `tsconfig.json` and is type-checked
 separately in `pnpm build`, but is not a separate package — no independent
@@ -431,7 +431,7 @@ migrate.ts so schema application cannot wedge an older database first.
 
 ### Test layout and conventions
 
-Tests are colocated (`src/**/*.test.ts`, plus `remotion/**`), in two tiers:
+Tests are colocated (`src/**/*.test.ts`, plus `integrations/remotion/**`), in two tiers:
 the default hermetic run and `*.contract.test.ts` (`CONTRACT=1`, real API calls;
 paid ones skip without their key and the free Arctic Shift one always runs).
 Compose forwards only explicit production settings.

@@ -10,8 +10,11 @@ import type { VoiceMeta } from './voice.js'
 
 // Resolved relative to THIS module, not process.cwd(): the CLI may be invoked
 // from any directory (pnpm -C, cron, a wrapper script), and a cwd-relative
-// path.resolve('remotion/index.ts') would point bundling at a nonexistent tree.
-const REMOTION_ENTRY = fileURLToPath(new URL('../../remotion/index.ts', import.meta.url))
+// path.resolve('integrations/remotion/index.ts') would point bundling at a
+// nonexistent tree.
+const REMOTION_ENTRY = fileURLToPath(
+  new URL('../../integrations/remotion/index.ts', import.meta.url),
+)
 
 /**
  * Where this stage puts the finished video, given a run directory. Exported so

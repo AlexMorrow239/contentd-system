@@ -35,14 +35,14 @@ credentials were preserved. No deployment was performed.
 
 ## Existing tests worth keeping
 
-| Concern               | Existing coverage                                                    | Why it replaces an operational dev channel                                                             |
-| --------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Channel configuration | `src/config/channel.test.ts`, `channels.smoke.test.ts`               | Validates fixtures and every maintained TOML without starting workers.                                 |
-| Scouting              | `src/scout/test/`, `src/scout/sources/test/`                         | Exercises source parsing, filtering, scoring, budgets, and deduplication with controlled inputs.       |
-| Daemon decisions      | `src/loop/test/`, `src/jobs/test/golden-path-loop.test.ts`           | Exercises leases, demand limits, claims, resumptions, and action workers against disposable databases. |
-| Finished video        | `src/jobs/test/golden-path.test.ts`, `src/stages/test/`, `remotion/` | Uses mocked paid providers and real media tools to validate actual artifacts.                          |
-| Operator interface    | `dashboard/lib/**/test/`, `src/cli.test.ts`                          | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
-| External boundaries   | `*.contract.test.ts`, `sidecar/whisperx/test_app.py`                 | Keeps paid calls and infrastructure requirements explicit and independently runnable.                  |
+| Concern               | Existing coverage                                                                 | Why it replaces an operational dev channel                                                             |
+| --------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Channel configuration | `src/config/channel.test.ts`, `channels.smoke.test.ts`                            | Validates fixtures and every maintained TOML without starting workers.                                 |
+| Scouting              | `src/scout/test/`, `src/scout/sources/test/`                                      | Exercises source parsing, filtering, scoring, budgets, and deduplication with controlled inputs.       |
+| Daemon decisions      | `src/loop/test/`, `src/jobs/test/golden-path-loop.test.ts`                        | Exercises leases, demand limits, claims, resumptions, and action workers against disposable databases. |
+| Finished video        | `src/jobs/test/golden-path.test.ts`, `src/stages/test/`, `integrations/remotion/` | Uses mocked paid providers and real media tools to validate actual artifacts.                          |
+| Operator interface    | `dashboard/lib/**/test/`, `src/cli.test.ts`                                       | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
+| External boundaries   | `*.contract.test.ts`, `integrations/whisperx/test_app.py`                         | Keeps paid calls and infrastructure requirements explicit and independently runnable.                  |
 
 ## Recommended next changes, in order
 
@@ -68,7 +68,7 @@ Use a clean install, the same check command, and a separate sidecar job. Keep
 paid provider contracts manually triggered.
 
 The eight Python endpoint tests run successfully in this checkout's existing
-virtual environment, but `sidecar/whisperx/requirements.txt` describes runtime
+virtual environment, but `integrations/whisperx/requirements.txt` describes runtime
 dependencies and does not declare pytest or the HTTP test client. The local
 interpreter is Python 3.14 while the image uses 3.11. Add explicit test
 dependencies and run the sidecar tests with the image's Python version before
@@ -124,7 +124,7 @@ complexity being removed.
 
 - `pnpm check`: passed, including 1,180 tests across 86 files.
 - `pnpm test:config`: 53 tests passed; `pnpm test:scout`: 180 tests passed.
-- `sidecar/whisperx/.venv/bin/python -m pytest sidecar/whisperx/test_app.py -q`:
+- `integrations/whisperx/.venv/bin/python -m pytest integrations/whisperx/test_app.py -q`:
   eight tests passed in the existing local virtual environment.
 - `docker compose config --quiet` and `git diff --check`: passed.
 - Read-only review found a missing WhisperX image build in the proposed release

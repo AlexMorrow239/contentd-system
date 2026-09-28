@@ -26,7 +26,7 @@ export default tseslint.config(
   {
     files: [
       'src/**/*.ts',
-      'remotion/**/*.ts',
+      'integrations/remotion/**/*.ts',
       'docker/*.ts',
       'scripts/**/*.ts',
       'dashboard/**/*.ts',
@@ -42,7 +42,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['remotion/**/*.tsx', 'dashboard/**/*.tsx'],
+    files: ['integrations/remotion/**/*.tsx', 'dashboard/**/*.tsx'],
     extends: [
       ...tseslint.configs.recommendedTypeChecked,
       react.configs.flat.recommended,

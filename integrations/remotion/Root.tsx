@@ -1,7 +1,7 @@
 import React from 'react'
 import { Composition } from 'remotion'
 import { ShortVideo, type ShortVideoProps } from './ShortVideo'
-import { CAPTION_STYLE, VIDEO_WIDTH, VIDEO_HEIGHT } from '../src/remotion-types'
+import { CAPTION_STYLE, VIDEO_WIDTH, VIDEO_HEIGHT } from '../../src/remotion-types'
 
 const FPS = 30
 

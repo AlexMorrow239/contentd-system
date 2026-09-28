@@ -14,7 +14,7 @@ const style = {
 
 describe('ShortVideo composition', () => {
   it('bundles and resolves 1080x1920@30 metadata', async () => {
-    const serveUrl = await bundle({ entryPoint: path.resolve('remotion/index.ts') })
+    const serveUrl = await bundle({ entryPoint: path.resolve('integrations/remotion/index.ts') })
 
     const props: ShortVideoProps = {
       audioSrc: 'sample/narration.wav',

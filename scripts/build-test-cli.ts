@@ -11,7 +11,7 @@
  *
  *   src/cli.ts:576           main-module guard   -> dist/cli.js vs process.argv[1]
  *   src/db/index.ts:7        ./schema.sql        -> dist/db/schema.sql (copied below)
- *   src/stages/assemble.ts   ../../remotion/...  -> <repo>/remotion/index.ts
+ *   src/stages/assemble.ts   ../../integrations/remotion/...  -> <repo>/integrations/remotion/index.ts
  *
  * The last is why outbase matters: dist/stages/assemble.js walking ../../
  * lands on the repo root, so Remotion bundles from real source, not a copy.

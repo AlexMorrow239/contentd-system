@@ -14,9 +14,9 @@ superpowers
 .superpowers
 .claude
 # The Python sidecar is a separate service with its own build context
-# (./sidecar/whisperx), so it reads its own .dockerignore, not this one.
+# (./integrations/whisperx), so the Node image does not need its files.
 # Nothing in this Node image uses that tree — including its 47MB .venv.
-sidecar
+integrations/whisperx
 tests-fixtures
 docker-compose.yml
 pyrightconfig.json

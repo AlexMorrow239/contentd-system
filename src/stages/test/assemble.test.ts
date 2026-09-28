@@ -200,7 +200,9 @@ describe('assembleStage bundle robustness', () => {
     // assemble.ts computes its entry point relative to its own file, one
     // directory up from this test file — the same relative hop from here
     // yields the exact path the module must resolve regardless of process.cwd().
-    const expectedEntry = fileURLToPath(new URL('../../../remotion/index.ts', import.meta.url))
+    const expectedEntry = fileURLToPath(
+      new URL('../../../integrations/remotion/index.ts', import.meta.url),
+    )
     expect(existsSync(expectedEntry)).toBe(true) // guards the ../../.. depth itself
     expect(bundleMock).toHaveBeenCalledWith({ entryPoint: expectedEntry })
   })

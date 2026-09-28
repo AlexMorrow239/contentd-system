@@ -19,12 +19,14 @@ describe('dist layout (built by the Vitest globalSetup)', () => {
     expect(existsSync(path.join(DIST, 'db', 'schema.sql'))).toBe(true)
   })
 
-  it('keeps assemble.js pointing at the real remotion/index.ts, not a copy', () => {
+  it('keeps assemble.js pointing at the real integrations/remotion/index.ts, not a copy', () => {
     const assemble = path.join(DIST, 'stages', 'assemble.js')
     expect(existsSync(assemble)).toBe(true)
-    // assemble.ts computes: new URL('../../remotion/index.ts', import.meta.url)
-    const entry = fileURLToPath(new URL('../../remotion/index.ts', `file://${assemble}`))
-    expect(entry).toBe(path.join(REPO_ROOT, 'remotion', 'index.ts'))
+    // assemble.ts computes: new URL('../../integrations/remotion/index.ts', import.meta.url)
+    const entry = fileURLToPath(
+      new URL('../../integrations/remotion/index.ts', `file://${assemble}`),
+    )
+    expect(entry).toBe(path.join(REPO_ROOT, 'integrations', 'remotion', 'index.ts'))
     expect(existsSync(entry)).toBe(true)
   })
 })

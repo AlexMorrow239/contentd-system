@@ -1,11 +1,11 @@
 {
-  "include": ["sidecar/whisperx"],
-  "venvPath": "sidecar/whisperx",
+  "include": ["integrations/whisperx"],
+  "venvPath": "integrations/whisperx",
   "venv": ".venv",
   "useLibraryCodeForTypes": false,
   "executionEnvironments": [
     {
-      "root": "sidecar/whisperx"
+      "root": "integrations/whisperx"
     }
   ]
 }

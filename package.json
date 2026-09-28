@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc --noEmit && tsc -p remotion --noEmit",
+    "build": "tsc --noEmit && tsc -p integrations/remotion --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -18,7 +18,7 @@
     "brainrot": "tsx src/cli.ts",
     "check": "pnpm format:check && pnpm lint && pnpm build && pnpm dashboard:build && pnpm test",
     "test:config": "vitest run src/config",
-    "test:pipeline": "vitest run src/jobs src/stages remotion",
+    "test:pipeline": "vitest run src/jobs src/stages integrations/remotion",
     "test:scout": "vitest run src/scout",
     "dashboard:dev": "tsx scripts/dashboard.ts dev",
     "dashboard:build": "next build dashboard --webpack",

@@ -11,7 +11,7 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url))
  * against absolute module ids. A renamed or deleted test file makes its entry
  * match nothing — the sequencer keeps working, it just silently stops
  * prioritizing that file, which is how the list rotted before (it had lost
- * remotion/remotion.test.ts, the single slowest file per byte).
+ * integrations/remotion/remotion.test.ts, the single slowest file per byte).
  */
 describe('SlowFilesFirstSequencer', () => {
   it('lists only test files that still exist', () => {

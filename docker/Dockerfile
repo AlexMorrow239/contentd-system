@@ -2,10 +2,10 @@ FROM node:22-bookworm-slim
 
 # ffmpeg/ffprobe  - src/media/ffmpeg.ts:23,47,58 and src/stages/qc.ts:93,132,144
 #                   invoke them by bare name through execa.
-# fonts-inter     - remotion/Root.tsx:12 defaults font:'Inter' and Captions.tsx:54
-#                   passes it to Chrome as a CSS fontFamily. A missing font is a
-#                   SILENT fallback to generic sans, not an error, and QC checks
-#                   frames and duration but never typeface.
+# fonts-inter     - integrations/remotion/Root.tsx defaults font:'Inter' and
+#                   Captions.tsx passes it to Chrome as a CSS fontFamily. A
+#                   missing font is a SILENT fallback to generic sans, not an
+#                   error, and QC checks frames and duration but never typeface.
 # tzdata          - src/publish/schedule.ts's publish window/pacing is
 #                   local-wall-clock by design.
 # lib*            - Chrome headless shell's runtime dependency closure.
