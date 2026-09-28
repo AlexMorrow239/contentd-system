@@ -187,30 +187,22 @@ export const RECENT_TITLES_LIMIT = 30
 // not part of the story's actual title.
 const PART_SUFFIX = /\s*\(\d+\/\d+\)\s*$/
 
-// `includeRejected` exists for one caller: the llm generator's own avoid-list
-// (src/scout/scout.ts's `llm` branch). The scorer's window deliberately
-// excludes rejected rows — a topic scored below SCOUT_MIN_SCORE is stale/
-// off-niche noise, not something worth telling the scorer "recently
-// covered". The generator's problem is the opposite: a rejected title is
-// exactly the near-duplicate it should stop re-proposing, or it re-bills the
-// same generation every attempt. Series-collapse stays identical either way
-// — only which rows are eligible to seed the MIN(part_index) representative
-// changes.
+// The scorer's window deliberately excludes rejected rows — a topic scored
+// below SCOUT_MIN_SCORE is stale/off-niche noise, not something worth telling
+// the scorer "recently covered".
 export function recentTopicTitles(
   db: Database,
   channel: string,
   limit = RECENT_TITLES_LIMIT,
-  opts: { includeRejected?: boolean } = {},
 ): string[] {
-  const t1Filter = opts.includeRejected ? '' : "AND t1.status != 'rejected'"
-  const t2Filter = opts.includeRejected ? '' : "AND t2.status != 'rejected'"
   const rows = db
     .prepare(
       `SELECT t1.title AS title, t1.series_key AS seriesKey FROM topics t1
-       WHERE t1.channel = ? ${t1Filter}
+       WHERE t1.channel = ? AND t1.status != 'rejected'
          AND (t1.series_key IS NULL OR t1.part_index = (
            SELECT MIN(t2.part_index) FROM topics t2
-           WHERE t2.channel = t1.channel AND t2.series_key = t1.series_key ${t2Filter}
+           WHERE t2.channel = t1.channel AND t2.series_key = t1.series_key
+             AND t2.status != 'rejected'
          ))
        ORDER BY t1.created_at DESC, t1.id DESC LIMIT ?`,
     )
@@ -249,44 +241,6 @@ export function rejectTopics(db: Database, ids: number[]): number {
       `UPDATE topics SET status = 'rejected' WHERE id IN (${placeholders}) AND status = 'candidate'`,
     )
     .run(...ids).changes
-}
-
-// Candidates the prune pass can re-check: reddit only (an RSS item has no
-// submission target) and 'candidate' only — a used or claimed topic is
-// already spoken for, and rejecting it would strand a live job.
-//
-// `target_url IS NULL` is what scopes this to the rows the pass exists to
-// recover. A row carrying a target was annotated at insert time and its
-// image-kind siblings were dropped before insert, so re-checking it cannot
-// change the verdict — it only pays the pass's 20s inter-row sleep and one
-// rate-limited fetch per row, while holding the scout lease.
-export function redditCandidates(db: Database, channel?: string): TopicRow[] {
-  const where = ["status = 'candidate'", "source LIKE 'reddit:%'", 'target_url IS NULL']
-  const params: string[] = []
-  if (channel !== undefined) {
-    where.push('channel = ?')
-    params.push(channel)
-  }
-  const rows = db
-    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics WHERE ${where.join(' AND ')} ORDER BY id`)
-    .all(...params) as DbTopicRow[]
-  return rows.map(toTopicRow)
-}
-
-// Backfill only — never touches status, so it is safe to call for a row the
-// caller is about to leave as a candidate.
-export function setTopicTargetUrl(db: Database, id: number, targetUrl: string): void {
-  db.prepare('UPDATE topics SET target_url = ? WHERE id = ?').run(targetUrl, id)
-}
-
-// Same 'candidate'-guarded shape as rejectTopics, with the reason recorded so
-// an operator reading the queue can see which pass rejected it and why.
-export function rejectTopicWithReason(db: Database, id: number, reason: string): number {
-  return db
-    .prepare(
-      "UPDATE topics SET status = 'rejected', reason = ? WHERE id = ? AND status = 'candidate'",
-    )
-    .run(reason, id).changes
 }
 
 // Claim = bind topic to job. Guarded so a rejected/used/claimed topic is

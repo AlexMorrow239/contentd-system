@@ -1,7 +1,7 @@
 # The MVP channel: one channel, topic mode, cross-posted to YouTube and
-# Instagram, fed by r/space, RSS, and LLM topic generation. r/space is read
-# through the Arctic Shift archive, since reddit.com itself is unreachable
-# keyless (anti-scraping + blocked OAuth approval). There is NO `[story]`
+# Instagram, fed by r/space alone. Subreddits are read through the Arctic
+# Shift archive, since reddit.com itself is unreachable keyless (anti-scraping
+# + blocked OAuth approval); it is the only scout source. There is NO `[story]`
 # table: story mode stays in the code, dormant purely because nothing here
 # mentions it. Scaling up is adding TOMLs, not restoring code.
 #
@@ -74,41 +74,11 @@ voice_id = "Gubgw9l4dtIoQA9YZHgx"
 # attempts, and the queue-full gate (queue_days below) is what bounds scoring
 # spend. Arctic Shift makes no uptime promises: when this source starts
 # erroring, check https://status.arctic-shift.photon-reddit.com.
-subreddits = ["space"]
+subreddits = ["space","spaceporn","NASA","ESA"]
 
-# RSS entries are full URLs (unlike subreddits, which are bare names). Each
-# feed's source id is `rss:<hostname>`, so keep hostnames distinct — two feeds
-# on one host share a source id. All five verified 200 + valid RSS 2.0 on
-# 2026-07-31.
-rss = [
-  "https://phys.org/rss-feed/space-news/",
-  "https://earthsky.org/feed/",
-  "https://www.sciencedaily.com/rss/space_time.xml",
-  "https://www.universetoday.com/feed/",
-  "https://www.nasa.gov/feed/",
-]
-
-# LLM topic generation (src/scout/sources/llm.ts), registered as one more
-# TrendSource beside the feeds above. 0 disables it; max 50.
-#
-# TRAP 1 — keep `rss` declared alongside this. A generation call that trips
-# the global-day budget gate degrades to a single sourceErrors entry, exactly
-# like a dead feed. On a channel where the generator is the ONLY source, that
-# one entry means failedSources === totalSources, and scoutAll raises
-# AllSourcesFailedError — a budget cap doing its job reads as a total outage
-# and exits 1. The feeds above are what keep that from happening.
-#
-# TRAP 2 — keep generate_topics <= per_source_limit. llmSource clamps its
-# request to min(count, fetch limit), and the fetch limit IS per_source_limit
-# (default 25), so anything above it is silently truncated rather than
-# rejected.
-#
-# Sizing: this is a drought-filler, not the primary supply. The queue-full
-# gate runs BEFORE any source fetches, so generation only fires while the
-# candidate queue is under depth — 8/attempt tops up whatever the feeds did
-# not deliver. It costs one Haiku call per scout attempt, ledgered as
-# operation 'scout-generate' under the sentinel job id 'scout:mvp'.
-generate_topics = 8
+# Newest posts fetched per subreddit per scout attempt (Arctic Shift's max is
+# 100). With a single subreddit, a failed fetch is a total scouting outage:
+# the tick reports AllSourcesFailedError until Arctic Shift answers again.
 per_source_limit = 25
 # Scout-side depth analogue of backlog_days: the scout skips this channel once
 # it holds ceil(videos_per_day x queue_days) = ceil(15 x 3) = 45 candidate
@@ -118,7 +88,7 @@ queue_days = 3
 
 # 15 renders/day is the dominant cost driver, and it is production — not
 # publishing — that spends: one Sonnet script call per video, plus the scout's
-# Haiku scoring and generation calls. per_video_usd is a generous per-job
+# Haiku scoring calls. per_video_usd is a generous per-job
 # ceiling (a breach marks the job `blocked`, not `failed`, and it resumes
 # after a cap change); per_day_usd is 15 x that ceiling with headroom for
 # scout spend.
@@ -128,7 +98,7 @@ queue_days = 3
 #   1. BRAINROT_GLOBAL_DAILY_USD spans ALL channels and ALL scout spend, and
 #      is set in .env (Compose defaults to 12). Raise it
 #      in step with per_day_usd or the global cap is what actually stops
-#      the day — and it is the gate the llm source trips (see TRAP 1 above).
+#      the day.
 #   2. channelDaySpentMicros JOINs costs -> jobs, so the sentinel
 #      'scout:mvp' rows are invisible to THIS cap and count only against the
 #      global one.

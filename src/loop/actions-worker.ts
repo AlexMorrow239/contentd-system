@@ -191,7 +191,7 @@ async function executeOne(
   if (lease !== undefined) {
     holder = leaseHolder(`action:${row.id}`)
     // Every kind that declares a lease (`jobs.produce`, `scout.run`,
-    // `jobs.resume`, `topics.pruneMedia`) is slow-lane, so this always
+    // `jobs.resume`) is slow-lane, so this always
     // resolves to the slow TTL in practice — there is no separate fast-lane
     // TTL any more, since no fast action leases.
     if (!acquireLease(db, lease, holder, SLOW_ACTION_LEASE_TTL_MS)) {

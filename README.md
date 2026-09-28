@@ -242,10 +242,12 @@ scheduled to fall behind: a channel with topics ready gets them produced as
 fast as its own gates (backlog caps, budgets) allow, and a channel with
 nothing to do costs nothing but an idle poll.
 
-No API keys are needed for scouting. RSS sources are read through their
-public feeds. Subreddits are read through [Arctic Shift](https://arctic-shift.photon-reddit.com),
+No API keys are needed for fetching. The scout has one source: subreddits
+(`[scout] subreddits`), read through [Arctic Shift](https://arctic-shift.photon-reddit.com),
 a free public Reddit archive that picks up posts within minutes, because
-reddit.com itself cannot be scouted keylessly any more. Each subreddit's
+reddit.com itself cannot be scouted keylessly any more. RSS feeds and LLM
+topic generation were removed; a channel TOML that still declares `rss` or
+`generate_topics` fails to load, naming the replacement. Each subreddit's
 newest `per_source_limit` posts are fetched, newest first. The archive has no
 "hot" ranking and holds scores near zero for the first ~36 hours, so recency
 is the only order available. Arctic Shift makes no uptime promises; when the
@@ -262,24 +264,12 @@ scoring slot forever. A subreddit name that is not well-formed (`r/space`
 rather than `space`) is reported as a source error. A well-formed name for a
 subreddit that does not exist just returns nothing.
 
-A third source trades a feed for a fee: `[scout] generate_topics = N` has an
-LLM (haiku) invent up to `N` candidate topics per scout attempt instead of
-reading one. There's no external feed to depend on, but unlike reddit/RSS
-each scout attempt that uses it spends a small Anthropic fee — self-limited
-by the same queue-full depth gate as every other source — a channel already
-holding
-enough queued candidates never generates. Two traps: keep `rss` (or
-`subreddits`) declared alongside it, since a budget breach on an
-llm-only channel makes generation the channel's _only_ source, and a single
-degraded call then reads as a total scouting outage rather than one skipped
-source; and keep `generate_topics` at or below `per_source_limit` — the
-generator's request is clamped to `min(generate_topics, per_source_limit)`
-silently, not rejected.
-
 A failed Arctic Shift request (a rate limit, a query timeout, an outage) is
 one `sourceErrors` entry, carrying the API's own error text, and is not
 retried. The channel's next scout attempt, at least 20 minutes later, tries
-again.
+again. When every subreddit across every channel fails, the run reports
+`AllSourcesFailedError`; with a single subreddit, one Arctic Shift outage is
+enough.
 
 Image submissions are dropped before scoring. The scorer only ever sees
 titles, so an astrophotography post reads as a strong topic and scores high,
@@ -290,25 +280,6 @@ extensions) without paying to score them. Hosts that are less clear-cut — an
 astrophotography site with no file extension, a YouTube explainer — are not
 guessed at: the target host goes into the scoring prompt so the model can weigh
 it. Each tick reports how many it dropped as `droppedMedia`.
-
-To clean image-sourced topics scouted before this existed, run `topics
-prune-media`. It re-fetches each candidate's permalink and rejects the ones
-whose target is an image. It still reads reddit.com's own permalink feed and
-has not moved to Arctic Shift, so from a network reddit blocks, every row is
-skipped with an error. Topics scouted through Arctic Shift always record
-their target, so they never need it. A host process can no longer open the production
-database at all, so run it inside the container:
-
-```bash
-docker compose exec brainrot pnpm brainrot topics prune-media --dry-run
-```
-
-Drop `--dry-run` once the verdicts look right. Reddit rate-limits this endpoint
-hard, so it paces itself at ~20s per row and retries a 429 once — budget
-roughly _20 seconds per reddit candidate_, and watch the per-row progress on
-stderr. Any row it cannot resolve is left untouched and reported; re-running
-picks those up. Like the other manual commands it runs outside the scout lease,
-so stop the daemon first if a unit of scout work may be live.
 
 ### Start
 
@@ -433,13 +404,13 @@ Every page it _reads_ still opens the database through a read-only connection
 connection flag, not the mount. What changed is that the dashboard now also
 _writes_, in one narrow way: buttons on the overview, jobs, library, topics
 and post pages queue an operator action (`POST /api/actions`) that the daemon
-executes, rather than mutating anything itself. Thirteen actions are wired
+executes, rather than mutating anything itself. Twelve actions are wired
 today. Six are fast — `topics reject/requeue`, `library approve`,
-`run digest` and `post mark/unmark` — and seven are slow, meaning they can
+`run digest` and `post mark/unmark` — and six are slow, meaning they can
 run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
 `produce` with a channel you pick and a topic you type (`/jobs`),
-`scout now` (`/topics`), `library reject` (discard, `/library`),
-`backfill store` (`/library`) and `prune media` (`/topics`). Nothing
+`scout now` (`/topics`), `library reject` (discard, `/library`) and
+`backfill store` (`/library`). Nothing
 wired to the dashboard uploads to a platform — posting is the
 paste-and-click `/post` workflow above, not a queued action. What is
 still CLI-only after this phase is `costs`' own seven-day breakdown —
@@ -467,21 +438,20 @@ you pick and a topic you type, from `/jobs`) each run the whole pipeline —
 an Anthropic call for the script, ElevenLabs if the channel configures
 `[voice.premium]`, and a full Remotion render — and `resume` re-runs
 whichever of those stages the job has not finished. `scout now` also
-spends real provider money without rendering anything, on topic scoring
-plus, where `generate_topics` is set, topic generation. A separate risk
+spends real provider money without rendering anything, on topic scoring.
+A separate risk
 is data loss, not spend: `library reject` ("discard") **permanently
 deletes** the rejected videos' stored objects — best-effort, so an
 unreachable bucket leaves them orphaned with a warning
 rather than rolling the rejection back — and pulls them out of the posting
 queue for good.
 
-Seven actions route through a confirmation interstitial naming the
+Six actions route through a confirmation interstitial naming the
 consequence: `produce next`, `produce` and `resume`, because they spend and
 render; `library reject` and `post unmark`, because they lose data rather
 than money (`post unmark` throws away a saved live link); and, added this
 phase, `backfill store`, because it can rack up real object-storage cost
-across every unstored video, and `prune media`, because it runs for minutes
-bulk-rejecting scouted topics. The rest fire on one
+across every unstored video. The rest fire on one
 click, `scout now` included — so a click can spend without a prompt. Spend
 still lands under a budget cap, but which one depends on the action.
 `produce next`, `produce` and `resume` each have a job to meter against, so
@@ -702,7 +672,7 @@ paused until you do.
 ```bash
 pnpm check          # complete Node/TypeScript release check
 pnpm test           # unit + integration (mocked providers; real ffmpeg/Remotion)
-pnpm test:contract  # real calls: a few cents (ElevenLabs synth, one LLM call) + free Arctic Shift GETs
+pnpm test:contract  # real calls: a few cents (ElevenLabs synth, one Anthropic call) + free Arctic Shift GETs
 pnpm test:storage   # object-store conformance against real MinIO (see Object storage above)
 ```
 

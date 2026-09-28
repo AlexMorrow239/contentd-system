@@ -131,20 +131,8 @@ describe('loadChannelConfig', () => {
 describe('[scout] config', () => {
   it('applies DEFAULT_SCOUT whole when the [scout] table is absent', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
-    expect(cfg.scout).toEqual({
-      subreddits: [],
-      rss: [],
-      perSourceLimit: 25,
-      queueDays: 3,
-      generateTopics: 0,
-    })
-    expect(DEFAULT_SCOUT).toEqual({
-      subreddits: [],
-      rss: [],
-      perSourceLimit: 25,
-      queueDays: 3,
-      generateTopics: 0,
-    })
+    expect(cfg.scout).toEqual({ subreddits: [], perSourceLimit: 25, queueDays: 3 })
+    expect(DEFAULT_SCOUT).toEqual({ subreddits: [], perSourceLimit: 25, queueDays: 3 })
   })
 
   it('parses a full [scout] table into camelCase', () => {
@@ -153,28 +141,20 @@ describe('[scout] config', () => {
         ...PLAN1_LINES,
         '[scout]',
         'subreddits = ["space", "askscience"]',
-        'rss = ["https://www.sciencedaily.com/rss/space_time.xml"]',
         'per_source_limit = 10',
+        'queue_days = 4',
       ]),
     )
     expect(cfg.scout).toEqual({
       subreddits: ['space', 'askscience'],
-      rss: ['https://www.sciencedaily.com/rss/space_time.xml'],
       perSourceLimit: 10,
-      queueDays: 3,
-      generateTopics: 0,
+      queueDays: 4,
     })
   })
 
   it('applies per-field defaults inside a partial [scout] table', () => {
     const cfg = loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'subreddits = ["space"]']))
-    expect(cfg.scout).toEqual({
-      subreddits: ['space'],
-      rss: [],
-      perSourceLimit: 25,
-      queueDays: 3,
-      generateTopics: 0,
-    })
+    expect(cfg.scout).toEqual({ subreddits: ['space'], perSourceLimit: 25, queueDays: 3 })
   })
 
   it('rejects out-of-range scout numbers', () => {
@@ -190,24 +170,20 @@ describe('[scout] config', () => {
     const config1 = loadChannelConfig(writeToml(PLAN1_LINES))
     const config2 = loadChannelConfig(writeToml(PLAN1_LINES))
     expect(config1.scout.subreddits).not.toBe(config2.scout.subreddits)
-    expect(config1.scout.rss).not.toBe(config2.scout.rss)
     expect(Object.isFrozen(DEFAULT_SCOUT)).toBe(true)
   })
 
-  it('parses [scout] generate_topics and defaults it to 0', () => {
-    const withoutKey = loadChannelConfig(writeToml(PLAN1_LINES))
-    expect(withoutKey.scout.generateTopics).toBe(0)
-    const withKey = loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'generate_topics = 5']))
-    expect(withKey.scout.generateTopics).toBe(5)
-  })
-
-  it('rejects a negative or fractional generate_topics', () => {
+  // Removed sources fail loudly, naming what replaced them: a silently ignored
+  // key would leave an operator believing a supply exists that no longer does.
+  it('rejects the removed rss and generate_topics sources, naming the replacement', () => {
     expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'generate_topics = -1'])),
-    ).toThrow(/generate_topics must be 0 or more/)
+      loadChannelConfig(
+        writeToml([...PLAN1_LINES, '[scout]', 'rss = ["https://example.com/feed.xml"]']),
+      ),
+    ).toThrow(/\[scout\] rss was removed; subreddits \(read through Arctic Shift\)/)
     expect(() =>
-      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'generate_topics = 1.5'])),
-    ).toThrow(/generate_topics must be a whole number/)
+      loadChannelConfig(writeToml([...PLAN1_LINES, '[scout]', 'generate_topics = 0'])),
+    ).toThrow(/\[scout\] generate_topics was removed; subreddits \(read through Arctic Shift\)/)
   })
 })
 
@@ -407,34 +383,6 @@ describe('loadChannelConfig story mode', () => {
     const file = join(dir, 'plain.toml')
     writeFileSync(file, channelToml({ name: 'plain' }))
     expect(loadChannelConfig(file).story).toBeNull()
-  })
-
-  it('rejects [story] alongside rss sources', () => {
-    const dir = tmpDir('story-config')
-    const file = join(dir, 'aita.toml')
-    writeFileSync(
-      file,
-      channelToml({
-        name: 'aita',
-        extra: ['[scout]', 'rss = ["https://example.com/feed.xml"]', '[story]'],
-      }),
-    )
-    expect(() => loadChannelConfig(file)).toThrow(/rss/i)
-  })
-
-  it('rejects [story] with generate_topics > 0, naming the reason', () => {
-    const dir = tmpDir('story-config')
-    const file = join(dir, 'aita.toml')
-    writeFileSync(
-      file,
-      channelToml({
-        name: 'aita',
-        extra: ['[scout]', 'subreddits = ["AmItheAsshole"]', 'generate_topics = 3', '[story]'],
-      }),
-    )
-    expect(() => loadChannelConfig(file)).toThrow(
-      'a [story] channel cannot declare [scout] generate_topics — a generated topic has no post body to narrate',
-    )
   })
 
   it('rejects max_parts exceeding videos_per_day x backlog_days', () => {

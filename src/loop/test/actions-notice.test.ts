@@ -7,8 +7,8 @@ describe('ActionContext.setNotice through the worker', () => {
   it("lands a running handler's notice on the row while it runs", async () => {
     const { db } = fileDb()
     const id = enqueueAction(db, {
-      kind: 'topics.pruneMedia',
-      args: { dryRun: true },
+      kind: 'library.backfillStore',
+      args: {},
       requestedBy: 'dashboard',
     })
     let seenMidRun: string | null = null
@@ -16,15 +16,15 @@ describe('ActionContext.setNotice through the worker', () => {
       channelsDir: '/ch',
       runsRoot: '/runs',
       run: (ctx) => {
-        ctx.setNotice('checked 1/2')
+        ctx.setNotice('uploaded 1/2')
         // Read it back on a DIFFERENT statement, proving it reached the row
         // rather than only the closure.
         seenMidRun = getAction(db, id)?.notice ?? null
-        return Promise.resolve({ checked: 0 })
+        return Promise.resolve({ uploaded: 0 })
       },
     })
     await unit()
-    expect(seenMidRun).toBe('checked 1/2')
+    expect(seenMidRun).toBe('uploaded 1/2')
     // Cleared on success — a stale progress label must not outlive the run.
     expect(getAction(db, id)?.notice).toBeNull()
   })
@@ -32,8 +32,8 @@ describe('ActionContext.setNotice through the worker', () => {
   it('leaves the last notice in place when the handler throws', async () => {
     const { db } = fileDb()
     const id = enqueueAction(db, {
-      kind: 'topics.pruneMedia',
-      args: { dryRun: true },
+      kind: 'library.backfillStore',
+      args: {},
       requestedBy: 'dashboard',
     })
     const unit = actionsUnit(db, 'slow', {
@@ -42,13 +42,13 @@ describe('ActionContext.setNotice through the worker', () => {
       run: (ctx) => {
         // Write the notice BEFORE throwing — this is the interrupted-render
         // shape: the handler published its context and then died.
-        ctx.setNotice('checked 1/2')
-        return Promise.reject(new Error('reddit said no'))
+        ctx.setNotice('uploaded 1/2')
+        return Promise.reject(new Error('bucket said no'))
       },
     })
     await unit()
     const row = getAction(db, id)
     expect(row?.status).toBe('failed')
-    expect(row?.notice).toBe('checked 1/2')
+    expect(row?.notice).toBe('uploaded 1/2')
   })
 })

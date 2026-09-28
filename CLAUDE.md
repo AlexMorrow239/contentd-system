@@ -174,15 +174,15 @@ Storage SDK imports are lazy in handlers and the store stage.
 Fast actions are `topics.reject`, `topics.requeue`, `library.approve`,
 `digest.run`, `post.mark`, and `post.unmark`. They perform no network calls,
 rendering, or lease acquisition. Slow actions are `produce.next`, `jobs.produce`,
-`scout.run`, `jobs.resume`, `library.reject`, `library.backfillStore`, and
-`topics.pruneMedia`. Discard belongs in slow because it can delete S3 objects.
+`scout.run`, `jobs.resume`, `library.reject`, and `library.backfillStore`.
+Discard belongs in slow because it can delete S3 objects.
 
 Lease declarations matter:
 
 | Slow action                                               | Worker-acquired lease |
 | --------------------------------------------------------- | --------------------- |
 | `jobs.produce`, `jobs.resume`                             | `produce`             |
-| `scout.run`, `topics.pruneMedia`                          | `scout`               |
+| `scout.run`                                               | `scout`               |
 | `produce.next`, `library.reject`, `library.backfillStore` | None                  |
 
 `produce.next` takes its own lease inside `produceNextTick`; declaring it again
@@ -237,7 +237,14 @@ derives `db/brainrot.db`, `runs/`, and `channels/` beneath it. There is no
 implicit host root. Compose supplies `/app/state`; tests supply temporary roots.
 Only `BRAINROT_ROOT` selects paths; obsolete path variables are ignored.
 
-### The scout filters media before it reaches the scorer
+### The scout: subreddits through Arctic Shift, filtered before scoring
+
+Subreddits read through Arctic Shift are the only scout source. RSS feeds and
+LLM topic generation were removed; `[scout] rss` and `generate_topics` are
+removed keys that fail validation naming the replacement, like `min_score`.
+Historical `rss:`/`llm:` topic rows and `scout-generate` cost rows remain as
+data. Outage detection counts subreddits: `AllSourcesFailedError` means every
+subreddit on every scouted channel failed.
 
 The scorer sees titles, so media posts can look like narratable stories.
 Reddit source parsing annotates `postKind`; `scoutChannel` decides what to drop.
@@ -248,8 +255,8 @@ Keep this split so scouting can report `droppedMedia` without changing the
 (`/api/posts/search`, newest first, `md2html=true`). reddit.com is unreachable
 keyless. Its source id (`reddit:r/<sub>`) and external id (`t3_<id>`) match the
 old Atom feed's, so dedupe hashes carry across the transport change; keep them.
-The candidate `url` is the rebuilt comments permalink, which the story outro,
-dashboard, and prune-media read. The post's own `url` field is the submission
+The candidate `url` is the rebuilt comments permalink, which the story outro
+and dashboard read. The post's own `url` field is the submission
 target. Classify it with `sources/post-kind.ts`; a crosspost's relative target
 resolves against reddit.com. Missing/unparseable targets fail open as `link`.
 Render target hosts into the scoring prompt for ambiguous media links rather
@@ -264,33 +271,10 @@ construction instead.
 
 Filter AutoModerator/moderator accounts via `isAutomatedAuthor` and report
 `droppedAutomated`; recurring threads have fresh IDs and evade ordinary dedupe.
-`topics.target_url` records the submission target separately from `topics.url`.
-`topics prune-media` repairs older rows by fetching permalink `.rss` and
-verifying the feed's ID against the stored dedupe hash before mutation. It
-still reads reddit.com (`fetchRedditFeed`, not yet ported to Arctic Shift), so
-it cannot resolve rows from a network reddit blocks. Arctic Shift rows always
-carry `target_url` and never qualify.
-
-### The third source invents topics rather than fetching them
-
-`src/scout/sources/llm.ts` implements `TrendSource`, sharing the ordinary
-scoring, dedupe, and insertion path. `[scout] generate_topics` enables it
-(default 0, maximum 50). It uses `SCOUT_MODEL` and recent topic titles; normalized
-headline text is its external ID, and URL is empty. Story channels reject it
-because generated topics have no source body.
-
-The queue-depth gate runs before fetching, so generation fills demand rather
-than running on a separate schedule. Reserve estimated spend against the global
-daily budget and ledger the actual `scout-generate` cost under `scout:<channel>`,
-including paid schema-invalid responses, before scoring can fail.
-
-Two configuration traps:
-
-- A generator-only channel can report all sources failed when its budget gate
-  throws, because that becomes a source error. Keep a feed source alongside it
-  when that failure mode would be misleading.
-- Keep `generate_topics <= per_source_limit`; the source clamps to the fetch
-  limit rather than rejecting an oversized request.
+`topics.target_url` records the submission target separately from `topics.url`;
+every Arctic Shift row carries one. Rows scouted before the column existed keep
+NULL — the reddit.com-only `topics prune-media` repair was removed with the
+other non-Arctic Shift scouting code.
 
 ### Story mode: channels that narrate reddit posts verbatim
 
@@ -317,8 +301,7 @@ representative per series so the novelty window counts stories, not parts.
 Candidate depth is checked before fetching, so a batch can overshoot the nominal
 queue limit, especially when each story generates multiple parts.
 
-Channel validation rejects story RSS sources and generated topics because they
-lack Reddit bodies. It also requires `max_parts <= videos_per_day * backlog_days`
+Channel validation requires `max_parts <= videos_per_day * backlog_days`
 so a series fits production capacity. This is not an age-out rule: videos do
 not expire. Drop bodyless and automated-author candidates before scoring.
 
@@ -490,8 +473,7 @@ the shared helpers rather than re-rolling fixtures locally:
   table, each `(db, id?, overrides?)`.
 - `cli.ts`, `run-cli.ts`, `storage.ts` — subprocess and object-storage
   scaffolding; `anthropic.ts` supplies the provider fake. `arctic-shift.ts`
-  supplies the redditSource response builders and the URL-keyed `fetchStub`;
-  `reddit-feed.ts` keeps the reddit.com Atom builders only prune-media still needs.
+  supplies the redditSource response builders and the URL-keyed `fetchStub`.
 
 Conventions:
 

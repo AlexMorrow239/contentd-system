@@ -4,7 +4,6 @@ import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from '../types.js
 import {
   ARCTIC_SHIFT_BASE_URL,
   REDDIT_USER_AGENT,
-  fetchRedditFeed,
   isAutomatedAuthor,
   redditSource,
 } from '../reddit.js'
@@ -34,91 +33,6 @@ function fakeFetch(status: number, body: string) {
   return { impl, calls }
 }
 
-describe('dedupeHash', () => {
-  it('is the sha256 hex of sourceId + newline + externalId', () => {
-    // printf 'reddit:r/space\nt3_abc' | shasum -a 256
-    expect(dedupeHash('reddit:r/space', 't3_abc')).toBe(
-      '543177266c3fc519b4f49513548b8109762f1e86010a941570d86885ac5b0f0a',
-    )
-  })
-
-  it('is stable across calls, distinct across items, and lowercase hex', () => {
-    expect(dedupeHash('rss:example.com', 'guid-1')).toBe(dedupeHash('rss:example.com', 'guid-1'))
-    expect(dedupeHash('rss:example.com', 'guid-1')).not.toBe(
-      dedupeHash('rss:example.com', 'guid-2'),
-    )
-    expect(dedupeHash('rss:example.com', 'guid-1')).toMatch(/^[0-9a-f]{64}$/)
-  })
-})
-
-describe('SOURCE_FETCH_TIMEOUT_MS', () => {
-  it('defaults to 10 seconds', () => {
-    expect(SOURCE_FETCH_TIMEOUT_MS).toBe(10_000)
-  })
-})
-
-describe('fetchRedditFeed', () => {
-  it('sends the descriptive UA and a timeout signal', async () => {
-    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
-    const { impl, calls } = fakeFetch(200, 'ok')
-
-    await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
-      fetchImpl: impl,
-      timeoutMs: 9_000,
-      retryDelayMs: 0,
-    })
-
-    const init = calls[0].init!
-    expect((init.headers as Record<string, string>)['User-Agent']).toBe(REDDIT_USER_AGENT)
-    expect(timeoutSpy).toHaveBeenCalledWith(9_000)
-  })
-
-  it('retries once after a 429 and returns the retry response', async () => {
-    const calls: unknown[] = []
-    const impl: FetchLike = async (input) => {
-      calls.push(input)
-      return calls.length === 1
-        ? new Response('', { status: 429 })
-        : new Response('ok', { status: 200 })
-    }
-
-    const res = await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
-      fetchImpl: impl,
-      timeoutMs: 1_000,
-      retryDelayMs: 0,
-    })
-
-    expect(res.status).toBe(200)
-    expect(calls).toHaveLength(2)
-  })
-
-  it('gives up after one retry rather than grinding', async () => {
-    const { impl, calls } = fakeFetch(429, '')
-
-    const res = await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
-      fetchImpl: impl,
-      timeoutMs: 1_000,
-      retryDelayMs: 0,
-    })
-
-    expect(res.status).toBe(429)
-    expect(calls).toHaveLength(2)
-  })
-
-  it('does not retry a non-429 failure', async () => {
-    const { impl, calls } = fakeFetch(404, '')
-
-    const res = await fetchRedditFeed('https://www.reddit.com/r/space/.rss', {
-      fetchImpl: impl,
-      timeoutMs: 1_000,
-      retryDelayMs: 0,
-    })
-
-    expect(res.status).toBe(404)
-    expect(calls).toHaveLength(1)
-  })
-})
-
 const JWST_TARGET = 'https://www.nasa.gov/missions/webb/water-ice/'
 const BOOSTER_PERMALINK = 'https://www.reddit.com/r/space/comments/def/starship_booster_catch/'
 
@@ -139,6 +53,27 @@ async function fetchAll(
 ): Promise<Awaited<ReturnType<ReturnType<typeof redditSource>['fetch']>>> {
   return redditSource(subreddit, impl).fetch({ limit, timeoutMs: 10_000 })
 }
+
+describe('dedupeHash', () => {
+  it('is the sha256 hex of sourceId + newline + externalId', () => {
+    // printf 'reddit:r/space\nt3_abc' | shasum -a 256
+    expect(dedupeHash('reddit:r/space', 't3_abc')).toBe(
+      '543177266c3fc519b4f49513548b8109762f1e86010a941570d86885ac5b0f0a',
+    )
+  })
+
+  it('is stable across calls, distinct across items, and lowercase hex', () => {
+    expect(dedupeHash('reddit:r/space', 't3_a')).toBe(dedupeHash('reddit:r/space', 't3_a'))
+    expect(dedupeHash('reddit:r/space', 't3_a')).not.toBe(dedupeHash('reddit:r/space', 't3_b'))
+    expect(dedupeHash('reddit:r/space', 't3_a')).toMatch(/^[0-9a-f]{64}$/)
+  })
+})
+
+describe('SOURCE_FETCH_TIMEOUT_MS', () => {
+  it('defaults to 10 seconds', () => {
+    expect(SOURCE_FETCH_TIMEOUT_MS).toBe(10_000)
+  })
+})
 
 describe('redditSource', () => {
   it("GETs the subreddit's newest posts from Arctic Shift with the UA and a timeout", async () => {

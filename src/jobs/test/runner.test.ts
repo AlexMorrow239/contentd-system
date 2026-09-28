@@ -10,7 +10,7 @@ import type { StoreArtifact } from '../../stages/store.js'
 import { testChannel } from '../../testing/channel.js'
 import { fileDb } from '../../testing/db.js'
 import { tagError } from '../../errors.js'
-import { claimTopic, insertTopics, redditCandidates } from '../../scout/topics.js'
+import { claimTopic, insertTopics, listTopics } from '../../scout/topics.js'
 import type { StoryPart } from '../../stories/types.js'
 
 /** A real on-disk db plus a runs root beside it; both cleaned up per file. */
@@ -631,7 +631,7 @@ describe('final gate: claimed topic', () => {
       },
     ])
     const jobId = createJob(db, channel, { topic: 'a scouted topic' })
-    const [topic] = redditCandidates(db, channel.name)
+    const [topic] = listTopics(db, { channel: channel.name })
     claimTopic(db, topic.id, jobId)
     return jobId
   }
@@ -701,7 +701,7 @@ describe('runJob story context', () => {
       },
     ])
     const jobId = createJob(db, channel, { topic: 'She blended the fruit (2/3)' })
-    const [topic] = redditCandidates(db, 'aita')
+    const [topic] = listTopics(db, { channel: 'aita' })
     claimTopic(db, topic.id, jobId)
 
     let seen: StoryPart | undefined

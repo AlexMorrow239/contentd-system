@@ -1,9 +1,8 @@
 import { arcticShiftJson } from '../../../testing/arctic-shift.js'
-import { linkAnchor, redditEntry, redditFeedXml } from '../../../testing/reddit-feed.js'
 
 /**
  * The post-kind classifier's own corpus, built from the shared wire-shape
- * builders in `src/testing/`. What is local here is the *selection* of posts —
+ * builder in `src/testing/arctic-shift.ts`. What is local here is the *selection* of posts —
  * one per `url` shape the source must turn into a target — not the wire shape.
  */
 
@@ -28,33 +27,3 @@ export const POST_KIND_SEARCH_JSON = arcticShiftJson([
   { id: 'fff6', title: 'A post whose url is empty', target: '' },
   { id: 'ggg7', title: 'A post with no url at all' },
 ])
-
-// prune-media still re-fetches reddit.com's own Atom permalink feed. Its
-// entries use reddit's `/comments/<id-without-t3_>/x/` permalink form; the
-// shared builder's default is the `/comments/<id>/` form, so it is spelled
-// out rather than inherited.
-function entry(id: string, title: string, contentInner: string): string {
-  return redditEntry({
-    id,
-    title,
-    permalink: `https://www.reddit.com/r/space/comments/${id.replace('t3_', '')}/x/`,
-    content: contentInner,
-  })
-}
-
-/**
- * A permalink's comment feed: the submission (t3_) first, then comments (t1_).
- * Only the submission carries a `[link]` anchor — this is what `prune-media`
- * re-fetches to recover a stored topic's submission target.
- */
-export function permalinkFeedXml(t3Id: string, target: string | undefined): string {
-  return redditFeedXml([
-    entry(
-      t3Id,
-      'Milky way over Yosemite',
-      target === undefined ? '&lt;p&gt;x&lt;/p&gt;' : linkAnchor(target),
-    ),
-    `<entry><id>t1_ozzv816</id><title>a comment</title>` +
-      `<content type="html">&lt;p&gt;nice shot&lt;/p&gt;</content></entry>`,
-  ])
-}

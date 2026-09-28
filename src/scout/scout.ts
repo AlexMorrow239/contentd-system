@@ -5,20 +5,12 @@ import { assertGlobalDayBudget, recordCost } from '../jobs/costs.js'
 import { BrainrotError, classify, errorMessage, retagWithContext } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
-import type { FetchLike, TrendCandidate, TrendSource } from './sources/types.js'
+import type { FetchLike, TrendCandidate } from './sources/types.js'
 import { isMediaPostKind } from './sources/post-kind.js'
 import { redditSource } from './sources/reddit.js'
-import { rssSource } from './sources/rss.js'
-import { ESTIMATED_GENERATE_COST_MICROS, llmSource } from './sources/llm.js'
 import { ESTIMATED_SCOUT_COST_MICROS, estimatedChunkCount, scoreCandidates } from './score.js'
 import type { ScoredCandidate } from './score.js'
-import {
-  candidateTopicCount,
-  insertTopics,
-  knownHashes,
-  RECENT_TITLES_LIMIT,
-  recentTopicTitles,
-} from './topics.js'
+import { candidateTopicCount, insertTopics, knownHashes, recentTopicTitles } from './topics.js'
 import type { NewTopic } from './topics.js'
 import { lastScoutAttemptAt, recordScoutAttempt } from './scout-state.js'
 import { splitStory, STORY_WORDS_PER_PART } from '../stories/split.js'
@@ -90,13 +82,6 @@ function emptyChannelResult(
   }
 }
 
-// A source before construction: the raw config entry the loop builds a source
-// from inside the per-source try, so a throwing constructor is isolated.
-type SourceDescriptor =
-  | { kind: 'reddit'; subreddit: string }
-  | { kind: 'rss'; url: string }
-  | { kind: 'llm'; count: number }
-
 // Scoring with the ledger-complete error path: gate first; if the call spent
 // before failing (paid-but-invalid response), record that spend before the
 // error propagates.
@@ -124,10 +109,6 @@ async function scoreWithLedger(
     const spent = errorCostUsdMicros(err)
     if (spent !== undefined) {
       recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', spent)
-      // += , not =: any already-recorded generation cost on `result` must
-      // survive a scoring failure — the ledger row for it is separate and
-      // already safe, but the in-memory result would otherwise be zeroed
-      // back to just this scoring spend.
       result.costUsdMicros += spent
     }
     // Carry the partial ScoutChannelResult across the rethrow so scoutAll can
@@ -170,89 +151,26 @@ export async function scoutChannel(
     return emptyChannelResult(channel.name, { skipped: 'queue-full' })
   }
 
-  // Iterate DESCRIPTORS, not pre-built sources: rssSource runs `new URL(url)`
-  // at construction, so building every source up front let one malformed feed
-  // URL abort the whole channel before per-source isolation began. Constructing
-  // inside the per-source try keeps a throwing constructor to a single entry.
-  const descriptors: SourceDescriptor[] = [
-    ...channel.scout.subreddits.map((subreddit) => ({ kind: 'reddit' as const, subreddit })),
-    ...channel.scout.rss.map((url) => ({ kind: 'rss' as const, url })),
-    ...(channel.scout.generateTopics > 0
-      ? [{ kind: 'llm' as const, count: channel.scout.generateTopics }]
-      : []),
-  ]
-
   const sourceErrors: string[] = []
   const candidates: TrendCandidate[] = []
-  // Generation spend accumulates across the loop and is recorded once, right
-  // after `result` is constructed below — NOT inside the final scoring
-  // transaction, so a later scoring throw can never lose this ledger row.
-  let generateCostMicros = 0
-  // Per-source isolation: a failed constructor, fetch, or timeout contributes
-  // zero candidates and one sourceErrors entry; the run continues (spec §4).
-  for (const descriptor of descriptors) {
-    let source: TrendSource | undefined
+  // Per-source isolation: a malformed subreddit name, a failed fetch, or a
+  // timeout contributes zero candidates and one sourceErrors entry; the run
+  // continues (spec §4). The source is constructed inside the try because its
+  // constructor is what rejects a malformed name.
+  for (const subreddit of channel.scout.subreddits) {
     try {
-      if (descriptor.kind === 'llm') {
-        // Same shape as scoring's gate: reserve the estimate against the
-        // global day cap BEFORE the paid call. A breach throws here inside
-        // the per-source try and lands in sourceErrors — rss/reddit sources
-        // still run, and the scoring gate below remains the hard stop.
-        assertGlobalDayBudget(db, ESTIMATED_GENERATE_COST_MICROS)
-        source = llmSource({
-          channelName: channel.name,
-          niche: channel.niche,
-          // includeRejected: true — backwards from the scorer's own call just
-          // above. A rejected title is exactly what the generator should stop
-          // re-proposing (a near-duplicate re-bills every attempt); the
-          // scorer's window deliberately excludes rejected rows instead (see
-          // recentTopicTitles' own comment).
-          recentTitles: recentTopicTitles(db, channel.name, RECENT_TITLES_LIMIT, {
-            includeRejected: true,
-          }),
-          count: descriptor.count,
-          client: opts.client,
-          onCost: (usdMicros) => {
-            generateCostMicros += usdMicros
-          },
-        })
-      } else {
-        source =
-          descriptor.kind === 'reddit'
-            ? redditSource(descriptor.subreddit, opts.fetchImpl)
-            : rssSource(descriptor.url, opts.fetchImpl)
-      }
       candidates.push(
-        ...(await source.fetch({
+        ...(await redditSource(subreddit, opts.fetchImpl).fetch({
           limit: channel.scout.perSourceLimit,
           timeoutMs: SOURCE_FETCH_TIMEOUT_MS,
         })),
       )
     } catch (err) {
-      // Prefer the constructed source's id; when the constructor itself threw
-      // (a malformed rss URL — no hostname to derive an id from) fall back to a
-      // raw-url prefix so the entry still names the offending source.
-      const id =
-        source?.id ??
-        (descriptor.kind === 'reddit'
-          ? `reddit:r/${descriptor.subreddit}`
-          : descriptor.kind === 'rss'
-            ? `rss:${descriptor.url}`
-            : `llm:${channel.name}`)
-      const entry = `${id}: ${errorMessage(err)}`
+      const entry = `reddit:r/${subreddit}: ${errorMessage(err)}`
       // Spec §4: a failing source "logs a warning" — stderr, since stdout is
       // reserved for the CLI's single JSON line.
       console.error(`scout: source ${entry}`)
       sourceErrors.push(entry)
-      // Paid-but-failed generation (schema-invalid response) still spent
-      // money; recover it the same way scoreWithLedger does. Gated on the
-      // llm descriptor: a reddit/rss error never carries a cost tag, but
-      // gating explicitly means one hypothetically doing so is never
-      // mis-ledgered as scout-generate spend.
-      if (descriptor.kind === 'llm') {
-        const spent = errorCostUsdMicros(err)
-        if (spent !== undefined) generateCostMicros += spent
-      }
     }
   }
 
@@ -308,15 +226,6 @@ export async function scoutChannel(
     costUsdMicros: 0,
   }
 
-  // Recorded here — right after `result` exists but well before the final
-  // scoring transaction below — so a later scoring throw (including the
-  // fresh.length === 0 early return just below) can never lose this ledger
-  // row or the spend it already represents on `result`.
-  if (generateCostMicros > 0) {
-    recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-generate', generateCostMicros)
-    result.costUsdMicros += generateCostMicros
-  }
-
   // Hash-filter BEFORE scoring: known items never reach Haiku again, so scout
   // re-runs are free and rejected topics stay rejected without re-spend.
   const hashes = narratable.map((c) => dedupeHash(c.sourceId, c.externalId))
@@ -329,9 +238,7 @@ export async function scoutChannel(
 
   result.scored = fresh.length
   const scored = await scoreWithLedger(db, channel, fresh, result, opts.client)
-  // += , not =: generation cost (if any) was already recorded onto `result`
-  // above, and scoring cost must sum with it, not overwrite it.
-  result.costUsdMicros += scored.costUsdMicros
+  result.costUsdMicros = scored.costUsdMicros
 
   // Topic mode: one row per candidate, exactly as before. Story mode: a
   // queued candidate becomes one row PER PART, which is what makes each part
@@ -455,19 +362,9 @@ export async function scoutAll(
   let totalSources = 0
   let failedSources = 0
   for (const channel of channels) {
-    // The llm descriptor counts as one source (it contributes at most one
-    // sourceErrors entry, same as a reddit/rss descriptor) whenever
-    // generateTopics is on — otherwise total-outage detection below drifts in
-    // both directions: a healthy run with every rss feed down but llm still
-    // working would over-count failedSources against the un-adjusted total,
-    // and a genuine total outage that also takes down llm would under-count
-    // it. This also makes an llm-only channel (no subreddits/rss) scoutable
-    // instead of silently skipped as "no [scout] sources".
-    const sourceCount =
-      channel.scout.subreddits.length +
-      channel.scout.rss.length +
-      (channel.scout.generateTopics > 0 ? 1 : 0)
-    // No [scout] sources → not a scouted channel; manual produce only.
+    // Each subreddit contributes at most one sourceErrors entry.
+    const sourceCount = channel.scout.subreddits.length
+    // No subreddits → not a scouted channel; manual produce only.
     if (sourceCount === 0) continue
     try {
       const result = await scoutChannel(db, channel, opts)

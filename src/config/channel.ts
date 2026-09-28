@@ -16,8 +16,8 @@ export interface PremiumVoiceConfig {
 }
 
 export interface ScoutConfig {
+  /** Bare subreddit names, read through Arctic Shift — the only scout source. */
   subreddits: string[]
-  rss: string[]
   perSourceLimit: number
   /**
    * How many days of scored candidate topics to keep queued before the scout
@@ -25,12 +25,6 @@ export interface ScoutConfig {
    * a share of what it sees, and topics go stale.
    */
   queueDays: number
-  /**
-   * How many LLM-generated topics to request per scout attempt (0 disables
-   * generation). scoutChannel builds the llm source only when this is > 0,
-   * so a channel that never sets it pays nothing.
-   */
-  generateTopics: number
 }
 
 export interface ChannelConfig {
@@ -64,20 +58,19 @@ export interface ChannelConfig {
 
 /**
  * Defaults for the [scout] TOML table: applied whole when the table is
- * absent, per-field (via the zod defaults below) when it is partial. Empty
- * source lists mean the scout skips this channel; manual produce still works.
+ * absent, per-field (via the zod defaults below) when it is partial. An empty
+ * subreddit list means the scout skips this channel; manual produce still
+ * works.
  *
  * Shared singleton — frozen so accidental mutation fails loudly instead of
  * leaking across channels/test runs. Callers that need per-config arrays
- * (loadChannelConfig's absent-[scout] branch) must copy subreddits/rss
- * fresh rather than spreading this object's array references.
+ * (loadChannelConfig's absent-[scout] branch) must copy subreddits fresh
+ * rather than spreading this object's array reference.
  */
 export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
   subreddits: Object.freeze([] as string[]),
-  rss: Object.freeze([] as string[]),
   perSourceLimit: 25,
   queueDays: 3,
-  generateTopics: 0,
 }) as ScoutConfig
 
 /**
@@ -100,6 +93,16 @@ const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
 // naming the replacement rather than a silently ignored key.
 const REMOVED_MIN_SCORE_MESSAGE =
   'min_score was removed; the scout stores only topics scoring >= 80 (SCOUT_MIN_SCORE)'
+
+// RSS feeds and LLM topic generation were scout sources until subreddits read
+// through Arctic Shift became the only one. A TOML still declaring either is
+// a load error rather than a silently ignored key, so an operator learns the
+// supply they configured no longer exists.
+const REMOVED_SCOUT_SOURCE_MESSAGES = {
+  rss: '[scout] rss was removed; subreddits (read through Arctic Shift) are the only scout source',
+  generate_topics:
+    '[scout] generate_topics was removed; subreddits (read through Arctic Shift) are the only scout source',
+} as const
 
 // The platforms this channel is posted to BY HAND. Not a schedule and not a
 // credential — just the checklist the /post page renders and the set
@@ -158,7 +161,8 @@ const rawSchema = z.object({
   scout: z
     .object({
       subreddits: z.array(z.string()).default([]),
-      rss: z.array(z.string()).default([]),
+      rss: z.unknown().optional(),
+      generate_topics: z.unknown().optional(),
       min_score: z.unknown().optional(),
       per_source_limit: z.number().int().min(1).max(100).default(DEFAULT_SCOUT.perSourceLimit),
       queue_days: z
@@ -166,16 +170,15 @@ const rawSchema = z.object({
         .int('queue_days must be a whole number of days')
         .positive('queue_days must be greater than 0')
         .default(DEFAULT_SCOUT.queueDays),
-      generate_topics: z
-        .number()
-        .int('generate_topics must be a whole number of topics')
-        .min(0, 'generate_topics must be 0 or more (0 disables generation)')
-        .max(50, 'generate_topics must be at most 50 per scout attempt')
-        .default(0),
     })
     .superRefine((scout, ctx) => {
       if (scout?.min_score !== undefined) {
         ctx.addIssue({ code: 'custom', message: REMOVED_MIN_SCORE_MESSAGE, path: ['min_score'] })
+      }
+      for (const key of ['rss', 'generate_topics'] as const) {
+        if (scout[key] !== undefined) {
+          ctx.addIssue({ code: 'custom', message: REMOVED_SCOUT_SOURCE_MESSAGES[key], path: [key] })
+        }
       }
     })
     .optional(),
@@ -237,22 +240,6 @@ const channelSchema = rawSchema.superRefine((cfg, ctx) => {
     })
   }
   if (cfg.story === undefined) return
-  if ((cfg.scout?.rss.length ?? 0) > 0) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['story'],
-      message:
-        'a [story] channel cannot declare [scout] rss sources — an RSS item has no post body to narrate',
-    })
-  }
-  if ((cfg.scout?.generate_topics ?? 0) > 0) {
-    ctx.addIssue({
-      code: 'custom',
-      path: ['story'],
-      message:
-        'a [story] channel cannot declare [scout] generate_topics — a generated topic has no post body to narrate',
-    })
-  }
   const capacity = cfg.videos_per_day * cfg.backlog_days
   if (cfg.story.max_parts > capacity) {
     ctx.addIssue({
@@ -304,12 +291,10 @@ export function parseChannelToml(text: string, filename: string): ChannelConfig 
     scout: raw.scout
       ? {
           subreddits: raw.scout.subreddits,
-          rss: raw.scout.rss,
           perSourceLimit: raw.scout.per_source_limit,
           queueDays: raw.scout.queue_days,
-          generateTopics: raw.scout.generate_topics,
         }
-      : { ...DEFAULT_SCOUT, subreddits: [], rss: [] },
+      : { ...DEFAULT_SCOUT, subreddits: [] },
     story: raw.story ? { maxParts: raw.story.max_parts } : null,
     // Safe: platformsSchema's superRefine already rejected any value not in
     // PLATFORMS, and parse() would have thrown before reaching here.

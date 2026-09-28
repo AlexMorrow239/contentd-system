@@ -302,18 +302,16 @@ export function buildDigest(
       )
     }
   }
-  // Topic starvation: with autonomous supply (rss/generate), an empty topic
+  // Topic starvation: with autonomous supply (subreddits), an empty topic
   // queue AND an empty backlog means the channel stops publishing when the
   // last scheduled video goes out — and every other line in this digest would
-  // stay quiet about it. Channels with no scout sources are excluded: they
-  // are fed by manual `brainrot produce`, where an empty queue is normal.
+  // stay quiet about it. Channels with no subreddits are excluded: they are
+  // fed by manual `brainrot produce`, where an empty queue is normal.
   const inFlightJobCount = db.prepare(
     "SELECT COUNT(*) AS n FROM jobs WHERE channel = ? AND status IN ('running', 'queued')",
   )
   for (const c of channels) {
-    const scoutsAnything =
-      c.scout.subreddits.length + c.scout.rss.length + c.scout.generateTopics > 0
-    if (!scoutsAnything || c.platforms.length === 0) continue
+    if (c.scout.subreddits.length === 0 || c.platforms.length === 0) continue
     const candidates = candidateTopicCount(db, c.name)
     const inventory = pendingByChannel.get(c.name) ?? 0
     if (candidates !== 0 || inventory !== 0) continue
@@ -333,7 +331,7 @@ export function buildDigest(
     // transaction, so it can't linger here as a false "still moving" signal.
     if (claimed > 0 || inFlight > 0) continue
     lines.push(
-      `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)`,
+      `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] subreddits and https://status.arctic-shift.photon-reddit.com)`,
     )
   }
   // A publishable library row with no stored object has nothing the operator

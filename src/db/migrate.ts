@@ -98,9 +98,9 @@ function addTopicStoryColumns(db: Database): void {
  * write-free.
  */
 export function migrate(db: Database): void {
-  // The submission target behind a scouted topic. Backfilled for existing rows
-  // by `brainrot topics prune-media`, which is the only thing that can recover
-  // it — topics.url is the comments permalink, not the target.
+  // The submission target behind a scouted topic — topics.url is the comments
+  // permalink, not the target. Rows scouted before the column existed stay
+  // NULL.
   if (tableExists(db, 'topics') && !hasColumn(db, 'topics', 'target_url')) {
     db.exec('ALTER TABLE topics ADD COLUMN target_url TEXT')
   }

@@ -11,10 +11,8 @@ import {
   markTopicUsedByJob,
   RECENT_TITLES_LIMIT,
   recentTopicTitles,
-  redditCandidates,
   rejectTopics,
   requeueTopic,
-  setTopicTargetUrl,
   storyPartForJob,
 } from '../topics.js'
 import { memDb, seedJob, seedTopic as kitSeedTopic } from '../../testing/db.js'
@@ -218,50 +216,6 @@ describe('recentTopicTitles', () => {
     expect(recentTopicTitles(db, 'chan-a')).toEqual(['Story'])
     db.close()
   })
-
-  // includeRejected exists for the llm generator's own avoid-list
-  // (src/scout/scout.ts) — the opposite need from the scorer's window above.
-  it('includes rejected titles only when includeRejected is set', () => {
-    const db = memDb()
-    seedTopic(db, { title: 'kept', createdAt: '2026-07-19T00:00:00.000Z' })
-    seedTopic(db, {
-      title: 'sub-80 rejected topic',
-      status: 'rejected',
-      createdAt: '2026-07-19T01:00:00.000Z',
-    })
-    expect(recentTopicTitles(db, 'chan-a')).not.toContain('sub-80 rejected topic')
-    expect(recentTopicTitles(db, 'chan-a', RECENT_TITLES_LIMIT, { includeRejected: true })).toEqual(
-      expect.arrayContaining(['sub-80 rejected topic', 'kept']),
-    )
-    db.close()
-  })
-
-  it('keeps series-collapse behavior intact when includeRejected is set', () => {
-    const db = memDb()
-    seedTopic(db, {
-      title: 'Story (1/2)',
-      seriesKey: 'S',
-      partIndex: 1,
-      partCount: 2,
-      status: 'rejected',
-      createdAt: '2026-07-19T00:00:00.000Z',
-    })
-    seedTopic(db, {
-      title: 'Story (2/2)',
-      seriesKey: 'S',
-      partIndex: 2,
-      partCount: 2,
-      createdAt: '2026-07-19T01:00:00.000Z',
-    })
-    // Non-rejected view: the rejected part 1 is skipped, part 2 represents.
-    expect(recentTopicTitles(db, 'chan-a')).toEqual(['Story'])
-    // includeRejected view: part 1 is eligible again and becomes the (lower
-    // part_index) representative — still one collapsed entry, not two.
-    expect(recentTopicTitles(db, 'chan-a', RECENT_TITLES_LIMIT, { includeRejected: true })).toEqual(
-      ['Story'],
-    )
-    db.close()
-  })
 })
 
 describe('candidateTopicCount', () => {
@@ -291,27 +245,6 @@ describe('claimedTopicCount', () => {
     expect(claimedTopicCount(db, 'chan-a')).toBe(2)
     expect(claimedTopicCount(db, 'chan-b')).toBe(1)
     expect(claimedTopicCount(db, 'chan-c')).toBe(0)
-    db.close()
-  })
-})
-
-describe('redditCandidates', () => {
-  it('takes reddit candidates with no target yet, in id order', () => {
-    const db = memDb()
-    const first = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r1' })
-    const second = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r2' })
-    seedTopic(db, { source: 'rss:phys.org', dedupeHash: 'r3' })
-    seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r4', status: 'used', jobId: 'job-1' })
-    expect(redditCandidates(db, 'chan-a').map((r) => r.id)).toEqual([first, second])
-    db.close()
-  })
-
-  it('skips a row already carrying a target, which the prune pass cannot re-verdict', () => {
-    const db = memDb()
-    const untargeted = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r1' })
-    const targeted = seedTopic(db, { source: 'reddit:r/space', dedupeHash: 'r2' })
-    setTopicTargetUrl(db, targeted, 'https://www.theguardian.com/science/x')
-    expect(redditCandidates(db, 'chan-a').map((r) => r.id)).toEqual([untargeted])
     db.close()
   })
 })
@@ -595,7 +528,7 @@ describe('insertTopics story columns', () => {
         partCount: 2,
       },
     ])
-    const [row] = redditCandidates(db, 'aita')
+    const [row] = listTopics(db, { channel: 'aita' })
     expect(row.bodyText).toBe('One month ago I hosted a movie night.')
     expect(row.seriesKey).toBe('series-abc')
     expect(row.partIndex).toBe(1)
@@ -617,7 +550,7 @@ describe('insertTopics story columns', () => {
         status: 'candidate',
       },
     ])
-    const [row] = redditCandidates(db, 'space')
+    const [row] = listTopics(db, { channel: 'space' })
     expect(row.bodyText).toBeNull()
     expect(row.seriesKey).toBeNull()
     expect(row.partIndex).toBeNull()
@@ -645,7 +578,7 @@ describe('storyPartForJob', () => {
         partCount: 3,
       },
     ])
-    const [topic] = redditCandidates(db, 'aita')
+    const [topic] = listTopics(db, { channel: 'aita' })
     expect(claimTopic(db, topic.id, 'job-xyz')).toBe(true)
     expect(storyPartForJob(db, 'job-xyz')).toEqual({
       bodyText: 'Then she called my mother.',
@@ -675,7 +608,7 @@ describe('storyPartForJob', () => {
         status: 'candidate',
       },
     ])
-    const [topic] = redditCandidates(db, 'space')
+    const [topic] = listTopics(db, { channel: 'space' })
     claimTopic(db, topic.id, 'job-plain')
     expect(storyPartForJob(db, 'job-plain')).toBeNull()
   })

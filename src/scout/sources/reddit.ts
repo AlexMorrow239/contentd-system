@@ -4,20 +4,6 @@ import { storyBody } from '../../stories/body.js'
 import { classifyTarget } from './post-kind.js'
 import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
 
-// Reddit renders the submission target as an anchor whose text is literally
-// "[link]" in a permalink's Atom comment feed. prune-media is the only reader
-// left: it re-fetches that feed from reddit.com to recover the target of a
-// topic scouted before targets were recorded.
-//
-// fast-xml-parser has already entity-decoded the <content> body, so this
-// matches plain HTML, not the encoded form on the wire.
-const LINK_ANCHOR = /href="([^"]+)"[^>]*>\s*\[link\]/
-
-export function redditLinkTarget(contentHtml: string | undefined): string | undefined {
-  if (contentHtml === undefined) return undefined
-  return LINK_ANCHOR.exec(contentHtml)?.[1]
-}
-
 // What reddit substitutes for the name of an account that no longer exists.
 const DELETED_AUTHOR = '[deleted]'
 
@@ -47,59 +33,10 @@ export function isAutomatedAuthor(author: string | undefined): boolean {
   return AUTOMATED_AUTHORS.has(author.toLowerCase()) || MODERATOR_SUFFIX.test(author)
 }
 
-// Reddit blocks default library user agents; a descriptive UA is the
-// documented convention for public feed access. Sent to Arctic Shift too — a
-// free service whose operator asks callers to be considerate.
+// A descriptive UA: Arctic Shift is a free service whose operator asks callers
+// to be considerate, and naming the caller is the courteous minimum.
 export const REDDIT_USER_AGENT =
   'brainrot-machine/0.1 (personal short-form pipeline; single operator)'
-
-// Reddit's rate limit on the public feed is effectively one request per
-// window: a single GET drives `x-ratelimit-remaining` to 0.0, and three
-// back-to-back GETs return 429 for all but the first (observed 2026-07-27,
-// which also confirmed reddit sends no Retry-After — only x-ratelimit-*).
-// ~20s spacing is what actually got through.
-//
-// So a 429 here is the ordinary case whenever anything else has touched
-// reddit recently — another source in the same tick, a `topics prune-media`
-// run, a second process — not an outage. Backing off and retrying once is
-// what makes a multi-source tick work at all.
-//
-// This is a retry rather than an unconditional delay between sources on
-// purpose: it costs nothing when the budget is free, and adapts when some
-// other caller has spent it. A fixed inter-source sleep would pay the full
-// delay every tick and still not cover the other-caller case.
-export const REDDIT_RETRY_DELAY_MS = 20_000
-
-// prune-media.ts paces its reddit.com refetches with this too.
-export function sleep(ms: number): Promise<void> {
-  return ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-export interface RedditFetchOpts {
-  fetchImpl: FetchLike
-  timeoutMs: number
-  retryDelayMs?: number
-}
-
-/**
- * GET a reddit.com feed with the conventional UA, a timeout, and one 429
- * backoff. prune-media's only: redditSource reads through Arctic Shift.
- *
- * Returns the Response as-is — including a still-429 one after the retry — so
- * the caller decides what a failure means: prune-media records a skip and
- * moves to the next row.
- */
-export async function fetchRedditFeed(url: string, opts: RedditFetchOpts): Promise<Response> {
-  const get = (): Promise<Response> =>
-    opts.fetchImpl(url, {
-      headers: { 'User-Agent': REDDIT_USER_AGENT },
-      signal: AbortSignal.timeout(opts.timeoutMs),
-    })
-  const res = await get()
-  if (res.status !== 429) return res
-  await sleep(opts.retryDelayMs ?? REDDIT_RETRY_DELAY_MS)
-  return get()
-}
 
 // Reddit itself is unreachable keyless: it 403s hot.json unauthenticated
 // (observed live 2026-07-21), rate-limits the public Atom feed to about one
@@ -243,7 +180,7 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
             return {
               title: post.title,
               // Always the comments permalink, whatever the post links to:
-              // the story outro, the dashboard link and prune-media read it.
+              // the story outro and the dashboard link read it.
               url: `${REDDIT_ORIGIN}/r/${subreddit}/comments/${postId}/`,
               sourceId: id,
               // The t3_ fullname is what the reddit.com feed keyed on, so

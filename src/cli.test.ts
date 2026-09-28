@@ -289,17 +289,17 @@ describe('brainrot CLI — scout', () => {
       const root = testRoot()
       // A channel WITH a scout source, so it reaches scoutChannel's recheck
       // gate instead of being dropped as sourceless before ever reaching it.
-      // The rss URL is deliberately malformed: rssSource's constructor throws
-      // synchronously on it (no network I/O), so --force's bypass is provable
-      // without a real fetch — see scout.test.ts's "isolates a source whose
-      // constructor throws on a malformed rss URL" for the same trick.
+      // The subreddit name is deliberately malformed: redditSource's
+      // constructor throws synchronously on it (no network I/O), so --force's
+      // bypass is provable without a real fetch — see scout.test.ts's
+      // "isolates a subreddit whose name is malformed" for the same trick.
       writeFileSync(
         path.join(root.channelsDir, 'cli-scout-force-test.toml'),
         [
           SCOUTLESS_TOML.replace('cli-scout-test', 'cli-scout-force-test'),
           '',
           '[scout]',
-          'rss = ["not a url"]',
+          'subreddits = ["r/space"]',
         ].join('\n'),
       )
       const seeded = openDb(root.dbPath)

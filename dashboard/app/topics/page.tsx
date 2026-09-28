@@ -28,7 +28,6 @@ export default function TopicsPage(props: PageProps) {
             <p className="subtitle">Scout candidates and the production queue.</p>
             <div className="page-actions">
               <ActionForm kind="scout.run" token={ctx.token} disabled={ctx.stale} />
-              <ActionForm kind="topics.pruneMedia" token={ctx.token} disabled={ctx.stale} />
             </div>
             <Filters
               path="/topics"

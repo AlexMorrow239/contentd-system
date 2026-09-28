@@ -6,11 +6,10 @@ import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../testing/channel.js'
 import { memDb, seedJob, seedLibrary, seedLibraryObject, seedTopic } from '../testing/db.js'
 import { postedPlatforms } from '../posts/posts.js'
-import type { PruneMediaOpts } from '../scout/prune-media.js'
 import { fakeStore } from '../storage/fake.js'
 import { storageEnvVars, stubStorageEnv } from '../testing/storage.js'
 import { tmpDir } from '../testing/tmp.js'
-import { ACTION_KINDS, parseActionArgs } from './catalog.js'
+import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
 
 function ctx(db: Database): ActionContext {
@@ -435,46 +434,5 @@ describe('action handlers', () => {
     // change that already happened, uploading IS this action. There is nothing
     // partial to report, so it must fail rather than record a green no-op.
     expect(backfill).not.toHaveBeenCalled()
-  })
-
-  it('topics.pruneMedia reports progress through setNotice', async () => {
-    const db = memDb()
-    const notices: string[] = []
-    const prune = vi.fn().mockImplementation((_db: Database, opts: PruneMediaOpts) => {
-      opts.onProgress?.({ index: 1, total: 3, topicId: 7, outcome: 'rejected' })
-      opts.onProgress?.({ index: 2, total: 3, topicId: 8, outcome: 'kept' })
-      return Promise.resolve({ checked: 2, rejected: 1, skipped: [] })
-    })
-    const result = await ACTION_HANDLERS['topics.pruneMedia'](
-      {
-        db,
-        now: new Date(),
-        channelsDir: '/ch',
-        runsRoot: '/runs',
-        setNotice: (t) => notices.push(t),
-      },
-      { dryRun: false },
-      { pruneMedia: prune },
-    )
-    expect(result).toEqual({ dryRun: false, checked: 2, rejected: 1, skipped: 0 })
-    // A rate-limited command that prints nothing for minutes reads as hung. The
-    // CLI sends these to stderr; here they go to the row the page is polling.
-    expect(notices.at(-1)).toContain('2/3')
-  })
-
-  it('topics.pruneMedia passes an omitted channel through as undefined, not ""', async () => {
-    const db = memDb()
-    const prune = vi.fn().mockResolvedValue({ checked: 0, rejected: 0, skipped: [] })
-    await ACTION_HANDLERS['topics.pruneMedia'](
-      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
-      parseActionArgs('topics.pruneMedia', { channel: '', dryRun: '1' }) as never,
-      { pruneMedia: prune },
-    )
-    // `optionalText` exists for exactly this: '' would mean "the channel named
-    // empty string" and match nothing, silently doing no work.
-    expect(prune).toHaveBeenCalledWith(
-      db,
-      expect.objectContaining({ channel: undefined, dryRun: true }),
-    )
   })
 })

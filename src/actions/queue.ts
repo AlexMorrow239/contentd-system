@@ -81,7 +81,7 @@ export function failAction(db: Database, id: number, err: unknown, now: Date): v
  * Publishes an interactive status for the row to show the operator: the
  * worker's lease-blocked path writes here while a row is still `pending`, and
  * a running handler writes here through `ActionContext.setNotice`
- * (`jobs.produce`'s job id, `topics.pruneMedia`'s per-row progress).
+ * (`jobs.produce`'s job id, `library.reject`'s deletion failures).
  *
  * `startAction` and `completeAction` clear it; the two FAILURE transitions
  * deliberately do NOT. A killed `jobs.produce` must stay traceable to the job

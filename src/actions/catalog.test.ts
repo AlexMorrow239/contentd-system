@@ -22,7 +22,6 @@ describe('ACTIONS catalog', () => {
       'post.unmark',
       'produce.next',
       'scout.run',
-      'topics.pruneMedia',
       'topics.reject',
       'topics.requeue',
     ])
@@ -84,18 +83,11 @@ describe('ACTIONS catalog', () => {
   })
 
   it("derives the confirm interstitial control from each argument's zod shape", () => {
-    // topics.pruneMedia is the worked example this was written for: dryRun is
-    // built with flag() (a boolean) and channel with optionalText (an
-    // optional string) — rendering both as required text inputs is what made
-    // dryRun a trap (an operator typing "true" produced a live run, since
-    // flag() only recognizes the literal strings "1"/"on").
-    expect(actionArgFieldKind('topics.pruneMedia', 'dryRun')).toBe('checkbox')
-    expect(actionArgFieldKind('topics.pruneMedia', 'channel')).toBe('optional-text')
     // A required string argument (jobs.resume's jobId) keeps the interstitial's
     // original required text input.
     expect(actionArgFieldKind('jobs.resume', 'jobId')).toBe('text')
-    // post.mark's optional url uses the same optionalUrl preprocess shape as
-    // optionalText, so it renders the same non-required control.
+    // post.mark's optional url is wrapped in blankToUndefined's preprocess, so
+    // the field kind must see through the pipe to the optional underneath.
     expect(actionArgFieldKind('post.mark', 'url')).toBe('optional-text')
     // An argument name the action does not declare falls back to the
     // interstitial's original required-text behavior rather than throwing.
@@ -208,18 +200,9 @@ describe('ACTIONS catalog', () => {
     expect(ACTIONS['library.reject'].lease).toBeUndefined()
   })
 
-  it('reads an unchecked checkbox as false and "1" as true', () => {
-    expect(parseActionArgs('topics.pruneMedia', { dryRun: '1' })).toMatchObject({ dryRun: true })
-    expect(parseActionArgs('topics.pruneMedia', {})).toMatchObject({ dryRun: false })
-    // The trap this exists to avoid: z.coerce.boolean()('false') === true.
-    expect(parseActionArgs('topics.pruneMedia', { dryRun: 'false' })).toMatchObject({
-      dryRun: false,
-    })
-  })
-
   it('treats a blank optional text field as absent', () => {
-    expect(parseActionArgs('topics.pruneMedia', { channel: '   ', dryRun: '' })).toMatchObject({
-      channel: undefined,
-    })
+    expect(
+      parseActionArgs('post.mark', { jobId: 'job-1', platform: 'youtube', url: '   ' }),
+    ).toMatchObject({ url: undefined })
   })
 })

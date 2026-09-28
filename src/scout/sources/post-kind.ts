@@ -64,9 +64,8 @@ export function classifyTarget(targetUrl: string | undefined): PostKind {
   return 'link'
 }
 
-// The one PostKind with no narrative substance. Shared so scoutChannel's
-// pre-scoring drop and prune-media's post-hoc reject can't drift apart on
-// what "rejectable" means.
+// The one PostKind with no narrative substance: scoutChannel drops it before
+// scoring.
 export function isMediaPostKind(kind: PostKind | undefined): boolean {
   return kind === 'image'
 }

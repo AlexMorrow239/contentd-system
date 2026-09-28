@@ -128,9 +128,8 @@ export function publishChannel(
 
 /**
  * A channel that both scouts and publishes — the target of the
- * topic-starvation action item. `scout` overrides the source lists so a
- * caller can exercise either the rss/subreddits path or the llm-only
- * (generate_topics, no feeds) path; the default declares one subreddit.
+ * topic-starvation action item. `scout` overrides the scout config; the
+ * default declares one subreddit.
  */
 export function scoutingPublishChannel(
   name: string,

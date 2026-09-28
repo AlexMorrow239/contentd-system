@@ -56,20 +56,10 @@ function list<T extends z.ZodTypeAny>(inner: T): z.ZodType<z.infer<T>[]> {
 }
 
 /**
- * A checkbox. Unchecked submits NOTHING (undefined), checked submits its
- * value. Deliberately not `z.coerce.boolean()`, which returns true for the
- * string "false" — a trap that would turn every dry-run toggle into a live run.
- */
-function flag(): z.ZodType<boolean> {
-  return z.preprocess((v) => v === '1' || v === 'on' || v === true, z.boolean())
-}
-
-/**
  * A form submits an untouched text field as `''`. That means "not provided",
  * not "the value is the empty string", and `.optional()` alone would happily
- * accept it as a present-but-empty value — for a channel filter that is the
- * difference between "all channels" and "the channel named empty string"; for
- * a url it is an empty `<a href>` on the library page.
+ * accept it as a present-but-empty value — for a url that is an empty
+ * `<a href>` on the library page.
  *
  * It stays a `z.preprocess` wrapper around the real schema rather than a
  * `.transform()` on it because `fieldKind` unwraps exactly this shape (zod4
@@ -83,8 +73,6 @@ function flag(): z.ZodType<boolean> {
 function blankToUndefined<T extends z.ZodTypeAny>(inner: T) {
   return z.preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), inner)
 }
-
-const optionalText = blankToUndefined(z.string().trim().min(1).optional())
 
 const topicId = z.coerce.number().int().positive()
 const jobId = z.string().trim().min(1)
@@ -233,19 +221,6 @@ export const ACTIONS = {
     lease: undefined,
     args: z.object({}),
   },
-  'topics.pruneMedia': {
-    lane: 'slow',
-    label: 'prune media',
-    confirm: true,
-    danger:
-      'Re-fetches every scouted reddit candidate and rejects the ones that ' +
-      'point at an image. Reddit rate-limits this to roughly one row every ' +
-      '20 seconds, so it runs for minutes. Tick "dry run" to preview instead.',
-    // pruneMedia mutates `topics`, which is the scout tick's table — the same
-    // reason scout.run declares this lease.
-    lease: 'scout',
-    args: z.object({ channel: optionalText, dryRun: flag() }),
-  },
 } as const satisfies Record<string, ActionDescriptor>
 
 export type ActionKind = keyof typeof ACTIONS
@@ -272,29 +247,24 @@ export function actionArgNames(kind: ActionKind): string[] {
 }
 
 /**
- * The HTML control an argument should render as on the confirm interstitial.
- * `checkbox` for a boolean (built by `flag()` above — the dry-run toggle
- * this exists for), `optional-text` for a field that may be omitted (built
- * by `optionalText`/`optionalUrl`'s `.optional()`), `text` (the previous,
- * only behaviour) for everything else. Rendering every missing field as a
- * required text input made `topics.pruneMedia`'s `dryRun` a trap: an operator
- * typing "true" into a text box does not satisfy `flag()`, which accepts only
- * the literal strings `1`/`on`, so the box silently produced a live run.
+ * The HTML control an argument should render as on the confirm interstitial:
+ * `optional-text` for a field that may be omitted (built by `optionalUrl`'s
+ * `.optional()`), which must not be marked required, and `text` for
+ * everything else.
  *
  * `.type` and `.def` are zod4's own public discriminator and definition
  * object (replacing zod3's underscored `_def`) — the same public surface
  * `actionArgNames` already relies on via `instanceof z.ZodObject` and
  * `.shape`, not a reach into internals.
  */
-export type ActionArgFieldKind = 'checkbox' | 'optional-text' | 'text'
+export type ActionArgFieldKind = 'optional-text' | 'text'
 
 function fieldKind(field: z.ZodTypeAny): ActionArgFieldKind {
   if (field.type === 'optional') return 'optional-text'
-  // flag()/optionalText/optionalUrl are all built with z.preprocess(...),
-  // which zod4 implements as a pipe from a transform to the real output
-  // schema — unwrap to that output schema to see what it actually validates.
+  // optionalUrl is built with z.preprocess(...), which zod4 implements as a
+  // pipe from a transform to the real output schema — unwrap to that output
+  // schema to see what it actually validates.
   if (field instanceof z.ZodPipe) return fieldKind(field.def.out as z.ZodTypeAny)
-  if (field.type === 'boolean') return 'checkbox'
   return 'text'
 }
 

@@ -57,8 +57,7 @@ export default function ConfirmPage(props: PageProps) {
                       {name}
                       <input
                         name={name}
-                        type={type === 'checkbox' ? 'checkbox' : 'text'}
-                        value={type === 'checkbox' ? '1' : undefined}
+                        type="text"
                         required={type === 'text'}
                         autoComplete="off"
                       />

@@ -47,14 +47,6 @@ function storyParts(db: Parameters<typeof listTopics>[0], channel: string) {
   return listTopics(db, { channel, status: 'candidate' }).sort((a, b) => a.id - b.id)
 }
 
-// A schema-valid emit tool_use response for llmSource, mirroring emitScores'
-// shape. Default usage matches emitScores' default (1000×1 + 200×5 = 2000
-// usd-micros at haiku list price) so a generation+scoring sum is easy to
-// eyeball in cost assertions.
-function emitTopics(titles: string[], usage = { input_tokens: 1000, output_tokens: 200 }) {
-  return emitToolUse({ topics: titles.map((title) => ({ title })) }, usage)
-}
-
 // A schema-valid emit tool_use carrying the given scores. Default usage costs
 // 1000×1 + 200×5 = 2000 usd-micros at the claude-haiku-4-5 list price.
 function emitScores(
@@ -332,13 +324,13 @@ describe('scoutChannel', () => {
     db.close()
   })
 
-  it('isolates a source whose constructor throws on a malformed rss URL', async () => {
+  it('isolates a subreddit whose name is malformed, without fetching it', async () => {
     const db = memDb()
-    // rssSource runs `new URL(url)` at construction; a malformed feed URL must
-    // fault only that source, not abort the whole channel before isolation.
-    const channel = scoutedChannel({ subreddits: ['space'], rss: ['not a url'] })
+    // redditSource rejects a malformed name at construction; that must fault
+    // only that subreddit, not abort the whole channel before isolation.
+    const channel = scoutedChannel({ subreddits: ['r/space', 'askscience'] })
     const fetchImpl = fetchStub({
-      'subreddit=space': redditFeed([{ name: 't3_ok', title: 'Why is the sky blue' }]),
+      'subreddit=askscience': redditFeed([{ name: 't3_ok', title: 'Why is the sky blue' }]),
     })
     const { client } = fakeClient(
       emitScores([
@@ -346,12 +338,13 @@ describe('scoutChannel', () => {
       ]),
     )
     const result = await scoutChannel(db, channel, { client, fetchImpl })
-    // the good subreddit still scouted and queued despite the bad feed URL
+    // the good subreddit still scouted and queued despite the bad name
     expect(result.fetched).toBe(1)
     expect(result.queued).toBe(1)
-    // exactly one error, prefixed with the RAW url (no hostname to derive an id)
     expect(result.sourceErrors).toHaveLength(1)
-    expect(result.sourceErrors[0]).toMatch(/^rss:not a url: /)
+    expect(result.sourceErrors[0]).toMatch(
+      /^reddit:r\/r\/space: .*"r\/space" is not a subreddit name/,
+    )
     db.close()
   })
 
@@ -421,10 +414,8 @@ describe('scoutChannel', () => {
       videosPerDay: 2,
       scout: {
         subreddits: ['space'],
-        rss: [],
         perSourceLimit: 25,
         queueDays: 3,
-        generateTopics: 0,
       },
     })
     for (let i = 0; i < 6; i++) {
@@ -445,10 +436,8 @@ describe('scoutChannel', () => {
       videosPerDay: 2,
       scout: {
         subreddits: ['space'],
-        rss: [],
         perSourceLimit: 25,
         queueDays: 3,
-        generateTopics: 0,
       },
     })
     for (let i = 0; i < 5; i++) {
@@ -469,10 +458,8 @@ describe('scoutChannel', () => {
       videosPerDay: 2,
       scout: {
         subreddits: ['space'],
-        rss: [],
         perSourceLimit: 25,
         queueDays: 3,
-        generateTopics: 0,
       },
     })
     for (let i = 0; i < 10; i++) {
@@ -519,10 +506,8 @@ describe('scoutChannel', () => {
       videosPerDay: 2,
       scout: {
         subreddits: ['space'],
-        rss: [],
         perSourceLimit: 25,
         queueDays: 3,
-        generateTopics: 0,
       },
     })
     for (let i = 0; i < 6; i++) {
@@ -563,216 +548,6 @@ describe('scoutChannel', () => {
 
     expect(result.skipped).toBeUndefined()
     expect(fetchImpl).toHaveBeenCalled()
-  })
-})
-
-describe('scoutChannel llm generation', () => {
-  it('feeds generated candidates through scoring and inserts survivors', async () => {
-    const db = memDb()
-    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter', 'Boring topic']))
-      .mockResolvedValueOnce(
-        emitScores([
-          { candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong hook' },
-          { candidateIndex: 1, score: 10, topic: 'Boring', reason: 'weak' },
-        ]),
-      )
-    const client = { messages: { create } } as unknown as Anthropic
-
-    const result = await scoutChannel(db, channel, { client })
-
-    expect(result.fetched).toBe(2)
-    expect(result.scored).toBe(2)
-    expect(result.queued).toBe(1)
-    expect(result.rejected).toBe(1)
-    const topics = listTopics(db, { channel: 'chan-a' })
-    expect(topics).toHaveLength(2)
-    const queued = topics.find((t) => t.status === 'candidate')
-    expect(queued?.title).toBe('Comet discovery')
-    expect(queued?.rawTitle).toBe('Comet found near Jupiter')
-    expect(queued?.source).toBe('llm:chan-a')
-    expect(create).toHaveBeenCalledTimes(2)
-    db.close()
-  })
-
-  it('never generates when the queue is at depth (queue-full precedes fetching)', async () => {
-    const db = memDb()
-    const channel = testChannel({
-      name: 'chan-a',
-      videosPerDay: 2,
-      scout: { ...DEFAULT_SCOUT, generateTopics: 3, queueDays: 3 },
-    })
-    for (let i = 0; i < 6; i++) {
-      seedTopic(db, { channel: 'chan-a', status: 'candidate', dedupeHash: `hash-${String(i)}` })
-    }
-    const create = vi.fn()
-    const client = { messages: { create } } as unknown as Anthropic
-
-    const result = await scoutChannel(db, channel, { client })
-
-    // Regression guard: the queue-full gate returns before the descriptor
-    // array is even built, so `create` was never going to be called either
-    // way — this test doesn't discriminate the llm wiring itself, it pins
-    // the ordering invariant (depth gate precedes generation) once that
-    // wiring exists.
-    expect(result.skipped).toBe('queue-full')
-    expect(create).not.toHaveBeenCalled()
-    db.close()
-  })
-
-  it('ledgers scout-generate spend on success', async () => {
-    const db = memDb()
-    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 1 } })
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(
-        emitTopics(['Comet found near Jupiter'], { input_tokens: 500, output_tokens: 100 }),
-      )
-      .mockResolvedValueOnce(
-        emitScores([{ candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong' }]),
-      )
-    const client = { messages: { create } } as unknown as Anthropic
-
-    const result = await scoutChannel(db, channel, { client })
-
-    // generation: 500×1 + 100×5 = 1000; scoring: 1000×1 + 200×5 = 2000
-    // (emitScores' default usage) — result.costUsdMicros sums both.
-    expect(result.costUsdMicros).toBe(3_000)
-    const costs = db.prepare('SELECT job_id, operation, usd_micros FROM costs ORDER BY id').all()
-    expect(costs).toEqual([
-      { job_id: 'scout:chan-a', operation: 'scout-generate', usd_micros: 1_000 },
-      { job_id: 'scout:chan-a', operation: 'scout-score', usd_micros: 2_000 },
-    ])
-    db.close()
-  })
-
-  it('a generation failure is one sourceErrors entry; reddit candidates still process', async () => {
-    const db = memDb()
-    const channel = testChannel({
-      name: 'chan-a',
-      scout: { ...DEFAULT_SCOUT, subreddits: ['space'], generateTopics: 2 },
-    })
-    const fetchImpl = fetchStub({
-      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting measured' }]),
-    })
-    const create = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('generation down'))
-      .mockResolvedValueOnce(
-        emitScores([{ candidateIndex: 0, score: 85, topic: 'Moon escape', reason: 'ok' }]),
-      )
-    const client = { messages: { create } } as unknown as Anthropic
-
-    const result = await scoutChannel(db, channel, { client, fetchImpl })
-
-    expect(result.fetched).toBe(1)
-    expect(result.queued).toBe(1)
-    expect(result.sourceErrors).toHaveLength(1)
-    expect(result.sourceErrors[0]).toMatch(/^llm:chan-a: /)
-    // the failed (unpaid) generation call left no scout-generate row; only
-    // the successful reddit-fed scoring call ledgered.
-    const costs = db.prepare('SELECT operation FROM costs').all()
-    expect(costs).toEqual([{ operation: 'scout-score' }])
-    db.close()
-  })
-
-  it('degrades to a sourceErrors entry when the generation budget gate fires, unlike a scoring throw', async () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
-    const db = memDb()
-    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
-    const create = vi.fn()
-    const client = { messages: { create } } as unknown as Anthropic
-
-    const result = await scoutChannel(db, channel, { client })
-
-    // The budget gate fires INSIDE the per-source try (assertGlobalDayBudget
-    // before llmSource's paid call), so it lands as an ordinary sourceErrors
-    // entry rather than the hard throw scoring's own gate produces.
-    expect(result.sourceErrors).toHaveLength(1)
-    expect(result.sourceErrors[0]).toMatch(/^llm:chan-a: /)
-    expect(result.sourceErrors[0]).toContain('global-day')
-    expect(create).not.toHaveBeenCalled()
-    expect(db.prepare('SELECT COUNT(*) AS n FROM costs').get()).toEqual({ n: 0 })
-    db.close()
-  })
-
-  it('re-running dedupes identical generated titles via knownHashes (no re-score)', async () => {
-    const db = memDb()
-    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter', 'Boring topic']))
-      .mockResolvedValueOnce(
-        emitScores([
-          { candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong' },
-          { candidateIndex: 1, score: 10, topic: 'Boring', reason: 'weak' },
-        ]),
-      )
-      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter', 'Boring topic']))
-    const client = { messages: { create } } as unknown as Anthropic
-
-    // force: true on both — this test is about dedupe across repeat runs, not
-    // the recheck cadence (covered separately elsewhere in this file).
-    const first = await scoutChannel(db, channel, { client, force: true })
-    expect(first.queued).toBe(1)
-    expect(first.costUsdMicros).toBe(4_000) // generate 2000 + score 2000
-
-    const second = await scoutChannel(db, channel, { client, force: true })
-
-    expect(second.alreadyKnown).toBe(2)
-    expect(second.scored).toBe(0)
-    expect(second.queued).toBe(0)
-    // The second generation call still spent money even though every title it
-    // returned deduped away before scoring — the fresh.length === 0 early
-    // return must still carry the recorded generation cost.
-    expect(second.costUsdMicros).toBe(2_000)
-    // gen1, score1, gen2 — no second scoring call
-    expect(create).toHaveBeenCalledTimes(3)
-    const costs = db
-      .prepare("SELECT operation FROM costs WHERE job_id = 'scout:chan-a' ORDER BY id")
-      .all()
-    expect(costs).toEqual([
-      { operation: 'scout-generate' },
-      { operation: 'scout-score' },
-      { operation: 'scout-generate' },
-    ])
-    expect(listTopics(db, { channel: 'chan-a' })).toHaveLength(2)
-    db.close()
-  })
-
-  // recentTopicTitles (the scorer's own feed) deliberately excludes rejected
-  // rows — right for the scorer, backwards for the generator: a sub-80 title
-  // is exactly what generation should stop re-proposing, or it re-bills the
-  // same near-duplicate every attempt. The generator must get its own
-  // avoid-list that includes rejected titles; the scorer's list must not.
-  it('feeds the generator an avoid-list that includes rejected titles, but keeps them out of the scoring prompt', async () => {
-    const db = memDb()
-    const channel = testChannel({ name: 'chan-a', scout: { ...DEFAULT_SCOUT, generateTopics: 1 } })
-    seedTopic(db, {
-      channel: 'chan-a',
-      status: 'rejected',
-      dedupeHash: 'rejected-1',
-      title: 'A previously rejected topic',
-    })
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter']))
-      .mockResolvedValueOnce(
-        emitScores([{ candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'ok' }]),
-      )
-    const client = { messages: { create } } as unknown as Anthropic
-
-    await scoutChannel(db, channel, { client })
-
-    // call 0 is llmSource's generation call, call 1 is scoreCandidates' call
-    // — pinned by the other tests in this describe block.
-    const generationPrompt = create.mock.calls[0][0].messages[0].content as string
-    const scoringPrompt = create.mock.calls[1][0].messages[0].content as string
-    expect(generationPrompt).toContain('A previously rejected topic')
-    expect(scoringPrompt).not.toContain('A previously rejected topic')
-    db.close()
   })
 })
 
@@ -839,89 +614,6 @@ describe('scoutAll', () => {
     expect(results).toHaveLength(2)
     expect(results[0].sourceErrors).toHaveLength(1)
     expect(results[1].queued).toBe(1)
-    db.close()
-  })
-
-  it('scouts an llm-only channel (no subreddits/rss) instead of skipping it as sourceless', async () => {
-    const db = memDb()
-    const channel = testChannel({ name: 'a', scout: { ...DEFAULT_SCOUT, generateTopics: 2 } })
-    const create = vi
-      .fn()
-      .mockResolvedValueOnce(emitTopics(['Comet found near Jupiter']))
-      .mockResolvedValueOnce(
-        emitScores([{ candidateIndex: 0, score: 85, topic: 'Comet discovery', reason: 'strong' }]),
-      )
-    const client = { messages: { create } } as unknown as Anthropic
-
-    const results = await scoutAll(db, [channel], { client })
-
-    // Without the corrected sourceCount, this channel's sourceCount would be
-    // 0 (no subreddits/rss) and scoutAll would `continue` past it entirely —
-    // an empty results array, never touching the llm descriptor at all.
-    expect(results).toHaveLength(1)
-    expect(results[0].channel).toBe('a')
-    expect(results[0].skipped).toBeUndefined()
-    expect(results[0].queued).toBe(1)
-    expect(create).toHaveBeenCalledTimes(2)
-    db.close()
-  })
-
-  it('raises AllSourcesFailedError on a total outage that includes a failed llm source', async () => {
-    const db = memDb()
-    const channel = testChannel({
-      name: 'a',
-      scout: { ...DEFAULT_SCOUT, subreddits: ['one'], generateTopics: 2 },
-    })
-    // reddit fetch fails (fetchStub({}) rejects every URL) and generation
-    // fails too — every one of this channel's two sources is down.
-    const create = vi.fn().mockRejectedValueOnce(new Error('llm down'))
-    const client = { messages: { create } } as unknown as Anthropic
-
-    const err = await scoutAll(db, [channel], {
-      client,
-      fetchImpl: fetchStub({}),
-      force: true,
-    }).then(
-      () => null,
-      (e: unknown) => e,
-    )
-
-    // With the old sourceCount (ignoring the llm descriptor), totalSources
-    // would be 1 against failedSources 2 — a genuine total outage that never
-    // throws. The corrected count (2) makes failedSources === totalSources.
-    expect(err).toBeInstanceOf(AllSourcesFailedError)
-    const failed = err as AllSourcesFailedError
-    expect(failed.results.map((r) => r.channel)).toEqual(['a'])
-    expect(failed.results[0].sourceErrors).toHaveLength(2)
-    db.close()
-  })
-
-  it('does not raise AllSourcesFailedError when a failed llm source sits alongside a succeeding reddit source', async () => {
-    const db = memDb()
-    const channel = testChannel({
-      name: 'a',
-      scout: { ...DEFAULT_SCOUT, subreddits: ['one'], generateTopics: 2 },
-    })
-    const fetchImpl = fetchStub({ 'subreddit=one': redditFeed([{ name: 't3_a', title: 'A' }]) })
-    const create = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('llm down'))
-      .mockResolvedValueOnce(
-        emitScores([{ candidateIndex: 0, score: 85, topic: 'A topic', reason: 'ok' }]),
-      )
-    const client = { messages: { create } } as unknown as Anthropic
-
-    // With the old sourceCount (ignoring the llm descriptor), this channel's
-    // sourceCount would be 1 (reddit only) against failedSources 1 (the llm
-    // failure) — a FALSE total-outage that would incorrectly throw even
-    // though the reddit source succeeded and queued a topic. The corrected
-    // count (2) keeps this a healthy partial run.
-    const results = await scoutAll(db, [channel], { client, fetchImpl })
-
-    expect(results).toHaveLength(1)
-    expect(results[0].sourceErrors).toHaveLength(1)
-    expect(results[0].sourceErrors[0]).toMatch(/^llm:a: /)
-    expect(results[0].queued).toBe(1)
     db.close()
   })
 
@@ -1069,10 +761,8 @@ describe('scoutAll', () => {
       videosPerDay: 2,
       scout: {
         subreddits: ['space'],
-        rss: [],
         perSourceLimit: 25,
         queueDays: 3,
-        generateTopics: 0,
       },
     })
     for (let i = 0; i < 6; i++) {
@@ -1097,10 +787,8 @@ describe('scoutAll', () => {
       videosPerDay: 2,
       scout: {
         subreddits: ['space'],
-        rss: [],
         perSourceLimit: 25,
         queueDays: 3,
-        generateTopics: 0,
       },
     })
     for (let i = 0; i < 6; i++) {

@@ -493,11 +493,9 @@ describe('buildDigest — unstored-object action items require storage to be con
 describe('buildDigest — topic starvation action item', () => {
   it('flags a scouting+publishing channel with zero candidates and zero inventory', () => {
     const db = memDb()
-    // generate_topics only, no rss/subreddits — the llm-only shape must still
-    // trip the scoutsAnything gate.
-    const chA = scoutingPublishChannel('chan-a', { subreddits: [], generateTopics: 3 })
+    const chA = scoutingPublishChannel('chan-a')
     expect(buildDigest(db, [chA])).toContain(
-      '  chan-a: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] rss feeds / generate_topics)',
+      '  chan-a: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] subreddits and https://status.arctic-shift.photon-reddit.com)',
     )
     db.close()
   })
@@ -519,9 +517,9 @@ describe('buildDigest — topic starvation action item', () => {
 
   it('does not flag a channel with no scout sources configured (manual-produce channels)', () => {
     const db = memDb()
-    // publishChannel carries the default empty scout config (no rss,
-    // subreddits, or generate_topics) — a manual-produce channel, where an
-    // empty topic queue is normal, not a starvation signal.
+    // publishChannel carries the default empty scout config (no subreddits)
+    // — a manual-produce channel, where an empty topic queue is normal, not a
+    // starvation signal.
     const digest = buildDigest(db, [publishChannel('chan-a')])
     expect(digest).not.toContain('topic starvation')
     db.close()

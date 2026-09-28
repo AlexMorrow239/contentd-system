@@ -7,7 +7,6 @@ import { errorMessage } from './errors.js'
 import { loadChannelConfig, tryLoadChannelsDir } from './config/channel.js'
 import { acquireLease, leaseHolder, releaseLease } from './loop/lease.js'
 import { openDb } from './db/index.js'
-import { pruneMedia } from './scout/prune-media.js'
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { daySpendBreakdown } from './jobs/costs.js'
@@ -370,36 +369,6 @@ topics
         console.error(`unknown topic id ${id}`)
       }
       process.exitCode = 1
-    })
-  })
-
-topics
-  .command('prune-media')
-  .description('re-check scouted reddit candidates and reject image-sourced ones')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .option('--channel <name>', 'limit to one channel (default: all)')
-  .option('--dry-run', 'report what would change without writing')
-  .action(async (opts: { root?: string; channel?: string; dryRun?: boolean }) => {
-    await withDb(opts, async (db) => {
-      const dryRun = opts.dryRun === true
-      // Reddit's rate limit forces ~20s per row, so this runs for minutes.
-      // Report each row as it resolves — on stderr, so stdout keeps its single
-      // JSON line — rather than going silent until the end and looking hung.
-      const result = await pruneMedia(db, {
-        channel: opts.channel,
-        dryRun,
-        onProgress: (p) =>
-          console.error(`prune-media: [${p.index}/${p.total}] topic ${p.topicId}: ${p.outcome}`),
-      })
-      process.stdout.write(
-        JSON.stringify({
-          action: 'prune-media',
-          dryRun,
-          checked: result.checked,
-          rejected: result.rejected,
-          skipped: result.skipped.length,
-        }) + '\n',
-      )
     })
   })
 
