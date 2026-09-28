@@ -7,15 +7,7 @@ import type { StoryPart } from '../stories/types.js'
 // reordering or renaming a stage here cannot leave a stale union behind.
 // Unrelated to DASHBOARD_STAGE_ORDER, which is a deliberate second copy the
 // dashboard keeps so a viewer never loads the pipeline module.
-export const STAGE_ORDER = [
-  'script',
-  'voice',
-  'captions',
-  'visuals',
-  'assemble',
-  'qc',
-  'store',
-] as const
+export const STAGE_ORDER = ['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'] as const
 
 export type StageName = (typeof STAGE_ORDER)[number]
 

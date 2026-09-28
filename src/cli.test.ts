@@ -33,7 +33,7 @@ const CLI_ENTRY = fileURLToPath(new URL('../dist/cli.js', import.meta.url))
 describe('pipelineStages', () => {
   it('returns the fixed stage list', () => {
     const stages = pipelineStages()
-    const order = ['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store']
+    const order = ['script', 'voice', 'captions', 'visuals', 'assemble', 'qc']
     expect(stages.map((s) => s.name)).toEqual(order)
     expect(stages[3]).toBe(visualsVolumeStage)
   })

@@ -4,7 +4,6 @@ import { captionsStage } from '../stages/captions.js'
 import { visualsVolumeStage } from '../stages/visuals-volume.js'
 import { assembleStage } from '../stages/assemble.js'
 import { qcStage } from '../stages/qc.js'
-import { storeStage } from '../stages/store.js'
 import type { StageDef } from './types.js'
 
 /**
@@ -12,13 +11,5 @@ import type { StageDef } from './types.js'
  * wiring without spawning a subprocess.
  */
 export function pipelineStages(): StageDef[] {
-  return [
-    scriptStage,
-    voiceStage,
-    captionsStage,
-    visualsVolumeStage,
-    assembleStage,
-    qcStage(),
-    storeStage(),
-  ]
+  return [scriptStage, voiceStage, captionsStage, visualsVolumeStage, assembleStage, qcStage()]
 }

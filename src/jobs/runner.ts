@@ -9,9 +9,6 @@ import { markTopicUsedByJob, storyPartForJob } from '../scout/topics.js'
 import { finalVideoPath } from '../stages/assemble.js'
 import { readQcResult } from '../stages/qc.js'
 import { readScriptArtifact } from '../stages/script.js'
-import { readStoreArtifact } from '../stages/store.js'
-import type { StoreArtifact } from '../stages/store.js'
-import { upsertLibraryObject } from './library.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
 
@@ -149,15 +146,12 @@ export async function runJob(
     // renames its output file cannot leave this gate reading a path no module
     // writes. Their tolerance rules differ deliberately: qc.json is required
     // (its absence means the gate cannot decide a state at all), while
-    // script.json and store.json are optional — store.json is absent for jobs
-    // produced before object storage existed, and for every job on a
-    // deployment with no bucket.
+    // script.json is optional for jobs produced before that artifact existed.
     const qcResult = readQcResult(runDir)
     const state: 'ready' | 'needs-review' = qcResult.passed ? 'ready' : 'needs-review'
 
     const videoPath = finalVideoPath(runDir)
     const metadataJson = JSON.stringify(readScriptArtifact(runDir)?.platformMeta ?? {})
-    const storeArtifact: StoreArtifact | undefined = readStoreArtifact(runDir)
 
     // The whole verdict rides along into library.qc_json (re-serialized from
     // the same read that decided `state`): the dashboard names the failing
@@ -173,14 +167,7 @@ export async function runJob(
     )
     const markJobDone = db.prepare('UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?')
     db.transaction(() => {
-      // library must be upserted first: library_objects.job_id references it,
-      // and object storage is written after the library row so the FK is
-      // satisfied even on the very first insert.
       libraryUpsert.run(jobId, videoPath, metadataJson, state, JSON.stringify(qcResult))
-      if (storeArtifact !== undefined) {
-        // Same idempotency story as libraryUpsert above, keyed on the FK to library.
-        upsertLibraryObject(db, jobId, storeArtifact)
-      }
       // "Library-landed consumes the claimed topic" belongs to the write that
       // makes it true, not to each caller's postlude: this is the only place
       // that knows first-hand the final gate ran, and inside the transaction

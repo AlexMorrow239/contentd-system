@@ -6,7 +6,6 @@ import { BudgetExceededError } from '../costs.js'
 import { STAGE_ORDER } from '../types.js'
 import type { JobContext, StageDef, StageName } from '../types.js'
 import { createJob, runJob } from '../runner.js'
-import type { StoreArtifact } from '../../stages/store.js'
 import { testChannel } from '../../testing/channel.js'
 import { fileDb } from '../../testing/db.js'
 import { tagError } from '../../errors.js'
@@ -24,13 +23,8 @@ function row<T>(db: Database, sql: string, ...params: unknown[]): T {
 }
 
 // Fake happy-path stages: script writes script.json, assemble writes final.mp4,
-// qc writes qc.json with the given pass flag, others drop a marker. `store`
-// writes store.json only when an artifact is supplied — omitting it is how a
-// pre-object-storage job is simulated.
-function buildStages(
-  calls: StageName[],
-  opts: { qcPassed?: boolean; storeArtifact?: StoreArtifact } = {},
-): StageDef[] {
+// qc writes qc.json with the given pass flag, and the others drop a marker.
+function buildStages(calls: StageName[], opts: { qcPassed?: boolean } = {}): StageDef[] {
   return STAGE_ORDER.map((name) => ({
     name,
     async run(ctx: JobContext) {
@@ -55,8 +49,6 @@ function buildStages(
           ctx.artifactPath('qc', 'qc.json'),
           JSON.stringify({ passed: opts.qcPassed ?? true, checks: [] }),
         )
-      } else if (name === 'store' && opts.storeArtifact !== undefined) {
-        writeFileSync(ctx.artifactPath('store', 'store.json'), JSON.stringify(opts.storeArtifact))
       } else {
         writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
       }
@@ -65,7 +57,7 @@ function buildStages(
 }
 
 describe('createJob', () => {
-  it('inserts a queued job and seven pending stages', () => {
+  it('inserts a queued job and six pending stages', () => {
     const { db } = setup()
     const jobId = createJob(db, testChannel(), { topic: 'space' })
     expect(typeof jobId).toBe('string')
@@ -81,13 +73,13 @@ describe('createJob', () => {
         stage: string
       }[]
     ).map((r) => r.stage)
-    expect(stages).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store'])
+    expect(stages).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
     const pending = row<{ n: number }>(
       db,
       "SELECT COUNT(*) AS n FROM job_stages WHERE job_id = ? AND status = 'pending'",
       jobId,
     )
-    expect(pending).toEqual({ n: 7 })
+    expect(pending).toEqual({ n: 6 })
   })
 })
 
@@ -102,7 +94,7 @@ describe('runJob', () => {
     expect(result.status).toBe('ready')
     expect(result.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
     expect(existsSync(result.videoPath!)).toBe(true)
-    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc', 'store'])
+    expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
 
     expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({
       status: 'done',
@@ -113,7 +105,7 @@ describe('runJob', () => {
         "SELECT COUNT(*) AS n FROM job_stages WHERE job_id = ? AND status = 'done'",
         jobId,
       ),
-    ).toEqual({ n: 7 })
+    ).toEqual({ n: 6 })
     const lib = row<{ state: string; video_path: string; metadata_json: string }>(
       db,
       'SELECT state, video_path, metadata_json FROM library WHERE job_id = ?',
@@ -217,7 +209,7 @@ describe('runJob', () => {
     const calls: StageName[] = []
     const result = await runJob(db, channel, jobId, buildStages(calls), { runsRoot })
 
-    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc', 'store'])
+    expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc'])
     expect(result.status).toBe('ready')
     // script stage was skipped, so script.json was never written → metadata falls back to '{}'
     expect(
@@ -241,9 +233,9 @@ describe('runJob', () => {
     const heartbeat = vi.fn()
     await runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat })
 
-    // The produce lease is kept alive by work, not by the clock: five stages
-    // ran, so five extensions.
-    expect(heartbeat).toHaveBeenCalledTimes(5)
+    // The produce lease is kept alive by work, not by the clock: four stages
+    // ran, so four extensions.
+    expect(heartbeat).toHaveBeenCalledTimes(4)
   })
 
   it('a throwing heartbeat never kills the job', async () => {
@@ -548,66 +540,39 @@ describe('runJob', () => {
   })
 })
 
-describe('final gate: library_objects', () => {
-  const stagesWithStore = (storeArtifact?: StoreArtifact): StageDef[] =>
-    buildStages([], { storeArtifact })
-
-  it('records the object row from store.json inside the library transaction', async () => {
+describe('final gate: local library', () => {
+  it('finishes when a legacy store.json remains in the run directory', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
     const jobId = createJob(db, channel, { topic: 'space' })
-    const artifact: StoreArtifact = { objectKey: 'videos/test/job-1.mp4', bytes: 4096, etag: 'abc' }
+    const legacyDir = join(runsRoot, jobId, 'store')
+    mkdirSync(legacyDir, { recursive: true })
+    writeFileSync(join(legacyDir, 'store.json'), JSON.stringify({ objectKey: 'old/key.mp4' }))
 
-    await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
-
-    const objectRow = row<{ objectKey: string; bytes: number; etag: string } | undefined>(
-      db,
-      'SELECT object_key AS objectKey, bytes, etag FROM library_objects WHERE job_id = ?',
-      jobId,
-    )
-    expect(objectRow).toEqual(artifact)
-  })
-
-  // Jobs produced before this plan have no store.json. The gate must stay
-  // survivable for them, exactly as it already tolerates a missing script.json.
-  it('finishes the job with no object row when store.json is absent', async () => {
-    const { db, runsRoot } = setup()
-    const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space' })
-
-    const result = await runJob(db, channel, jobId, stagesWithStore(), { runsRoot })
+    const result = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
 
     expect(result.status).toBe('ready')
     expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({
       status: 'done',
     })
-    expect(
-      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library_objects WHERE job_id = ?', jobId),
-    ).toEqual({ n: 0 })
   })
 
   it('is idempotent when the gate runs a second time', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
     const jobId = createJob(db, channel, { topic: 'space' })
-    const artifact: StoreArtifact = { objectKey: 'videos/test/job-1.mp4', bytes: 4096, etag: 'abc' }
 
-    await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
+    await runJob(db, channel, jobId, buildStages([]), { runsRoot })
     // Second call: every stage is already 'done', so this re-enters only the
     // final gate.
-    const second = await runJob(db, channel, jobId, stagesWithStore(artifact), { runsRoot })
+    const second = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
 
-    // The row count alone can't distinguish a correct upsert from a broken
-    // INSERT that hits the job_id PRIMARY KEY and rolls back: both leave
-    // exactly one row (the first run's). Assert the second call's own outcome
-    // too — it only stays 'ready' (and the job only stays 'done') when the
-    // ON CONFLICT upsert actually ran.
     expect(second.status).toBe('ready')
     expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({
       status: 'done',
     })
     expect(
-      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library_objects WHERE job_id = ?', jobId),
+      row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library WHERE job_id = ?', jobId),
     ).toEqual({ n: 1 })
   })
 })
