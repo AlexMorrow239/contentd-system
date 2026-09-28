@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { bundle } from '@remotion/bundler'
 import { renderMedia, selectComposition } from '@remotion/renderer'
 import type { JobContext, StageDef } from '../jobs/types.js'
-import type { ShortVideoProps } from '../remotion-types.js'
+import { CAPTION_STYLE, type ShortVideoProps } from '../remotion-types.js'
 import type { CaptionsArtifact } from './captions.js'
 import type { VoiceMeta } from './voice.js'
 
@@ -81,7 +81,7 @@ export const assembleStage: StageDef = {
         audioSrc: `${ctx.jobId}/narration.wav`,
         bgmSrc: bgmFile ? `${ctx.jobId}/bgm.mp3` : undefined,
         words: captions.words,
-        style: ctx.channel.captionStyle,
+        style: CAPTION_STYLE,
         durationMs: voice.durationMs,
       }
 

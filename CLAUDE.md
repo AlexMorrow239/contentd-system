@@ -224,7 +224,8 @@ resume loads `<channelsDir>/<job.channel>.toml` by filename.
 Keep top-level TOML keys before section headers. `platforms` is a top-level
 array of unique `youtube`, `instagram`, and/or `tiktok` entries; empty means no
 posting checklist and no inventory can count as fully posted. Removed
-`[publish]`, `slots`, and `[scout] min_score` settings fail validation.
+`[publish]`, `slots`, `[caption_style]`, and `[scout] min_score` settings fail validation.
+Caption styling is shared in code via `CAPTION_STYLE` in `src/remotion-types.ts`.
 `videos_per_day` limits production; it is not a platform upload quota.
 
 `backlog_days` (default 2) caps unconsumed finished inventory.

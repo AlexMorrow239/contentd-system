@@ -33,6 +33,19 @@ function named(name: string): string[] {
 }
 
 describe('loadChannelConfig', () => {
+  it('loads a channel without caption styling', () => {
+    expect(parseChannelToml(channelToml(), 'example.toml').name).toBe('example')
+  })
+
+  it.each([
+    '[caption_style]',
+    '[caption_style]\nfont = "Arial"\nfont_size_px = 40\nactive_color = "#FF0000"\ninactive_color = "#000000"\nstroke_px = 2',
+  ])('rejects removed caption styling: %s', (section) => {
+    expect(() => parseChannelToml(channelToml() + section, 'example.toml')).toThrow(
+      /caption_style.*removed/,
+    )
+  })
+
   it('parses a baseline TOML: voice.premium undefined, budget in micros', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
     expect(cfg.voice.premium).toBeUndefined()

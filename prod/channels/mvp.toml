@@ -116,13 +116,6 @@ per_source_limit = 25
 # what it sees (only >= SCOUT_MIN_SCORE = 80 is stored) and topics go stale.
 queue_days = 3
 
-[caption_style]
-font = "Inter"
-font_size_px = 72
-active_color = "#FFD700"
-inactive_color = "#FFFFFF"
-stroke_px = 8
-
 # 15 renders/day is the dominant cost driver, and it is production — not
 # publishing — that spends: one Sonnet script call per video, plus the scout's
 # Haiku scoring and generation calls. per_video_usd is a generous per-job

@@ -9,14 +9,6 @@ function configInvalid(message: string): BrainrotError {
   return new BrainrotError(message, { domain: 'config', kind: 'invalid' })
 }
 
-export interface CaptionStyle {
-  font: string
-  fontSizePx: number
-  activeColor: string
-  inactiveColor: string
-  strokePx: number
-}
-
 export interface PremiumVoiceConfig {
   provider: 'elevenlabs'
   voiceId: string
@@ -51,7 +43,6 @@ export interface ChannelConfig {
    */
   backlogDays: number
   voice: { volume: string; premium?: PremiumVoiceConfig }
-  captionStyle: CaptionStyle
   bgDir: string[]
   bgmDir: string
   budget: { perVideoUsdMicros: number; perDayUsdMicros: number }
@@ -200,13 +191,7 @@ const rawSchema = z.object({
     .optional(),
   platforms: platformsSchema,
   publish: z.unknown().optional(),
-  caption_style: z.object({
-    font: z.string(),
-    font_size_px: z.number(),
-    active_color: z.string(),
-    inactive_color: z.string(),
-    stroke_px: z.number(),
-  }),
+  caption_style: z.unknown().optional(),
   // Every cap must be strictly positive. A zero cap is a misconfiguration that
   // reads as a legitimate one everywhere downstream — plan-tick's resume floor
   // becomes 0, `0 < 0` is false, and the job livelocks instead of parking —
@@ -234,6 +219,14 @@ const rawSchema = z.object({
 //    stranding viewers on an earlier part indefinitely. Caught here rather
 //    than at 3am.
 const channelSchema = rawSchema.superRefine((cfg, ctx) => {
+  if (cfg.caption_style !== undefined) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['caption_style'],
+      message:
+        'the [caption_style] table was removed; caption styling is shared in code (CAPTION_STYLE)',
+    })
+  }
   if (cfg.publish !== undefined) {
     ctx.addIssue({
       code: 'custom',
@@ -300,13 +293,6 @@ export function parseChannelToml(text: string, filename: string): ChannelConfig 
             modelId: raw.voice.premium.model,
           }
         : undefined,
-    },
-    captionStyle: {
-      font: raw.caption_style.font,
-      fontSizePx: raw.caption_style.font_size_px,
-      activeColor: raw.caption_style.active_color,
-      inactiveColor: raw.caption_style.inactive_color,
-      strokePx: raw.caption_style.stroke_px,
     },
     bgDir: raw.bg_dir,
     bgmDir: raw.bgm_dir,

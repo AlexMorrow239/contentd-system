@@ -1,5 +1,21 @@
-import type { CaptionStyle } from './config/channel.js'
 import type { WordTiming } from './providers/whisperx.js'
+
+export interface CaptionStyle {
+  font: string
+  fontSizePx: number
+  activeColor: string
+  inactiveColor: string
+  strokePx: number
+}
+
+// Shared by production renders and the Remotion preview, independent of channel config.
+export const CAPTION_STYLE: Readonly<CaptionStyle> = Object.freeze({
+  font: 'Inter',
+  fontSizePx: 72,
+  activeColor: '#FFD700',
+  inactiveColor: '#FFFFFF',
+  strokePx: 8,
+})
 
 // The 9:16 output contract, in the module both sides of the src/remotion
 // boundary already import. The Remotion composition, the crop/scale filter,
