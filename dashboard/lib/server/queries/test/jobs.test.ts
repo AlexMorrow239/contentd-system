@@ -9,7 +9,6 @@ import {
   seedCost,
   seedJob,
   seedLibrary,
-  seedLibraryObject,
   seedPost,
   seedStage,
 } from '../../../../../src/testing/db.js'
@@ -165,37 +164,14 @@ describe('getJobDetail', () => {
     const file = path.join(dir, 'out.mp4')
     writeFileSync(file, 'not really a video')
     seedLibrary(db, 'j2', { videoPath: file, state: 'ready' })
-    seedLibraryObject(db, 'j2', { objectKey: 'videos/ocean/j2.mp4', bytes: 1, etag: 'e' })
     expect(getJobDetail(db, 'j2')?.bytes).toBe('local')
     db.close()
   })
 
-  it('reports bytes archived when the local file is gone and the object is not reclaimed', () => {
+  it('reports bytes missing when the local file is gone', () => {
     const db = seed()
     seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
-    seedLibraryObject(db, 'j2', { objectKey: 'videos/ocean/j2.mp4', bytes: 1, etag: 'e' })
-    expect(getJobDetail(db, 'j2')?.bytes).toBe('archived')
-    db.close()
-  })
-
-  it('reports bytes unstored when there is no local file and no library_objects row', () => {
-    const db = seed()
-    seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
-    // No library_objects row: this job was never uploaded to object storage.
-    expect(getJobDetail(db, 'j2')?.bytes).toBe('unstored')
-    db.close()
-  })
-
-  it('reports bytes reclaimed when the stored object has been reclaimed', () => {
-    const db = seed()
-    seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
-    seedLibraryObject(db, 'j2', {
-      objectKey: 'videos/ocean/j2.mp4',
-      bytes: 1,
-      etag: 'e',
-      reclaimedAt: '2026-07-26T00:00:00.000Z',
-    })
-    expect(getJobDetail(db, 'j2')?.bytes).toBe('reclaimed')
+    expect(getJobDetail(db, 'j2')?.bytes).toBe('missing')
     db.close()
   })
 

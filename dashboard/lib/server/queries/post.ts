@@ -39,8 +39,6 @@ interface DbPostQueueRow {
   created_at: string
   video_path: string
   metadata_json: string
-  object_key: string | null
-  reclaimed_at: string | null
   series_key: string | null
   part_index: number | null
   part_count: number | null
@@ -108,11 +106,9 @@ export function listPostQueue(
   const rows = db
     .prepare(
       `SELECT l.job_id, j.channel, j.topic, l.created_at, l.video_path, l.metadata_json,
-              lo.object_key, lo.reclaimed_at,
               t.series_key, t.part_index, t.part_count
        FROM library l
        JOIN jobs j ON j.id = l.job_id
-       LEFT JOIN library_objects lo ON lo.job_id = l.job_id
        LEFT JOIN topics t ON t.job_id = l.job_id
        WHERE l.state = 'ready' AND (${perChannel.join(' OR ')})
        ORDER BY l.created_at ASC, l.job_id ASC

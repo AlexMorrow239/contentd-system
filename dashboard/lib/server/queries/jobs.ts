@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { whereClause } from '../../../../src/db/sql.js'
-import { libraryBytes, libraryLinks } from './library.js'
+import { libraryBytes, libraryLinks, type LibraryBytes } from './library.js'
 
 // A tuple, not a bare union: the filter dropdowns need the values at runtime,
 // and a hand-maintained second copy beside the type is what they used to be.
@@ -23,7 +23,6 @@ export const DASHBOARD_STAGE_ORDER = [
   'visuals',
   'assemble',
   'qc',
-  'store',
 ] as const
 
 export interface JobListRow {
@@ -130,13 +129,8 @@ export interface JobDetail {
   costs: JobCostRow[]
   libraryState: string | null
   videoPath: string | null
-  /**
-   * Where this job's video bytes are — same four states the library page
-   * draws, from the database plus existsSync. The dashboard holds no bucket
-   * credentials (design spec decision 9), so this is never fetched or
-   * presigned. Null when the job has no library row at all.
-   */
-  bytes: 'local' | 'archived' | 'reclaimed' | 'unstored' | null
+  /** Whether the finished video's local file is available. */
+  bytes: LibraryBytes | null
   /** Live post urls, one per platform that published. */
   links: { platform: string; url: string }[]
 }
@@ -193,17 +187,9 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
   }))
 
   const libraryRow = db
-    .prepare(
-      `SELECT l.state AS state, l.video_path AS video_path, lo.object_key AS object_key,
-              lo.reclaimed_at AS reclaimed_at
-       FROM library l LEFT JOIN library_objects lo ON lo.job_id = l.job_id
-       WHERE l.job_id = ?`,
-    )
-    .get(jobId) as
-    | { state: string; video_path: string; object_key: string | null; reclaimed_at: string | null }
-    | undefined
+    .prepare('SELECT state, video_path FROM library WHERE job_id = ?')
+    .get(jobId) as { state: string; video_path: string } | undefined
 
-  // Same precedence as the library page: libraryBytes owns it, this just calls it.
   const bytes: JobDetail['bytes'] = libraryRow === undefined ? null : libraryBytes(libraryRow)
 
   const links = libraryLinks(db, [jobId]).get(jobId) ?? []

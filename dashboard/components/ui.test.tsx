@@ -15,15 +15,15 @@ describe('dashboard components', () => {
       'rel="noopener noreferrer"',
     )
   })
-  it('only provides a video source for local bytes', () => {
+  it('provides a video source for local bytes', () => {
     expect(renderToStaticMarkup(<Video bytes="local" jobId="job-a" />)).toContain(
       '/library/job-a/video',
     )
-    for (const bytes of ['archived', 'reclaimed', 'unstored'] as const) {
-      const html = renderToStaticMarkup(<Video bytes={bytes} jobId="job-a" />)
-      expect(html).not.toContain('<video')
-      expect(html).not.toContain('src=')
-    }
+  })
+  it('explains when the local video is missing', () => {
+    const html = renderToStaticMarkup(<Video bytes="missing" jobId="job-a" />)
+    expect(html).toContain('Local video file is missing')
+    expect(html).not.toContain('<video')
   })
   it('keeps recovery notices visible alongside failures', () => {
     const db = memDb()

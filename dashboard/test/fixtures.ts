@@ -112,7 +112,6 @@ export function resetFixture({ db, videoPath }: DashboardFixture) {
   for (const table of [
     'operator_actions',
     'posts',
-    'library_objects',
     'library',
     'job_stages',
     'costs',

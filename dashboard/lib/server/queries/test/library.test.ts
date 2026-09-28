@@ -4,13 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import type { QcResult } from '../../../../../src/stages/qc.js'
 import { countLibraryEntries, libraryChannels, listLibraryEntries } from '../library.js'
-import {
-  memDb,
-  seedJob,
-  seedLibrary,
-  seedLibraryObject,
-  seedPost,
-} from '../../../../../src/testing/db.js'
+import { memDb, seedJob, seedLibrary, seedPost } from '../../../../../src/testing/db.js'
 import { tmpDir } from '../../../../../src/testing/tmp.js'
 
 function seed(): Database {
@@ -130,31 +124,12 @@ describe('listLibraryEntries', () => {
     db.close()
   })
 
-  it('reports a reclaimed object as reclaimed', () => {
+  it('reports a missing local video', () => {
     const db = memDb()
     seedJob(db, 'job-1', { channel: 'chan-a' })
-    seedLibrary(db, 'job-1', { state: 'published', videoPath: '/nope/final.mp4' })
-    seedLibraryObject(db, 'job-1', { reclaimedAt: '2026-07-26T00:00:00.000Z' })
+    seedLibrary(db, 'job-1', { state: 'ready', videoPath: '/definitely/missing/final.mp4' })
 
-    expect(listLibraryEntries(db)[0].bytes).toBe('reclaimed')
-  })
-
-  it('reports a stored object with no local file as archived', () => {
-    const db = memDb()
-    seedJob(db, 'job-1', { channel: 'chan-a' })
-    seedLibrary(db, 'job-1', { state: 'published', videoPath: '/nope/final.mp4' })
-    seedLibraryObject(db, 'job-1')
-
-    expect(listLibraryEntries(db)[0].bytes).toBe('archived')
-  })
-
-  it('reports a video with no library_objects row as unstored, not archived', () => {
-    const db = memDb()
-    seedJob(db, 'job-1', { channel: 'chan-a' })
-    seedLibrary(db, 'job-1', { state: 'ready', videoPath: '/nope/final.mp4' })
-    // No seedLibraryObject call: this job was never uploaded to object storage.
-
-    expect(listLibraryEntries(db)[0].bytes).toBe('unstored')
+    expect(listLibraryEntries(db)[0].bytes).toBe('missing')
   })
 
   it('reports an existing local file as local', () => {

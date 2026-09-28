@@ -10,20 +10,7 @@ export type QcSummary =
   | { kind: 'unparseable' }
   | { kind: 'absent' }
 
-/**
- * Where this video's bytes are. 'local' — the runs/ file is still on disk and
- * the dashboard can stream it. 'archived' — only the bucket has it; the
- * dashboard holds no bucket credentials by design, so it can name the state
- * but not play the video. 'reclaimed' — the object was deliberately deleted
- * after every declared platform was posted, and the live post is all that is
- * left. 'unstored' — there is no local file AND no library_objects row: the
- * video was never uploaded to object storage at all, distinct from
- * 'archived' (uploaded, just not present locally). This is exactly the set
- * jobs/library.ts's unstoredLibraryJobs selects and digest.ts reports as the
- * `library backfill-store` backlog. Drawn from the database plus existsSync,
- * never from the bucket.
- */
-export type LibraryBytes = 'local' | 'archived' | 'reclaimed' | 'unstored'
+export type LibraryBytes = 'local' | 'missing'
 
 export interface LibraryLink {
   platform: string
@@ -81,23 +68,10 @@ interface DbLibraryEntry {
   video_path: string
   qc_json: string | null
   created_at: string
-  object_key: string | null
-  reclaimed_at: string | null
 }
 
-// Precedence: a reclaimed object is reclaimed even if a stale runs/ file
-// happens to survive, because the durable copy is the one that is gone. Only
-// once neither reclaimed-nor-local applies does the presence of a
-// library_objects row distinguish 'archived' (uploaded) from 'unstored'
-// (never uploaded).
-export function libraryBytes(row: {
-  video_path: string
-  object_key: string | null
-  reclaimed_at: string | null
-}): LibraryBytes {
-  if (row.reclaimed_at !== null) return 'reclaimed'
-  if (existsSync(row.video_path)) return 'local'
-  return row.object_key !== null ? 'archived' : 'unstored'
+export function libraryBytes(row: { video_path: string }): LibraryBytes {
+  return existsSync(row.video_path) ? 'local' : 'missing'
 }
 
 /**
@@ -149,10 +123,9 @@ export function listLibraryEntries(
     .prepare(
       'SELECT library.job_id AS job_id, jobs.channel AS channel, jobs.topic AS topic, ' +
         'library.state AS state, library.video_path AS video_path, ' +
-        'library.qc_json AS qc_json, library.created_at AS created_at, ' +
-        'library_objects.object_key AS object_key, library_objects.reclaimed_at AS reclaimed_at ' +
+        'library.qc_json AS qc_json, library.created_at AS created_at ' +
         'FROM library JOIN jobs ON library.job_id = jobs.id ' +
-        `LEFT JOIN library_objects ON library_objects.job_id = library.job_id${clause} ` +
+        `${clause} ` +
         'ORDER BY library.created_at DESC, library.job_id DESC LIMIT ?',
     )
     .all(...params, limit) as DbLibraryEntry[]

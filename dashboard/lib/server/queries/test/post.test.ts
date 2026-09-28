@@ -25,6 +25,12 @@ describe('listPostQueue', () => {
     expect(listPostQueue(db, [alpha]).map((c) => c.jobId)).toEqual(['j1', 'j2'])
   })
 
+  it('reports missing bytes when the local video does not exist', () => {
+    const db = memDb()
+    seedReady(db, 'j1', '2026-01-01T00:00:00.000Z')
+    expect(listPostQueue(db, [alpha])[0]?.bytes).toBe('missing')
+  })
+
   it('drops a card once every declared platform is posted', () => {
     const db = memDb()
     seedReady(db, 'j1', '2026-01-01T00:00:00.000Z')

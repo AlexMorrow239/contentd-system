@@ -35,15 +35,7 @@ export function JobLink({ id }: { id: string }) {
 export function Video({ bytes, jobId }: { bytes: LibraryBytes; jobId: string }) {
   if (bytes === 'local')
     return <video controls preload="metadata" src={`/library/${encodeURIComponent(jobId)}/video`} />
-  return (
-    <p className="muted">
-      {bytes === 'archived'
-        ? 'Archived to object storage — unavailable locally'
-        : bytes === 'reclaimed'
-          ? 'Reclaimed — stored bytes intentionally removed'
-          : 'Not stored — use backfill store'}
-    </p>
-  )
+  return <p className="muted">Local video file is missing</p>
 }
 export function Table({ headings, children }: { headings: string[]; children: ReactNode }) {
   return (
