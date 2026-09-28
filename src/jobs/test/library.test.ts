@@ -1,16 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { existsSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { parseLibraryJobIds } from '../../cli.js'
-import { fakeStore } from '../../storage/fake.js'
-import type { ObjectStore } from '../../storage/types.js'
-import {
-  approveLibrary,
-  deleteRejectedObjects,
-  libraryObjectKeys,
-  listLibrary,
-  pendingInventory,
-  rejectLibrary,
-} from '../library.js'
+import { approveLibrary, listLibrary, pendingInventory, rejectLibrary } from '../library.js'
 import type { LibraryState } from '../library.js'
 import { runCli } from '../../testing/run-cli.js'
 import { tmpDir } from '../../testing/tmp.js'
@@ -18,7 +11,6 @@ import {
   memDb,
   seedJob as seedJobRow,
   seedLibrary as seedLibraryRow,
-  seedLibraryObject,
   seedPost,
 } from '../../testing/db.js'
 
@@ -108,7 +100,7 @@ describe('approveLibrary', () => {
     seedLibrary(db, c, { state: 'needs-review' })
 
     // b is not needs-review and 'no-such-job' does not exist: both silently skipped
-    expect(approveLibrary(db, [a, b, c, 'no-such-job'])).toEqual({ approved: 2, reclaimed: [] })
+    expect(approveLibrary(db, [a, b, c, 'no-such-job'])).toBe(2)
     const states = db.prepare('SELECT job_id, state FROM library ORDER BY job_id').all() as {
       job_id: string
       state: string
@@ -128,41 +120,8 @@ describe('approveLibrary', () => {
     const blocked = seedJob(db, { id: 'blocked-job' })
     seedLibrary(db, blocked, { state: 'blocked' })
 
-    expect(approveLibrary(db, ['ready-job', 'blocked-job'])).toEqual({
-      approved: 0,
-      reclaimed: [],
-    })
-    expect(approveLibrary(db, [])).toEqual({ approved: 0, reclaimed: [] })
-    db.close()
-  })
-
-  it('refuses a needs-review row whose stored object was reclaimed, and names it', () => {
-    const db = memDb()
-    const gone = seedJob(db, { id: 'gone-job' })
-    seedLibrary(db, gone, { state: 'needs-review' })
-    seedLibraryObject(db, gone, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
-    const held = seedJob(db, { id: 'held-job' })
-    seedLibrary(db, held, { state: 'needs-review' })
-    seedLibraryObject(db, held)
-
-    // Approving a video with no bytes would put an unpublishable row into the
-    // pool, where it can only be picked, fail, and be picked again.
-    expect(approveLibrary(db, [gone, held])).toEqual({ approved: 1, reclaimed: ['gone-job'] })
-    expect(
-      db.prepare('SELECT state FROM library WHERE job_id = ?').get(gone) as { state: string },
-    ).toEqual({ state: 'needs-review' })
-    db.close()
-  })
-
-  it('does not report an already-ready id as a reclaimed refusal', () => {
-    const db = memDb()
-    const ready = seedJob(db, { id: 'ready-job' })
-    seedLibrary(db, ready, { state: 'ready' })
-    seedLibraryObject(db, ready, { reclaimedAt: '2026-07-20T00:00:00.000Z' })
-
-    // It was never approvable in the first place — calling that a reclaim
-    // refusal would send the operator after the wrong cause.
-    expect(approveLibrary(db, [ready])).toEqual({ approved: 0, reclaimed: [] })
+    expect(approveLibrary(db, ['ready-job', 'blocked-job'])).toBe(0)
+    expect(approveLibrary(db, [])).toBe(0)
     db.close()
   })
 })
@@ -188,151 +147,17 @@ describe('rejectLibrary', () => {
     expect(rejectLibrary(db, [])).toBe(0)
     db.close()
   })
-})
 
-describe('libraryObjectKeys', () => {
-  it('returns the keys for the given job ids, skipping ids with no object row', () => {
+  it('blocks a ready row without deleting its local video', () => {
     const db = memDb()
-    const jobId = seedJob(db, { id: 'job-1' })
-    seedLibrary(db, jobId, { state: 'ready' })
-    seedLibraryObject(db, 'job-1', {
-      objectKey: 'videos/example/job-1.mp4',
-      bytes: 1,
-      etag: 'e',
-    })
-    expect(libraryObjectKeys(db, ['job-1', 'job-missing'])).toEqual([
-      { jobId: 'job-1', objectKey: 'videos/example/job-1.mp4' },
-    ])
-    db.close()
-  })
-
-  it('returns an empty array for no ids', () => {
-    const db = memDb()
-    expect(libraryObjectKeys(db, [])).toEqual([])
-    db.close()
-  })
-
-  it('omits an already-reclaimed object', () => {
-    const db = memDb()
+    const dir = tmpDir('brainrot-library-reject-')
+    const videoPath = join(dir, 'final.mp4')
+    writeFileSync(videoPath, 'video')
     seedJob(db, { id: 'job-1' })
-    seedLibrary(db, 'job-1')
-    seedLibraryObject(db, 'job-1', { reclaimedAt: '2026-07-26T00:00:00.000Z' })
+    seedLibrary(db, 'job-1', { state: 'ready', videoPath })
 
-    expect(libraryObjectKeys(db, ['job-1'])).toEqual([])
-  })
-})
-
-// Wraps a real store but makes `delete` throw for one chosen key, so a
-// partial-failure batch can be exercised without any network/module mocking.
-function storeThatFailsToDelete(store: ObjectStore, failingKey: string): ObjectStore {
-  return {
-    ...store,
-    delete: async (key: string) => {
-      if (key === failingKey) throw new Error(`boom: cannot delete ${key}`)
-      await store.delete(key)
-    },
-  }
-}
-
-describe('deleteRejectedObjects', () => {
-  function seedObjectRow(db: Database, jobId: string, objectKey: string): void {
-    seedLibraryObject(db, jobId, { objectKey, bytes: 1, etag: `etag-${jobId}` })
-  }
-
-  it('is a no-op for an empty object list', async () => {
-    const db = memDb()
-    const store = fakeStore(tmpDir('brainrot-reject-'))
-    const res = await deleteRejectedObjects({ db, objects: [], store })
-    expect(res).toEqual({ deleted: [], failed: [] })
-    db.close()
-  })
-
-  it('deletes every object and clears every library_objects row when all succeed', async () => {
-    const db = memDb()
-    const a = seedJob(db, { id: 'a' })
-    const b = seedJob(db, { id: 'b' })
-    seedObjectRow(db, a, 'videos/chan-a/a.mp4')
-    seedObjectRow(db, b, 'videos/chan-a/b.mp4')
-
-    const dir = tmpDir('brainrot-reject-')
-    const store = fakeStore(dir)
-    await store.put('videos/chan-a/a.mp4', Buffer.from('a'), 'video/mp4')
-    await store.put('videos/chan-a/b.mp4', Buffer.from('b'), 'video/mp4')
-
-    const res = await deleteRejectedObjects({
-      db,
-      objects: [
-        { jobId: a, objectKey: 'videos/chan-a/a.mp4' },
-        { jobId: b, objectKey: 'videos/chan-a/b.mp4' },
-      ],
-      store,
-    })
-
-    expect(res).toEqual({ deleted: [a, b], failed: [] })
-    expect(db.prepare('SELECT job_id FROM library_objects').all()).toEqual([])
-    db.close()
-  })
-
-  it('one key throwing lands it in failed, still processes the rest, and warns with the key', async () => {
-    const db = memDb()
-    const a = seedJob(db, { id: 'a' })
-    const b = seedJob(db, { id: 'b' })
-    const c = seedJob(db, { id: 'c' })
-    seedObjectRow(db, a, 'videos/chan-a/a.mp4')
-    seedObjectRow(db, b, 'videos/chan-a/b.mp4')
-    seedObjectRow(db, c, 'videos/chan-a/c.mp4')
-
-    const dir = tmpDir('brainrot-reject-')
-    const inner = fakeStore(dir)
-    await inner.put('videos/chan-a/a.mp4', Buffer.from('a'), 'video/mp4')
-    await inner.put('videos/chan-a/b.mp4', Buffer.from('b'), 'video/mp4')
-    await inner.put('videos/chan-a/c.mp4', Buffer.from('c'), 'video/mp4')
-    const store = storeThatFailsToDelete(inner, 'videos/chan-a/b.mp4')
-
-    const warnings: string[] = []
-    const res = await deleteRejectedObjects({
-      db,
-      objects: [
-        { jobId: a, objectKey: 'videos/chan-a/a.mp4' },
-        { jobId: b, objectKey: 'videos/chan-a/b.mp4' },
-        { jobId: c, objectKey: 'videos/chan-a/c.mp4' },
-      ],
-      store,
-      warn: (message) => warnings.push(message),
-    })
-
-    // The other keys are still processed and their rows still cleared.
-    expect(res).toEqual({ deleted: [a, c], failed: [b] })
-    expect(db.prepare('SELECT job_id AS jobId FROM library_objects ORDER BY job_id').all()).toEqual(
-      [{ jobId: b }],
-    )
-    expect(warnings).toHaveLength(1)
-    expect(warnings[0]).toContain('videos/chan-a/b.mp4')
-    expect(warnings[0]).toContain(b)
-    db.close()
-  })
-
-  it('leaves the library_objects row of a failed delete in place so the orphan is still discoverable', async () => {
-    const db = memDb()
-    const jobId = seedJob(db, { id: 'job-1' })
-    seedObjectRow(db, jobId, 'videos/chan-a/job-1.mp4')
-
-    const dir = tmpDir('brainrot-reject-')
-    const inner = fakeStore(dir)
-    await inner.put('videos/chan-a/job-1.mp4', Buffer.from('x'), 'video/mp4')
-    const store = storeThatFailsToDelete(inner, 'videos/chan-a/job-1.mp4')
-
-    const res = await deleteRejectedObjects({
-      db,
-      objects: [{ jobId, objectKey: 'videos/chan-a/job-1.mp4' }],
-      store,
-    })
-
-    expect(res).toEqual({ deleted: [], failed: [jobId] })
-    expect(
-      db.prepare('SELECT object_key AS k FROM library_objects WHERE job_id = ?').get(jobId),
-    ).toEqual({ k: 'videos/chan-a/job-1.mp4' })
-    db.close()
+    expect(rejectLibrary(db, ['job-1'])).toBe(1)
+    expect(existsSync(videoPath)).toBe(true)
   })
 })
 

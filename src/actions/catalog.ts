@@ -193,33 +193,14 @@ export const ACTIONS = {
     args: z.object({ jobId, platform }),
   },
   'library.reject': {
-    // Slow, not fast: the handler makes real network calls (a dynamic S3
-    // import plus one store.delete() per object, sequentially), and the fast
-    // lane also carries the daemon heartbeat — a slow or unreachable bucket
-    // during a multi-job discard must not stall the heartbeat and trip the
-    // dashboard's 409 liveness gate. No lease: it races no worker, and the
-    // object deletes are idempotent.
-    lane: 'slow',
+    lane: 'fast',
     label: 'discard',
     confirm: true,
     danger:
       'Discards this video: it leaves the posting queue and stops counting toward ' +
-      'the channel backlog, so production can resume. Its stored bytes are freed.',
+      'the channel backlog, so production can resume. The local video file is kept.',
     lease: undefined,
     args: z.object({ jobIds: list(jobId) }),
-  },
-  'library.backfillStore': {
-    lane: 'slow',
-    label: 'backfill store',
-    confirm: true,
-    danger:
-      'Uploads every finished video that has no stored object yet. This can be ' +
-      'a lot of bytes and costs whatever your object storage charges for them.',
-    // No lease: it races no worker. The reclaim sweep deletes only objects
-    // whose library_objects row survives, and this uploads only rows with no
-    // such row at all — the two cannot collide on the same job.
-    lease: undefined,
-    args: z.object({}),
   },
 } as const satisfies Record<string, ActionDescriptor>
 

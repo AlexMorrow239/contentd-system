@@ -1,8 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { loadChannelsDir, tryLoadChannelsDir } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
-import { approveLibrary, rejectLibraryAndFreeObjects } from '../jobs/library.js'
-import { backfillStore } from '../jobs/backfill-store.js'
+import { approveLibrary, rejectLibrary } from '../jobs/library.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
@@ -11,8 +10,6 @@ import { configErrorNoop, produceNextTick } from '../loop/produce-next.js'
 import { markPosted, unmarkPosted } from '../posts/posts.js'
 import { scoutAll } from '../scout/scout.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
-import { s3ConfigError } from '../storage/config.js'
-import type { ObjectStore } from '../storage/types.js'
 import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 
 /**
@@ -24,18 +21,14 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
  * which is pure metadata.
  *
  * Each handler mirrors its CLI command's semantics, including which outcomes
- * are failures. One deliberate exception: `library.approve` on a reclaimed
- * job exits 1 on the CLI but records `done` here with `reclaimed: [...]`, so
- * the page can still report the approvals that did succeed in the same
- * batch.
+ * are failures.
  */
 
 /**
  * `runsRoot` is live: all three render-triggering handlers — `produce.next`,
  * `jobs.resume` and `jobs.produce` — thread it straight through to the
  * pipeline. `setNotice` is called by handlers and the worker to publish
- * operator-facing status: `jobs.produce` publishes its job id (for
- * resumption if interrupted), `library.reject` publishes deletion failures,
+ * operator-facing status: `jobs.produce` publishes its job id for recovery,
  * and the worker publishes when actions wait on a held lease.
  */
 export interface ActionContext {
@@ -44,9 +37,8 @@ export interface ActionContext {
   channelsDir: string
   runsRoot: string
   /**
-   * Publishes an interactive status for the operator to see. Called by handlers
-   * (`jobs.produce`, `library.reject`) and by the worker's
-   * lease-blocked path when actions wait on a held lease.
+   * Publishes an interactive status for the operator to see. Called by
+   * `jobs.produce` and by the worker's lease-blocked path.
    */
   setNotice: (text: string) => void
 }
@@ -62,19 +54,6 @@ type HandlerDeps = {
   scoutAll?: typeof scoutAll
   resumeJob?: typeof resumeJob
   runJob?: typeof runJob
-  /**
-   * Test seam standing in for `(await import('../storage/s3.js')).storeFromEnv()`
-   * in `library.reject` and `library.backfillStore` — keeps the AWS SDK's
-   * ~35ms/~10MB startup cost off every other path that imports this module,
-   * mirroring the CLI's `reject` command. It substitutes for the acquisition
-   * only: `library.reject` routes it through the same
-   * `rejectLibraryAndFreeObjects` the CLI calls, whose production path reports
-   * an unreachable store as `storageUnavailable` rather than throwing, while a
-   * throw from THIS seam (like one from `library.backfillStore`'s) surfaces as
-   * a failed action.
-   */
-  storeFromEnv?: () => ObjectStore
-  backfillStore?: typeof backfillStore
 }
 
 type Handler<K extends ActionKind> = (
@@ -91,7 +70,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   // thrown error becomes a rejected Promise rather than a synchronous throw —
   // the sole caller is `async runAction`, but a future direct
   // `ACTION_HANDLERS[k](ctx, args).catch(...)` must not blow past the
-  // `.catch`. Same convention as storage/fake.ts. require-await doesn't know
+  // `.catch`. require-await doesn't know
   // that distinction, hence the per-handler disable.
   // eslint-disable-next-line @typescript-eslint/require-await
   'topics.requeue': async (ctx, args) => {
@@ -123,13 +102,11 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     return { ok: true }
   },
 
-  'library.approve': (ctx, args) => {
-    const { approved, reclaimed } = approveLibrary(ctx.db, args.jobIds)
-    // Not an error: the CLI exits 1 on a reclaimed refusal but still reports
-    // the approvals it made. Both numbers travel in the result so the page can
-    // say "approved 2 of 3" the same way.
-    return Promise.resolve({ approved, requested: args.jobIds.length, reclaimed })
-  },
+  'library.approve': (ctx, args) =>
+    Promise.resolve({
+      approved: approveLibrary(ctx.db, args.jobIds),
+      requested: args.jobIds.length,
+    }),
 
   'digest.run': (ctx) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
@@ -155,11 +132,6 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     }),
 
   'jobs.produce': async (ctx, args, deps) => {
-    // Object storage is optional (src/stages/store.ts no-ops without it), so
-    // this is a warning carried in the result, NOT a refusal — the same
-    // decision `produce` makes when it writes one line to stderr. Read before
-    // the render so the answer describes the run that is about to happen.
-    const storageWarning = s3ConfigError()
     // Resolve the NAME through the loader, never by string-joining a path:
     // loadChannelsDir already enforces that a file's basename equals its
     // declared `name`, which is the invariant resume depends on.
@@ -176,10 +148,9 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     // and because failAction no longer clears `notice` (Task 1), this line is
     // what tells the operator which job to resume.
     ctx.setNotice(`job ${jobId}`)
-    const result = await (deps?.runJob ?? runJob)(ctx.db, channel, jobId, pipelineStages(), {
+    return (deps?.runJob ?? runJob)(ctx.db, channel, jobId, pipelineStages(), {
       runsRoot: ctx.runsRoot,
     })
-    return storageWarning === undefined ? result : { ...result, storageWarning }
   },
 
   'scout.run': async (ctx, _args, deps) => {
@@ -237,36 +208,11 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     removed: unmarkPosted(ctx.db, args.jobId, args.platform),
   }),
 
-  // Shares the whole sequence with the CLI's `library reject` command through
-  // the library module: keys are read BEFORE the state change, and the object
-  // delete is best-effort AFTER it — the reject itself must not depend on
-  // network reachability, and a storage failure must not roll back (or fail)
-  // the state change. A failure there leaves an orphaned object, and the
-  // notice this routes `warn` into is how an operator finds it. The
-  // `storeFromEnv` test seam rides through the helper's own override, so the
-  // AWS SDK stays behind a dynamic import on the production path.
-  'library.reject': async (ctx, args, deps) => {
-    const result = await rejectLibraryAndFreeObjects({
-      db: ctx.db,
-      jobIds: args.jobIds,
-      warn: (message) => ctx.setNotice(message),
-      storeFromEnv: deps?.storeFromEnv,
-    })
-    return {
-      rejected: result.rejected,
-      requested: result.requested,
-      objectsDeleted: result.deleted.length,
-      objectsFailed: result.failed.length,
-      ...(result.storageUnavailable !== undefined
-        ? { storageUnavailable: result.storageUnavailable }
-        : {}),
-    }
-  },
-
-  'library.backfillStore': async (ctx, _args, deps) => {
-    const store = deps?.storeFromEnv?.() ?? (await import('../storage/s3.js')).storeFromEnv()
-    return (deps?.backfillStore ?? backfillStore)({ db: ctx.db, store })
-  },
+  'library.reject': (ctx, args) =>
+    Promise.resolve({
+      rejected: rejectLibrary(ctx.db, args.jobIds),
+      requested: args.jobIds.length,
+    }),
 }
 
 /**

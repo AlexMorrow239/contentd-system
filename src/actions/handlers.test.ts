@@ -4,10 +4,8 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../testing/channel.js'
-import { memDb, seedJob, seedLibrary, seedLibraryObject, seedTopic } from '../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedTopic } from '../testing/db.js'
 import { postedPlatforms } from '../posts/posts.js'
-import { fakeStore } from '../storage/fake.js'
-import { storageEnvVars, stubStorageEnv } from '../testing/storage.js'
 import { tmpDir } from '../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
@@ -85,19 +83,6 @@ describe('action handlers', () => {
     expect(await runAction(ctx(db), 'library.approve', { jobIds: 'j1' })).toEqual({
       approved: 1,
       requested: 1,
-      reclaimed: [],
-    })
-  })
-
-  it('refuses to approve a reclaimed row and reports it, not as an error', async () => {
-    const db = memDb()
-    seedJob(db, 'j1')
-    seedLibrary(db, 'j1', { state: 'needs-review' })
-    seedLibraryObject(db, 'j1', { reclaimedAt: '2026-07-30T00:00:00Z' })
-    expect(await runAction(ctx(db), 'library.approve', { jobIds: 'j1' })).toEqual({
-      approved: 0,
-      requested: 1,
-      reclaimed: ['j1'],
     })
   })
 
@@ -236,27 +221,6 @@ describe('action handlers', () => {
     expect(notices.some((n) => n.includes(jobId))).toBe(true)
   })
 
-  it('jobs.produce still produces with object storage unconfigured, and says so', async () => {
-    // Object storage is OPTIONAL: `store` no-ops, the job is normal, the video
-    // just lives only under runs/. Mirrors `produce`'s stderr warning — the
-    // action has no stderr, so the warning rides in the result.
-    for (const key of Object.keys(storageEnvVars())) vi.stubEnv(key, undefined)
-    const db = memDb()
-    const dir = writeChannelsDir(
-      { 'alpha.toml': channelToml({ name: 'alpha' }) },
-      tmpDir('produce-action-nostore'),
-    )
-    const run = vi.fn().mockResolvedValue({ jobId: 'j1', status: 'ready' })
-    const result = await ACTION_HANDLERS['jobs.produce'](
-      { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
-      { channel: 'alpha', topic: 't' },
-      { runJob: run },
-    )
-    expect(run).toHaveBeenCalled()
-    expect(result).toMatchObject({ jobId: 'j1', status: 'ready' })
-    expect((result as { storageWarning?: string }).storageWarning).toMatch(/S3|storage/i)
-  })
-
   it('jobs.produce rejects an unknown channel name without creating a job', async () => {
     const db = memDb()
     const dir = writeChannelsDir(
@@ -318,121 +282,6 @@ describe('action handlers', () => {
     seedJob(db, 'j1', { channel: 'alpha' })
     seedLibrary(db, 'j1', { state: 'ready' })
     const result = await runAction(ctx(db), 'library.reject', { jobIds: ['j1'] })
-    expect(result).toEqual({ rejected: 1, requested: 1, objectsDeleted: 0, objectsFailed: 0 })
-  })
-
-  it('library.reject deletes the stored object and drops the library_objects row', async () => {
-    stubStorageEnv()
-    const db = memDb()
-    seedJob(db, 'j1', { channel: 'alpha' })
-    seedLibrary(db, 'j1', { state: 'ready' })
-    seedLibraryObject(db, 'j1', { objectKey: 'videos/j1.mp4' })
-    const store = fakeStore(tmpDir('brainrot-handlers-reject-'))
-    const deleteSpy = vi.spyOn(store, 'delete')
-    // Seed the object into the fake store so a real delete has something to
-    // remove — proves the handler actually calls store.delete with the right
-    // key, not just that it returns a plausible-looking result.
-    await store.put('videos/j1.mp4', Buffer.from('x'), 'video/mp4')
-
-    const result = await ACTION_HANDLERS['library.reject'](
-      ctx(db),
-      { jobIds: ['j1'] },
-      { storeFromEnv: () => store },
-    )
-
-    expect(deleteSpy).toHaveBeenCalledWith('videos/j1.mp4')
-    expect(result).toEqual({ rejected: 1, requested: 1, objectsDeleted: 1, objectsFailed: 0 })
-    expect(db.prepare('SELECT * FROM library_objects WHERE job_id = ?').get('j1')).toBeUndefined()
-    expect(
-      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as { state: string })
-        .state,
-    ).toBe('blocked')
-  })
-
-  it('library.reject does not fail the action when the store delete throws', async () => {
-    stubStorageEnv()
-    const db = memDb()
-    seedJob(db, 'j1', { channel: 'alpha' })
-    seedLibrary(db, 'j1', { state: 'ready' })
-    seedLibraryObject(db, 'j1', { objectKey: 'videos/j1.mp4' })
-    const failingStore = {
-      ...fakeStore(tmpDir('brainrot-handlers-reject-fail-')),
-      delete: vi.fn().mockRejectedValue(new Error('network unreachable')),
-    }
-
-    const result = await ACTION_HANDLERS['library.reject'](
-      ctx(db),
-      { jobIds: ['j1'] },
-      { storeFromEnv: () => failingStore },
-    )
-
-    expect(result).toEqual({ rejected: 1, requested: 1, objectsDeleted: 0, objectsFailed: 1 })
-    // The state change stands even though the delete failed — the row is
-    // left in place so the next sweep can retry the delete.
-    expect(
-      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as { state: string })
-        .state,
-    ).toBe('blocked')
-    expect(db.prepare('SELECT * FROM library_objects WHERE job_id = ?').get('j1')).toBeDefined()
-  })
-
-  it('library.reject treats unconfigured object storage as nothing to delete', async () => {
-    vi.stubEnv('BRAINROT_S3_ENDPOINT', '')
-    vi.stubEnv('BRAINROT_S3_BUCKET', '')
-    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', '')
-    vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', '')
-    const db = memDb()
-    seedJob(db, 'j1', { channel: 'alpha' })
-    seedLibrary(db, 'j1', { state: 'ready' })
-    seedLibraryObject(db, 'j1', { objectKey: 'videos/j1.mp4' })
-
-    const result = await runAction(ctx(db), 'library.reject', { jobIds: ['j1'] })
-
-    // Every field asserted: this is exactly the branch where storageUnavailable
-    // is the interesting output, and objectsFailed must stay 0 — unconfigured
-    // storage is "nothing to delete", not a delete attempt that failed.
-    expect(result).toEqual({
-      rejected: 1,
-      requested: 1,
-      objectsDeleted: 0,
-      objectsFailed: 0,
-      storageUnavailable: expect.stringContaining('object storage is not configured'),
-    })
-    expect(
-      (db.prepare('SELECT state FROM library WHERE job_id = ?').get('j1') as { state: string })
-        .state,
-    ).toBe('blocked')
-  })
-
-  it('library.backfillStore uploads the unstored backlog and reports both lists', async () => {
-    const db = memDb()
-    const backfill = vi.fn().mockResolvedValue({ uploaded: ['j1', 'j2'], skipped: ['j3'] })
-    const result = await ACTION_HANDLERS['library.backfillStore'](
-      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
-      {},
-      { backfillStore: backfill, storeFromEnv: () => fakeStore(tmpDir('backfill-store')) },
-    )
-    expect(result).toEqual({ uploaded: ['j1', 'j2'], skipped: ['j3'] })
-  })
-
-  it('library.backfillStore fails when object storage is unreachable', async () => {
-    const db = memDb()
-    const backfill = vi.fn()
-    await expect(
-      ACTION_HANDLERS['library.backfillStore'](
-        { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
-        {},
-        {
-          backfillStore: backfill,
-          storeFromEnv: () => {
-            throw new Error('S3_BUCKET is not set')
-          },
-        },
-      ),
-    ).rejects.toThrow(/S3_BUCKET/)
-    // Unlike library.reject, where deletion is best-effort cleanup after a state
-    // change that already happened, uploading IS this action. There is nothing
-    // partial to report, so it must fail rather than record a green no-op.
-    expect(backfill).not.toHaveBeenCalled()
+    expect(result).toEqual({ rejected: 1, requested: 1 })
   })
 })

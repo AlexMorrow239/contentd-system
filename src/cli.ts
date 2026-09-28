@@ -11,12 +11,8 @@ import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { daySpendBreakdown } from './jobs/costs.js'
 import { formatUsdMicros } from './money.js'
-import { approveLibrary, listLibrary, rejectLibraryAndFreeObjects } from './jobs/library.js'
+import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
-// storage/s3.js is imported dynamically at the commands that need it — a
-// static import puts the AWS SDK on the startup path of every command.
-// storage/config.js carries no SDK import, so this one is free.
-import { s3ConfigError } from './storage/config.js'
 import { resolveBrainrotPaths } from './config/paths.js'
 import type { BrainrotPaths } from './config/paths.js'
 
@@ -124,14 +120,6 @@ program
   .requiredOption('--topic <text>', 'topic text')
   .option('--root <path>', ROOT_OPTION_DESC)
   .action(async (opts: { channel: string; topic: string; root?: string }) => {
-    // Object storage is optional (src/stages/store.ts): warn, don't refuse.
-    // The `store` stage runs last and simply no-ops with no S3 config, so an
-    // unconfigured deployment still produces a normal ready/needs-review job
-    // — it just has no cloud copy to hand to the (now manual) publish step.
-    const storageError = s3ConfigError()
-    if (storageError !== undefined) {
-      console.error(`produce: ${storageError}`)
-    }
     // Both before the db handle, as they were: a bad --channel path must
     // exit 1 without having opened (or created) a database.
     const channel = loadChannelConfig(opts.channel)
@@ -409,24 +397,9 @@ library
     // the parseAsync .catch (message on stderr, exit 1) with no writes.
     const jobIds = parseLibraryJobIds(rawIds)
     await withDb(opts, (db) => {
-      const { approved, reclaimed } = approveLibrary(db, jobIds)
+      const approved = approveLibrary(db, jobIds)
       // approved < jobIds.length flags ids that were not in 'needs-review' state.
       console.log(`approved ${approved} of ${jobIds.length}`)
-      // A distinct diagnostic, because it is a distinct condition: the row was
-      // approvable in every way except that its bytes are gone, so approving it
-      // would have put an unpublishable video into the pool.
-      if (reclaimed.length > 0) {
-        console.error(
-          `not approved — stored object already reclaimed, nothing left to publish: ${reclaimed.join(', ')} ` +
-            `— retire with brainrot library reject ${reclaimed.join(' ')}`,
-        )
-        // Refusal is an outcome a wrapper has to see. exitCode rather than
-        // process.exit for the same reason every other command here uses it: a
-        // piped stdout must flush the line above first. Ids that were simply in
-        // the wrong state stay exit 0 — `approved N of M` already says so, and
-        // re-approving an already-approved id is a no-op, not a failure.
-        process.exitCode = 1
-      }
     })
   })
 
@@ -435,44 +408,11 @@ library
   .option('--root <path>', ROOT_OPTION_DESC)
   .action(async (rawIds: string[], opts: { root?: string }) => {
     const jobIds = parseLibraryJobIds(rawIds)
-    await withDb(opts, async (db) => {
-      // The whole sequence — keys read before the state change, best-effort
-      // deletes after — lives in the library module, shared with the
-      // dashboard's `library.reject` action so the two cannot drift. What is
-      // this command's own is where the warnings go and what prints.
-      const result = await rejectLibraryAndFreeObjects({
-        db,
-        jobIds,
-        warn: (message) => console.warn(message),
-      })
+    await withDb(opts, (db) => {
+      const rejected = rejectLibrary(db, jobIds)
       // reject takes needs-review AND ready; those are the only two states a
       // row can be pulled back from — there is no 'published' state any more.
-      console.log(`rejected ${result.rejected} of ${result.requested}`)
-      // A failure here leaves an orphaned object, which this warning line —
-      // not an ObjectStore.list() sweep — is how you find.
-      if (result.storageUnavailable !== undefined) {
-        console.warn(
-          `object storage unavailable, ${result.objects} object(s) left in place: ${result.storageUnavailable}`,
-        )
-      }
-    })
-  })
-
-library
-  .command('backfill-store')
-  .description('upload finished videos that have no stored object yet')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .action(async (opts: { root?: string }) => {
-    const { backfillStore } = await import('./jobs/backfill-store.js')
-    await withDb(opts, async (db) => {
-      const res = await backfillStore({
-        db,
-        store: (await import('./storage/s3.js')).storeFromEnv(),
-      })
-      console.log(`uploaded ${res.uploaded.length}, skipped ${res.skipped.length}`)
-      for (const jobId of res.skipped) {
-        console.log(`  skipped ${jobId}: local video file is gone, nothing to upload`)
-      }
+      console.log(`rejected ${rejected} of ${jobIds.length}`)
     })
   })
 

@@ -29,9 +29,6 @@ export default function LibraryPage(props: PageProps) {
           <>
             <h1>Library</h1>
             <p className="subtitle">Finished videos and quality checks.</p>
-            <div className="page-actions">
-              <ActionForm kind="library.backfillStore" token={ctx.token} disabled={ctx.stale} />
-            </div>
             <Filters
               path="/library"
               filters={[

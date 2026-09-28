@@ -11,7 +11,6 @@ import { pipelineStages } from './jobs/pipeline.js'
 import { visualsVolumeStage } from './stages/visuals-volume.js'
 import { openDb } from './db/index.js'
 import { runCli } from './testing/run-cli.js'
-import { storageEnvVars } from './testing/storage.js'
 import { countJobs, seedLibraryRow } from './testing/cli.js'
 import { tmpDir, testRoot } from './testing/tmp.js'
 
@@ -119,53 +118,19 @@ describe('brainrot CLI — jobs and produce', () => {
     '`produce` with a nonexistent --channel exits 1 with a clean one-line error (no stack)',
     async () => {
       const root = testRoot()
-      // Storage env passed explicitly: produce gates on it before opening the
-      // channel file, so without this the assertion below depends on whether
-      // the machine happens to have a .env.
-      const result = await runCli(
-        ['produce', '--channel', '/no/such/channel.toml', '--topic', 'venus', '--root', root.root],
-        { env: storageEnvVars() },
-      )
+      const result = await runCli([
+        'produce',
+        '--channel',
+        '/no/such/channel.toml',
+        '--topic',
+        'venus',
+        '--root',
+        root.root,
+      ])
       expect(result.exitCode).toBe(1)
       expect(result.stderr).toMatch(/ENOENT|no such file/)
       // Just the message — no raw unhandled-rejection stack frames ("    at ...").
       expect(result.stderr).not.toMatch(/\n\s+at /)
-      expect(countJobs(root.dbPath)).toBe(0)
-    },
-    60000,
-  )
-
-  // Object storage is optional now (src/stages/store.ts): the `store` stage
-  // simply no-ops with no S3 config, so `produce` warns rather than refusing
-  // and keeps going. Reusing the nonexistent-channel setup from the test
-  // above (rather than a real channel, which would run a full render) proves
-  // exactly the part that changed: the storage warning no longer short-circuits
-  // the command — it falls through to the channel load and fails on ITS OWN
-  // error (ENOENT), not on the storage precondition.
-  it.concurrent(
-    '`produce` warns about missing storage keys but does not refuse to run',
-    async () => {
-      const root = testRoot()
-      const result = await runCli(
-        ['produce', '--channel', '/no/such/channel.toml', '--topic', 'venus', '--root', root.root],
-        // Empty, not absent: dotenv does not override a key already present in
-        // the child env, so this holds whether or not the machine has a .env
-        // with real R2 credentials in it.
-        {
-          env: {
-            BRAINROT_S3_ENDPOINT: '',
-            BRAINROT_S3_BUCKET: '',
-            BRAINROT_S3_ACCESS_KEY_ID: '',
-            BRAINROT_S3_SECRET_ACCESS_KEY: '',
-          },
-        },
-      )
-      // Still exits 1, but now for the channel file, not the storage check —
-      // the old refusal returned before ever reaching loadChannelConfig.
-      expect(result.stderr).toContain('BRAINROT_S3_BUCKET')
-      expect(result.stderr).toContain('object storage is not configured')
-      expect(result.stderr).toMatch(/ENOENT|no such file/)
-      expect(result.exitCode).toBe(1)
       expect(countJobs(root.dbPath)).toBe(0)
     },
     60000,
@@ -501,26 +466,6 @@ describe('brainrot CLI — digest', () => {
 
 describe('brainrot CLI — library', () => {
   it.concurrent(
-    '`library approve` exits 1 when every id was refused for having been reclaimed',
-    async () => {
-      // A wrapper script reads the exit code, not the stderr line: approving
-      // nothing at all is a failed operation, not a quiet no-op.
-      const root = testRoot()
-      seedLibraryRow(root.dbPath, {
-        jobId: 'job-gone-1',
-        channel: 'demo',
-        state: 'needs-review',
-        reclaimed: true,
-      })
-      const result = await runCli(['library', 'approve', 'job-gone-1', '--root', root.root])
-      expect(result.exitCode).toBe(1)
-      expect(result.stdout).toContain('approved 0 of 1')
-      expect(result.stderr).toContain('already reclaimed')
-    },
-    60000,
-  )
-
-  it.concurrent(
     '`library approve` exits 0 when an id approves normally',
     async () => {
       const root = testRoot()
@@ -538,21 +483,7 @@ describe('run', () => {
     const root = testRoot()
     const child = spawn('node', [CLI_ENTRY, 'run', '--root', root.root], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      // Unlike execa's runCli (which merges onto process.env), node:child_process's
-      // spawn REPLACES env entirely when the option is passed — so process.env must
-      // be spread explicitly here. The four storage keys are set to empty strings,
-      // not omitted: dotenv will not override a key already present in the child
-      // env, so an omitted key would let a real .env on this machine fill it back
-      // in, and the "daemon boots with no storage env" property this test exists to
-      // prove would silently stop being tested (see src/testing/storage.ts:75-77's
-      // "mirror case" note).
-      env: {
-        ...process.env,
-        BRAINROT_S3_ENDPOINT: '',
-        BRAINROT_S3_BUCKET: '',
-        BRAINROT_S3_ACCESS_KEY_ID: '',
-        BRAINROT_S3_SECRET_ACCESS_KEY: '',
-      },
+      env: process.env,
     })
     let stdout = ''
     let stderr = ''

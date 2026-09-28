@@ -16,7 +16,6 @@ describe('ACTIONS catalog', () => {
       'jobs.produce',
       'jobs.resume',
       'library.approve',
-      'library.backfillStore',
       'library.reject',
       'post.mark',
       'post.unmark',
@@ -38,6 +37,10 @@ describe('ACTIONS catalog', () => {
   it('declares no lease for actions that touch tables where a concurrent tick is benign', () => {
     expect(ACTIONS['topics.reject'].lease).toBeUndefined()
     expect(ACTIONS['library.approve'].lease).toBeUndefined()
+  })
+
+  it('runs local-only discard in the fast lane', () => {
+    expect(ACTIONS['library.reject'].lane).toBe('fast')
   })
 
   it('requires confirmation only for irreversible actions', () => {
