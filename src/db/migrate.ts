@@ -104,11 +104,13 @@ export function migrate(db: Database): void {
   if (tableExists(db, 'topics') && !hasColumn(db, 'topics', 'target_url')) {
     db.exec('ALTER TABLE topics ADD COLUMN target_url TEXT')
   }
-  // Marks an object deliberately deleted after every declared platform was
-  // posted (posts/reclaim.ts). NULL means the bytes are still in the bucket,
-  // which is the correct reading for every pre-existing row.
-  if (tableExists(db, 'library_objects') && !hasColumn(db, 'library_objects', 'reclaimed_at')) {
-    db.exec('ALTER TABLE library_objects ADD COLUMN reclaimed_at TEXT')
+  // Object storage is retired. Remove its historical metadata and its stage
+  // rows without touching the local video path held by library.
+  if (tableExists(db, 'library_objects')) {
+    db.exec('DROP TABLE library_objects')
+  }
+  if (tableExists(db, 'job_stages')) {
+    db.prepare("DELETE FROM job_stages WHERE stage = 'store'").run()
   }
   // The qc stage's verdict, persisted whole by the runner's final gate so
   // the dashboard's library page can name the failing checks. NULL is the
