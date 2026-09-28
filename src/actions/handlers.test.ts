@@ -211,9 +211,11 @@ describe('action handlers', () => {
     // given. A hardcoded literal here (e.g. 'j1') would make the notice
     // assertion below depend on nanoid() happening to produce that literal,
     // which it practically never does.
-    const run = vi.fn().mockImplementation((_db, _channel, id: string) =>
-      Promise.resolve({ jobId: id, status: 'ready' }),
-    )
+    const run = vi
+      .fn()
+      .mockImplementation((_db, _channel, id: string) =>
+        Promise.resolve({ jobId: id, status: 'ready' }),
+      )
     const notices: string[] = []
     const result = await ACTION_HANDLERS['jobs.produce'](
       {
@@ -444,7 +446,13 @@ describe('action handlers', () => {
       return Promise.resolve({ checked: 2, rejected: 1, skipped: [] })
     })
     const result = await ACTION_HANDLERS['topics.pruneMedia'](
-      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: (t) => notices.push(t) },
+      {
+        db,
+        now: new Date(),
+        channelsDir: '/ch',
+        runsRoot: '/runs',
+        setNotice: (t) => notices.push(t),
+      },
       { dryRun: false },
       { pruneMedia: prune },
     )
@@ -464,6 +472,9 @@ describe('action handlers', () => {
     )
     // `optionalText` exists for exactly this: '' would mean "the channel named
     // empty string" and match nothing, silently doing no work.
-    expect(prune).toHaveBeenCalledWith(db, expect.objectContaining({ channel: undefined, dryRun: true }))
+    expect(prune).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({ channel: undefined, dryRun: true }),
+    )
   })
 })

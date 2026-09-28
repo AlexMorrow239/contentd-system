@@ -93,10 +93,7 @@ describe('csrfFailure', () => {
 
   it('rejects an opaque Origin: null (the sandboxed-iframe form)', () => {
     expect(
-      csrfFailure(
-        req({ host: '127.0.0.1:8787', origin: 'null', 'x-brainrot-csrf': token }),
-        token,
-      ),
+      csrfFailure(req({ host: '127.0.0.1:8787', origin: 'null', 'x-brainrot-csrf': token }), token),
     ).toContain('origin')
   })
 
@@ -151,7 +148,7 @@ describe('csrfFailure', () => {
       ).toContain('loopback')
     })
 
-    it('rejects an empty Host even though it would equal an opaque Origin\'s empty host', () => {
+    it("rejects an empty Host even though it would equal an opaque Origin's empty host", () => {
       // Origin: file:///x parses to host ''. Before the allowlist, an equally
       // empty Host header would satisfy originHost === host and pass the
       // origin layer entirely.

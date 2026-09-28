@@ -11,7 +11,7 @@ vi.mock('../../providers/elevenlabs.js', () => ({
 
 import { KokoroTTS } from 'kokoro-js'
 import { MsEdgeTTS } from 'msedge-tts'
-import { voiceStage, MAX_CHUNK_WORDS, DEV_VOICE_ENV, resetKokoro } from '../voice.js'
+import { voiceStage, MAX_CHUNK_WORDS, resetKokoro } from '../voice.js'
 import { countWords, HOOK_PAUSE_MS } from '../narration-text.js'
 import { parseWavDurationMs } from '../../media/wav.js'
 import { testChannel } from '../../testing/channel.js'
@@ -109,20 +109,11 @@ function ctxWithScript(script: unknown = SCRIPT): JobContext {
   return writeScriptJson(makeCtx(), script)
 }
 
-// Hermeticity guard: capture whatever the ambient environment actually had
-// for this var (e.g. an operator's own `BRAINROT_DEV_VOICE=1 npx vitest run`,
-// exactly as the README instructs) so every test in this file starts from a
-// known-clean slate, then restore it once the whole file is done. Without
-// this, an ambient BRAINROT_DEV_VOICE=1 would make every premium-configured
-// test below silently skip the elevenlabs branch it exists to exercise.
 beforeEach(() => {
   vi.clearAllMocks()
   // The stage memoizes the loaded kokoro model for the process; each test arms
   // its own from_pretrained mock, so the memo is dropped between them.
   resetKokoro()
-  // Stubbing (not deleting) is what lets setup.ts's global vi.unstubAllEnvs()
-  // hand the developer's real BRAINROT_DEV_VOICE back after the file.
-  vi.stubEnv(DEV_VOICE_ENV, undefined)
 })
 
 describe('parseWavDurationMs', () => {
@@ -526,46 +517,15 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
   })
 })
 
-describe('voiceStage dev mode', () => {
-  it('channel.voice.dev=true skips elevenlabs and its budget check even when premium is configured', async () => {
-    const channel = premiumChannel()
-    channel.voice = { ...channel.voice, dev: true }
-    // Cap set below the mocked 40_000 elevenlabs estimate: if dev mode did not
-    // skip the premium branch entirely, this would throw BudgetExceededError
-    // instead of falling through to kokoro.
-    channel.budget = { ...channel.budget, perVideoUsdMicros: 10_000 }
-    const ctx = premiumCtx(SCRIPT, channel)
-    const generate = vi.fn(async (t: string) => chunkAudio(t))
-    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
-
-    await voiceStage.run(ctx)
-
-    expect(vi.mocked(estimateTtsCostMicros)).not.toHaveBeenCalled()
-    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled()
-    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'))
-    expect(meta.provider).toBe('kokoro')
-  })
-
-  it('BRAINROT_DEV_VOICE=1 skips elevenlabs even when the channel has no dev flag set', async () => {
-    vi.stubEnv(DEV_VOICE_ENV, '1')
-    const ctx = premiumCtx()
-    const generate = vi.fn(async (t: string) => chunkAudio(t))
-    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
-
-    await voiceStage.run(ctx)
-
-    expect(vi.mocked(synthWithTimestamps)).not.toHaveBeenCalled()
-    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'))
-    expect(meta.provider).toBe('kokoro')
-  })
-
-  it('leaves premium behavior untouched when BRAINROT_DEV_VOICE is unset or not "1"', async () => {
-    vi.stubEnv(DEV_VOICE_ENV, '0')
+describe('voiceStage channel configuration', () => {
+  it('uses the configured premium voice despite a stale development environment', async () => {
+    vi.stubEnv('BRAINROT_DEV_VOICE', '1')
     const ctx = premiumCtx()
     vi.mocked(synthWithTimestamps).mockResolvedValue(elevenSynthResult())
 
     await voiceStage.run(ctx)
 
-    expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledTimes(1)
+    const meta = JSON.parse(await fs.readFile(ctx.artifactPath('voice', 'voice.json'), 'utf8'))
+    expect(meta.provider).toBe('elevenlabs')
   })
 })

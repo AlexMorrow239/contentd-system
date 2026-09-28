@@ -22,18 +22,16 @@ cp .env.example .env          # fill in provider keys (see below)
 docker compose up -d whisperx # caption alignment sidecar
 ```
 
-The working directory this creates is a **development copy**: `.env.example`
-sets `BRAINROT_ROOT=local`, pointing at the development root (unset also
-resolves to `local`, the built-in default), so a bare `pnpm brainrot ...` on
-the host never touches production state. See Development vs. production
-below for how the container overrides this.
+Development runs through disposable test fixtures. `prod/channels/` is the
+only maintained channel directory; there is no local operational environment
+or channel-promotion copy. Provider keys are needed for production and the
+opt-in contract tests, not for `pnpm test`.
 
 Keys in `.env`:
 
 - `ANTHROPIC_API_KEY` — script generation
 - `ELEVENLABS_API_KEY` — premium voice (optional; unset falls back to kokoro/edge-tts)
-- `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (default 25)
-- `BRAINROT_DEV_VOICE` — set to 1 to force the cheap voice chain, skipping ElevenLabs (see below)
+- `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (Compose default 12)
 
 ## Seed background footage
 
@@ -60,8 +58,10 @@ subfolders).
 ## Produce a video
 
 ```bash
-pnpm brainrot produce --channel local/channels/example.toml --topic "Why is Venus so hot?"
-# host default: --root local
+docker compose stop brainrot
+docker compose run --rm --no-deps brainrot pnpm brainrot produce \
+  --channel /app/state/channels/mvp.toml --topic "Why is Venus so hot?"
+docker compose start brainrot
 ```
 
 Prints the `JobResult` as one JSON line; exit code `0` on `ready`/`needs-review`,
@@ -73,45 +73,31 @@ dependency on the happy path) — no separate flag or tier needed. It falls back
 to kokoro/edge-tts on failure or when unconfigured. This requires
 `ELEVENLABS_API_KEY` in `.env`.
 
-To skip ElevenLabs on purpose — for a local test run of a channel that has
-`[voice.premium]` configured — pass `--dev` to `produce` or `resume`, set
-`BRAINROT_DEV_VOICE=1` in the environment, or add `dev = true` to the
-channel's `[voice]` table to force it for every job on that channel. Forcing
-the volume chain this way reinstates the WhisperX dependency for captions:
-since the audio no longer comes from ElevenLabs, captions need the WhisperX
-sidecar running (`docker compose up -d whisperx`), same as any non-premium
-channel.
+Voice selection comes only from the channel: omit `[voice.premium]` to use
+the free chain. Tests mock each provider independently; there is no `--dev`
+flag or development voice override.
 
 ## Where outputs land
 
-Paths below are the **container's** (production) defaults. A host command
-writes into the development copy instead — `local/runs/` and
-`local/db/brainrot.db` — unless you override `--root`/`BRAINROT_ROOT`.
-See Development vs. production below.
+Production uses `/app/state` inside the container:
 
-- Per-job artifacts: `/app/state/runs/<jobId>/<stage>/` (`script.json`,
-  `narration.wav`, `words.json`, `background.mp4`, `final.mp4`, `qc.json`) —
-  `local/runs/<jobId>/<stage>/` on the host
-- Finished video: `/app/state/runs/<jobId>/assemble/final.mp4` —
-  `local/runs/<jobId>/assemble/final.mp4` on the host
-- State + library + cost ledger: SQLite at `/app/state/db/brainrot.db`
-  (override the root with `--root` or `BRAINROT_ROOT`) — `local/db/brainrot.db`
-  on the host
+- Per-job artifacts: `/app/state/runs/<jobId>/<stage>/`, visible on the host
+  under `prod/runs/<jobId>/<stage>/`.
+- Finished video: `prod/runs/<jobId>/assemble/final.mp4` on the host.
+- SQLite state: `/app/state/db/brainrot.db` in the `brainrot-data` named volume.
+- Channel configuration: `prod/channels/*.toml`, mounted read-only at
+  `/app/state/channels`.
 
-**`runs/<jobId>/` is a disposable local cache, not the durable copy.** Once a
-job's `store` stage completes, the finished video also lives in the object
-store (see Object storage below) and `library_objects` records its key —
-`rm -rf prod/runs/<jobId>` on the host for production, or `rm -rf
-local/runs/<jobId>` for development, is then safe. Nothing deletes `runs/`
-for you automatically; reclaiming disk is a manual operator call, and it's only safe
-for jobs whose `store` stage actually finished (check `pnpm brainrot jobs` or
-the dashboard first).
+Keep run artifacts until their videos are no longer needed or you have verified
+an accessible archived copy. Object storage is optional and fully posted objects
+can be reclaimed, so a completed store stage alone does not guarantee that a
+cloud copy still exists. Tests use temporary directories cleaned up after each file.
 
 ## Inspect
 
 ```bash
-pnpm brainrot jobs    # last 20 jobs
-pnpm brainrot costs   # per-day USD totals, last 7 days
+docker compose exec brainrot pnpm brainrot jobs    # last 20 jobs
+docker compose exec brainrot pnpm brainrot costs   # per-day USD totals, last 7 days
 ```
 
 ## Object storage
@@ -135,47 +121,35 @@ rendered:
 2. Create an **R2 API token** scoped to that bucket with **Object Read & Write**.
 3. Fill the `BRAINROT_R2_*` keys in `.env` (endpoint, access key id, secret access key).
    The endpoint is `https://<account-id>.r2.cloudflarestorage.com`. `docker-compose.yml`
-   maps these onto `BRAINROT_S3_*` inside the production container only — the host CLI's
-   own `BRAINROT_S3_*` keeps pointing at local MinIO, see "Local development" below.
+   maps these onto `BRAINROT_S3_*` inside the production container. Storage tests
+   use separate `TEST_S3_*` settings and cannot inherit these credentials.
 
 Videos finished before object storage was configured have no stored object.
 Back-fill them:
 
 ```bash
-pnpm brainrot library backfill-store
+docker compose stop brainrot
+docker compose run --rm --no-deps brainrot pnpm brainrot library backfill-store
+docker compose start brainrot
 ```
 
-### Local development
+### Storage integration tests
 
-MinIO stands in for R2. It is a `dev`-profile Compose service, so a normal
-`docker compose up -d` does not start it:
+MinIO is an optional test fixture, outside the normal production startup:
 
 ```bash
-docker compose --profile dev up -d minio
-```
-
-Console at http://localhost:9101 (user/password `brainrotdev`), S3 API on
-port 9100. Point `.env`'s `BRAINROT_S3_*` at it — this is what the host CLI reads
-directly, separate from the container-only `BRAINROT_R2_*` above:
-
-```
-BRAINROT_S3_ENDPOINT=http://localhost:9100
-BRAINROT_S3_BUCKET=brainrot-videos
-BRAINROT_S3_ACCESS_KEY_ID=brainrotdev
-BRAINROT_S3_SECRET_ACCESS_KEY=brainrotdev
-```
-
-Then run the storage test tier, which creates the bucket if it is missing:
-
-```bash
+docker compose --profile test up -d --wait minio
 pnpm test:storage
+docker compose --profile test stop minio
 ```
 
-**A MinIO presigned URL is `localhost`,** which is fine for the object-store
-conformance tests (they only need content-type and completeness) but is not
-reachable from anywhere off-machine — irrelevant to posting now that posting
-is a manual download-and-upload from `/post`, but worth knowing if you build
-against the stored object for anything else.
+The test helper creates `brainrot-tests` on `http://localhost:9100`, using
+`brainrotdev` for its access key and secret. The console is at
+`http://localhost:9101`. Both ports bind only to loopback. If needed, override
+`TEST_S3_ENDPOINT`, `TEST_S3_BUCKET`, `TEST_S3_ACCESS_KEY_ID`, and
+`TEST_S3_SECRET_ACCESS_KEY` in the test process's environment. Production
+`BRAINROT_S3_*` settings are ignored by this tier. No channel files, daemon,
+provider keys, or WhisperX service are needed.
 
 ## Posting a video
 
@@ -198,7 +172,7 @@ open http://127.0.0.1:8787/post
    a readonly, copy-buttoned paste field: YouTube gets separate title,
    description and tags fields; Instagram and TikTok get one composed caption
    (they have no separate title field, so it reads `title. description
-   #tags`).
+#tags`).
 4. **Upload by hand** through each platform's own app or web uploader, using
    the pasted title/caption/tags.
 5. **Tick the platform off.** Back on `/post`, paste the live post's URL into
@@ -331,9 +305,10 @@ Use `--build`, not a bare `up -d`: Compose will happily start a stale local
 means "start" can silently run old code. `--build` makes it always build (or
 confirm current) first.
 
-This brings up both services: `whisperx` (the caption-alignment sidecar) and
+This brings up the production services: `whisperx` (the caption-alignment sidecar) and
 `brainrot` (the daemon: `brainrot run`, five workers polling for demand),
-which waits on `whisperx`'s healthcheck before its workers start. There is
+which waits on `whisperx`'s healthcheck before its workers start, plus the
+`dashboard`. There is
 one log stream for everything the daemon does:
 
 ```bash
@@ -414,20 +389,14 @@ out (posted-at, channel, platform, topic, link); the scout topic queue; and
 an action history page (`/actions`) listing every operator action that has
 been queued, with its status, result and error.
 
-The dashboard serves whichever root it is given, like every other entrypoint —
-there is no in-page database switcher, and the footer names the root being
-served. The compose service reads production. To view development state, run a
-second dashboard against the dev root:
+The dashboard serves the explicit production root supplied by Compose, and its
+footer names that root. Dashboard tests construct isolated databases directly.
 
-```bash
-BRAINROT_ROOT=local pnpm exec tsx src/dashboard/server.ts
-```
-
-Every page it *reads* still opens the database through a read-only connection
+Every page it _reads_ still opens the database through a read-only connection
 — the `brainrot-data` mount is read-write on purpose (SQLite must create the
 `-shm` file even to read a WAL database), but the guarantee lives in the
 connection flag, not the mount. What changed is that the dashboard now also
-*writes*, in one narrow way: buttons on the overview, jobs, library, topics
+_writes_, in one narrow way: buttons on the overview, jobs, library, topics
 and post pages queue an operator action (`POST /actions`) that the daemon
 executes, rather than mutating anything itself. Thirteen actions are wired
 today. Six are fast — `topics reject/requeue`, `library approve`,
@@ -443,7 +412,7 @@ the overview page already shows spend against the global-day and
 per-channel-day budget caps, just not that day-by-day table — plus `jobs`,
 `topics list` and `library list`'s own listing format (the `/jobs`,
 `/topics` and `/library` pages cover the same data), `resume --force`,
-`--dev` on both `produce` and `resume`, `produce --channel` taking a path
+`produce --channel` taking a path
 where `jobs.produce`'s own field deliberately takes a name, and `run`
 itself — a scope boundary, not a structural limit.
 
@@ -500,52 +469,50 @@ must be running for a queued action to execute: the dashboard shows a banner
 and disables the buttons when it is not, and `POST /actions` itself answers
 409 rather than queue work nothing would drain.
 
-### Development vs. production
+### Development and release
 
-|                        | root         | db                     | runs                     | channels                     |
-| ---------------------- | ------------ | ---------------------- | ------------------------ | ---------------------------- |
-| development (host)     | `local/`     | `local/db/brainrot.db` | `local/runs/`            | `local/channels/`            |
-| production (container) | `/app/state` | `brainrot-data` volume | `prod/runs/` on the host | `prod/channels/` on the host |
-
-`BRAINROT_ROOT` is the only knob, and **unset means `local`** — a bare
-`pnpm brainrot ...` on this machine cannot read or write production state even
-with no `.env` at all. `docker-compose.yml` pins the container to `/app/state`.
-Every command takes `--root <path>` to override it for one invocation.
-
-A bare `pnpm brainrot ...` on the host reads and writes only the development
-root — the host's `.env` sets `BRAINROT_ROOT=local`, and unset also resolves
-to `local`. The same command run inside the container reads and writes only
-production, because `docker-compose.yml`'s `environment:` block pins
-`BRAINROT_ROOT=/app/state` no matter what the host's `.env` says:
+`prod/channels/` is the source of truth. Edit those TOMLs directly; tests create
+their own minimal channel fixtures in temporary directories. There is no
+`local/channels/` directory to synchronize or promote.
 
 ```bash
-pnpm brainrot jobs                               # host: reads local/db/brainrot.db
-docker compose exec brainrot pnpm brainrot jobs  # container: reads /app/state/db/brainrot.db
+pnpm test:config    # schema, path rules, and every tracked channel TOML
+pnpm test:scout     # sources, filtering, scoring, deduplication
+pnpm test:pipeline  # stages, job lifecycle, and mocked-provider render tests
+pnpm check         # formatting, lint, both TypeScript projects, full default suite
 ```
 
-This is what makes local iteration safe: a half-finished channel's jobs are
-invisible to the production `produce-next` loop, and its spend never enters
-the ledger the production budget caps read.
+The full default suite also covers daemon workers, action queues, budgets,
+leases, the dashboard, and the CLI. No paid providers or running services are
+needed. Paid provider contracts and MinIO conformance remain opt-in.
 
-### Promotion
-
-Once a channel developed under `local/channels/` is ready to go live, copy
-its TOML into `prod/channels/`:
+For a release, run `pnpm check`, then build before restarting the services:
 
 ```bash
-cp local/channels/<name>.toml prod/channels/<name>.toml   # edit as needed
+pnpm check
+docker compose build brainrot whisperx
+docker compose up -d --no-build
 ```
 
-There is no credential grant to run — nothing in this codebase authenticates
-against a platform, so promoting a channel is just getting its TOML into the
-production channels directory with the right `platforms` declared.
-`loadChannelsDir()` validates it the same way it validates every other
-channel: the basename-equals-`name` invariant and no duplicate declared
-names, so a malformed promotion fails at the next daemon tick's config load,
-reported as `config-error`, rather than corrupting state. The daemon does
-not need to be stopped for this — copying a file into `prod/channels/` is
-picked up by the next unit's fresh `tryLoadChannelsDir` read, no restart
-required.
+There is no automatic deployment or CI workflow in this repository. The commands
+above are the release gate and deployment procedure. Rebuilding changes the
+image; it does not require copying channels or recreating database volumes.
+
+Channel edits are live because Compose bind-mounts `prod/channels/` and workers
+reload it each tick. To keep a running daemon from consuming an unvalidated edit,
+stop it before editing and restart after `pnpm check` passes. Code-only changes
+can be built while the old image runs. See Recovery below for the existing
+in-flight render shutdown limitation.
+
+Operational commands run inside the container:
+
+```bash
+docker compose exec brainrot pnpm brainrot jobs
+```
+
+Host CLI/dashboard entrypoints require an explicit `--root`/`BRAINROT_ROOT`;
+omission fails before creating a database. Tests pass a disposable root. Do not
+set a persistent host root in `.env`; Compose supplies `/app/state` itself.
 
 ### Operating the database
 
@@ -697,6 +664,7 @@ paused until you do.
 ## Tests
 
 ```bash
+pnpm check          # complete Node/TypeScript release check
 pnpm test           # unit + integration (mocked providers; real ffmpeg/Remotion)
 pnpm test:contract  # real paid calls, a few cents total (ElevenLabs synth, one LLM call)
 pnpm test:storage   # object-store conformance against real MinIO (see Object storage above)

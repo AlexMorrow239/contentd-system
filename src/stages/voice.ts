@@ -2,7 +2,6 @@ import { promises as fs } from 'node:fs'
 import { KokoroTTS, type GenerateOptions } from 'kokoro-js'
 import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts'
 import type { StageDef, JobContext } from '../jobs/types.js'
-import { DEV_VOICE_ENV } from '../config/dev-voice.js'
 import type { ScriptArtifact } from './script.js'
 import { assertBudget, recordCost } from '../jobs/costs.js'
 import { BrainrotError } from '../errors.js'
@@ -45,10 +44,6 @@ const EDGE_FORMAT = 'riff-24khz-16bit-mono-pcm' as unknown as OUTPUT_FORMAT
 // ~510 phoneme tokens is roughly 80 English words; 60 is a conservative budget that
 // leaves headroom for phoneme-dense words.
 export const MAX_CHUNK_WORDS = 60
-
-// Re-exported for the existing importers; the constant itself lives in a leaf
-// module so reading the name does not cost a caller the TTS backends.
-export { DEV_VOICE_ENV }
 
 // Break any piece still over budget on `boundary`; leave the rest alone.
 function refine(pieces: string[], boundary: RegExp): string[] {
@@ -281,17 +276,7 @@ export const voiceStage: StageDef = {
     let voiceId = ''
     let premiumWords: WordTiming[] | undefined
 
-    // Dev mode (channel-level `[voice] dev = true` or BRAINROT_DEV_VOICE=1)
-    // forces the volume chain regardless of [voice.premium] — see
-    // docs/superpowers/specs/2026-07-25-dev-voice-mode-design.md.
-    const devMode = ctx.channel.voice.dev === true || process.env[DEV_VOICE_ENV] === '1'
-    const premiumVoice = devMode ? undefined : ctx.channel.voice.premium
-    if (devMode) {
-      ctx.log.info(
-        { hadPremiumConfigured: Boolean(ctx.channel.voice.premium) },
-        'dev voice mode active; forcing volume voice chain',
-      )
-    }
+    const premiumVoice = ctx.channel.voice.premium
     if (premiumVoice) {
       // The hook and body go in one call, with an explicit SSML break between
       // them so ElevenLabs leaves a deliberate pause instead of reading

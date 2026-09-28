@@ -126,7 +126,10 @@ export function splitStory(
     let count = 0
     // Always take at least one chunk, so a chunk at exactly the budget cannot
     // stall the loop.
-    while (i + count < chunks.length && (count === 0 || taken + chunks[i + count].words <= wordsPerPart)) {
+    while (
+      i + count < chunks.length &&
+      (count === 0 || taken + chunks[i + count].words <= wordsPerPart)
+    ) {
       taken += chunks[i + count].words
       count += 1
     }

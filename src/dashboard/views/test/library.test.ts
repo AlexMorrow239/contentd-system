@@ -176,14 +176,19 @@ describe('renderLibraryPage', () => {
 
   it('escapes a hostile url', () => {
     const html = renderLibraryPage(
-      pageData([entry({ links: [{ platform: 'youtube', url: 'https://x/"><script>alert(1)</script>' }] })]),
+      pageData([
+        entry({ links: [{ platform: 'youtube', url: 'https://x/"><script>alert(1)</script>' }] }),
+      ]),
     ).value
     expect(html).not.toContain('<script>alert(1)</script>')
   })
 
   it('offers approve on a needs-review row only', () => {
     const out = renderLibraryPage({
-      entries: [entry({ jobId: 'j1', state: 'needs-review' }), entry({ jobId: 'j2', state: 'ready' })],
+      entries: [
+        entry({ jobId: 'j1', state: 'needs-review' }),
+        entry({ jobId: 'j2', state: 'ready' }),
+      ],
       total: 2,
       channels: [],
       filter: {},

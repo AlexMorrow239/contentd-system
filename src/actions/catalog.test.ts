@@ -212,7 +212,9 @@ describe('ACTIONS catalog', () => {
     expect(parseActionArgs('topics.pruneMedia', { dryRun: '1' })).toMatchObject({ dryRun: true })
     expect(parseActionArgs('topics.pruneMedia', {})).toMatchObject({ dryRun: false })
     // The trap this exists to avoid: z.coerce.boolean()('false') === true.
-    expect(parseActionArgs('topics.pruneMedia', { dryRun: 'false' })).toMatchObject({ dryRun: false })
+    expect(parseActionArgs('topics.pruneMedia', { dryRun: 'false' })).toMatchObject({
+      dryRun: false,
+    })
   })
 
   it('treats a blank optional text field as absent', () => {

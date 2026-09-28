@@ -75,17 +75,11 @@ describe('loadChannelConfig', () => {
     expect(() => loadChannelConfig('channels/does-not-exist.toml')).toThrow()
   })
 
-  it('defaults [voice] dev to false when absent', () => {
-    const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
-    expect(cfg.voice.dev).toBe(false)
-  })
-
-  it('parses [voice] dev = true', () => {
+  it('rejects the removed development voice setting', () => {
     const lines = PLAN1_LINES.flatMap((l) =>
       l === 'volume = "af_heart"' ? [l, 'dev = true'] : [l],
     )
-    const cfg = loadChannelConfig(writeToml(lines))
-    expect(cfg.voice.dev).toBe(true)
+    expect(() => loadChannelConfig(writeToml(lines))).toThrow(/dev/)
   })
 
   it('normalizes a single-string bg_dir into a one-element array', () => {

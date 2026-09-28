@@ -63,7 +63,7 @@ export const ALGOSPEAK: Record<string, string> = {
 // 'died' has a negative lookahead to exclude particle forms that change meaning:
 // "died down/out/off/away" have senses distinct from the base verb.
 const keys = Object.keys(ALGOSPEAK).sort((a, b) => b.length - a.length)
-const terms = keys.map(k => k === 'died' ? 'died(?!\\s+(?:down|out|off|away)\\b)' : k).join('|')
+const terms = keys.map((k) => (k === 'died' ? 'died(?!\\s+(?:down|out|off|away)\\b)' : k)).join('|')
 const PATTERN = new RegExp(`\\b(${terms})\\b`, 'gi')
 
 /**

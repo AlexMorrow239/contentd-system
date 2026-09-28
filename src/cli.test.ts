@@ -1,9 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { applyDevFlag, DEV_VOICE_ENV, parseTopicIds } from './cli.js'
+import { parseTopicIds } from './cli.js'
 // Straight from the module that owns it: cli.ts reaches pipelineStages through
 // a dynamic import inside the commands that render, so it no longer re-exports
 // it — a static re-export would put Remotion back on every command's startup.
@@ -58,29 +58,13 @@ describe('parseTopicIds', () => {
   })
 })
 
-describe('applyDevFlag', () => {
-  // applyDevFlag writes process.env directly, so the assertions have to read
-  // it directly too. Stubbing the key to undefined first both clears it and
-  // registers it with vitest, so setup.ts's global vi.unstubAllEnvs() reverts
-  // whatever applyDevFlag wrote.
-  beforeEach(() => {
-    vi.stubEnv(DEV_VOICE_ENV, undefined)
-  })
-
-  it('sets BRAINROT_DEV_VOICE=1 when dev is true', () => {
-    applyDevFlag(true)
-    expect(process.env[DEV_VOICE_ENV]).toBe('1')
-  })
-
-  it('leaves BRAINROT_DEV_VOICE untouched when dev is falsy', () => {
-    applyDevFlag(undefined)
-    expect(process.env[DEV_VOICE_ENV]).toBeUndefined()
-    applyDevFlag(false)
-    expect(process.env[DEV_VOICE_ENV]).toBeUndefined()
-  })
-})
-
 describe('brainrot CLI — jobs and produce', () => {
+  it('refuses operational commands without an explicit root', async () => {
+    const result = await runCli(['jobs'], { env: { BRAINROT_ROOT: '' } })
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toMatch(/BRAINROT_ROOT.*required/)
+  })
+
   it.concurrent(
     '`jobs` opens the db and prints a table header, exiting 0',
     async () => {
@@ -112,21 +96,21 @@ describe('brainrot CLI — jobs and produce', () => {
   )
 
   it.concurrent(
-    '`produce --help` lists --dev',
+    '`produce --help` no longer offers --dev',
     async () => {
       const result = await runCli(['produce', '--help'])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('--dev')
+      expect(result.stdout).not.toContain('--dev')
     },
     60000,
   )
 
   it.concurrent(
-    '`resume --help` lists --dev',
+    '`resume --help` no longer offers --dev',
     async () => {
       const result = await runCli(['resume', '--help'])
       expect(result.exitCode).toBe(0)
-      expect(result.stdout).toContain('--dev')
+      expect(result.stdout).not.toContain('--dev')
     },
     60000,
   )

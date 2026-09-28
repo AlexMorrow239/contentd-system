@@ -153,7 +153,10 @@ describe('renderTopicsPage', () => {
 
   it('offers reject on a candidate and requeue on a claimed topic', () => {
     const out = renderTopicsPage({
-      topics: [topic({ id: 1, status: 'candidate' }), topic({ id: 2, status: 'claimed', title: 'b' })],
+      topics: [
+        topic({ id: 1, status: 'candidate' }),
+        topic({ id: 2, status: 'claimed', title: 'b' }),
+      ],
       channels: [],
       filter: {},
       csrfToken: 'tok',

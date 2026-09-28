@@ -1,9 +1,9 @@
 import type { Database } from 'better-sqlite3'
 
 export function lastScoutAttemptAt(db: Database, channel: string): Date | null {
-  const row = db.prepare('SELECT last_attempt_at FROM scout_state WHERE channel = ?').get(channel) as
-    | { last_attempt_at: string }
-    | undefined
+  const row = db
+    .prepare('SELECT last_attempt_at FROM scout_state WHERE channel = ?')
+    .get(channel) as { last_attempt_at: string } | undefined
   return row === undefined ? null : new Date(row.last_attempt_at)
 }
 

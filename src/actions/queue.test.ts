@@ -72,7 +72,12 @@ describe('operator action queue', () => {
     const db = memDb()
     const id = seedAction(db)
     startAction(db, id, new Date())
-    failAction(db, id, new BrainrotError('no such job', { domain: 'job', kind: 'not-found' }), new Date())
+    failAction(
+      db,
+      id,
+      new BrainrotError('no such job', { domain: 'job', kind: 'not-found' }),
+      new Date(),
+    )
     const row = getAction(db, id)
     expect(row?.status).toBe('failed')
     expect(row?.error).toBe('no such job')

@@ -108,7 +108,11 @@ describe('renderOverviewPage', () => {
   })
 
   it('renders the unattributed spend row when it is greater than zero', () => {
-    const out = renderOverviewPage(data({ unattributedUsdMicros: 1_500_000 }), undefined, OPTS).value
+    const out = renderOverviewPage(
+      data({ unattributedUsdMicros: 1_500_000 }),
+      undefined,
+      OPTS,
+    ).value
     expect(out).toContain('unattributed')
     expect(out).toContain('$1.50')
   })

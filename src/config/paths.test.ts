@@ -1,36 +1,34 @@
 import { describe, expect, it } from 'vitest'
 import path from 'node:path'
-import { DEFAULT_ROOT, resolveBrainrotPaths, resolvePaths, resolveRoot } from './paths.js'
+import { resolveBrainrotPaths, resolvePaths, resolveRoot } from './paths.js'
 
 describe('resolveRoot', () => {
   it('prefers the flag over the env var', () => {
-    expect(resolveRoot('/app/state', { BRAINROT_ROOT: 'local' })).toBe('/app/state')
+    expect(resolveRoot('/app/state', { BRAINROT_ROOT: 'fixture' })).toBe('/app/state')
   })
 
   it('falls back to the env var when no flag is passed', () => {
     expect(resolveRoot(undefined, { BRAINROT_ROOT: '/app/state' })).toBe('/app/state')
   })
 
-  it('defaults to the dev root when neither is set', () => {
-    // The whole point of the default: omission can never reach production.
-    expect(resolveRoot(undefined, {})).toBe(DEFAULT_ROOT)
-    expect(DEFAULT_ROOT).toBe('local')
+  it('requires an explicit root instead of creating local operational state', () => {
+    expect(() => resolveRoot(undefined, {})).toThrow(/BRAINROT_ROOT.*required/)
   })
 
   it('treats an empty flag or env value as unset', () => {
     // compose pins some keys to "" deliberately; "" must not become a root of "".
     expect(resolveRoot('', { BRAINROT_ROOT: '/app/state' })).toBe('/app/state')
-    expect(resolveRoot(undefined, { BRAINROT_ROOT: '  ' })).toBe(DEFAULT_ROOT)
+    expect(() => resolveRoot(undefined, { BRAINROT_ROOT: '  ' })).toThrow(/required/)
   })
 })
 
 describe('resolvePaths', () => {
   it('derives the documented layout from the root', () => {
-    expect(resolvePaths('local')).toEqual({
-      root: 'local',
-      dbPath: path.join('local', 'db', 'brainrot.db'),
-      runsRoot: path.join('local', 'runs'),
-      channelsDir: path.join('local', 'channels'),
+    expect(resolvePaths('fixture')).toEqual({
+      root: 'fixture',
+      dbPath: path.join('fixture', 'db', 'brainrot.db'),
+      runsRoot: path.join('fixture', 'runs'),
+      channelsDir: path.join('fixture', 'channels'),
     })
   })
 
@@ -41,10 +39,9 @@ describe('resolvePaths', () => {
     expect(paths.channelsDir).toBe('/app/state/channels')
   })
 
-  it('uses the same db filename in both modes', () => {
-    // No dev.db: the root disambiguates, so a path never has to be read to
-    // learn which mode it belongs to.
-    expect(path.basename(resolvePaths('local').dbPath)).toBe(
+  it('uses the same db filename across runtime roots', () => {
+    // Disposable fixtures use the same layout as the production container.
+    expect(path.basename(resolvePaths('fixture').dbPath)).toBe(
       path.basename(resolvePaths('/app/state').dbPath),
     )
   })

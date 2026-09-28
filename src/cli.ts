@@ -18,7 +18,6 @@ import type { LibraryState } from './jobs/library.js'
 // static import puts the AWS SDK on the startup path of every command.
 // storage/config.js carries no SDK import, so this one is free.
 import { s3ConfigError } from './storage/config.js'
-import { DEV_VOICE_ENV } from './config/dev-voice.js'
 import { resolveBrainrotPaths } from './config/paths.js'
 import type { BrainrotPaths } from './config/paths.js'
 
@@ -33,8 +32,7 @@ import type { BrainrotPaths } from './config/paths.js'
  *
  * Keep it that way: a static import of any of those specifiers here silently
  * re-imposes the cost on every other command, and nothing fails to make it
- * visible. `DEV_VOICE_ENV` living in config/dev-voice.ts rather than
- * stages/voice.ts is the same rule applied to a single string.
+ * visible.
  */
 
 /**
@@ -68,27 +66,9 @@ export function parseLibraryJobIds(raw: string[]): string[] {
   })
 }
 
-// One flag, not three. The container/host split is built on this single value:
-// compose pins BRAINROT_ROOT=/app/state, the host .env sets `local`, and an
-// unset value means development — so a command can never reach production by
-// omission, and "dev db + prod runs" is not a representable state.
+// Production pins the root in Compose; test subprocesses supply a temp root.
 const ROOT_OPTION_DESC =
-  'mode root holding db/, runs/ and channels/ (default: $BRAINROT_ROOT or local)'
-
-// Re-exported so in-process importers (cli.test.ts) can assert against the
-// same constant applyDevFlag uses. config/dev-voice.ts is a leaf module (it
-// imports nothing), so unlike the stage that reads it this re-export costs
-// nothing at startup.
-export { DEV_VOICE_ENV } from './config/dev-voice.js'
-
-/**
- * Sets BRAINROT_DEV_VOICE for the current process when --dev is passed, so
- * voiceStage treats [voice.premium] as absent. Exported so cli.test.ts can
- * assert the wiring in-process instead of spawning a subprocess.
- */
-export function applyDevFlag(dev?: boolean): void {
-  if (dev) process.env[DEV_VOICE_ENV] = '1'
-}
+  'runtime root holding db/, runs/ and channels/ (required: flag or $BRAINROT_ROOT)'
 
 /**
  * The one resolve → open → work → close sequence every db-touching command
@@ -144,12 +124,7 @@ program
   .requiredOption('--channel <path>', 'path to channel TOML')
   .requiredOption('--topic <text>', 'topic text')
   .option('--root <path>', ROOT_OPTION_DESC)
-  .option(
-    '--dev',
-    'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
-  )
-  .action(async (opts: { channel: string; topic: string; root?: string; dev?: boolean }) => {
-    applyDevFlag(opts.dev)
+  .action(async (opts: { channel: string; topic: string; root?: string }) => {
     // Object storage is optional (src/stages/store.ts): warn, don't refuse.
     // The `store` stage runs last and simply no-ops with no S3 config, so an
     // unconfigured deployment still produces a normal ready/needs-review job
@@ -236,20 +211,14 @@ program
   .argument('<jobId>', 'job id to resume (failed or blocked; running needs --force)')
   .option('--root <path>', ROOT_OPTION_DESC)
   .option('--force', 'resume a job stuck in running (asserts no live process holds it)')
-  .option(
-    '--dev',
-    'force the cheap voice chain (kokoro/edge-tts), skipping ElevenLabs even if [voice.premium] is configured',
-  )
   .action(
     async (
       jobId: string,
       opts: {
         root?: string
         force?: boolean
-        dev?: boolean
       },
     ) => {
-      applyDevFlag(opts.dev)
       const { resumeJob } = await import('./jobs/resume.js')
       const { exitCodeFor } = await import('./jobs/runner.js')
       await withDb(opts, async (db, paths) => {
@@ -563,7 +532,7 @@ program
     }
   })
 
-// cli.test.ts imports parseTopicIds/applyDevFlag in-process, which must not
+// cli.test.ts imports argument parsers in-process, which must not
 // fire the argv parser. Node (and tsx) set argv[1] to the executed script's
 // resolved path, so this comparison is true exactly when cli.ts IS the entry
 // script.

@@ -93,8 +93,7 @@ export function setActionNotice(db: Database, id: number, notice: string | null)
 
 export function getAction(db: Database, id: number): ActionRow | null {
   const row = db.prepare(`SELECT ${COLUMNS} FROM operator_actions WHERE id = ?`).get(id) as
-    | ActionRow
-    | undefined
+    ActionRow | undefined
   return row ?? null
 }
 

@@ -34,17 +34,17 @@ services:
   minio:
     image: minio/minio:latest
     # profiles keeps this OUT of a production `docker compose up -d`. Start it
-    # explicitly for local work:
-    #   docker compose --profile dev up -d minio
-    profiles: [dev]
+    # explicitly for the optional storage test suite:
+    #   docker compose --profile test up -d minio
+    profiles: [test]
     command: server /data --console-address ":9001"
-    restart: unless-stopped
+    restart: 'no'
     ports:
       # Host ports moved off MinIO's defaults: an unrelated `minio` container
       # for another project already holds BOTH 9000 and 9001 on this machine.
       # Container-internal ports are unchanged.
-      - '9100:9000' # S3 API
-      - '9101:9001' # web console
+      - '127.0.0.1:9100:9000' # S3 API
+      - '127.0.0.1:9101:9001' # web console
     environment:
       MINIO_ROOT_USER: brainrotdev
       MINIO_ROOT_PASSWORD: brainrotdev
@@ -75,68 +75,21 @@ services:
     depends_on:
       whisperx:
         condition: service_healthy
-    # Forwards EVERY key in the host's (dev-pointing) .env — provider keys,
-    # the dev-facing BRAINROT_S3_* (MinIO), etc. — into
-    # this container. The `environment:` block below overrides the keys that
-    # must hold a different value in production; every other .env key passes
-    # through unmodified (intended for provider keys).
-    env_file:
-      - .env
+    # Only declared production settings enter the daemon; host test settings
+    # cannot change its paths or provider behavior.
     environment:
-      # env_file above forwards EVERY key in the host's (dev-pointing) .env —
-      # provider keys, etc — straight into this container.
-      # Compose applies `environment` after `env_file`, so only the keys
-      # listed below are guaranteed to hold their production value regardless
-      # of what the host .env says; every other .env key passes through
-      # unmodified, which is intended for provider keys but was previously
-      # unbounded for path/behavior toggles too. Anything host-only that
-      # controls where data lands or how the pipeline behaves belongs here.
-      # ONE root, holding db/, runs/ and channels/. Pinned here rather than
-      # left to env_file: the host .env points at the dev root, and Compose
-      # applies `environment` after every env_file, so this is what guarantees
-      # the container reads production state no matter what the host .env says.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
       BRAINROT_ROOT: /app/state
-      # Service DNS, not localhost — the sidecar is a different container.
       WHISPERX_URL: http://whisperx:8585
-      # The Dockerfile's `ENV TZ=America/Chicago` is only a default — an
-      # env_file value of the same name overrides an image ENV — and
-      # everything that reads local time (src/publish/schedule.ts's
-      # per-channel-day videos_per_day quota via localDay, and the daemon's
-      # 08:00 DIGEST_HOUR firing) reads the container's wall-clock time, so
-      # pin it explicitly.
       TZ: America/Chicago
-      # voice.ts:231 forces the free voice chain only when this is exactly
-      # '1'; empty is verified equivalent to unset (safely OFF). Both
-      # .env.example and the README invite setting BRAINROT_DEV_VOICE=1 for
-      # local runs — if that landed in the host .env, every production video
-      # would silently and permanently lose ElevenLabs with nothing in QC
-      # catching it. Pinning to "" closes that off. Do not pin any other value.
-      BRAINROT_DEV_VOICE: ''
-      # Pins the cross-channel daily spend cap currently effective via the
-      # host .env (BRAINROT_GLOBAL_DAILY_USD=12), so this commit does not
-      # change today's budget behavior while removing the coupling to
-      # whatever the host .env happens to contain. costs.ts treats an empty
-      # string as "unset" (falls back to its own $25 default), so this must
-      # be a real number, not "".
-      BRAINROT_GLOBAL_DAILY_USD: '12'
-      # BRAINROT_S3_* below is pinned to the production R2 credentials for
-      # the same reason as BRAINROT_DEV_VOICE and BRAINROT_ROOT: env_file
-      # forwards the host's (dev-pointing) .env wholesale, so without a pin
-      # the container would run against MinIO — not even reachable from
-      # here — instead of R2.
-      #
-      # BRAINROT_R2_* holds the real R2 credentials under distinct names
-      # specifically so this mapping is possible: ${VAR} interpolates from
-      # the project .env, and since BRAINROT_S3_* in that same file is the
-      # MinIO value, `BRAINROT_S3_ENDPOINT: ${BRAINROT_S3_ENDPOINT}` would
-      # just clobber R2 with MinIO. Filling BRAINROT_S3_ENDPOINT directly
-      # here isn't an option either — it embeds the Cloudflare account id,
-      # so it can't be a committed literal.
-      BRAINROT_S3_ENDPOINT: ${BRAINROT_R2_ENDPOINT}
+      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
+      # Optional archive. Tests use TEST_S3_* and an isolated MinIO bucket.
+      BRAINROT_S3_ENDPOINT: ${BRAINROT_R2_ENDPOINT:-}
       BRAINROT_S3_BUCKET: brainrot-videos
-      BRAINROT_S3_ACCESS_KEY_ID: ${BRAINROT_R2_ACCESS_KEY_ID}
-      BRAINROT_S3_SECRET_ACCESS_KEY: ${BRAINROT_R2_SECRET_ACCESS_KEY}
-      # R2 ignores region but the SDK requires one.
+      BRAINROT_S3_ACCESS_KEY_ID: ${BRAINROT_R2_ACCESS_KEY_ID:-}
+      BRAINROT_S3_SECRET_ACCESS_KEY: ${BRAINROT_R2_SECRET_ACCESS_KEY:-}
       BRAINROT_S3_REGION: 'auto'
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
@@ -189,7 +142,7 @@ services:
     # Deliberately no depends_on: whisperx. The dashboard reads a file and
     # serves HTML; coupling it to sidecar health would hide the dashboard you
     # would use to diagnose an unhealthy sidecar.
-    # Deliberately NO env_file here, unlike `brainrot`. This is the one
+    # Deliberately no provider credentials here. This is the one
     # process that terminates unauthenticated HTTP, and env_file would inject
     # every key in the host .env — ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, etc
     # — into it for no reason: every variable the dashboard actually reads is
@@ -199,7 +152,7 @@ services:
       BRAINROT_DASHBOARD_PORT: '8787'
       # Read for the spend panel; must match the brainrot service so the
       # dashboard reports the cap that is actually enforced.
-      BRAINROT_GLOBAL_DAILY_USD: '12'
+      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
       TZ: America/Chicago
     ports:
       # Loopback-bound on the HOST: unreachable from the network. There is no

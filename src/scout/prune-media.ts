@@ -35,7 +35,12 @@ export interface PruneMediaOpts {
   // Per-row progress. At ~20s a row this command runs for minutes, and one
   // that prints nothing for that long reads as hung. The CLI sends these to
   // stderr, keeping stdout's single-JSON-line contract intact.
-  onProgress?: (progress: { index: number; total: number; topicId: number; outcome: string }) => void
+  onProgress?: (progress: {
+    index: number
+    total: number
+    topicId: number
+    outcome: string
+  }) => void
 }
 
 // A stored permalink ends in '/', which the feed suffix replaces rather than

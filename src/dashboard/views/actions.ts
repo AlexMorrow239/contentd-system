@@ -164,10 +164,7 @@ export function renderConfirmPage(opts: {
     </form>`
 }
 
-export function renderActionsPage(
-  data: ActionsPageData,
-  opts: { highlightId?: number },
-): SafeHtml {
+export function renderActionsPage(data: ActionsPageData, opts: { highlightId?: number }): SafeHtml {
   const rows = data.actions.map((row) => renderRow(row, opts.highlightId))
   const body =
     data.actions.length === 0

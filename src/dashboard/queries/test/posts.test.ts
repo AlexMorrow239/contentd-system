@@ -6,7 +6,12 @@ describe('listPostLog', () => {
   it('joins the topic off the owning job', () => {
     const db = memDb()
     seedJob(db, 'j1', { channel: 'space', topic: 'Venus' })
-    seedPost(db, { jobId: 'j1', channel: 'space', platform: 'youtube', url: 'https://youtube.com/shorts/j1' })
+    seedPost(db, {
+      jobId: 'j1',
+      channel: 'space',
+      platform: 'youtube',
+      url: 'https://youtube.com/shorts/j1',
+    })
     const [entry] = listPostLog(db)
     expect(entry?.jobId).toBe('j1')
     expect(entry?.channel).toBe('space')

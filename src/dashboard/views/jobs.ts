@@ -187,7 +187,8 @@ export function renderJobDetailPage(detail: JobDetail, runsRoot: string): SafeHt
           <h2>video</h2>
           ${bytesCell(detail.bytes, job.id, {
             archived: 'archived to object storage — not available locally',
-            reclaimed: 'reclaimed — the stored object was deleted after every platform was posted to',
+            reclaimed:
+              'reclaimed — the stored object was deleted after every platform was posted to',
           })}
           ${renderLinks(detail.links, html``)}
         </div>`

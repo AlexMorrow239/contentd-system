@@ -26,7 +26,7 @@ export function tmpDir(prefix = 'brainrot-'): string {
 }
 
 /**
- * A temp mode-root with db/, runs/ and channels/ already created, laid out by
+ * A disposable runtime root with db/, runs/ and channels/ already created, laid out by
  * the SAME resolvePaths the CLI uses — so a test can never assert against a
  * layout production does not have. Removed after the current test FILE
  * finishes, like every other tmpDir.

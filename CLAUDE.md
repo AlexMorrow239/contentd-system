@@ -24,6 +24,10 @@ pnpm install
 cp .env.example .env          # provider keys — see README for which are required
 docker compose up -d whisperx # caption-alignment sidecar (captions + ElevenLabs-fallback)
 
+pnpm check                    # formatting, lint, type-checks, full default test suite
+pnpm test:config              # validate schema and tracked channel configs
+pnpm test:scout               # source/scoring/queue behavior with fixtures
+pnpm test:pipeline            # stages, lifecycle, and mocked-provider real renders
 pnpm build                    # tsc --noEmit on both src/ and remotion/ — no emit, type-check only
 pnpm test                     # vitest run — mocked providers, real ffmpeg/Remotion (~20s warm)
                                # a globalSetup esbuilds src/ -> dist/ first (~19ms);
@@ -31,7 +35,8 @@ pnpm test                     # vitest run — mocked providers, real ffmpeg/Rem
 pnpm test:coverage            # same run + v8 coverage -> coverage/ (report-only, no thresholds)
 pnpm test:contract            # CONTRACT=1 — real paid calls: ElevenLabs, one LLM call
 
-pnpm brainrot produce --channel local/channels/<name>.toml --topic "..."
+docker compose run --rm --no-deps brainrot pnpm brainrot produce --channel /app/state/channels/<name>.toml --topic "..."  # stop daemon first
+# Subcommands below run inside the production container (or with a test root).
 pnpm brainrot run                    # the demand-driven daemon: produce/scout/digest workers + the action lanes
 pnpm brainrot scout | produce-next | digest  # one manual/debug unit of each, outside the daemon
 pnpm brainrot jobs | costs
@@ -41,10 +46,10 @@ pnpm brainrot topics prune-media [--channel <name>] [--dry-run]  # re-check pre-
 pnpm brainrot library list|approve|reject <jobIds...>
 pnpm brainrot library backfill-store   # upload finished videos with no stored object yet
 
-# A bare `pnpm brainrot ...` on the host reads `local/` — unset BRAINROT_ROOT
-# means local, and production is `/app/state` inside the container — an
-# empty `jobs` table means wrong root, not a lost job. Production state lives
-# in a container-only volume:
+# Development uses disposable test fixtures, not a second operational root.
+# prod/channels/ is the only maintained channel directory. Host entrypoints
+# require --root/BRAINROT_ROOT explicitly; Compose supplies /app/state.
+# Production state lives in a container-only volume:
 docker compose exec brainrot pnpm brainrot jobs   # read-only; safe while the daemon runs
 # Mutating commands take no lease and race live workers — stop the daemon first:
 docker compose stop brainrot && docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId>
@@ -151,7 +156,7 @@ cadence, but the tick function's own shape is unchanged. It:
   `posts/reclaim.ts`'s `reclaimableObjects` finds every video in the channel
   whose stored object is still in the bucket but has already been posted to
   every platform the channel declares — a plain `COUNT(*) FROM posts ... >=
-  declared.length` correlated subquery, no age clause, no "settled" state
+declared.length` correlated subquery, no age clause, no "settled" state
   machine; see "Config" below for why the old aged-out horizon needed none of
   that either. That predicate is written once, not per site:
   `fullyPostedClause` (`src/posts/posts.ts`) hands the same fragment to all
@@ -179,8 +184,7 @@ blocked job or claim+produce a new topic. `planTick` skips a channel holding
 `ceil(videos_per_day × backlog_days)` unconsumed videos (`pendingInventory`,
 `jobs/library.ts`) and reports `backlog-full` — "unconsumed" now means "not
 yet posted to every platform the channel declares", a plain row-existence
-check against `posts`, not an age-based definition. `backlog_days` (default
-2) is consequently a pure **production depth cap**: hold too much unposted
+check against `posts`, not an age-based definition. `backlog_days` (default 2) is consequently a pure **production depth cap**: hold too much unposted
 video and production pauses for that channel until the operator posts or
 discards some of it. There is no aged-out horizon anymore — nothing deletes a
 video for sitting in the queue too long; the operator's `library.reject`
@@ -292,7 +296,7 @@ Of those seven slow actions, four declare a lease and three declare none.
 `topics.pruneMedia` take `scout`; `produce.next`, `library.reject` and
 `library.backfillStore` take none. `jobs.produce` sitting beside
 `produce.next` is the clearest statement of the lease rule in the whole file:
-`produceNextTick` acquires `produce` *inside itself*, so `produce.next`
+`produceNextTick` acquires `produce` _inside itself_, so `produce.next`
 declaring the lease here would make the worker hold the very lease the tick
 then fails to take, turning every click into a green `lease-held` noop —
 which is why it declares none. `runJob`, by contrast, does not lease on its
@@ -323,7 +327,7 @@ not "costs money" or "is slow" alone.
 The `notice` column follows a similar asymmetry: `startAction` and
 `completeAction` clear it, but the two failure transitions (`failAction`,
 `failRunningActions`) deliberately do not. `jobs.produce` mints its job id
-*inside* the handler and publishes it through `ctx.setNotice` the instant it
+_inside_ the handler and publishes it through `ctx.setNotice` the instant it
 exists; if the process dies mid-render, the action row goes `failed` but the
 notice is the only place left naming the job the operator can still resume.
 `src/loop/test/actions-notice.test.ts` proves that a running handler's
@@ -473,14 +477,15 @@ the queue too long anymore. It caps how many finished, unposted videos
 (`pendingInventory`, `jobs/library.ts` — a plain count against `posts`) a
 channel may hold before `produce-next` stops producing more for it; the only
 way a video stops counting is the operator posting it (on every declared
-platform) or discarding it (`library.reject`). `[scout] queue_days` (default
-3) is its scout-side analogue, capping how many scored candidate topics a
+platform) or discarding it (`library.reject`). `[scout] queue_days` (default 3) is its scout-side analogue, capping how many scored candidate topics a
 channel may hold queued before `scout` stops fetching and scoring more for
 it.
 
 `BRAINROT_ROOT` is the single path knob, resolved by `src/config/paths.ts`
-into `<root>/db/brainrot.db`, `<root>/runs`, and `<root>/channels`; unset
-means `local`. The four separate path variables it replaced are gone and now
+into `<root>/db/brainrot.db`, `<root>/runs`, and `<root>/channels`. It is
+required (or supply `--root`); omission fails before creating a database.
+Compose sets `/app/state` and mounts `prod/channels/` there. Tests pass
+disposable roots; there is no local operational environment. The four separate path variables it replaced are gone and now
 inert — a `.env` still setting one of the old names is silently ignored, not
 a startup error. They lived weeks, not years, so the compatibility guard
 that used to name the replacement was cut rather than carried as debt
@@ -517,7 +522,7 @@ no per-channel config and no false positives on a human asking a real question.
 
 The ambiguous tail is not guessed at. `app.astrobin.com` is an image host with
 no file extension; `youtu.be` is a media link that can still be a strong
-topic. Rather than maintain a host list for these, the target *host* is
+topic. Rather than maintain a host list for these, the target _host_ is
 rendered into the scoring prompt (`candidateLine`) with a rule that a
 photograph is not a story. The classifier itself fails open — an absent or
 unparseable target is `link`, never `image` — because dropping is the
@@ -548,7 +553,7 @@ regenerations dedupe through the ordinary `dedupeHash(sourceId, externalId)`
 with no special case.
 
 It is structurally a drought-filler, with no priority logic anywhere: the
-queue-full gate runs *before* any source fetches, so generation fires only
+queue-full gate runs _before_ any source fetches, so generation fires only
 while the candidate queue is under `ceil(videos_per_day × queue_days)`. Spend
 is ledgered as operation `scout-generate` under the same `scout:<channel>`
 sentinel job id scoring uses, reserved against the global day cap
@@ -562,7 +567,7 @@ topic has no post body to narrate.
 Two traps are worth stating because neither announces itself:
 
 - **Keep an `rss` source declared alongside `generate_topics`.** The
-  generation budget gate throws *inside* the per-source try, so a breach
+  generation budget gate throws _inside_ the per-source try, so a breach
   degrades to one `sourceErrors` entry — indistinguishable from a dead feed.
   On a channel where the generator is the only source, that single entry makes
   `failedSources === totalSources` and `scoutAll` raises
@@ -572,7 +577,7 @@ Two traps are worth stating because neither announces itself:
   instead of silently skipped as "no `[scout]` sources" — the counting is
   correct, the degenerate single-source case is the trap.)
 - **Keep `generate_topics <= per_source_limit`.** `llmSource` clamps its
-  request to `min(count, fetchOpts.limit)`, and that limit *is*
+  request to `min(count, fetchOpts.limit)`, and that limit _is_
   `per_source_limit` (default 25), so a larger `generate_topics` is silently
   truncated rather than rejected at load.
 
@@ -622,14 +627,15 @@ the split — measured on real feeds, 19% of story bodies ended with a final
 part short enough to fail that floor, land the job `needs-review`, and never
 publish, after already paying for synth and render. The merge bounds the
 combined part at `STORY_WORDS_PER_PART + STORY_MIN_TAIL_WORDS - 1` words (160
-+ 50 - 1 = 209), comfortably inside qc's `maxMs` — a future change to either
-constant needs to keep clearing that bound. Two
-deterministic drops guard the queue ahead of scoring: `droppedBodyless` (no
-selftext — this is r/AskReddit, whose stories live in comments the feed does
-not carry) and a moderator-account test now folded into `isAutomatedAuthor`
-(a suffix match — `AITAMod`, `ModTeam`, `AskHistorians-Mods` — since a
-per-subreddit mod team, not just `/u/AutoModerator`, posts the recurring
-announcement threads that would otherwise burn a scoring slot every week).
+
+- 50 - 1 = 209), comfortably inside qc's `maxMs` — a future change to either
+  constant needs to keep clearing that bound. Two
+  deterministic drops guard the queue ahead of scoring: `droppedBodyless` (no
+  selftext — this is r/AskReddit, whose stories live in comments the feed does
+  not carry) and a moderator-account test now folded into `isAutomatedAuthor`
+  (a suffix match — `AITAMod`, `ModTeam`, `AskHistorians-Mods` — since a
+  per-subreddit mod team, not just `/u/AutoModerator`, posts the recurring
+  announcement threads that would otherwise burn a scoring slot every week).
 
 Three load-time invariants join the existing two (filename == `name`, and no
 duplicate declared name — the third, `assertQuotaHeadroom`, is gone): `[story]`
@@ -651,14 +657,14 @@ like `#kill` ships unsubstituted while the audio says "unalive" — an accepted
 risk, not an oversight. The substitution map itself is small and hand-curated
 by necessity: it went 21 entries -> 17 (pre-flight) -> 15 (review), plus a
 particle guard on `died` (`"died down/out/off/away"` are senses distinct from
-the base verb — "died out" -> "passed out" means *fainted*, not deceased). Six
+the base verb — "died out" -> "passed out" means _fainted_, not deceased). Six
 candidates were rejected outright for changing a sentence's meaning rather
 than softening it (`abuse -> mistreatment` breaks as a verb; `death ->
 passing` turns "death threats" into "passing threats"), and four low-frequency
 collocation leaks are accepted and enumerated in the code comment rather than
 guarded against. The rule applied throughout, because a word map cannot see
-collocation: *drop or guard what changes meaning, tolerate what is merely
-clunky*.
+collocation: _drop or guard what changes meaning, tolerate what is merely
+clunky_.
 
 Story mode also breaks `queue_days` as a meaningful depth dial: measured
 against a cap of 2, a single scout tick inserted 9 candidate rows (still
@@ -694,7 +700,7 @@ violated during implementation. The story indexes (`ix_topics_job`,
 `ix_topics_series`) live in `migrate.ts` rather than `schema.sql`, even though
 the story columns themselves are declared in `schema.sql`: `openDb` execs
 `schema.sql` **before** calling `migrate`, so an index over a column that only
-`migrate.ts`'s `ALTER TABLE` adds to an *existing* database would throw on
+`migrate.ts`'s `ALTER TABLE` adds to an _existing_ database would throw on
 every such database and wedge the entire CLI. And `knownHashes` must consult
 `series_key` as well as `dedupe_hash`, because a queued story writes only
 per-part suffixed hashes — without the `series_key` check every part of an
@@ -812,9 +818,9 @@ credential: the paste-and-click shape is the entire mechanism.
 ### The dashboard's read-only guarantee narrows, not disappears
 
 `src/dashboard/` serves a localhost web view of the database (compose service
-`dashboard`, port 8787, loopback-bound). It serves one `BRAINROT_ROOT` per
-process — there is no in-page switcher, and the footer names the root being
-served; viewing the other root means running a second dashboard against it.
+`dashboard`, port 8787, loopback-bound). It serves one explicit `BRAINROT_ROOT` per
+process, supplied by Compose. There is no in-page switcher, and the footer
+names the root being served.
 Every GET route still opens SQLite through `openDbReadonly` — a sibling of
 `openDb` that skips the `mkdirSync` and the `schema.sql` exec, both of which
 are writes — so no read route can mutate state. `POST /actions` is the one
@@ -826,7 +832,7 @@ render needs live only in the daemon — though there is now nothing left for
 the dashboard to hold a credential FOR either way, since no queued action
 ends in a platform upload anymore (`BRAINROT_TOKEN_KEY` itself is gone,
 along with the encrypted credential store it protected). Queueing a
-*render* is still not prospective, though: `produce.next`, `jobs.produce` and
+_render_ is still not prospective, though: `produce.next`, `jobs.produce` and
 `jobs.resume` all end in a real Remotion render and real provider spend
 (`jobs.produce` calls `runJob` with the full `pipelineStages()`, same as the
 CLI's `produce`), and `scout.run` in real provider calls — all from an
@@ -841,7 +847,7 @@ seven-day breakdown — the overview page already shows spend against the
 global-day and per-channel-day caps (`src/dashboard/queries/overview.ts:113-135`),
 just not that day-by-day table — plus `jobs`, `topics list` and `library list`'s own
 listing format (the `/jobs`, `/topics` and `/library` pages cover the same
-data), `resume --force`, `--dev` on both `produce` and `resume`,
+data), `resume --force`,
 `produce --channel` taking a path where `jobs.produce`'s own field
 deliberately takes a name, and `run` itself — a scope boundary, not a
 structural one.
@@ -851,12 +857,12 @@ either of which alone would stop the classic cross-site-form attack: proof the
 request is same-origin (`Sec-Fetch-Site`, then `Origin` vs `Host`), and the
 boot-minted CSRF token. The same-origin proof needs its own loopback-Host
 allowlist ahead of the `Origin`-vs-`Host` comparison — that comparison only
-proves the two headers *agree*, which a DNS-rebinding attacker satisfies
+proves the two headers _agree_, which a DNS-rebinding attacker satisfies
 trivially, so the allowlist is the sole check asking "is this host ours" at
 all. The redirect guard behind the confirm-page `from` link (`sameSitePath` in
-`src/dashboard/server.ts`) re-validates its own *output*, not just the input,
+`src/dashboard/server.ts`) re-validates its own _output_, not just the input,
 for the same reason: `/..//evil.example` parses as same-origin and then
-*normalizes* to `//evil.example`, a protocol-relative off-site URL — a check
+_normalizes_ to `//evil.example`, a protocol-relative off-site URL — a check
 that ran once on the raw input would miss it. Both of these are exactly the
 kind of thing a "simplify this" pass deletes without understanding why it was
 there; see the "do not simplify this away" comments in `csrf.ts` itself before
@@ -942,7 +948,12 @@ the table starts empty on every fresh install and `migratePublishesToPosts`
 
 Tests are colocated (`src/**/*.test.ts`, plus `remotion/**`), in three tiers:
 the default hermetic run, `*.contract.test.ts` (`CONTRACT=1`, real paid API
-calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up).
+calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up via
+`docker compose --profile test up -d --wait minio`). Storage tests use
+`TEST_S3_*` overrides and a `brainrot-tests` bucket; production credentials
+never select their store. Compose forwards only explicit production settings.
+Voice selection is solely `[voice.premium]` or the free fallback chain; there
+is no `--dev`, `voice.dev`, or development voice environment override.
 
 **Layout rule: a directory with more than 3 test files folds its tests into a
 nested `test/` subdirectory** — `src/loop/test/`, `src/stages/test/`,
@@ -983,9 +994,7 @@ fixtures locally:
 Conventions:
 
 - **Env only via `vi.stubEnv`.** `setup.ts` registers a global
-  `afterEach(vi.unstubAllEnvs)`, so no file needs its own. When the code under
-  test writes `process.env` itself (`applyDevFlag`), stub the key to `undefined`
-  first — that registers it so the global unstub reverts the write.
+  `afterEach(vi.unstubAllEnvs)`, so no file needs its own.
 - **A spawned CLI cannot see `vi.stubEnv`.** Pass what it needs through
   `runCli(args, { env })`. Inheriting the developer's `.env` instead is how two
   tests came to assert `ENOENT` while actually failing the storage gate, and to
@@ -1001,10 +1010,9 @@ Conventions:
   every describe for their module, subprocess and in-process tests included).
   A split earns its keep only when it separates a genuinely different concern
   — `src/config/channels.smoke.test.ts` stays apart from `channel.test.ts`
-  because it hits real on-disk channel directories (a git-tracked
-  `prod/channels/` and the dev mode root's own gitignored `local/channels/`)
-  and would otherwise cost `channel.test.ts` its hermeticity, not because of
-  size.
+  because it validates the real tracked `prod/channels/` source of truth;
+  `channel.test.ts` uses disposable fixtures. No tests read local operational
+  channel copies.
 - A `_<module>.fixtures.ts` holds what only that module needs, and **delegates
   row SQL to `src/testing/db.ts`** rather than re-issuing INSERTs. That is what
   lets a module keep an ergonomic local call shape (digest ages rows via

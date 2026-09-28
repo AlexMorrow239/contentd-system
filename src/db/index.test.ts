@@ -144,9 +144,19 @@ describe('schemas', () => {
     const db = memDb()
     const cols = db.prepare('PRAGMA table_info(operator_actions)').all() as { name: string }[]
     expect(cols.map((c) => c.name)).toEqual([
-      'id', 'kind', 'lane', 'args', 'status', 'requested_by',
-      'created_at', 'started_at', 'finished_at',
-      'result', 'error', 'error_kind', 'notice',
+      'id',
+      'kind',
+      'lane',
+      'args',
+      'status',
+      'requested_by',
+      'created_at',
+      'started_at',
+      'finished_at',
+      'result',
+      'error',
+      'error_kind',
+      'notice',
     ])
     expect(() =>
       db
@@ -161,9 +171,15 @@ describe('schemas', () => {
     const db = memDb()
     const cols = db.prepare('PRAGMA table_info(daemon_state)').all() as { name: string }[]
     expect(cols.map((c) => c.name)).toEqual(['id', 'pid', 'started_at', 'last_seen_at'])
-    db.prepare("INSERT INTO daemon_state (id, pid, started_at, last_seen_at) VALUES (1, 7, 'a', 'b')").run()
+    db.prepare(
+      "INSERT INTO daemon_state (id, pid, started_at, last_seen_at) VALUES (1, 7, 'a', 'b')",
+    ).run()
     expect(() =>
-      db.prepare("INSERT INTO daemon_state (id, pid, started_at, last_seen_at) VALUES (2, 8, 'a', 'b')").run(),
+      db
+        .prepare(
+          "INSERT INTO daemon_state (id, pid, started_at, last_seen_at) VALUES (2, 8, 'a', 'b')",
+        )
+        .run(),
     ).toThrow(/CHECK constraint/)
   })
 })

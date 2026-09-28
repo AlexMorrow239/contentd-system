@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { minioConfig } from '../testing/storage.js'
 import { errorMessage } from '../errors.js'
 import { s3ConfigError, s3ConfigFromEnv } from './config.js'
 
@@ -85,5 +86,35 @@ describe('s3ConfigError', () => {
       thrown = errorMessage(err)
     }
     expect(message).toBe(thrown)
+  })
+})
+
+describe('minioConfig', () => {
+  it('does not inherit production storage settings', () => {
+    for (const key of KEYS) vi.stubEnv(key, 'production-value')
+    for (const key of ['ENDPOINT', 'BUCKET', 'ACCESS_KEY_ID', 'SECRET_ACCESS_KEY']) {
+      vi.stubEnv(`TEST_S3_${key}`, undefined)
+    }
+    expect(minioConfig()).toEqual({
+      endpoint: 'http://localhost:9100',
+      bucket: 'brainrot-tests',
+      accessKeyId: 'brainrotdev',
+      secretAccessKey: 'brainrotdev',
+      region: 'auto',
+    })
+  })
+
+  it('accepts dedicated storage test overrides', () => {
+    vi.stubEnv('TEST_S3_ENDPOINT', 'http://localhost:19100')
+    vi.stubEnv('TEST_S3_BUCKET', 'isolated-tests')
+    vi.stubEnv('TEST_S3_ACCESS_KEY_ID', 'test-key')
+    vi.stubEnv('TEST_S3_SECRET_ACCESS_KEY', 'test-secret')
+    expect(minioConfig()).toEqual({
+      endpoint: 'http://localhost:19100',
+      bucket: 'isolated-tests',
+      accessKeyId: 'test-key',
+      secretAccessKey: 'test-secret',
+      region: 'auto',
+    })
   })
 })

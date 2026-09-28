@@ -1,21 +1,14 @@
 import { vi } from 'vitest'
 import type { S3Config } from '../storage/config.js'
 
-/**
- * Shared scaffolding for the storage test tier (STORAGE=1, see vitest.config.ts).
- * Centralized so pointing the tier at a different MinIO is one edit — the two
- * copies this replaced had already drifted, one honoring the BRAINROT_S3_*
- * overrides and the other hardcoding localhost.
- */
-
-// Matches docker-compose.yml's `minio` service (profile: dev). Start it with:
-//   docker compose --profile dev up -d minio
+/** Storage tests use their own settings and never inherit production S3 keys. */
+// docker compose --profile test up -d minio
 export function minioConfig(): S3Config {
   return {
-    endpoint: process.env.BRAINROT_S3_ENDPOINT ?? 'http://localhost:9100',
-    bucket: process.env.BRAINROT_S3_BUCKET ?? 'brainrot-videos',
-    accessKeyId: process.env.BRAINROT_S3_ACCESS_KEY_ID ?? 'brainrotdev',
-    secretAccessKey: process.env.BRAINROT_S3_SECRET_ACCESS_KEY ?? 'brainrotdev',
+    endpoint: process.env.TEST_S3_ENDPOINT ?? 'http://localhost:9100',
+    bucket: process.env.TEST_S3_BUCKET ?? 'brainrot-tests',
+    accessKeyId: process.env.TEST_S3_ACCESS_KEY_ID ?? 'brainrotdev',
+    secretAccessKey: process.env.TEST_S3_SECRET_ACCESS_KEY ?? 'brainrotdev',
     region: 'auto',
   }
 }

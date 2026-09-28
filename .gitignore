@@ -18,8 +18,8 @@ sandbox/
 logs/
 superpowers/
 
-# The dev mode-root: db, run artifacts and dev channel TOMLs. One directory,
-# never mounted into the container — production reads prod/ and its own volume.
+# Legacy local state is retired. Keep it ignored on older checkouts so
+# historical databases are never accidentally committed.
 local/
 
 # The host side of the container's bind mounts. prod/channels/ IS tracked (it

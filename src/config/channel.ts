@@ -50,7 +50,7 @@ export interface ChannelConfig {
    * production stops (plan-tick.ts). The one knob for inventory depth.
    */
   backlogDays: number
-  voice: { volume: string; premium?: PremiumVoiceConfig; dev?: boolean }
+  voice: { volume: string; premium?: PremiumVoiceConfig }
   captionStyle: CaptionStyle
   bgDir: string[]
   bgmDir: string
@@ -152,17 +152,18 @@ const rawSchema = z.object({
     .int('backlog_days must be a whole number of days')
     .positive('backlog_days must be greater than 0')
     .default(2),
-  voice: z.object({
-    volume: z.string(),
-    premium: z
-      .object({
-        provider: z.literal('elevenlabs'),
-        voice_id: z.string(),
-        model: z.string().default(DEFAULT_ELEVENLABS_MODEL_ID),
-      })
-      .optional(),
-    dev: z.boolean().default(false),
-  }),
+  voice: z
+    .object({
+      volume: z.string(),
+      premium: z
+        .object({
+          provider: z.literal('elevenlabs'),
+          voice_id: z.string(),
+          model: z.string().default(DEFAULT_ELEVENLABS_MODEL_ID),
+        })
+        .optional(),
+    })
+    .strict(),
   scout: z
     .object({
       subreddits: z.array(z.string()).default([]),
@@ -292,7 +293,6 @@ export function parseChannelToml(text: string, filename: string): ChannelConfig 
     backlogDays: raw.backlog_days,
     voice: {
       volume: raw.voice.volume,
-      dev: raw.voice.dev,
       premium: raw.voice.premium
         ? {
             provider: raw.voice.premium.provider,

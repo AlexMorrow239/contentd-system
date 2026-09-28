@@ -5,11 +5,9 @@
 # dormant purely because nothing here mentions them. Scaling back up is
 # adding TOMLs, not restoring code.
 #
-# This copy lives in `local/channels/` (gitignored) as the editable draft.
-# The DEPLOYED channels dir is `./prod/channels`, bind-mounted read-only at
-# /app/state/channels (docker-compose.yml:194) and re-read every tick — see
-# the ops runbook in superpowers/specs/2026-07-31-mvp-pivot-design.md for how
-# this file gets there and what has to leave first.
+# prod/channels/ is the sole maintained source of channel configuration.
+# Compose mounts it read-only at /app/state/channels; workers re-read it every
+# tick. Validate changes with pnpm test:config before deployment.
 #
 # The filename basename MUST equal `name` below: resumeJob resolves a job's
 # channel config as <channelsDir>/<job.channel>.toml, so a mismatch wedges
@@ -21,8 +19,7 @@ script_model = "claude-sonnet-5"
 # bg_dir/bgm_dir MUST stay above every [section] header — TOML nests any
 # top-level key written after a table header under that table, and these two
 # would silently vanish. Paths are relative to the process cwd (/app in the
-# container), which is why they are the same strings prod/channels/test.toml
-# uses.
+# container).
 bg_dir = "assets/bg"
 bgm_dir = "assets/bgm"
 
@@ -129,8 +126,8 @@ stroke_px = 8
 # CAVEAT — the channel-day cap is NOT the effective ceiling. Two other limits
 # bind first, and both are outside this file:
 #   1. BRAINROT_GLOBAL_DAILY_USD spans ALL channels and ALL scout spend, and
-#      docker-compose.yml pins it to '12' for the brainrot service. Raise that
-#      pin in step with per_day_usd or the global cap is what actually stops
+#      is set in .env (Compose defaults to 12). Raise it
+#      in step with per_day_usd or the global cap is what actually stops
 #      the day — and it is the gate the llm source trips (see TRAP 1 above).
 #   2. channelDaySpentMicros JOINs costs -> jobs, so the sentinel
 #      'scout:mvp' rows are invisible to THIS cap and count only against the

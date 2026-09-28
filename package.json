@@ -16,7 +16,11 @@
     "test:coverage": "vitest run --coverage",
     "test:contract": "CONTRACT=1 vitest run",
     "test:storage": "STORAGE=1 vitest run",
-    "brainrot": "tsx src/cli.ts"
+    "brainrot": "tsx src/cli.ts",
+    "check": "pnpm format:check && pnpm lint && pnpm build && pnpm test",
+    "test:config": "vitest run src/config",
+    "test:pipeline": "vitest run src/jobs src/stages remotion",
+    "test:scout": "vitest run src/scout"
   },
   "prettier": {
     "singleQuote": true,

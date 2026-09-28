@@ -63,9 +63,7 @@ describe('sanitizeStory', () => {
     }
     // Every entry in the map is covered by a sentence above, so a new entry
     // cannot be added without also proving it reads correctly.
-    const covered = new Set(
-      cases.flatMap(([input]) => input.toLowerCase().match(/[a-z]+/g) ?? []),
-    )
+    const covered = new Set(cases.flatMap(([input]) => input.toLowerCase().match(/[a-z]+/g) ?? []))
     for (const term of Object.keys(ALGOSPEAK)) {
       expect(covered.has(term), `ALGOSPEAK entry "${term}" has no sentence case`).toBe(true)
     }

@@ -78,8 +78,9 @@ describe('migrate', () => {
 
     migrate(db)
 
-    const row = db.prepare('SELECT reclaimed_at AS at FROM library_objects WHERE job_id = ?').get('job-1') as
-      { at: string | null }
+    const row = db
+      .prepare('SELECT reclaimed_at AS at FROM library_objects WHERE job_id = ?')
+      .get('job-1') as { at: string | null }
     expect(row.at).toBe('2026-07-01T00:00:00.000Z')
   })
 })
@@ -109,7 +110,7 @@ describe('migrate — topics.target_url', () => {
   it('preserves existing rows, leaving the new column null', () => {
     const db = topicsDb(OLD_TOPICS)
     db.exec(
-      "INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) " +
+      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason) ' +
         "VALUES ('chan-a', 'A topic', 'A topic', 'reddit:r/space', 'https://e.invalid/x', 'h1', 80, 'seeded')",
     )
 
@@ -170,7 +171,7 @@ describe('migrate — library.qc_json', () => {
   it('preserves existing rows, leaving the new column null', () => {
     const db = bareDb(OLD_LIBRARY)
     db.exec(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) " +
+      'INSERT INTO library (job_id, video_path, metadata_json, state) ' +
         "VALUES ('job-1', '/runs/job-1/assemble/final.mp4', '{}', 'ready')",
     )
 
@@ -267,10 +268,12 @@ describe('addTopicStoryColumns', () => {
     raw.exec(TOPICS_PRE_STORY)
     raw.exec('ALTER TABLE topics ADD COLUMN body_text TEXT')
     raw.exec('ALTER TABLE topics ADD COLUMN part_count INTEGER')
-    raw.prepare(
-      'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, body_text) ' +
-        "VALUES ('space','t','t','reddit:r/space','u','h',90,'r','part 1')",
-    ).run()
+    raw
+      .prepare(
+        'INSERT INTO topics (channel, title, raw_title, source, url, dedupe_hash, score, reason, body_text) ' +
+          "VALUES ('space','t','t','reddit:r/space','u','h',90,'r','part 1')",
+      )
+      .run()
     raw.close()
 
     const db = openDb(dbPath)
@@ -355,7 +358,7 @@ describe('publishes -> posts', () => {
     const db = memDb()
     seedLegacy(db)
     db.prepare(
-      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at) VALUES " +
+      'INSERT INTO publishes (job_id, channel, platform, status, url, created_at) VALUES ' +
         "('j1','alpha','youtube','done','https://y/1','2026-01-01T00:00:00.000Z')," +
         "('j2','alpha','instagram','failed',NULL,'2026-01-02T00:00:00.000Z')," +
         "('j3','alpha','youtube','claimed',NULL,'2026-01-03T00:00:00.000Z')",
@@ -376,7 +379,7 @@ describe('publishes -> posts', () => {
     const db = memDb()
     seedLegacy(db)
     db.prepare(
-      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at, finished_at) " +
+      'INSERT INTO publishes (job_id, channel, platform, status, url, created_at, finished_at) ' +
         "VALUES ('j1','alpha','youtube','done','https://y/1'," +
         "'2026-01-01T00:00:00.000Z','2026-01-01T00:05:00.000Z')",
     ).run()
@@ -389,7 +392,7 @@ describe('publishes -> posts', () => {
     const db = memDb()
     seedLegacy(db)
     db.prepare(
-      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at, finished_at) " +
+      'INSERT INTO publishes (job_id, channel, platform, status, url, created_at, finished_at) ' +
         "VALUES ('j1','alpha','youtube','done','https://y/1'," +
         "'2026-01-01T00:00:00.000Z',NULL)",
     ).run()
@@ -402,9 +405,9 @@ describe('publishes -> posts', () => {
     const db = memDb()
     seedLegacy(db)
     migrate(db)
-    const names = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
-      .all() as { name: string }[]
+    const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as {
+      name: string
+    }[]
     expect(names.map((n) => n.name)).not.toContain('publishes')
     expect(names.map((n) => n.name)).not.toContain('oauth_tokens')
   })
@@ -422,9 +425,10 @@ describe('publishes -> posts', () => {
     seedJob(db, 'j3', { channel: 'alpha' })
     seedLibrary(db, 'j3', { state: 'blocked' })
     migrate(db)
-    const states = db
-      .prepare('SELECT job_id, state FROM library ORDER BY job_id')
-      .all() as { job_id: string; state: string }[]
+    const states = db.prepare('SELECT job_id, state FROM library ORDER BY job_id').all() as {
+      job_id: string
+      state: string
+    }[]
     expect(states).toEqual([
       { job_id: 'j1', state: 'ready' },
       { job_id: 'j2', state: 'needs-review' },
@@ -438,7 +442,7 @@ describe('publishes -> posts', () => {
     const db = memDb()
     seedLegacy(db)
     db.prepare(
-      "INSERT INTO publishes (job_id, channel, platform, status, url, created_at) VALUES " +
+      'INSERT INTO publishes (job_id, channel, platform, status, url, created_at) VALUES ' +
         "('j1','alpha','youtube','done','https://y/1','2026-01-01T00:00:00.000Z')",
     ).run()
     migrate(db)
@@ -453,4 +457,3 @@ describe('publishes -> posts', () => {
     expect(() => migrate(db)).not.toThrow()
   })
 })
-

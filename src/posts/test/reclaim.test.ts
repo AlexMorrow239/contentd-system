@@ -50,7 +50,9 @@ describe('reclaimableObjects', () => {
       seedStored(db, id)
       seedPost(db, { jobId: id, channel: 'alpha', platform: 'youtube' })
     }
-    db.prepare("UPDATE library SET created_at = '2020-01-0' || substr(job_id, 2) || 'T00:00:00.000Z'").run()
+    db.prepare(
+      "UPDATE library SET created_at = '2020-01-0' || substr(job_id, 2) || 'T00:00:00.000Z'",
+    ).run()
     const out = reclaimableObjects(db, { channel: 'alpha', declared: ['youtube'], limit: 2 })
     expect(out.map((o) => o.jobId)).toEqual(['j1', 'j2'])
   })

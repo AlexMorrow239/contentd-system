@@ -1,32 +1,12 @@
 import path from 'node:path'
 
 /**
- * The one definition of where state lives.
- *
- * There are exactly two modes of operation — the containerized daemon (its
- * SQLite volume, its dashboard, the sidecar it depends on) and local
- * development driven by the manual CLI triggers — and each gets one canonical
- * root directory holding everything it owns. Before this module the split was
- * three independent environment variables whose CODE DEFAULTS were the
- * production paths, so any process that started without the host `.env`
- * targeted production by omission (which happened: a stray host-side
- * `data/brainrot.db` that nothing read), and "dev db + prod runs" was a
- * reachable state.
- *
- * Imports are limited to `node:` builtins, enforced by an arch lint in
- * src/arch.test.ts: every entrypoint reaches this module, so a dependency
- * added here becomes a dependency everywhere.
+ * Runtime layout shared by the container and disposable test fixtures.
+ * Production pins BRAINROT_ROOT in Compose. Host commands must select a root
+ * explicitly; development uses tests, not a second operational environment.
+ * Keep this module limited to node builtins (enforced by src/arch.test.ts).
  */
-
 export const ROOT_ENV = 'BRAINROT_ROOT'
-
-/**
- * Unset means DEVELOPMENT. This inversion is the point of the module: the old
- * defaults were `data/brainrot.db`/`runs`/`channels`, so forgetting to set
- * anything aimed at production. The container never relies on this — compose
- * pins BRAINROT_ROOT explicitly.
- */
-export const DEFAULT_ROOT = 'local'
 
 export interface BrainrotPaths {
   root: string
@@ -44,10 +24,14 @@ export function envValue(env: NodeJS.ProcessEnv, key: string): string | undefine
   return raw === undefined || raw.trim() === '' ? undefined : raw
 }
 
-/** flag > $BRAINROT_ROOT > DEFAULT_ROOT. */
+/** flag > $BRAINROT_ROOT; no implicit operational state on the host. */
 export function resolveRoot(flag?: string, env: NodeJS.ProcessEnv = process.env): string {
   if (flag !== undefined && flag.trim() !== '') return flag
-  return envValue(env, ROOT_ENV) ?? DEFAULT_ROOT
+  const root = envValue(env, ROOT_ENV)
+  if (root !== undefined) return root
+  throw new Error(
+    'BRAINROT_ROOT is required (or pass --root). Use docker compose exec brainrot pnpm brainrot for operations; pnpm test for development.',
+  )
 }
 
 export function resolvePaths(root: string): BrainrotPaths {

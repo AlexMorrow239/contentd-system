@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadChannelsDir } from './channel.js'
@@ -14,40 +14,13 @@ import { loadChannelsDir } from './channel.js'
  */
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const PROD_CHANNELS = path.join(REPO_ROOT, 'prod', 'channels')
-const LOCAL_CHANNELS = path.join(REPO_ROOT, 'local', 'channels')
 
 describe('checked-in channel configs', () => {
-  // prod/channels/test.toml is tracked in git, so every checkout has at
-  // least one channel here. Assert on that positively — directory present
-  // AND at least one channel actually loaded — rather than only
-  // not.toThrow(): loadChannelsDir doesn't throw on a missing/empty
-  // directory, so a not.toThrow()-only check would pass vacuously if this
-  // path is ever moved again, exactly what happened when channels/ became
-  // prod/channels/.
+  // The maintained directory must contain a valid config; an empty/missing
+  // directory must not turn validation into a vacuous pass.
   it('every prod/channels/*.toml loads', () => {
     expect(existsSync(PROD_CHANNELS)).toBe(true)
     const channels = loadChannelsDir(PROD_CHANNELS)
     expect(channels.length).toBeGreaterThan(0)
-  })
-
-  /**
-   * local/channels/ is the dev mode root's channel directory. It is
-   * gitignored, so nothing in CI ever loads it and it can drift out of sync
-   * with the schema. A developer who has channels there gets a loud
-   * failure; everyone else gets a reported SKIP.
-   *
-   * Gate on the directory containing at least one entry, not just existing:
-   * loadChannelsDir tolerates an empty directory (returns zero channels
-   * without throwing), so a present-but-empty local/channels/ would run this
-   * test, load nothing, assert nothing, and report PASS — the same vacuity
-   * this file's prod case was already fixed for.
-   *
-   * skipIf, not an early `return`: a bare return reports a PASS for work that
-   * never ran, which is how this check could have gone silently dead.
-   */
-  const hasLocalChannels =
-    existsSync(LOCAL_CHANNELS) && readdirSync(LOCAL_CHANNELS).length > 0
-  it.skipIf(!hasLocalChannels)('local/channels/ loads when present locally', () => {
-    expect(() => loadChannelsDir(LOCAL_CHANNELS)).not.toThrow()
   })
 })

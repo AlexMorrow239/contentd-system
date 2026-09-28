@@ -22,8 +22,7 @@ function unit(db: Database, lane: 'fast' | 'slow' = 'fast'): () => Promise<UnitR
 
 function leaseExpiry(db: Database, name: string): string {
   const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get(name) as
-    | { expires_at: string }
-    | undefined
+    { expires_at: string } | undefined
   return row?.expires_at ?? ''
 }
 
@@ -120,20 +119,16 @@ describe('actionsUnit', () => {
       worked: false,
       line: { action: 'noop', reason: 'lease-held', lease: 'scout' },
     })
-    const notices = db
-      .prepare('SELECT notice FROM operator_actions ORDER BY id ASC')
-      .all() as { notice: string | null }[]
+    const notices = db.prepare('SELECT notice FROM operator_actions ORDER BY id ASC').all() as {
+      notice: string | null
+    }[]
     // Only the FIRST blocked row is touched: the rest are skipped before any
     // acquire attempt, so they never get a notice written.
-    expect(notices.map((r) => r.notice)).toEqual([
-      'waiting for the scout lease',
-      null,
-      null,
-    ])
+    expect(notices.map((r) => r.notice)).toEqual(['waiting for the scout lease', null, null])
     // All three are still pending — skipping is not failing.
-    const statuses = db
-      .prepare('SELECT status FROM operator_actions ORDER BY id ASC')
-      .all() as { status: string }[]
+    const statuses = db.prepare('SELECT status FROM operator_actions ORDER BY id ASC').all() as {
+      status: string
+    }[]
     expect(statuses.map((r) => r.status)).toEqual(['pending', 'pending', 'pending'])
   })
 
@@ -329,9 +324,7 @@ describe('actionsUnit', () => {
         },
       })
       await unit()
-      expect(expiryDuringRun).toBe(
-        new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString(),
-      )
+      expect(expiryDuringRun).toBe(new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString())
     } finally {
       vi.useRealTimers()
     }
@@ -412,9 +405,7 @@ describe('actionsUnit', () => {
         },
       })
       await unit()
-      expect(expiryDuringRun).toBe(
-        new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString(),
-      )
+      expect(expiryDuringRun).toBe(new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString())
       expect(timersDuringRun).toBe(0)
     } finally {
       vi.useRealTimers()
