@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && fc-cache -f \
  && rm -rf /var/lib/apt/lists/*
 
-ENV TZ=America/Chicago
+ENV TZ=America/New_York
 RUN corepack enable && corepack prepare pnpm@11.12.0 --activate
 
 WORKDIR /app

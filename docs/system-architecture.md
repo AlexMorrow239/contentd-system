@@ -51,7 +51,7 @@ Compose mounts:
 | `assets` at `/app/assets`                        | Read-only               | Not mounted      | Video backgrounds                                                               |
 | `whisperx-cache`                                 | Separate sidecar volume | None             | Downloaded alignment models                                                     |
 
-The dashboard has no provider or bucket credentials. Its HTTP boundary validates same-origin/Host and CSRF token, validates action arguments, checks daemon liveness, and inserts an action. It never executes pipeline handlers. MinIO is a test-profile service, not part of normal production startup. Compose's daemon/dashboard timezone is America/Chicago; daily production and spend accounting use UTC.
+The dashboard has no provider or bucket credentials. Its HTTP boundary validates same-origin/Host and CSRF token, validates action arguments, checks daemon liveness, and inserts an action. It never executes pipeline handlers. MinIO is a test-profile service, not part of normal production startup. Compose's daemon/dashboard timezone is America/New_York; daily production and spend accounting use UTC.
 
 Sources: [Compose](../docker-compose.yml), [daemon](../src/loop/daemon.ts), [submission](../dashboard/lib/server/submission.ts), [database opening](../src/db/index.ts), [architecture boundary checks](../src/arch.test.ts).
 

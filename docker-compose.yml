@@ -83,7 +83,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       BRAINROT_ROOT: /app/state
       WHISPERX_URL: http://whisperx:8585
-      TZ: America/Chicago
+      TZ: America/New_York
       BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
       # Optional archive. Tests use TEST_S3_* and an isolated MinIO bucket.
       BRAINROT_S3_ENDPOINT: ${BRAINROT_R2_ENDPOINT:-}
@@ -157,7 +157,7 @@ services:
       # Read for the spend panel; must match the brainrot service so the
       # dashboard reports the cap that is actually enforced.
       BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
-      TZ: America/Chicago
+      TZ: America/New_York
     ports:
       # Loopback-bound on the HOST: unreachable from the network. There is no
       # auth layer, and this binding is what makes that acceptable.

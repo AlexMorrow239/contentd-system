@@ -349,7 +349,7 @@ and a restart later the same day can re-fire it once. The other two workers,
 poll at ~1s and 30s respectively for a different queue — see "The dashboard
 queues renders and spends money" below.
 
-Times that matter are container-local (`TZ=America/Chicago`, set in
+Times that matter are container-local (`TZ=America/New_York`, set in
 `docker/Dockerfile` and pinned again in `docker-compose.yml`'s
 `environment:` block — an `env_file` value of the same name would otherwise
 override the image's `ENV`), regardless of the host Mac's own timezone.
@@ -590,36 +590,23 @@ paused until you do.
   config behind it, and unbinding is safe because a later resume of that job
   keys its `used` flip on `job_id`, which by then matches nothing.
 
-- **A stranded `running` job is still a per-deploy risk, not just a crash
-  scenario.** The daemon (`src/loop/daemon.ts`) does handle SIGTERM/SIGINT:
-  a `process.once` handler aborts a controller, `abortableSleep` ends an
-  idle worker's sleep in milliseconds instead of waiting out the full 30s,
-  and no worker starts a new unit once the signal fires. (A clean stop still
-  reports **exit 143** in `docker compose ps`/`logs`: `tsx` re-raises SIGTERM
-  after the process unwinds, and 128+15 is what Docker records. That is the
-  expected shape of a graceful stop, not a failure, and the restart policy
-  does not treat it as one.) But the abort is
-  not threaded into `runJob` itself, so a unit already mid-render keeps
-  rendering — `docker compose stop`/`restart`/`down`, and every
-  rebuild-deploy since that's a stop-then-recreate, still fall back to
-  Docker's stop grace period (10s default, no `stop_grace_period` override
-  in `docker-compose.yml`) and can kill it mid-stage. What heals that is
-  stage-resume — `runJob` skips any stage already `done`, so a later
-  `resume` picks up where the render died instead of redoing it — but
-  getting there is not automatic here: that leaves `jobs.status='running'`,
-  the current stage
-  `running`, and the topic still `claimed`, and nothing auto-recovers it:
-  `planTick` only resumes `blocked` jobs, the repair sweep only heals topics
-  whose job already reached `library`, `topics requeue` refuses while a
-  `running` job holds the topic, and plain `resume` refuses a `running` job.
-  Recover it explicitly, after confirming no container is actually still
-  rendering it:
+- **A daemon restart aborts interrupted production automatically.** Before
+  starting workers, the daemon marks leftover `queued`/`running` jobs and
+  their running stages `failed`, records the interruption on active stages,
+  and clears the old `produce` lease immediately. No lease deletion or
+  90-minute expiry wait is needed. This assumes one daemon per database;
+  stop any manual production command before starting the daemon.
 
-  ```bash
-  docker compose stop brainrot
-  docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId> --force
-  docker compose start brainrot
-  ```
+  Their claimed topics return to the candidate queue, unbound from the old
+  job. Normal production creates a fresh job and starts from the script
+  stage; it does not reuse the interrupted run's progress. Old job records,
+  stage history, artifacts, and incurred costs remain for inspection. Daily
+  budgets and production quotas still apply and may delay the fresh attempt.
+  Manual jobs without a queue topic are marked failed but are not requeued.
+
+  SIGTERM/SIGINT stops polling but lets an active render finish. Docker may
+  kill it after its stop grace period; the next daemon startup performs the
+  cleanup above. Until that startup, a killed job may still show `running`.
 
 ### Operational caveats
 
@@ -657,7 +644,7 @@ paused until you do.
   afternoon/early evening US-Eastern — not at local midnight. Expect a fresh
   production quota and budget headroom in the early evening. `digest` is the
   one thing left keyed off the **container's** local wall-clock day (`TZ` is
-  pinned to `America/Chicago` in `docker-compose.yml`'s `environment:` block
+  pinned to `America/New_York` in `docker-compose.yml`'s `environment:` block
   regardless of the host Mac's own timezone): it fires once per local day at
   or after `DIGEST_HOUR` (08:00). Posting has no clock at all anymore — it
   happens whenever the operator gets to `/post`.
