@@ -2,20 +2,16 @@ import { defineConfig } from 'vitest/config'
 import { SlowFilesFirstSequencer } from './scripts/vitest-sequencer.js'
 
 const contract = process.env.CONTRACT === '1'
-// A third tier alongside CONTRACT: free but infrastructure-dependent (MinIO
-// must be up). Kept out of the default run so `pnpm test` stays hermetic.
-const storage = process.env.STORAGE === '1'
 
 function include(): string[] {
   if (contract) return ['src/**/*.contract.test.ts']
-  if (storage) return ['src/**/*.storage.test.ts']
   return ['src/**/*.test.ts', 'remotion/**/*.test.ts', 'dashboard/**/*.test.{ts,tsx}']
 }
 
 function exclude(): string[] {
   const base = ['**/node_modules/**', '**/dist/**']
-  if (contract || storage) return base
-  return [...base, 'src/**/*.contract.test.ts', 'src/**/*.storage.test.ts']
+  if (contract) return base
+  return [...base, 'src/**/*.contract.test.ts']
 }
 
 export default defineConfig({
@@ -54,7 +50,6 @@ export default defineConfig({
         '**/*.test.tsx',
         // Test scaffolding, not code under test.
         'src/testing/**',
-        'src/storage/conformance.ts',
         // Type-only modules: erased at runtime, so they can only ever read 0%.
         '**/types.ts',
         'src/remotion-types.ts',

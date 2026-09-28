@@ -14,7 +14,6 @@ import {
   AllSourcesFailedError,
   ScoutRunFailedError,
 } from './scout/scout.js'
-import { StorageError } from './storage/types.js'
 
 // Every .ts file under src/, as paths relative to src/. Used by the error
 // convention lints below, which are source-text greps rather than import
@@ -290,12 +289,9 @@ describe('error handling conventions', () => {
 
   it('classifies every domain class to its declared domain and kind', () => {
     // The anti-drift guard for the taxonomy itself. It lives here rather than
-    // in errors.test.ts because it drags storage, jobs and scout into
+    // in errors.test.ts because it drags jobs and scout into
     // whatever file holds it — exactly what this file exists to absorb.
     const cases: [Error, string][] = [
-      [new StorageError('x', 'not-found'), 'storage/not-found'],
-      [new StorageError('x', 'auth'), 'storage/auth'],
-      [new StorageError('x', 'transient'), 'storage/transient'],
       [new BudgetExceededError('x'), 'job/budget'],
       [new ResumeError('x', 'not-found'), 'job/not-found'],
       [new ResumeError('x', 'refused'), 'job/refused'],

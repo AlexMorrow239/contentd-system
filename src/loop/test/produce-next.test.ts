@@ -190,25 +190,6 @@ describe('produceNextTick — lease', () => {
   })
 })
 
-describe('produceNextTick — retired storage configuration', () => {
-  it('ignores legacy storage variables and produces normally', async () => {
-    const { db, runsRoot } = setup()
-    const topicId = seedTopic(db)
-    vi.stubEnv('BRAINROT_S3_ENDPOINT', 'http://127.0.0.1:9100')
-    vi.stubEnv('BRAINROT_S3_BUCKET', 'legacy-bucket')
-    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', 'legacy-access')
-    vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', 'legacy-secret')
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
-    expect(result).toEqual({
-      action: 'produced',
-      jobId: expect.any(String),
-      topicId,
-      status: 'ready',
-    })
-    db.close()
-  })
-})
-
 describe('produceNextTick — config errors', () => {
   it('no-ops with reason config-error on an unparseable channel TOML, naming the file', async () => {
     const { db, runsRoot } = setup()

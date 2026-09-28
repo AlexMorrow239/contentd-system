@@ -122,15 +122,14 @@ describe('fullyPostedClause', () => {
     expect(clause.params).toEqual(['youtube', 'tiktok', 2])
   })
 
-  it('inverts to >= for the reclaim direction', () => {
+  it('uses >= for the fully-posted direction', () => {
     const clause = fullyPostedClause(['youtube'], { alias: 'l', match: 'fully' })
     expect(clause.sql.endsWith(') >= ?')).toBe(true)
     expect(clause.params).toEqual(['youtube', 1])
   })
 
-  // An undecided channel: everything still counts as inventory, nothing is
-  // reclaimable. The two directions are deliberately not each other's negation
-  // here, which is why the helper owns the case.
+  // An undecided channel: everything still counts as inventory and nothing is
+  // fully posted. The two directions are deliberately not each other's negation.
   it('resolves an empty platform list per direction, with no bindings', () => {
     expect(fullyPostedClause([], { alias: 'l', match: 'not-fully' })).toEqual({
       sql: '1',

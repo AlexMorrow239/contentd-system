@@ -12,10 +12,10 @@ import {
 describe('errors', () => {
   describe('BrainrotError', () => {
     it('carries its domain, kind and derived code', () => {
-      const err = new BrainrotError('nope', { domain: 'storage', kind: 'auth' })
-      expect(err.domain).toBe('storage')
+      const err = new BrainrotError('nope', { domain: 'provider', kind: 'auth' })
+      expect(err.domain).toBe('provider')
       expect(err.kind).toBe('auth')
-      expect(err.code).toBe('storage/auth')
+      expect(err.code).toBe('provider/auth')
       expect(err.message).toBe('nope')
       expect(err).toBeInstanceOf(Error)
     })
@@ -35,7 +35,7 @@ describe('errors', () => {
     it('threads cause through to the native Error.cause', () => {
       const root = new Error('root')
       const err = new BrainrotError('wrapper', {
-        domain: 'storage',
+        domain: 'provider',
         kind: 'transient',
         cause: root,
       })
@@ -43,7 +43,7 @@ describe('errors', () => {
     })
 
     it('leaves cause undefined when none is given', () => {
-      const err = new BrainrotError('x', { domain: 'storage', kind: 'transient' })
+      const err = new BrainrotError('x', { domain: 'provider', kind: 'transient' })
       expect(err.cause).toBeUndefined()
     })
   })
@@ -67,14 +67,14 @@ describe('errors', () => {
   describe('classify', () => {
     it('reads a BrainrotError own fields', () => {
       const err = new BrainrotError('nope', {
-        domain: 'storage',
+        domain: 'provider',
         kind: 'quota',
         context: { platform: 'youtube' },
       })
       expect(classify(err)).toEqual({
-        domain: 'storage',
+        domain: 'provider',
         kind: 'quota',
-        code: 'storage/quota',
+        code: 'provider/quota',
         message: 'nope',
         context: { platform: 'youtube' },
       })
@@ -140,7 +140,7 @@ describe('errors', () => {
       })
       // A tag with a completely different domain/kind must not leak through —
       // only its context may enrich the classification.
-      tagError(err, { domain: 'storage', kind: 'auth', context: { b: 2 } })
+      tagError(err, { domain: 'provider', kind: 'auth', context: { b: 2 } })
       const info = classify(err)
       expect(info.domain).toBe('job')
       expect(info.kind).toBe('budget')

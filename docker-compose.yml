@@ -31,33 +31,6 @@ services:
       retries: 3
       start_period: 30s
 
-  minio:
-    image: minio/minio:latest
-    # profiles keeps this OUT of a production `docker compose up -d`. Start it
-    # explicitly for the optional storage test suite:
-    #   docker compose --profile test up -d minio
-    profiles: [test]
-    command: server /data --console-address ":9001"
-    restart: 'no'
-    ports:
-      # Host ports moved off MinIO's defaults: an unrelated `minio` container
-      # for another project already holds BOTH 9000 and 9001 on this machine.
-      # Container-internal ports are unchanged.
-      - '127.0.0.1:9100:9000' # S3 API
-      - '127.0.0.1:9101:9001' # web console
-    environment:
-      MINIO_ROOT_USER: brainrotdev
-      MINIO_ROOT_PASSWORD: brainrotdev
-    volumes:
-      - minio-data:/data
-    healthcheck:
-      # `mc` ships in the minio image; the image has no curl.
-      test: ['CMD', 'mc', 'ready', 'local']
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 10s
-
   brainrot:
     build:
       context: .
@@ -85,12 +58,6 @@ services:
       WHISPERX_URL: http://whisperx:8585
       TZ: America/New_York
       BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
-      # Optional archive. Tests use TEST_S3_* and an isolated MinIO bucket.
-      BRAINROT_S3_ENDPOINT: ${BRAINROT_R2_ENDPOINT:-}
-      BRAINROT_S3_BUCKET: brainrot-videos
-      BRAINROT_S3_ACCESS_KEY_ID: ${BRAINROT_R2_ACCESS_KEY_ID:-}
-      BRAINROT_S3_SECRET_ACCESS_KEY: ${BRAINROT_R2_SECRET_ACCESS_KEY:-}
-      BRAINROT_S3_REGION: 'auto'
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
@@ -192,7 +159,6 @@ services:
 
 volumes:
   whisperx-cache:
-  minio-data:
   # All persistent state: jobs, library, topics, costs, leases and posts (the
   # manual-posting record). Not a bind mount — see the brainrot
   # service's mount comment for why, and treat `docker volume rm

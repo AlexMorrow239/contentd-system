@@ -87,10 +87,10 @@ Production uses `/app/state` inside the container:
 - Channel configuration: `docker/state/channels/*.toml`, mounted read-only at
   `/app/state/channels`.
 
-Keep run artifacts until their videos are no longer needed or you have verified
-an accessible archived copy. Object storage is optional and fully posted objects
-can be reclaimed, so a completed store stage alone does not guarantee that a
-cloud copy still exists. Tests use temporary directories cleaned up after each file.
+Finished videos remain at `runs/<jobId>/assemble/final.mp4`. Keep those local
+files until their videos are no longer needed: if one is deleted or goes missing,
+the application cannot recover it. Tests use temporary directories cleaned up
+after each file.
 
 ## Inspect
 
@@ -98,57 +98,6 @@ cloud copy still exists. Tests use temporary directories cleaned up after each f
 docker compose exec brainrot pnpm brainrot jobs    # last 20 jobs
 docker compose exec brainrot pnpm brainrot costs   # per-day USD totals, last 7 days
 ```
-
-## Object storage
-
-**Object storage is optional.** Finished videos can be uploaded to Cloudflare
-R2 by the `store` stage, which runs last in the pipeline. With the
-`BRAINROT_S3_*` keys unset, `store` simply no-ops and logs it — `produce`
-still finishes with a normal `ready`/`needs-review` job, the CLI prints a
-warning to stderr rather than refusing, and the video lives only under
-`runs/`. What you lose without it: no cloud archive, no
-`library backfill-store` recovery path, and `runs/<jobId>/` becomes the only
-copy — reclaiming disk by deleting it is then a real, unrecoverable deletion
-of that video, not just clearing a cache of a durable copy.
-
-Configure it if you want a durable copy independent of the machine's local
-disk, or if you plan to post from a different machine than the one that
-rendered:
-
-1. In the Cloudflare dashboard, create an **R2 bucket** named exactly `brainrot-videos` —
-   the name is pinned as a literal in `docker-compose.yml`.
-2. Create an **R2 API token** scoped to that bucket with **Object Read & Write**.
-3. Fill the `BRAINROT_R2_*` keys in `.env` (endpoint, access key id, secret access key).
-   The endpoint is `https://<account-id>.r2.cloudflarestorage.com`. `docker-compose.yml`
-   maps these onto `BRAINROT_S3_*` inside the production container. Storage tests
-   use separate `TEST_S3_*` settings and cannot inherit these credentials.
-
-Videos finished before object storage was configured have no stored object.
-Back-fill them:
-
-```bash
-docker compose stop brainrot
-docker compose run --rm --no-deps brainrot pnpm brainrot library backfill-store
-docker compose start brainrot
-```
-
-### Storage integration tests
-
-MinIO is an optional test fixture, outside the normal production startup:
-
-```bash
-docker compose --profile test up -d --wait minio
-pnpm test:storage
-docker compose --profile test stop minio
-```
-
-The test helper creates `brainrot-tests` on `http://localhost:9100`, using
-`brainrotdev` for its access key and secret. The console is at
-`http://localhost:9101`. Both ports bind only to loopback. If needed, override
-`TEST_S3_ENDPOINT`, `TEST_S3_BUCKET`, `TEST_S3_ACCESS_KEY_ID`, and
-`TEST_S3_SECRET_ACCESS_KEY` in the test process's environment. Production
-`BRAINROT_S3_*` settings are ignored by this tier. No channel files, daemon,
-provider keys, or WhisperX service are needed.
 
 ## Posting a video
 
@@ -181,8 +130,7 @@ open http://127.0.0.1:8787/post
    a mis-click.
 
 A video is not fully done until every platform the channel declares has been
-marked. Once it is, its stored object (if any) is freed automatically on the
-next produce tick's reclaim sweep — see Object storage above.
+marked.
 
 **Production is held once a channel hits its backlog cap.** `backlog_days`
 (default 2) caps how many finished, unposted videos a channel may hold;
@@ -403,13 +351,12 @@ Every page it _reads_ still opens the database through a read-only connection
 connection flag, not the mount. What changed is that the dashboard now also
 _writes_, in one narrow way: buttons on the overview, jobs, library, topics
 and post pages queue an operator action (`POST /api/actions`) that the daemon
-executes, rather than mutating anything itself. Twelve actions are wired
+executes, rather than mutating anything itself. Eleven actions are wired
 today. Six are fast — `topics reject/requeue`, `library approve`,
-`run digest` and `post mark/unmark` — and six are slow, meaning they can
+`run digest` and `post mark/unmark` — and five are slow, meaning they can
 run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
 `produce` with a channel you pick and a topic you type (`/jobs`),
-`scout now` (`/topics`), `library reject` (discard, `/library`) and
-`backfill store` (`/library`). Nothing
+`scout now` (`/topics`) and `library reject` (discard, `/library`). Nothing
 wired to the dashboard uploads to a platform — posting is the
 paste-and-click `/post` workflow above, not a queued action. What is
 still CLI-only after this phase is `costs`' own seven-day breakdown —
@@ -439,18 +386,13 @@ an Anthropic call for the script, ElevenLabs if the channel configures
 whichever of those stages the job has not finished. `scout now` also
 spends real provider money without rendering anything, on topic scoring.
 A separate risk
-is data loss, not spend: `library reject` ("discard") **permanently
-deletes** the rejected videos' stored objects — best-effort, so an
-unreachable bucket leaves them orphaned with a warning
-rather than rolling the rejection back — and pulls them out of the posting
-queue for good.
+is workflow state, not spend: `library reject` ("discard") pulls rejected
+videos out of the posting queue but keeps their local files.
 
-Six actions route through a confirmation interstitial naming the
+Five actions route through a confirmation interstitial naming the
 consequence: `produce next`, `produce` and `resume`, because they spend and
-render; `library reject` and `post unmark`, because they lose data rather
-than money (`post unmark` throws away a saved live link); and, added this
-phase, `backfill store`, because it can rack up real object-storage cost
-across every unstored video. The rest fire on one
+render; `library reject` and `post unmark`, because they change or remove
+operator state (`post unmark` throws away a saved live link). The rest fire on one
 click, `scout now` included — so a click can spend without a prompt. Spend
 still lands under a budget cap, but which one depends on the action.
 `produce next`, `produce` and `resume` each have a job to meter against, so
@@ -488,7 +430,7 @@ pnpm check         # formatting, lint, CLI/Remotion types, Next.js build, defaul
 
 The full default suite also covers daemon workers, action queues, budgets,
 leases, the dashboard, and the CLI. No paid providers or running services are
-needed. Paid provider contracts and MinIO conformance remain opt-in.
+needed. Paid provider contracts remain opt-in.
 
 For a release, run `pnpm check`, then build before restarting the services:
 
@@ -659,7 +601,6 @@ paused until you do.
 pnpm check          # complete Node/TypeScript release check
 pnpm test           # unit + integration (mocked providers; real ffmpeg/Remotion)
 pnpm test:contract  # real calls: a few cents (ElevenLabs synth, one Anthropic call) + free Arctic Shift GETs
-pnpm test:storage   # object-store conformance against real MinIO (see Object storage above)
 ```
 
 Media/render tests shell out to ffmpeg and run a real Remotion render; the first

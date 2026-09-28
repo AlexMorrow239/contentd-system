@@ -32,9 +32,6 @@ flowchart TB
   Assets[Background clips] --> Pipeline
   Pipeline --> Runs[Local runs and final MP4s]
   Runs --> Dashboard
-  Pipeline -->|optional archive| S3[S3-compatible storage / R2]
-  Produce -->|reclaim fully posted objects| S3
-  Slow -->|discard or backfill| S3
   Digest --> Logs[JSON logs / digest text]
   User -->|manual upload| Platforms[YouTube / Instagram / TikTok]
 ```
@@ -51,7 +48,7 @@ Compose mounts:
 | `assets` at `/app/assets`                        | Read-only               | Not mounted      | Video backgrounds                                                               |
 | `whisperx-cache`                                 | Separate sidecar volume | None             | Downloaded alignment models                                                     |
 
-The dashboard has no provider or bucket credentials. Its HTTP boundary validates same-origin/Host and CSRF token, validates action arguments, checks daemon liveness, and inserts an action. It never executes pipeline handlers. MinIO is a test-profile service, not part of normal production startup. Compose's daemon/dashboard timezone is America/New_York; daily production and spend accounting use UTC.
+The dashboard has no provider credentials. Its HTTP boundary validates same-origin/Host and CSRF token, validates action arguments, checks daemon liveness, and inserts an action. It never executes pipeline handlers. Compose's daemon/dashboard timezone is America/New_York; daily production and spend accounting use UTC.
 
 Sources: [Compose](../docker-compose.yml), [daemon](../src/loop/daemon.ts), [submission](../dashboard/lib/server/submission.ts), [database opening](../src/db/index.ts), [architecture boundary checks](../src/arch.test.ts).
 
@@ -59,15 +56,14 @@ Sources: [Compose](../docker-compose.yml), [daemon](../src/loop/daemon.ts), [sub
 
 There is no Redis/RabbitMQ-style message broker. Work is discovered by polling SQLite. Some queues are persistent rows with statuses; others are computed views of existing state.
 
-| Queue / work set     | Representation                                                            | Producer                              | Consumer                             | Selection and capacity                                                                                                            |
-| -------------------- | ------------------------------------------------------------------------- | ------------------------------------- | ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Candidate topics     | `topics.status = candidate`                                               | Scout; operator requeue               | Production planner                   | Per channel: score descending, creation time ascending, ID ascending. Scout stops fetching at `ceil(videos_per_day × queue_days)` |
-| Blocked-job recovery | `jobs.status = blocked`                                                   | Budget enforcement in runner          | Production planner                   | Oldest eligible job first, before any new topic; requires remaining budget                                                        |
-| Fast actions         | `operator_actions`, lane `fast`, status `pending`                         | Dashboard                             | `actions-fast`                       | ID ascending, up to 50 completions per unit                                                                                       |
-| Slow actions         | Same table, lane `slow`                                                   | Dashboard                             | `actions-slow`                       | ID ascending with lease-blocked rows skipped within the first 50 pending rows; one completion per unit                            |
-| Review inventory     | `library.state = needs-review`                                            | Completed pipeline with QC issues     | Human approval/discard actions       | Counts toward backlog but does not appear in `/post`                                                                              |
-| Manual posting queue | Query of ready library rows missing at least one configured platform post | Pipeline or approval                  | Human                                | Oldest library creation time, then job ID; default page limit 200                                                                 |
-| Reclaim work set     | Stored objects for fully posted videos                                    | Posting records make objects eligible | Production tick's pre-planning sweep | Up to 20 objects per channel per tick                                                                                             |
+| Queue / work set     | Representation                                                            | Producer                          | Consumer                       | Selection and capacity                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------- | --------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| Candidate topics     | `topics.status = candidate`                                               | Scout; operator requeue           | Production planner             | Per channel: score descending, creation time ascending, ID ascending. Scout stops fetching at `ceil(videos_per_day × queue_days)` |
+| Blocked-job recovery | `jobs.status = blocked`                                                   | Budget enforcement in runner      | Production planner             | Oldest eligible job first, before any new topic; requires remaining budget                                                        |
+| Fast actions         | `operator_actions`, lane `fast`, status `pending`                         | Dashboard                         | `actions-fast`                 | ID ascending, up to 50 completions per unit                                                                                       |
+| Slow actions         | Same table, lane `slow`                                                   | Dashboard                         | `actions-slow`                 | ID ascending with lease-blocked rows skipped within the first 50 pending rows; one completion per unit                            |
+| Review inventory     | `library.state = needs-review`                                            | Completed pipeline with QC issues | Human approval/discard actions | Counts toward backlog but does not appear in `/post`                                                                              |
+| Manual posting queue | Query of ready library rows missing at least one configured platform post | Pipeline or approval              | Human                          | Oldest library creation time, then job ID; default page limit 200                                                                 |
 
 `jobs.status = queued` is a persisted pre-execution state, not a generic job queue drained by a worker. New production creates a job and immediately calls its runner. The automatic planner only selects blocked jobs for recovery; a stranded queued job needs explicit resume.
 
@@ -93,7 +89,6 @@ flowchart LR
   Discard -.->|frees inventory capacity| Job
   Job -.->|claims reduce candidate depth| Topics
   Topics -.->|depth below threshold permits future fetch| Filter
-  Consumed --> Reclaim[Reclaim cloud bytes on production tick]
 ```
 
 These are two separate capacity controls:
@@ -118,8 +113,7 @@ flowchart TD
   Config -->|yes| Lease{Acquire produce lease?}
   Lease -->|no| Noop
   Lease -->|yes| Repair[Repair historical claimed topics already in library]
-  Repair --> Reclaim[Attempt cloud reclaim if configured]
-  Reclaim --> Resume{Eligible blocked job?}
+  Repair --> Resume{Eligible blocked job?}
   Resume -->|yes - oldest first| Run[Resume unfinished stages]
   Resume -->|no| Channels[Filter channels by daily new-job count and backlog]
   Channels --> Fair[Sort by fraction of daily quota used, then channel name]
@@ -178,9 +172,9 @@ sequenceDiagram
 | Slow | `jobs.produce`, `jobs.resume`                                                                  | `produce`                                                    |
 | Slow | `scout.run`                                                                                    | `scout`                                                      |
 | Slow | `produce.next`                                                                                 | None at worker level; the tick acquires `produce` internally |
-| Slow | `library.reject`, `library.backfillStore`                                                      | None                                                         |
+| Slow | `library.reject`                                                                               | None                                                         |
 
-Fast actions do local operations without provider calls, rendering, or lease acquisition. Discard is slow because it may delete cloud objects. The slow lane is serial: once a handler starts, other slow actions wait even if they need a different lease. The independent automatic scout/produce loops can still run when their leases allow it.
+Fast actions do local operations without provider calls, rendering, or lease acquisition. The slow lane is serial: once a handler starts, other slow actions wait even if they need a different lease. The independent automatic scout/produce loops can still run when their leases allow it.
 
 Leases are two **global names**, `produce` and `scout`, not per-channel locks. They prevent normal overlap between automatic and operator-triggered work of the same class. Scouting and production can run concurrently.
 
@@ -200,7 +194,7 @@ Sources: [catalog](../src/actions/catalog.ts), [queue persistence](../src/action
 
 ```mermaid
 flowchart LR
-  Script[script] --> Voice[voice] --> Captions[captions] --> Visuals[visuals] --> Assemble[assemble] --> QC[qc] --> Store[store] --> Commit[Atomic finalization]
+  Script[script] --> Voice[voice] --> Captions[captions] --> Visuals[visuals] --> Assemble[assemble] --> QC[qc] --> Commit[Atomic finalization]
 ```
 
 | Stage        | Main work / dependencies                                                                                                                | Output role                                                                |
@@ -211,8 +205,7 @@ flowchart LR
 | Visuals      | Select background assets; loop/crop with ffmpeg; track recent usage                                                                     | Background video inputs                                                    |
 | Assemble     | Remotion React composition, Chrome renderer, ffmpeg                                                                                     | `assemble/final.mp4`                                                       |
 | QC           | Local media checks using probe/ffmpeg and artifacts                                                                                     | QC verdict                                                                 |
-| Store        | Optional S3 upload and read-back size verification                                                                                      | Object metadata; skipped when storage is unconfigured                      |
-| Finalization | Read artifacts and commit database state                                                                                                | Library/object upsert, job done, claimed topic used in one transaction     |
+| Finalization | Read artifacts and commit database state                                                                                                | Library upsert, job done, claimed topic used in one transaction            |
 
 There are no separate voice/render/QC queues. One `runJob` call awaits each stage. Stage status and files under `<root>/runs/<jobId>/<stage>/` are the resume checkpoints. A completed stage is skipped on resume. A failed paid attempt can still have ledgered cost; a retry is not necessarily free. A budget error does not activate the paid-voice fallback path.
 
@@ -239,7 +232,7 @@ stateDiagram-v2
 
 Job `done` can mean either library `ready` or `needs-review`. A QC verdict that fails checks leads to needs-review; an exception executing QC fails the job. Library `blocked` means discarded, whereas job `blocked` means budget-stopped. They are different state machines.
 
-Posting does not change ready into a published state. The existence of a `posts` row for each `(job_id, platform)` records actual manual posting. Marking is idempotent; correcting its URL preserves the original posting time. Unmark removes that record and can put the video back into the pending checklist. It does not restore reclaimed cloud bytes.
+Posting does not change ready into a published state. The existence of a `posts` row for each `(job_id, platform)` records actual manual posting. Marking is idempotent; correcting its URL preserves the original posting time. Unmark removes that record and can put the video back into the pending checklist.
 
 Story mode expands one source post into multiple topics/jobs/videos with a shared series key and individual part numbers. The production selector uses normal score/time/ID ordering; the posting page uses creation ordering. There is no per-platform predecessor enforcement, so the human must post parts in sequence.
 
@@ -252,7 +245,6 @@ erDiagram
   TOPICS o|--o| JOBS : "optional binding by job_id"
   JOBS ||--o{ JOB_STAGES : checkpoints
   JOBS ||--o| LIBRARY : produces
-  LIBRARY ||--o| LIBRARY_OBJECTS : archive
   JOBS ||--o{ POSTS : "manual platform records"
   JOBS ||--o{ COSTS : "production spend"
 ```
@@ -266,7 +258,6 @@ This diagram shows application relationships, not enforced foreign keys. Databas
 | `jobs`             | Production identity, channel, topic, status and timestamps                         |
 | `job_stages`       | Per-stage execution checkpoints and errors                                         |
 | `library`          | Finished video path, platform metadata, QC verdict and review state                |
-| `library_objects`  | Object key/size/ETag and reclaimed marker                                          |
 | `posts`            | Actual manual posting records by video/platform                                    |
 | `costs`            | Provider spend in integer USD micros                                               |
 | `bg_usage`         | Recent background usage by channel                                                 |
@@ -274,11 +265,14 @@ This diagram shows application relationships, not enforced foreign keys. Databas
 | `operator_actions` | Durable command queue, results, errors and audit history                           |
 | `daemon_state`     | Single-row daemon heartbeat                                                        |
 
-Cloud reclaim deletes object bytes but preserves the object row with `reclaimed_at`, preventing backfill from re-uploading it. Backfill selects non-discarded library entries with no object row. Discard marks the library row blocked and attempts cloud deletion; successful discard deletion removes the object row. These operations do not delete the local run directory. Local disk usage is therefore separate from cloud reclaim and backlog capacity.
+Finished videos remain at `runs/<jobId>/assemble/final.mp4`. The dashboard reports
+each one as `local` or `missing` from that path alone. Discard marks the library
+row blocked but keeps the local file; if a local video is deleted, the application
+cannot recover it.
 
 The schema is applied and migrations run by the daemon/normal CLI opener. Dashboard read/action handles never initialize or migrate. The production SQLite file lives on the Linux named volume so all WAL users share coherent filesystem memory.
 
-Sources: [schema](../src/db/schema.sql), [migrations](../src/db/migrate.ts), [database opener](../src/db/index.ts), [dashboard handles](../src/db/dashboard.ts), [reclaim](../src/posts/reclaim.ts), [library operations](../src/jobs/library.ts).
+Sources: [schema](../src/db/schema.sql), [migrations](../src/db/migrate.ts), [database opener](../src/db/index.ts), [dashboard handles](../src/db/dashboard.ts), [library operations](../src/jobs/library.ts).
 
 ## 8. Scheduling, failures, and practical limits
 
@@ -318,7 +312,7 @@ Sources: [worker loops](../src/loop/daemon.ts), [action execution](../src/loop/a
 | Slow action pending while other activity continues | Action notice and lease expiry                              | Waiting for produce/scout ownership, serial slow work, or 50-row scan window              |
 | Action done but no video appeared                  | Action result, job status, stage errors                     | Noop, budget block, failed job, or needs-review result                                    |
 | Restarted daemon but render never resumed          | Job status and saved action notice                          | Orphaned running/queued jobs require explicit recovery                                    |
-| Finished videos still consume disk                 | Local run files versus cloud object records                 | Cloud reclaim does not remove local artifacts                                             |
+| Finished video is unavailable                      | Local run path                                              | The local file was moved or deleted and cannot be recovered by the application            |
 | Fully posted video reappears                       | Current platform list and posts rows                        | Unmark or newly declared destination changes completion                                   |
 
-For an individual item, trace **action ID → result/notice job ID → jobs/job_stages → library → posts/library_objects**. For automatic production, start from **topic ID → topics.job_id**. These are the identities connecting the queue views; there is no single shared queue position spanning discovery, rendering, and posting.
+For an individual item, trace **action ID → result/notice job ID → jobs/job_stages → library → posts**. For automatic production, start from **topic ID → topics.job_id**. These are the identities connecting the queue views; there is no single shared queue position spanning discovery, rendering, and posting.

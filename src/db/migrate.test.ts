@@ -50,61 +50,6 @@ afterEach(() => {
   for (const d of cleanupDirs.splice(0)) rmSync(d, { recursive: true, force: true })
 })
 
-describe('migrate', () => {
-  it('drops legacy object metadata and store stages while preserving local library data', () => {
-    const db = memDb()
-    seedJob(db, 'job-1', { status: 'done' })
-    seedLibrary(db, 'job-1', { videoPath: '/runs/job-1/assemble/final.mp4' })
-    db.exec(`CREATE TABLE library_objects (
-      job_id TEXT PRIMARY KEY REFERENCES library(job_id),
-      object_key TEXT NOT NULL,
-      bytes INTEGER NOT NULL,
-      etag TEXT NOT NULL,
-      uploaded_at TEXT NOT NULL,
-      reclaimed_at TEXT
-    )`)
-    db.prepare(
-      `INSERT INTO library_objects
-         (job_id, object_key, bytes, etag, uploaded_at, reclaimed_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run('job-1', 'videos/job-1.mp4', 10, 'etag', '2026-01-01T00:00:00Z', null)
-    db.prepare("INSERT INTO job_stages (job_id, stage, status) VALUES (?, 'qc', 'done')").run(
-      'job-1',
-    )
-    db.prepare("INSERT INTO job_stages (job_id, stage, status) VALUES (?, 'store', 'done')").run(
-      'job-1',
-    )
-
-    migrate(db)
-
-    expect(
-      db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'library_objects'")
-        .get(),
-    ).toBeUndefined()
-    expect(db.prepare('SELECT stage FROM job_stages WHERE job_id = ?').all('job-1')).toEqual([
-      { stage: 'qc' },
-    ])
-    expect(db.prepare('SELECT video_path FROM library WHERE job_id = ?').get('job-1')).toEqual({
-      video_path: '/runs/job-1/assemble/final.mp4',
-    })
-
-    migrate(db)
-  })
-
-  it('removes a store stage when legacy object metadata is already absent', () => {
-    const db = memDb()
-    seedJob(db, 'job-1', { status: 'done' })
-    db.prepare("INSERT INTO job_stages (job_id, stage, status) VALUES (?, 'store', 'done')").run(
-      'job-1',
-    )
-    migrate(db)
-
-    expect(db.prepare('SELECT stage FROM job_stages WHERE job_id = ?').all('job-1')).toEqual([])
-    migrate(db)
-  })
-})
-
 describe('migrate — topics.target_url', () => {
   // A bare handle carrying only what these tests exercise: none of migrate's
   // OTHER steps depend on any table besides the one they name, and each is

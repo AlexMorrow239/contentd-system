@@ -15,7 +15,6 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:contract": "CONTRACT=1 vitest run",
-    "test:storage": "STORAGE=1 vitest run",
     "brainrot": "tsx src/cli.ts",
     "check": "pnpm format:check && pnpm lint && pnpm build && pnpm dashboard:build && pnpm test",
     "test:config": "vitest run src/config",
@@ -35,7 +34,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
-    "@aws-sdk/client-s3": "^3.1095.0",
     "@remotion/bundler": "^4.0.491",
     "@remotion/cli": "^4.0.491",
     "@remotion/renderer": "^4.0.491",

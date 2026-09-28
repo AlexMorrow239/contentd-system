@@ -121,22 +121,6 @@ export function seedLibrary(
   }
 }
 
-export function seedLibraryObject(
-  db: Database,
-  jobId: string,
-  overrides: Partial<{ objectKey: string; bytes: number; etag: string; reclaimedAt: string }> = {},
-): void {
-  db.prepare(
-    'INSERT INTO library_objects (job_id, object_key, bytes, etag, reclaimed_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(
-    jobId,
-    overrides.objectKey ?? `videos/${jobId}.mp4`,
-    overrides.bytes ?? 1024,
-    overrides.etag ?? 'etag-1',
-    overrides.reclaimedAt ?? null,
-  )
-}
-
 export interface TopicRow {
   channel: string
   title: string

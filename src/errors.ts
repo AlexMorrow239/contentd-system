@@ -12,7 +12,7 @@
  *   - `kind`   — what kind of break it was
  *
  * A surface matches at whichever width it needs: `kind === 'transient'` for
- * anything worth another tick, or `domain === 'storage' && kind === 'auth'`
+ * anything worth another tick, or `domain === 'provider' && kind === 'auth'`
  * for one specific condition.
  *
  * There is deliberately NO `retryable` boolean. It would be a lie: 'transient'
@@ -21,7 +21,7 @@
  * and each surface maps kind -> its own outcome correctly.
  */
 
-export type ErrorDomain = 'storage' | 'provider' | 'config' | 'job' | 'scout' | 'internal'
+export type ErrorDomain = 'provider' | 'config' | 'job' | 'scout' | 'internal'
 
 export type ErrorKind =
   | 'auth' // credential missing, expired, or refused
@@ -230,7 +230,7 @@ export function isAbortLike(err: unknown): boolean {
 /**
  * True for HTTP status codes indicating expired, invalid, or missing
  * credentials. Replaces the `status === 401 || status === 403` check
- * duplicated across elevenlabs.ts, whisperx.ts and s3.ts's mapS3Error.
+ * duplicated across the external provider clients.
  */
 export function isAuthStatus(status: number | undefined): boolean {
   return status === 401 || status === 403

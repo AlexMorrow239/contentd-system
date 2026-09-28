@@ -541,22 +541,6 @@ describe('runJob', () => {
 })
 
 describe('final gate: local library', () => {
-  it('finishes when a legacy store.json remains in the run directory', async () => {
-    const { db, runsRoot } = setup()
-    const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space' })
-    const legacyDir = join(runsRoot, jobId, 'store')
-    mkdirSync(legacyDir, { recursive: true })
-    writeFileSync(join(legacyDir, 'store.json'), JSON.stringify({ objectKey: 'old/key.mp4' }))
-
-    const result = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
-
-    expect(result.status).toBe('ready')
-    expect(row<{ status: string }>(db, 'SELECT status FROM jobs WHERE id = ?', jobId)).toEqual({
-      status: 'done',
-    })
-  })
-
   it('is idempotent when the gate runs a second time', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()

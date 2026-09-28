@@ -19,16 +19,13 @@ credentials were preserved. No deployment was performed.
 - Removed the local-channel smoke check, `--dev`, the development voice
   environment switch, and `[voice] dev`. Voice behavior comes from the channel;
   module tests mock the providers and test both the premium and fallback paths.
-- Removed retired host-root, MinIO, and development overrides from this
+- Removed retired host-root and development overrides from this
   checkout's `.env`. Compose explicitly maps supported production variables;
   it no longer forwards the entire host environment file. Daemon and dashboard
   read the same daily-budget setting, preserving this checkout's $12 cap.
-- Isolated storage tests behind `TEST_S3_*`, with a separate `brainrot-tests`
-  bucket. MinIO is a `test`-profile service, binds to loopback, and no longer
-  restarts automatically. It needs no operational channels or daemon.
 - Added `pnpm test:config`, `pnpm test:scout`, and `pnpm test:pipeline` as focused
   selections of existing suites. Added regression coverage for required roots,
-  retired voice settings, and storage credential isolation.
+  and retired voice settings.
 - Added `pnpm check`: formatting, lint, both TypeScript projects, and the full
   default test suite. Normalized existing source-format drift and excluded
   ignored agent reports from formatting so the gate is usable.
@@ -38,14 +35,14 @@ credentials were preserved. No deployment was performed.
 
 ## Existing tests worth keeping
 
-| Concern               | Existing coverage                                                         | Why it replaces an operational dev channel                                                             |
-| --------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Channel configuration | `src/config/channel.test.ts`, `channels.smoke.test.ts`                    | Validates fixtures and every maintained TOML without starting workers.                                 |
-| Scouting              | `src/scout/test/`, `src/scout/sources/test/`                              | Exercises source parsing, filtering, scoring, budgets, and deduplication with controlled inputs.       |
-| Daemon decisions      | `src/loop/test/`, `src/jobs/test/golden-path-loop.test.ts`                | Exercises leases, demand limits, claims, resumptions, and action workers against disposable databases. |
-| Finished video        | `src/jobs/test/golden-path.test.ts`, `src/stages/test/`, `remotion/`      | Uses mocked paid providers and real media tools to validate actual artifacts.                          |
-| Operator interface    | `dashboard/lib/**/test/`, `src/cli.test.ts`                               | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
-| External boundaries   | `*.contract.test.ts`, `*.storage.test.ts`, `sidecar/whisperx/test_app.py` | Keeps paid calls and infrastructure requirements explicit and independently runnable.                  |
+| Concern               | Existing coverage                                                    | Why it replaces an operational dev channel                                                             |
+| --------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Channel configuration | `src/config/channel.test.ts`, `channels.smoke.test.ts`               | Validates fixtures and every maintained TOML without starting workers.                                 |
+| Scouting              | `src/scout/test/`, `src/scout/sources/test/`                         | Exercises source parsing, filtering, scoring, budgets, and deduplication with controlled inputs.       |
+| Daemon decisions      | `src/loop/test/`, `src/jobs/test/golden-path-loop.test.ts`           | Exercises leases, demand limits, claims, resumptions, and action workers against disposable databases. |
+| Finished video        | `src/jobs/test/golden-path.test.ts`, `src/stages/test/`, `remotion/` | Uses mocked paid providers and real media tools to validate actual artifacts.                          |
+| Operator interface    | `dashboard/lib/**/test/`, `src/cli.test.ts`                          | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
+| External boundaries   | `*.contract.test.ts`, `sidecar/whisperx/test_app.py`                 | Keeps paid calls and infrastructure requirements explicit and independently runnable.                  |
 
 ## Recommended next changes, in order
 
@@ -68,7 +65,7 @@ This has more operational value than adding another staging daemon.
 There is no `.github/workflows/` pipeline. `pnpm check` now provides the Node
 entrypoint for one, but a local pass alone does not protect subsequent changes.
 Use a clean install, the same check command, and a separate sidecar job. Keep
-paid provider contracts manually triggered; keep MinIO in an optional job.
+paid provider contracts manually triggered.
 
 The eight Python endpoint tests run successfully in this checkout's existing
 virtual environment, but `sidecar/whisperx/requirements.txt` describes runtime
@@ -82,7 +79,7 @@ not Python or a Docker image build.
 
 `package.json` has no `packageManager` pin while the Dockerfile selects
 `pnpm@11.12.0`; host and image installs can use different package managers.
-The Node/Python base tags and `minio:latest` can also move. Pin the package
+The Node/Python base tags can also move. Pin the package
 manager and choose an explicit update policy for image tags/digests. Build
 once per release and record an immutable image tag so rollback does not mean
 reconstructing a previous environment from today's base images.
@@ -136,8 +133,8 @@ complexity being removed.
 ## Validation limits
 
 Production was not restarted. Docker is not running on this machine, so this
-change can validate Compose configuration but cannot build/run the images or
-execute the MinIO integration tier. Paid provider contracts were not invoked.
+change can validate Compose configuration but cannot build/run the images.
+Paid provider contracts were not invoked.
 The default suite needs permission to bind localhost ports and launch Chrome;
 its first sandboxed run failed on those restrictions and was rerun outside
 the sandbox. Python tests emitted dependency deprecation warnings.

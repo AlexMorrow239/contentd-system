@@ -17,7 +17,7 @@ import type { Platform } from './types.js'
  * `posts.channel` is denormalized from `jobs.channel`, so the resolution is a
  * fact about this table's own schema rather than something each caller should
  * re-derive: a mismatched channel misfiles the row in every channel-scoped
- * read (pendingInventory, reclaim, the digest) with nothing to flag it.
+ * read (pendingInventory, the posting queue, and the digest) with nothing to flag it.
  */
 function jobChannel(db: Database, jobId: string): string {
   const row = db.prepare('SELECT channel FROM jobs WHERE id = ?').get(jobId) as
@@ -53,10 +53,9 @@ export function markPosted(
 /**
  * The "posted to every declared platform" predicate as data, for the readers
  * that must agree on what "consumed" means: `pendingInventory` (the
- * production depth cap), `reclaimableObjects` (which bytes are deleted),
- * `listPostQueue` (what the operator sees) and the digest's unposted-age
- * column. Each failure mode of a drifted copy is silent — production halts,
- * bytes are freed early, the digest lies.
+ * production depth cap), `listPostQueue` (what the operator sees) and the
+ * digest's unposted-age column. Each failure mode of a drifted copy is silent
+ * — production halts or the digest lies.
  *
  * `alias` is the row alias the correlated subquery joins against (`l` where
  * the caller selects from `library l`), so a caller's own FROM naming stays
@@ -66,7 +65,7 @@ export function markPosted(
  * than appended by the caller, because the empty-`declared` case is not
  * symmetric and cannot be expressed as one count fragment two ways: a channel
  * with no platforms has not decided where to post yet, so nothing is fully
- * posted ('fully' -> `0`, reclaim frees nothing) while everything still
+ * posted ('fully' -> `0`) while everything still
  * counts as inventory ('not-fully' -> `1`).
  */
 export function fullyPostedClause(

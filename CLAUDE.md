@@ -43,13 +43,9 @@ Opt-in tiers:
 
 ```bash
 pnpm test:contract           # real provider calls (paid ones key-gated); run deliberately
-
-docker compose --profile test up -d --wait minio
-pnpm test:storage            # free MinIO conformance tests
-docker compose --profile test stop minio
 ```
 
-`pnpm check` does not run Python tests, paid contracts, MinIO tests, or image
+`pnpm check` does not run Python tests, paid contracts, or image
 builds. The sidecar tests live in `sidecar/whisperx/test_app.py`; run them with
 `python -m pytest sidecar/whisperx/test_app.py` in an environment containing
 its runtime dependencies plus pytest and httpx. Test dependencies are not yet
@@ -100,7 +96,7 @@ production operations, and recovery.
 `src/jobs/pipeline.ts` owns stage order for produce, resume, and produce-next:
 
 ```
-script -> voice -> captions -> visuals -> assemble -> qc -> store
+script -> voice -> captions -> visuals -> assemble -> qc
 ```
 
 A `StageDef` runs against `JobContext` (`src/jobs/types.ts`). Read/write artifacts
@@ -109,11 +105,10 @@ through `ctx.artifactPath(stage, file)`, under `runs/<jobId>/<stage>/`.
 reusable without repeating successful work. Errors mark a job `failed`;
 `BudgetExceededError` marks it `blocked`.
 
-The final gate reads QC/script/store artifacts, upserts the library and stored
-object records, marks the job done, and changes its claimed topic to used in
-one transaction. Preserve idempotency and that transaction boundary. Missing
-store metadata is tolerated; storage is optional. `library.qc_json` carries
-the verdict so dashboard queries do not need to read job artifacts.
+The final gate reads QC/script artifacts, upserts the library row, marks the
+job done, and changes its claimed topic to used in one transaction. Preserve
+idempotency and that transaction boundary. `library.qc_json` carries the
+verdict so dashboard queries do not need to read job artifacts.
 
 `visuals-volume.ts` selects and loops/crops a background clip. Voice selection
 is independent: configured ElevenLabs first, then kokoro/edge-tts on provider
@@ -130,21 +125,18 @@ a same-day restart can produce another report. There is no publishing worker.
 `produceNextTick` (`src/loop/produce-next.ts`) loads channels fresh each tick,
 reports malformed config as a structured noop, and acquires the `produce`
 lease before mutation. It repairs historical claimed-topic/library mismatches,
-reclaims fully posted stored objects when storage is configured, then executes
-`planTick`. Stage-start heartbeats extend the lease; ownership checks prevent
+then executes `planTick`. Stage-start heartbeats extend the lease; ownership checks prevent
 an expired holder from releasing a successor's lease.
 
 `planTick` (`src/loop/plan-tick.ts`) prefers eligible blocked jobs, then claims
 new topics subject to daily production limits, budgets, and backlog capacity.
 A channel holding `ceil(videos_per_day * backlog_days)` unconsumed videos
 pauses production. Videos do not expire; posting to all declared platforms or
-discarding them frees capacity. Running jobs orphaned by a crash are not
-automatically resumed.
+discarding them frees capacity. Discard changes library state but keeps the
+local video file. Running jobs orphaned by a crash are not automatically resumed.
 
-`fullyPostedClause` (`src/posts/posts.ts`) is shared by reclaim, inventory,
-post-queue, and digest readers. Empty `platforms` means nothing is fully posted.
-Reclaim deletes bytes and stamps `reclaimed_at`, preserving `library_objects`
-so backfill does not re-upload intentionally reclaimed videos.
+`fullyPostedClause` (`src/posts/posts.ts`) is shared by inventory, post-queue,
+and digest readers. Empty `platforms` means nothing is fully posted.
 
 The two lease names are `produce` and `scout`. Scout's lease TTL is 30 minutes.
 Manual `produce`, `resume`, library mutations, and topic reject/requeue bypass
@@ -169,21 +161,19 @@ Keep `src/actions/` separated by import boundary:
 
 `src/arch.test.ts` checks the dashboard's transitive runtime imports, including TSX and dynamic imports. Pipeline,
 Remotion, and paid-provider clients must stay outside the HTTP process.
-Storage SDK imports are lazy in handlers and the store stage.
 
 Fast actions are `topics.reject`, `topics.requeue`, `library.approve`,
 `digest.run`, `post.mark`, and `post.unmark`. They perform no network calls,
 rendering, or lease acquisition. Slow actions are `produce.next`, `jobs.produce`,
-`scout.run`, `jobs.resume`, `library.reject`, and `library.backfillStore`.
-Discard belongs in slow because it can delete S3 objects.
+`scout.run`, `jobs.resume`, and `library.reject`.
 
 Lease declarations matter:
 
-| Slow action                                               | Worker-acquired lease |
-| --------------------------------------------------------- | --------------------- |
-| `jobs.produce`, `jobs.resume`                             | `produce`             |
-| `scout.run`                                               | `scout`               |
-| `produce.next`, `library.reject`, `library.backfillStore` | None                  |
+| Slow action                      | Worker-acquired lease |
+| -------------------------------- | --------------------- |
+| `jobs.produce`, `jobs.resume`    | `produce`             |
+| `scout.run`                      | `scout`               |
+| `produce.next`, `library.reject` | None                  |
 
 `produce.next` takes its own lease inside `produceNextTick`; declaring it again
 would turn each action into a lease-held noop. `runJob` and `scoutAll` do not
@@ -336,7 +326,7 @@ so callers still match `instanceof z.ZodError` — and `src/providers/errors.ts`
 `errorContext`, and `isAbortLike`. It imports nothing from `src/`; an architecture
 lint protects that boundary. Domain classes stay with their owning modules.
 
-Errors have a domain (`storage`, `provider`, `config`, `job`, `scout`, `internal`)
+Errors have a domain (`provider`, `config`, `job`, `scout`, `internal`)
 and kind (`auth`, `quota`, `budget`, `invalid`, `not-found`, `rejected`,
 `conflict`, `refused`, `transient`, `unknown-outcome`, `internal`). Retry policy
 belongs to the consuming operation; there is no universal retryable flag.
@@ -369,14 +359,14 @@ A `posts` row means the video was actually posted to that platform.
 `markPosted` is idempotent on `(job_id, platform)`: URL corrections must not
 refresh `posted_at`. `unmarkPosted` deletes the row. The dashboard presents
 paste fields for unposted platforms and saved links/unmark controls for posted
-ones. Reclaim uses the same fully-posted predicate as inventory and the queue.
+ones.
 
 ### The dashboard's read-only guarantee narrows, not disappears
 
 `dashboard/` contains the Next.js App Router frontend and its supporting code.
 `dashboard/lib/server/` holds query and HTTP helpers; `dashboard/lib/shared/`
 holds browser-safe helpers. Launcher configuration and CSRF utilities live in
-`dashboard/lib/`. The service runs without provider or bucket credentials and binds to host
+`dashboard/lib/`. The service runs without provider credentials and binds to host
 loopback through Compose. Actions can spend provider budget and render videos;
 keep the loopback binding. The footer identifies its explicit runtime root.
 
@@ -407,10 +397,9 @@ Use webpack extension aliases for shared NodeNext `.js` source imports.
 The lightweight `DASHBOARD_STAGE_ORDER` must agree with the pipeline (tested),
 but importing `pipelineStages()` would pull rendering/provider code into HTTP.
 
-Library byte states are `local`, `archived`, `reclaimed`, and `unstored`.
-A missing `library_objects` row means never stored; a reclaimed row means its
-stored bytes were deliberately removed. Do not confuse these for backfill or
-local artifact deletion. The library's QC verdict comes from `library.qc_json`.
+Library byte states are `local` and `missing`, based only on whether the local
+video path exists. Missing local files cannot be recovered by the application.
+The library's QC verdict comes from `library.qc_json`.
 
 ### Remotion rendering
 
@@ -428,7 +417,7 @@ shared memory across all openers, and mixing host/VM kernels over virtiofs
 previously corrupted state. Use container CLI commands for production access.
 `busy_timeout=5000` handles concurrent daemon/dashboard/CLI connections.
 
-The database holds jobs/stages, library/object metadata, topics/scout state,
+The database holds jobs/stages, library metadata, topics/scout state,
 costs, leases, posting records, operator actions, and daemon liveness. Artifacts
 live under `<root>/runs/<jobId>/<stage>/`, bound to host `docker/state/runs/`.
 
@@ -442,12 +431,10 @@ migrate.ts so schema application cannot wedge an older database first.
 
 ### Test layout and conventions
 
-Tests are colocated (`src/**/*.test.ts`, plus `remotion/**`), in three tiers:
-the default hermetic run, `*.contract.test.ts` (`CONTRACT=1`, real API calls:
-paid ones skip without their key, the free Arctic Shift one always runs), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up via
-`docker compose --profile test up -d --wait minio`). Storage tests use
-`TEST_S3_*` overrides and a `brainrot-tests` bucket; production credentials
-never select their store. Compose forwards only explicit production settings.
+Tests are colocated (`src/**/*.test.ts`, plus `remotion/**`), in two tiers:
+the default hermetic run and `*.contract.test.ts` (`CONTRACT=1`, real API calls;
+paid ones skip without their key and the free Arctic Shift one always runs).
+Compose forwards only explicit production settings.
 Voice selection is solely `[voice.premium]` or the free fallback chain; there
 is no `--dev`, `voice.dev`, or development voice environment override.
 
@@ -471,8 +458,8 @@ the shared helpers rather than re-rolling fixtures locally:
   `seedScriptJson`.
 - `db.ts` — `memDb()`/`fileDb()` (both auto-closed) and one seed builder per
   table, each `(db, id?, overrides?)`.
-- `cli.ts`, `run-cli.ts`, `storage.ts` — subprocess and object-storage
-  scaffolding; `anthropic.ts` supplies the provider fake. `arctic-shift.ts`
+- `cli.ts`, `run-cli.ts` — subprocess scaffolding; `anthropic.ts` supplies
+  the provider fake. `arctic-shift.ts`
   supplies the redditSource response builders and the URL-keyed `fetchStub`.
 
 Conventions:
@@ -481,9 +468,8 @@ Conventions:
   `afterEach(vi.unstubAllEnvs)`, so no file needs its own.
 - **Pass subprocess settings explicitly through `runCli(args, { env })`.**
   The child inherits environment variables unless overridden. Explicit values
-  keep tests independent of the developer's `.env`; use `storageEnvVars()`
-  for fake storage configuration. Empty strings prevent dotenv from filling
-  a key from the host file when testing missing configuration.
+  keep tests independent of the developer's `.env`. Empty strings prevent
+  dotenv from filling a key from the host file when testing missing configuration.
 - One top-level `describe` named after the symbol under test. `it(`, never
   `test(`. Helpers at the top of the file or in a colocated `_*.fixtures.ts` —
   never buried between describes.

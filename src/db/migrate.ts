@@ -104,14 +104,6 @@ export function migrate(db: Database): void {
   if (tableExists(db, 'topics') && !hasColumn(db, 'topics', 'target_url')) {
     db.exec('ALTER TABLE topics ADD COLUMN target_url TEXT')
   }
-  // Object storage is retired. Remove its historical metadata and its stage
-  // rows without touching the local video path held by library.
-  if (tableExists(db, 'library_objects')) {
-    db.exec('DROP TABLE library_objects')
-  }
-  if (tableExists(db, 'job_stages')) {
-    db.prepare("DELETE FROM job_stages WHERE stage = 'store'").run()
-  }
   // The qc stage's verdict, persisted whole by the runner's final gate so
   // the dashboard's library page can name the failing checks. NULL is the
   // correct reading for every pre-existing row: finalized before the verdict
