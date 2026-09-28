@@ -42,7 +42,7 @@ pnpm vitest run src/jobs/test/runner.test.ts
 Opt-in tiers:
 
 ```bash
-pnpm test:contract           # real paid provider calls; run deliberately
+pnpm test:contract           # real provider calls (paid ones key-gated); run deliberately
 
 docker compose --profile test up -d --wait minio
 pnpm test:storage            # free MinIO conformance tests
@@ -243,16 +243,32 @@ Reddit source parsing annotates `postKind`; `scoutChannel` decides what to drop.
 Keep this split so scouting can report `droppedMedia` without changing the
 `TrendSource.fetch` interface. Dropped candidates do not get topic rows.
 
-The Atom entry's own link is the comments permalink. Classify the submission
-from the target `[link]` inside `<content>` using `sources/post-kind.ts`.
-Missing/unparseable targets fail open as `link`. Render target hosts into the
-scoring prompt for ambiguous media links rather than growing a host blacklist.
+`redditSource` reads subreddits through the public Arctic Shift archive
+(`/api/posts/search`, newest first, `md2html=true`). reddit.com is unreachable
+keyless. Its source id (`reddit:r/<sub>`) and external id (`t3_<id>`) match the
+old Atom feed's, so dedupe hashes carry across the transport change; keep them.
+The candidate `url` is the rebuilt comments permalink, which the story outro,
+dashboard, and prune-media read. The post's own `url` field is the submission
+target. Classify it with `sources/post-kind.ts`; a crosspost's relative target
+resolves against reddit.com. Missing/unparseable targets fail open as `link`.
+Render target hosts into the scoring prompt for ambiguous media links rather
+than growing a host blacklist.
+
+Removed/deleted posts (`[removed]`/`[deleted]` selftext, `[ Removed by Reddit`)
+are the one exception to annotate-don't-drop: the source drops them uncounted,
+because reddit's own listing, which the source replaced, never returned them.
+A deleted account's post is kept, with `author` undefined. Arctic Shift answers
+a malformed subreddit name with an empty list, so the source rejects one at
+construction instead.
 
 Filter AutoModerator/moderator accounts via `isAutomatedAuthor` and report
 `droppedAutomated`; recurring threads have fresh IDs and evade ordinary dedupe.
 `topics.target_url` records the submission target separately from `topics.url`.
 `topics prune-media` repairs older rows by fetching permalink `.rss` and
-verifying the feed's ID against the stored dedupe hash before mutation.
+verifying the feed's ID against the stored dedupe hash before mutation. It
+still reads reddit.com (`fetchRedditFeed`, not yet ported to Arctic Shift), so
+it cannot resolve rows from a network reddit blocks. Arctic Shift rows always
+carry `target_url` and never qualify.
 
 ### The third source invents topics rather than fetching them
 
@@ -277,7 +293,8 @@ Two configuration traps:
 
 ### Story mode: channels that narrate reddit posts verbatim
 
-`[story]` channels narrate Reddit self-post bodies from Atom `<content>`.
+`[story]` channels narrate Reddit self-post bodies from Arctic Shift's
+`selftext_html` (`storyBody` in `src/stories/body.ts`).
 The body is assembled locally by `runStoryScript` (`src/stages/script.ts`);
 the model response schema accepts only platform metadata, not narration.
 The hook is still the scout's model-authored topic title. “Verbatim” refers to
@@ -442,8 +459,8 @@ migrate.ts so schema application cannot wedge an older database first.
 ### Test layout and conventions
 
 Tests are colocated (`src/**/*.test.ts`, plus `remotion/**`), in three tiers:
-the default hermetic run, `*.contract.test.ts` (`CONTRACT=1`, real paid API
-calls), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up via
+the default hermetic run, `*.contract.test.ts` (`CONTRACT=1`, real API calls:
+paid ones skip without their key, the free Arctic Shift one always runs), and `*.storage.test.ts` (`STORAGE=1`, needs MinIO up via
 `docker compose --profile test up -d --wait minio`). Storage tests use
 `TEST_S3_*` overrides and a `brainrot-tests` bucket; production credentials
 never select their store. Compose forwards only explicit production settings.
@@ -471,7 +488,9 @@ the shared helpers rather than re-rolling fixtures locally:
 - `db.ts` — `memDb()`/`fileDb()` (both auto-closed) and one seed builder per
   table, each `(db, id?, overrides?)`.
 - `cli.ts`, `run-cli.ts`, `storage.ts` — subprocess and object-storage
-  scaffolding; `anthropic.ts` and `reddit-feed.ts` supply provider/feed fakes.
+  scaffolding; `anthropic.ts` supplies the provider fake. `arctic-shift.ts`
+  supplies the redditSource response builders and the URL-keyed `fetchStub`;
+  `reddit-feed.ts` keeps the reddit.com Atom builders only prune-media still needs.
 
 Conventions:
 

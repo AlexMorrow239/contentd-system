@@ -85,9 +85,10 @@ export async function pruneMedia(
     row: (typeof rows)[number],
   ): Promise<{ target: string } | { skip: string }> {
     try {
-      // Shares redditSource's fetch: one place knows reddit's UA convention
-      // and its 429 backoff. A row that is still limited after the retry is a
-      // skip, not a throw — the remaining rows are still worth checking.
+      // Still reddit.com's own feed — redditSource moved to Arctic Shift, this
+      // pass did not. fetchRedditFeed knows reddit's UA convention and its 429
+      // backoff. A row that is still limited after the retry is a skip, not a
+      // throw — the remaining rows are still worth checking.
       const res = await fetchRedditFeed(permalinkFeedUrl(row.url), {
         fetchImpl,
         timeoutMs: SOURCE_FETCH_TIMEOUT_MS,

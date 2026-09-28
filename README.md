@@ -242,13 +242,25 @@ scheduled to fall behind: a channel with topics ready gets them produced as
 fast as its own gates (backlog caps, budgets) allow, and a channel with
 nothing to do costs nothing but an idle poll.
 
-No API keys are needed for scouting: reddit subreddits and RSS sources are
-both read through their public feeds. Reddit's feed carries no `stickied`
-flag, but it does name the submitting account, so AutoModerator's recurring
-scheduled threads ("Basic cosmology questions weekly thread" and friends) are
-dropped before scoring and counted as `droppedAutomated`. Each week's instance
-is a new post id, so dedupe alone would let them cost a scoring slot forever.
-A sticky posted by a human mod still reaches the scorer and simply scores low.
+No API keys are needed for scouting. RSS sources are read through their
+public feeds. Subreddits are read through [Arctic Shift](https://arctic-shift.photon-reddit.com),
+a free public Reddit archive that picks up posts within minutes, because
+reddit.com itself cannot be scouted keylessly any more. Each subreddit's
+newest `per_source_limit` posts are fetched, newest first. The archive has no
+"hot" ranking and holds scores near zero for the first ~36 hours, so recency
+is the only order available. Arctic Shift makes no uptime promises; when the
+source starts erroring, check <https://status.arctic-shift.photon-reddit.com>.
+
+The archive keeps posts that Reddit's own listing hides: removed by
+moderators, deleted by their authors, or removed by Reddit. These are dropped
+inside the source and never counted, so `fetched` can come in under
+`per_source_limit`. Each post names its submitting account, so AutoModerator's
+recurring scheduled threads ("Basic cosmology questions weekly thread" and
+friends) are dropped before scoring and counted as `droppedAutomated`. Each
+week's instance is a new post id, so dedupe alone would let them cost a
+scoring slot forever. A subreddit name that is not well-formed (`r/space`
+rather than `space`) is reported as a source error. A well-formed name for a
+subreddit that does not exist just returns nothing.
 
 A third source trades a feed for a fee: `[scout] generate_topics = N` has an
 LLM (haiku) invent up to `N` candidate topics per scout attempt instead of
@@ -264,14 +276,15 @@ source; and keep `generate_topics` at or below `per_source_limit` — the
 generator's request is clamped to `min(generate_topics, per_source_limit)`
 silently, not rejected.
 
-Reddit rate-limits the public feed to roughly one request per window, so a
-tick that fetched several subreddits back-to-back used to lose every source
-after the first. Each feed fetch now backs off once on a 429 and retries.
+A failed Arctic Shift request (a rate limit, a query timeout, an outage) is
+one `sourceErrors` entry, carrying the API's own error text, and is not
+retried. The channel's next scout attempt, at least 20 minutes later, tries
+again.
 
 Image submissions are dropped before scoring. The scorer only ever sees
 titles, so an astrophotography post reads as a strong topic and scores high,
-producing a video with a picture where its story should be. The feed names the
-submission target in each entry's `[link]` anchor, which is enough to drop the
+producing a video with a picture where its story should be. Each post's `url`
+field names the submission target, which is enough to drop the
 unambiguous cases (reddit-hosted media, imgur, galleries, image file
 extensions) without paying to score them. Hosts that are less clear-cut — an
 astrophotography site with no file extension, a YouTube explainer — are not
@@ -280,7 +293,10 @@ it. Each tick reports how many it dropped as `droppedMedia`.
 
 To clean image-sourced topics scouted before this existed, run `topics
 prune-media`. It re-fetches each candidate's permalink and rejects the ones
-whose target is an image. A host process can no longer open the production
+whose target is an image. It still reads reddit.com's own permalink feed and
+has not moved to Arctic Shift, so from a network reddit blocks, every row is
+skipped with an error. Topics scouted through Arctic Shift always record
+their target, so they never need it. A host process can no longer open the production
 database at all, so run it inside the container:
 
 ```bash
@@ -686,7 +702,7 @@ paused until you do.
 ```bash
 pnpm check          # complete Node/TypeScript release check
 pnpm test           # unit + integration (mocked providers; real ffmpeg/Remotion)
-pnpm test:contract  # real paid calls, a few cents total (ElevenLabs synth, one LLM call)
+pnpm test:contract  # real calls: a few cents (ElevenLabs synth, one LLM call) + free Arctic Shift GETs
 pnpm test:storage   # object-store conformance against real MinIO (see Object storage above)
 ```
 

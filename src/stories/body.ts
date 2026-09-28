@@ -1,10 +1,11 @@
-// Reddit self-post bodies, extracted from the Atom <content> element.
+// Reddit self-post bodies, extracted from Arctic Shift's `selftext_html`
+// (src/scout/sources/reddit.ts requests md2html=true).
 //
-// Reddit wraps selftext in an SC_OFF/SC_ON comment pair and appends a
-// "submitted by /u/x [link] [comments]" anchor run OUTSIDE it. Slicing the
-// marked span therefore extracts the body and drops the boilerplate in one
-// step — and the span's ABSENCE is exactly the bodyless case (a link post,
-// or r/AskReddit's title-only posts, which carry anchors and nothing else).
+// That field is the rendered markdown alone — a `<div class="md">` of `<p>`
+// paragraphs, with no surrounding boilerplate — so the whole fragment is the
+// body. It is absent for a link post or a title-only post, which is exactly
+// the bodyless case; a removed post's `[removed]` placeholder falls under the
+// word floor below.
 
 /**
  * Below this many words a "body" is a title restated, not a story worth
@@ -18,8 +19,6 @@
  */
 export const STORY_MIN_BODY_WORDS = 50
 
-const SC_SPAN = /<!--\s*SC_OFF\s*-->([\s\S]*?)<!--\s*SC_ON\s*-->/
-
 // The named entities reddit actually emits, plus numeric forms. A map rather
 // than a dependency: the set is small, closed, and this module must stay pure.
 const NAMED_ENTITIES: Record<string, string> = {
@@ -32,11 +31,10 @@ const NAMED_ENTITIES: Record<string, string> = {
 }
 
 /**
- * ONE HTML-entity decode. fast-xml-parser has already performed the XML-level
- * decode by the time content reaches here (see src/scout/sources/reddit.ts),
- * so `&amp;#39;` on the wire arrives as `&#39;` and resolves to an apostrophe
- * in a single pass. A second pass would turn an author's literal `&lt;` into
- * live markup.
+ * ONE HTML-entity decode. The markdown renderer encodes each authored
+ * character exactly once (`'` arrives as `&#39;`, `&` as `&amp;`), so a single
+ * pass restores the author's text. A second pass would turn an author's
+ * literal `&lt;` into live markup.
  */
 function decodeEntities(text: string): string {
   return text.replace(/&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);/g, (whole, body: string) => {
@@ -72,15 +70,13 @@ export function wordTruncate(text: string, maxWords: number, ellipsis = ' …'):
  * short inputs; production always takes the default.
  */
 export function storyBody(
-  contentHtml: string | undefined,
+  selftextHtml: string | undefined,
   minWords: number = STORY_MIN_BODY_WORDS,
 ): string | undefined {
-  if (contentHtml === undefined) return undefined
-  const span = SC_SPAN.exec(contentHtml)
-  if (span === null) return undefined
+  if (selftextHtml === undefined) return undefined
 
   const text = decodeEntities(
-    span[1]
+    selftextHtml
       // Block boundaries become paragraph breaks before tags are stripped;
       // afterwards the information is gone.
       .replace(/<\/p\s*>/gi, '\n\n')

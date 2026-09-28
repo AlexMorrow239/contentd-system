@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { countWords, storyBody, STORY_MIN_BODY_WORDS } from './body.js'
 import {
-  LINK_POST_CONTENT,
   LITERAL_ENTITY_CONTENT,
   NESTED_ENTITY_CONTENT,
+  REMOVED_CONTENT,
   SELF_POST_CONTENT,
   TINY_BODY_CONTENT,
 } from './_stories.fixtures.js'
 
 describe('storyBody', () => {
-  it('extracts the selftext and drops the submitted-by boilerplate', () => {
+  it('extracts the selftext as paragraphs of plain text', () => {
     const body = storyBody(SELF_POST_CONTENT)
     expect(body).toBe(
       'One month ago I hosted a movie night for my five closest friends. ' +
@@ -26,7 +26,7 @@ describe('storyBody', () => {
     expect(storyBody(LITERAL_ENTITY_CONTENT, 0)).toBe('She said <3 and I said & what.')
     // Uppercase-hex numeric entity (&#X..;), the sibling of the lowercase
     // &#x..; path — same decode branch, distinct case-sensitivity check.
-    expect(storyBody('<!-- SC_OFF --><p>&#X3C;3</p><!-- SC_ON -->', 0)).toBe('<3')
+    expect(storyBody('<div class="md"><p>&#X3C;3</p></div>', 0)).toBe('<3')
   })
 
   it('decodes only one layer, so a nested entity survives as text', () => {
@@ -35,8 +35,8 @@ describe('storyBody', () => {
     expect(storyBody(NESTED_ENTITY_CONTENT, 0)).toBe('Type &lt;br&gt; to break a line.')
   })
 
-  it('returns undefined for a link post with no selftext', () => {
-    expect(storyBody(LINK_POST_CONTENT)).toBeUndefined()
+  it('returns undefined for a removed post, whose placeholder is under the floor', () => {
+    expect(storyBody(REMOVED_CONTENT)).toBeUndefined()
   })
 
   it('returns undefined for undefined input', () => {
@@ -49,9 +49,7 @@ describe('storyBody', () => {
   })
 
   it('preserves paragraph breaks and collapses stray whitespace', () => {
-    const html =
-      '<!-- SC_OFF --><div class="md"><p>First   para.</p>\n\n<p>Second<br>line.</p>' +
-      '</div><!-- SC_ON -->'
+    const html = '<div class="md"><p>First   para.</p>\n\n<p>Second<br>line.</p></div>'
     expect(storyBody(html, 0)).toBe('First para.\n\nSecond\nline.')
   })
 })

@@ -2,11 +2,10 @@ import { XMLParser } from 'fast-xml-parser'
 import { BrainrotError } from '../../errors.js'
 import type { TrendCandidate } from './types.js'
 
-// Shared RSS 2.0 / Atom parsing. Both the generic rssSource and the keyless
-// reddit path consume it: reddit's public .rss feed is an ordinary Atom
-// document, and its <entry><id> is the t3_ fullname the JSON API reports as
-// `data.name` — so a candidate's externalId is identical whichever path
-// fetched it, keeping dedupe hashes stable across a switch.
+// Shared RSS 2.0 / Atom parsing, for the generic rssSource and for
+// prune-media's re-fetch of a reddit permalink's .rss (an ordinary Atom
+// document whose <entry><id> is the t3_ fullname). redditSource itself reads
+// JSON from Arctic Shift and does not come through here.
 
 // Attributes stay on: an Atom <link> carries its URL as @_href, and an RSS
 // <guid isPermaLink="..."> parses to { '#text': ..., '@_isPermaLink': ... }.

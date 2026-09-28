@@ -5,8 +5,7 @@ import { BrainrotError, classify } from '../../errors.js'
 import { DEFAULT_SCOUT } from '../../config/channel.js'
 import type { ChannelConfig, ScoutConfig } from '../../config/channel.js'
 import { testChannel } from '../../testing/channel.js'
-import { listTopics, redditCandidates } from '../topics.js'
-import { LINK_POST_CONTENT } from '../../stories/_stories.fixtures.js'
+import { listTopics } from '../topics.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
@@ -20,16 +19,16 @@ import { lastScoutAttemptAt } from '../scout-state.js'
 import { SCOUT_SCORE_CHUNK_SIZE } from '../score.js'
 import { memDb, seedScoutState, seedTopic } from '../../testing/db.js'
 import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
-import { fetchStub, redditFeedXml } from '../../testing/reddit-feed.js'
+import { arcticShiftJson, fetchStub } from '../../testing/arctic-shift.js'
 
 // Channel with scout sources; testChannel supplies every non-scout field.
 function scoutedChannel(overrides: Partial<ScoutConfig> = {}, name = 'chan-a'): ChannelConfig {
   return testChannel({ name, scout: { ...DEFAULT_SCOUT, subreddits: ['space'], ...overrides } })
 }
 
-// Reddit .rss fixture over the shared wire-shape builders. `name` is this
-// file's spelling of the t3_ fullname (`<entry><id>`); everything else maps
-// straight through to RedditEntrySpec.
+// Arctic Shift search-response fixture over the shared wire-shape builders.
+// `name` is this file's spelling of the t3_ fullname; everything else maps
+// straight through to ArcticShiftPostSpec.
 function redditFeed(
   posts: {
     name: string
@@ -37,10 +36,15 @@ function redditFeed(
     target?: string
     author?: string
     body?: string
-    content?: string
   }[],
 ): string {
-  return redditFeedXml(posts.map(({ name, ...rest }) => ({ id: name, ...rest })))
+  return arcticShiftJson(posts.map(({ name, ...rest }) => ({ id: name, ...rest })))
+}
+
+// A story channel's candidate rows in insertion order — the order the
+// fan-out transaction writes a story's parts in.
+function storyParts(db: Parameters<typeof listTopics>[0], channel: string) {
+  return listTopics(db, { channel, status: 'candidate' }).sort((a, b) => a.id - b.id)
 }
 
 // A schema-valid emit tool_use response for llmSource, mirroring emitScores'
@@ -69,7 +73,7 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel() // gate is SCOUT_MIN_SCORE (80), not per-channel
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([
+      'subreddit=space': redditFeed([
         { name: 't3_aaa', title: 'Moon drifting measured' },
         { name: 't3_bbb', title: 'Buy my telescope (ad)' },
       ]),
@@ -128,7 +132,7 @@ describe('scoutChannel', () => {
       name: `t3_${i}`,
       title: `Story ${i}`,
     }))
-    const fetchImpl = fetchStub({ '/r/space/.rss': redditFeed(posts) })
+    const fetchImpl = fetchStub({ 'subreddit=space': redditFeed(posts) })
     const create = vi.fn()
     for (let offset = 0; offset < total; offset += SCOUT_SCORE_CHUNK_SIZE) {
       const chunkLen = Math.min(SCOUT_SCORE_CHUNK_SIZE, total - offset)
@@ -158,7 +162,7 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel() // gate is the SCOUT_MIN_SCORE constant, not channel config
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([
+      'subreddit=space': redditFeed([
         { name: 't3_aaa', title: 'Exactly at the gate' },
         { name: 't3_bbb', title: 'Just under the gate' },
       ]),
@@ -184,7 +188,7 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([
+      'subreddit=space': redditFeed([
         {
           name: 't3_img',
           title: 'Milky way over Yosemite',
@@ -219,11 +223,11 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([
+      'subreddit=space': redditFeed([
         {
           name: 't3_auto',
           title: 'All Space Questions thread for week of July 26, 2026',
-          author: '/u/AutoModerator',
+          author: 'AutoModerator',
           target: 'https://www.reddit.com/r/space/comments/t3_auto/x/',
         },
         {
@@ -253,11 +257,11 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([
+      'subreddit=space': redditFeed([
         {
           name: 't3_human',
           title: 'What will the orbit of starship look like',
-          author: '/u/curious_person',
+          author: 'curious_person',
           target: 'https://www.reddit.com/r/space/comments/t3_human/x/',
         },
       ]),
@@ -277,7 +281,7 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     const { client, create } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 20, topic: 'Moon', reason: 'dull' }]),
@@ -311,8 +315,8 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel({ subreddits: ['space', 'askscience'] })
     const fetchImpl = fetchStub({
-      '/r/space/.rss': new Error('connect timeout'),
-      '/r/askscience/.rss': redditFeed([{ name: 't3_ccc', title: 'Why is the sky blue' }]),
+      'subreddit=space': new Error('connect timeout'),
+      'subreddit=askscience': redditFeed([{ name: 't3_ccc', title: 'Why is the sky blue' }]),
     })
     const { client } = fakeClient(
       emitScores([
@@ -334,7 +338,7 @@ describe('scoutChannel', () => {
     // fault only that source, not abort the whole channel before isolation.
     const channel = scoutedChannel({ subreddits: ['space'], rss: ['not a url'] })
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_ok', title: 'Why is the sky blue' }]),
+      'subreddit=space': redditFeed([{ name: 't3_ok', title: 'Why is the sky blue' }]),
     })
     const { client } = fakeClient(
       emitScores([
@@ -356,7 +360,7 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     const { client, create } = fakeClient(emitScores([]))
     await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow(
@@ -373,7 +377,7 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     // schema-invalid emit input: structuredCompletion throws a ZodError with
     // costUsdMicros attached (the call was billed regardless)
@@ -392,7 +396,7 @@ describe('scoutChannel', () => {
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     const { client } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 70, topic: 'Moon escape', reason: 'ok' }]),
@@ -538,7 +542,7 @@ describe('scoutChannel', () => {
     const channel = scoutedChannel()
     const now = new Date(2026, 6, 28, 12, 0, 0)
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     const { client } = fakeClient(emitScores([]))
 
@@ -651,7 +655,7 @@ describe('scoutChannel llm generation', () => {
       scout: { ...DEFAULT_SCOUT, subreddits: ['space'], generateTopics: 2 },
     })
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting measured' }]),
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting measured' }]),
     })
     const create = vi
       .fn()
@@ -780,8 +784,8 @@ describe('scoutAll', () => {
     const bad = scoutedChannel({ subreddits: ['failing'] }, 'bad')
     const good = scoutedChannel({}, 'good')
     const fetchImpl = fetchStub({
-      '/r/failing/.rss': redditFeed([{ name: 't3_f', title: 'F' }]),
-      '/r/space/.rss': redditFeed([{ name: 't3_g', title: 'G' }]),
+      'subreddit=failing': redditFeed([{ name: 't3_f', title: 'F' }]),
+      'subreddit=space': redditFeed([{ name: 't3_g', title: 'G' }]),
     })
     // first scoring call (bad) is paid-but-invalid; second (good) is valid
     const create = vi
@@ -827,7 +831,7 @@ describe('scoutAll', () => {
     // one healthy source flips it back to a normal (partial) run. force: true
     // again — this test is about the all-sources-failed transition, not the
     // recheck cadence (covered separately in scoutChannel's own tests).
-    const mixed = fetchStub({ '/r/two/.rss': redditFeed([{ name: 't3_x', title: 'X' }]) })
+    const mixed = fetchStub({ 'subreddit=two': redditFeed([{ name: 't3_x', title: 'X' }]) })
     const { client: client2 } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 80, topic: 'X topic', reason: 'ok' }]),
     )
@@ -898,7 +902,7 @@ describe('scoutAll', () => {
       name: 'a',
       scout: { ...DEFAULT_SCOUT, subreddits: ['one'], generateTopics: 2 },
     })
-    const fetchImpl = fetchStub({ '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]) })
+    const fetchImpl = fetchStub({ 'subreddit=one': redditFeed([{ name: 't3_a', title: 'A' }]) })
     const create = vi
       .fn()
       .mockRejectedValueOnce(new Error('llm down'))
@@ -927,8 +931,8 @@ describe('scoutAll', () => {
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
     const fetchImpl = fetchStub({
-      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
-      '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]),
+      'subreddit=one': redditFeed([{ name: 't3_a', title: 'A' }]),
+      'subreddit=two': redditFeed([{ name: 't3_b', title: 'B' }]),
     })
     // Every scoring call is paid-but-invalid (the shape an expired key or a
     // provider outage produces): sourceErrors stays empty, so nothing else
@@ -960,8 +964,8 @@ describe('scoutAll', () => {
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
     const fetchImpl = fetchStub({
-      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
-      '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]),
+      'subreddit=one': redditFeed([{ name: 't3_a', title: 'A' }]),
+      'subreddit=two': redditFeed([{ name: 't3_b', title: 'B' }]),
     })
     const { client } = fakeClient(emitScores([]))
     const results = await scoutAll(db, [a, b], { client, fetchImpl })
@@ -992,8 +996,8 @@ describe('scoutAll', () => {
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const b = scoutedChannel({ subreddits: ['two'] }, 'b')
     const fetchImpl = fetchStub({
-      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
-      '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]),
+      'subreddit=one': redditFeed([{ name: 't3_a', title: 'A' }]),
+      'subreddit=two': redditFeed([{ name: 't3_b', title: 'B' }]),
     })
     // Cap set to exactly one scout reservation ($0.02): channel "a" clears the
     // gate and then dies on a paid-but-invalid response, whose ledgered spend
@@ -1029,7 +1033,7 @@ describe('scoutAll', () => {
     const db = memDb()
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
     const fetchImpl = fetchStub({
-      '/r/one/.rss': redditFeed([{ name: 't3_a', title: 'A' }]),
+      'subreddit=one': redditFeed([{ name: 't3_a', title: 'A' }]),
     })
     const { client, create } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 70, topic: 'A topic', reason: 'ok' }]),
@@ -1103,7 +1107,7 @@ describe('scoutAll', () => {
       seedTopic(db, { channel: 'chan-full', status: 'candidate', dedupeHash: `h-${String(i)}` })
     }
     const broken = scoutedChannel({ subreddits: ['two'] }, 'b')
-    const fetchImpl = fetchStub({ '/r/two/.rss': redditFeed([{ name: 't3_b', title: 'B' }]) })
+    const fetchImpl = fetchStub({ 'subreddit=two': redditFeed([{ name: 't3_b', title: 'B' }]) })
     const { client } = fakeClient(
       emitToolUse({ scores: 'nope' }, { input_tokens: 10, output_tokens: 5 }),
     )
@@ -1134,18 +1138,16 @@ describe('scoutChannel story mode', () => {
     })
     const { client, create } = fakeClient(emitScores([]))
     const fetchImpl = fetchStub({
-      '/r/AskReddit/.rss': redditFeed([
+      'subreddit=AskReddit': redditFeed([
         {
           name: 't3_a',
           title: 'What is your worst job story?',
-          author: '/u/x',
-          content: `<![CDATA[${LINK_POST_CONTENT}]]>`,
+          author: 'x',
         },
         {
           name: 't3_b',
           title: 'What is your best job story?',
-          author: '/u/y',
-          content: `<![CDATA[${LINK_POST_CONTENT}]]>`,
+          author: 'y',
         },
       ]),
     })
@@ -1170,11 +1172,10 @@ describe('scoutChannel story mode', () => {
       emitScores([{ candidateIndex: 0, score: 90, topic: 'T', reason: 'R' }]),
     )
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([
+      'subreddit=space': redditFeed([
         {
           name: 't3_a',
           title: 'Voyager 1 phones home',
-          content: `<![CDATA[${LINK_POST_CONTENT}]]>`,
         },
       ]),
     })
@@ -1205,21 +1206,23 @@ describe('scoutChannel story mode', () => {
         { candidateIndex: 0, score: 88, topic: 'She blended the fruit', reason: 'strong conflict' },
       ]),
     )
+    const permalink = 'https://www.reddit.com/r/AmItheAsshole/comments/abc/aita/'
     const fetchImpl = fetchStub({
-      '/r/AmItheAsshole/.rss': redditFeed([
-        { name: 't3_abc', title: 'AITA for not apologizing?', author: '/u/real', body: long },
+      'subreddit=AmItheAsshole': redditFeed([
+        {
+          name: 't3_abc',
+          title: 'AITA for not apologizing?',
+          author: 'real',
+          target: permalink,
+          body: long,
+        },
       ]),
     })
 
     const result = await scoutChannel(db, channel, { client, fetchImpl })
 
     expect(result.queued).toBe(3)
-    // redditCandidates orders by id — insertion order within the fan-out
-    // transaction — which exists to serve the prune pass, not this test. The
-    // four ordering-sensitive assertions in this describe lean on it; a
-    // future change to prune's own ordering must not silently break these
-    // for an unrelated reason.
-    const rows = redditCandidates(db, 'aita')
+    const rows = storyParts(db, 'aita')
     expect(rows).toHaveLength(3)
     expect(rows.map((r) => r.partIndex)).toEqual([1, 2, 3])
     expect(rows.map((r) => r.title)).toEqual([
@@ -1233,6 +1236,8 @@ describe('scoutChannel story mode', () => {
     expect(rows.every((r) => r.rawTitle === 'AITA for not apologizing?')).toBe(true)
     expect(rows.every((r) => r.truncated === false)).toBe(true)
     expect(rows.map((r) => r.bodyText).join(' ')).toBe(long)
+    // A self post's target is its own permalink; every part records it.
+    expect(rows.every((r) => r.targetUrl === permalink)).toBe(true)
     db.close()
   })
 
@@ -1253,14 +1258,14 @@ describe('scoutChannel story mode', () => {
       emitScores([{ candidateIndex: 0, score: 88, topic: 'A long one', reason: 'strong' }]),
     )
     const fetchImpl = fetchStub({
-      '/r/AmItheAsshole/.rss': redditFeed([
-        { name: 't3_abc', title: 'AITA?', author: '/u/real', body: long },
+      'subreddit=AmItheAsshole': redditFeed([
+        { name: 't3_abc', title: 'AITA?', author: 'real', body: long },
       ]),
     })
 
     await scoutChannel(db, channel, { client, fetchImpl })
 
-    const rows = redditCandidates(db, 'aita')
+    const rows = storyParts(db, 'aita')
     expect(rows).toHaveLength(2)
     expect(rows.every((r) => r.truncated === true)).toBe(true)
     db.close()
@@ -1283,14 +1288,14 @@ describe('scoutChannel story mode', () => {
       emitScores([{ candidateIndex: 0, score: 88, topic: 'Short one', reason: 'strong' }]),
     )
     const fetchImpl = fetchStub({
-      '/r/AmItheAsshole/.rss': redditFeed([
-        { name: 't3_s', title: 'AITA?', author: '/u/real', body: short },
+      'subreddit=AmItheAsshole': redditFeed([
+        { name: 't3_s', title: 'AITA?', author: 'real', body: short },
       ]),
     })
 
     await scoutChannel(db, channel, { client, fetchImpl })
 
-    const [row] = redditCandidates(db, 'aita')
+    const [row] = storyParts(db, 'aita')
     expect(row.title).toBe('Short one')
     expect(row.partIndex).toBe(1)
     expect(row.partCount).toBe(1)
@@ -1313,8 +1318,8 @@ describe('scoutChannel story mode', () => {
       emitScores([{ candidateIndex: 0, score: 10, topic: 'Weak', reason: 'no conflict' }]),
     )
     const fetchImpl = fetchStub({
-      '/r/AmItheAsshole/.rss': redditFeed([
-        { name: 't3_w', title: 'AITA?', author: '/u/real', body: long },
+      'subreddit=AmItheAsshole': redditFeed([
+        { name: 't3_w', title: 'AITA?', author: 'real', body: long },
       ]),
     })
 
@@ -1350,8 +1355,8 @@ describe('scoutChannel story mode', () => {
       ]),
     )
     const fetchImpl = fetchStub({
-      '/r/AmItheAsshole/.rss': redditFeed([
-        { name: 't3_abc', title: 'AITA for not apologizing?', author: '/u/real', body: long },
+      'subreddit=AmItheAsshole': redditFeed([
+        { name: 't3_abc', title: 'AITA for not apologizing?', author: 'real', body: long },
       ]),
     })
 
@@ -1378,7 +1383,7 @@ describe('scoutChannel story mode', () => {
     // series_key even though no row's own dedupe_hash matches it
     expect(create).toHaveBeenCalledTimes(1)
     // no new rows: still exactly the three parts from the first run
-    expect(redditCandidates(db, 'aita')).toHaveLength(3)
+    expect(storyParts(db, 'aita')).toHaveLength(3)
     db.close()
   })
 
@@ -1386,7 +1391,7 @@ describe('scoutChannel story mode', () => {
     const db = memDb()
     const channel = scoutedChannel({}, 'space-topic')
     const fetchImpl = fetchStub({
-      '/r/space/.rss': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
     })
     const { client, create } = fakeClient(
       emitScores([{ candidateIndex: 0, score: 90, topic: 'Moon topic', reason: 'ok' }]),

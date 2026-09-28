@@ -193,8 +193,8 @@ program
         process.stdout.write(JSON.stringify({ channels: results }) + '\n')
       } catch (err) {
         if (!(err instanceof ScoutRunFailedError)) throw err
-        // A systemic run failure — every source dead (network down, Reddit
-        // blocking) or every channel dead in scoring (expired key, provider
+        // A systemic run failure — every source dead (network down, Arctic
+        // Shift outage) or every channel dead in scoring (expired key, provider
         // outage). Still one JSON line — the contract holds on failure outcomes —
         // then exit 1 so cron flags the run.
         process.stdout.write(JSON.stringify({ channels: err.results }) + '\n')

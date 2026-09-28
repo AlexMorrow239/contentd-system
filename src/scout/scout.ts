@@ -42,7 +42,7 @@ export interface ScoutChannelResult {
   /**
    * Story channels only: candidates with no narratable body (a link post, or
    * an r/AskReddit-style title-only post whose story lives in comments the
-   * feed does not carry). Always 0 on a topic-mode channel.
+   * source does not fetch). Always 0 on a topic-mode channel.
    */
   droppedBodyless: number
   alreadyKnown: number

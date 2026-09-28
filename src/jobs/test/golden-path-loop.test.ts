@@ -12,19 +12,18 @@ import type { JobContext, StageDef, StageName } from '../types.js'
 import { tmpDir } from '../../testing/tmp.js'
 import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
 import type { FakeAnthropic } from '../../testing/anthropic.js'
-import { fetchStub, redditFeedXml } from '../../testing/reddit-feed.js'
+import { arcticShiftJson, fetchStub } from '../../testing/arctic-shift.js'
 
-// Reddit .rss fixture: the public Atom feed redditSource reads keylessly,
-// <entry><id> carrying the t3_ fullname. One post scores above the channel
-// threshold, one below.
-const REDDIT_FEED = redditFeedXml([
-  { id: 't3_moon', title: 'Moon drifting away measured precisely' },
-  { id: 't3_ad', title: 'Buy my telescope (ad)' },
+// Arctic Shift search response: the keyless archive redditSource reads r/space
+// through. One post scores above the channel threshold, one below.
+const SPACE_SEARCH = arcticShiftJson([
+  { id: 'moon', title: 'Moon drifting away measured precisely' },
+  { id: 'ad', title: 'Buy my telescope (ad)' },
 ])
 
-// Serves only r/space's feed; any other URL is a test bug, never a
+// Serves only r/space's search; any other URL is a test bug, never a
 // silent live-network hit.
-const fetchImpl = fetchStub({ '/r/space/.rss': REDDIT_FEED })
+const fetchImpl = fetchStub({ 'subreddit=space': SPACE_SEARCH })
 
 // The scorer's structuredCompletion consumes a forced 'emit' tool_use.
 function scoringClient(): FakeAnthropic {

@@ -1,9 +1,9 @@
 # The MVP channel: one channel, topic mode, cross-posted to YouTube and
-# Instagram, fed by RSS + LLM topic generation. Reddit is unreachable
-# (anti-scraping + blocked OAuth approval), so this file declares NO
-# `subreddits` and NO `[story]` table — both pipelines stay in the code,
-# dormant purely because nothing here mentions them. Scaling back up is
-# adding TOMLs, not restoring code.
+# Instagram, fed by r/space, RSS, and LLM topic generation. r/space is read
+# through the Arctic Shift archive, since reddit.com itself is unreachable
+# keyless (anti-scraping + blocked OAuth approval). There is NO `[story]`
+# table: story mode stays in the code, dormant purely because nothing here
+# mentions it. Scaling up is adding TOMLs, not restoring code.
 #
 # prod/channels/ is the sole maintained source of channel configuration.
 # Compose mounts it read-only at /app/state/channels; workers re-read it every
@@ -66,9 +66,16 @@ provider = "elevenlabs"
 voice_id = "Gubgw9l4dtIoQA9YZHgx"
 
 [scout]
-# NO `subreddits` key. Adding one re-arms redditSource, which will fetch every
-# SCOUT_RECHECK_MS (20 min) and fail — a sourceErrors entry every cycle.
-#
+# Subreddits are bare names; `r/space` is rejected as a source error. Each is
+# read through Arctic Shift (src/scout/sources/reddit.ts), newest posts first.
+# Removed and deleted posts are dropped before `fetched` is counted; image
+# posts and AutoModerator threads are dropped before scoring. The archive has
+# no "hot" ranking, so an active subreddit brings fresh posts on most scout
+# attempts, and the queue-full gate (queue_days below) is what bounds scoring
+# spend. Arctic Shift makes no uptime promises: when this source starts
+# erroring, check https://status.arctic-shift.photon-reddit.com.
+subreddits = ["space"]
+
 # RSS entries are full URLs (unlike subreddits, which are bare names). Each
 # feed's source id is `rss:<hostname>`, so keep hostnames distinct — two feeds
 # on one host share a source id. All five verified 200 + valid RSS 2.0 on
