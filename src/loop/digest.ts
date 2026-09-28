@@ -6,14 +6,11 @@ import {
   globalDaySpentMicros,
   jobSpentMicros,
 } from '../jobs/costs.js'
-import { pendingInventory, unstoredLibraryJobs } from '../jobs/library.js'
+import { pendingInventory } from '../jobs/library.js'
 import { formatUsdMicros } from '../money.js'
 import { candidateTopicCount, claimedTopicCount } from '../scout/topics.js'
 import { fullyPostedClause } from '../posts/posts.js'
 import type { Platform } from '../posts/types.js'
-// ./config.js, not ./s3.js: this must not drag the AWS SDK onto the digest's
-// startup path, same reasoning as produce-next.ts's own import of this.
-import { s3ConfigError } from '../storage/config.js'
 import { backlogCap } from './plan-tick.js'
 
 // A job 'running' longer than this has almost certainly lost its process —
@@ -333,29 +330,6 @@ export function buildDigest(
     lines.push(
       `  ${c.name}: topic starvation — 0 candidate topics and 0 unpublished videos; publishing stops when the backlog drains (check [scout] subreddits and https://status.arctic-shift.photon-reddit.com)`,
     )
-  }
-  // A publishable library row with no stored object has nothing the operator
-  // can download and post once its local runs/ file is gone: runs/ is a
-  // disposable cache and the bucket is the durable copy, so a missing
-  // library_objects row is the only remaining trace worth flagging. Checking
-  // existsSync on the local path instead would fire constantly, since a video
-  // living only in runs/ (never uploaded) is now NORMAL. Shared with
-  // backfillStore so this line reports exactly the rows the command it names
-  // will upload (src/jobs/library.ts).
-  //
-  // Gated on storage being configured: object storage is now OPTIONAL (the
-  // `store` stage no-ops without it), so on a laptop-only deployment with no
-  // bucket EVERY finished video has no `library_objects` row and this block
-  // would tell the operator to run a command (`library backfill-store`) that
-  // itself cannot run without storage. Same gate produce-next.ts already
-  // applies to the reclaim sweep, for the identical reason.
-  if (s3ConfigError() === undefined) {
-    const unstored = unstoredLibraryJobs(db)
-    for (const r of unstored) {
-      lines.push(
-        `  job ${r.jobId} (${r.channel}) has no stored object — run brainrot library backfill-store`,
-      )
-    }
   }
   pushNoneIfEmpty(lines, actionItemsStart, '  none')
 

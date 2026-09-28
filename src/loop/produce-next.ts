@@ -1,17 +1,12 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
-import { BrainrotError, errorMessage } from '../errors.js'
+import { BrainrotError } from '../errors.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { ResumeError, resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef } from '../jobs/types.js'
-import { RECLAIM_BATCH_LIMIT, reclaimableObjects, reclaimObjects } from '../posts/reclaim.js'
 import { claimTopic } from '../scout/topics.js'
-// ./config.js, not ./s3.js: validating configuration must not drag the AWS
-// SDK onto this tick's startup path. loadStoreFromEnv lives there too and
-// keeps the SDK import dynamic inside itself.
-import { loadStoreFromEnv, s3ConfigError } from '../storage/config.js'
 import {
   acquireLease,
   extendLease,
@@ -131,44 +126,6 @@ export async function produceNextTick(
     db.prepare(
       "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
     ).run()
-    // The reclaim sweep moved here from the deleted publish tick: it needs a
-    // lease window and a channel list, and this is the only remaining worker
-    // with both. It is a sweep, not a gate — a storage failure must not stop
-    // the tick from producing, so it reports and moves on. Object storage is
-    // now optional (src/stages/store.ts), so skip the sweep entirely when
-    // unconfigured — there is nothing to reclaim when nothing was ever stored.
-    // One client for the whole sweep: storeFromEnv() builds a fresh S3Client
-    // (credential resolution, endpoint config, middleware stack), and doing
-    // that per channel bought nothing. The per-channel try/catch stays where
-    // it is — one channel's failed deletes must not stop the next channel's.
-    if (s3ConfigError() === undefined) {
-      const batches = channels
-        .map((channel) =>
-          reclaimableObjects(db, {
-            channel: channel.name,
-            declared: channel.platforms,
-            limit: RECLAIM_BATCH_LIMIT,
-          }),
-        )
-        .filter((objects) => objects.length > 0)
-      // Still acquired only when there is something to delete, so a tick with
-      // an empty sweep pays neither the client construction nor a reclaim-error
-      // line for storage it never needed.
-      if (batches.length > 0) {
-        const store = await loadStoreFromEnv()
-        if ('error' in store) {
-          console.log(JSON.stringify({ event: 'reclaim-error', error: store.error }))
-        } else {
-          for (const objects of batches) {
-            try {
-              await reclaimObjects({ db, objects, store: store.store })
-            } catch (err) {
-              console.log(JSON.stringify({ event: 'reclaim-error', error: errorMessage(err) }))
-            }
-          }
-        }
-      }
-    }
     const plan = planTick(db, channels)
 
     if (plan.kind === 'noop') {

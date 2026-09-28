@@ -77,7 +77,7 @@ export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
   )
   const jobsToday = (name: string): number => (quotaStmt.get(name) as { n: number }).n
   // Depth gate, ahead of the daily rate gate: producing into a full backlog
-  // is how object storage grows faster than videos are consumed. A channel
+  // consumes local capacity faster than videos are handled. A channel
   // with no declared platforms is gated the same way — nothing drains it, so
   // it fills once and then waits for the operator to post or discard videos
   // by hand.

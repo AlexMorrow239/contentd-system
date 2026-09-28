@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { memDb } from '../../testing/db.js'
 import { testChannel } from '../../testing/channel.js'
-import { stubStorageEnv } from '../../testing/storage.js'
 import { buildDigest, STRANDED_QUEUED_MS, ZOMBIE_RUNNING_MS } from '../digest.js'
 import {
   DAY_MS,
@@ -12,7 +11,6 @@ import {
   seedCost,
   seedJob,
   seedLibrary,
-  seedLibraryPath,
   seedPost,
   seedStage,
   seedTopic,
@@ -22,8 +20,8 @@ import {
  * The assembled operator digest: pipeline health (topics, jobs, spend,
  * action items, zombie/stranded aging, the failed-job cap, blocked jobs),
  * the Posting section (unposted counts, oldest age, production-held marker),
- * storage health (unstored objects, reclaimed-but-unreviewed videos), and the
- * section order they're assembled in. Shared seeds live in _digest.fixtures.ts.
+ * and the section order they're assembled in. Shared seeds live in
+ * _digest.fixtures.ts.
  */
 
 describe('buildDigest — topics section', () => {
@@ -382,110 +380,6 @@ describe('buildDigest — Posting section', () => {
     const db = memDb()
     const text = buildDigest(db, [testChannel({ name: 'alpha', platforms: ['youtube'] })])
     expect(text).toContain('nothing waiting to post')
-    db.close()
-  })
-})
-
-describe('buildDigest — library rows with no stored object', () => {
-  // The whole section is gated on storage being configured (see the describe
-  // below), so every test here that expects the flag to fire has to clear
-  // that gate itself — from a stub, not the developer's real .env, same
-  // reasoning as every other storage-gated test in this codebase.
-  it('flags a ready library row that has no library_objects row', () => {
-    stubStorageEnv()
-    const db = memDb()
-    seedJob(db, { id: 'j-unstored', channel: 'chan-a' })
-    seedLibrary(db, 'j-unstored', 'ready')
-    const digest = buildDigest(db, [])
-    expect(digest).toContain(
-      '  job j-unstored (chan-a) has no stored object — run brainrot library backfill-store',
-    )
-    db.close()
-  })
-
-  it('does not flag a row whose local file is gone but is stored', () => {
-    stubStorageEnv()
-    const db = memDb()
-    seedJob(db, { id: 'j-stored', channel: 'chan-a' })
-    seedLibraryPath(db, 'j-stored', '/nonexistent/runs/j-stored/final.mp4')
-    db.prepare(
-      "INSERT INTO library_objects (job_id, object_key, bytes, etag) VALUES ('j-stored','k',1,'e')",
-    ).run()
-    const digest = buildDigest(db, [])
-    expect(digest).not.toContain('j-stored')
-    db.close()
-  })
-
-  // This line names `backfill-store`, so it must report exactly what that
-  // command uploads — both now read unstoredLibraryJobs (src/jobs/library.ts).
-  // A needs-review row is in scope for both: approving it promotes it straight
-  // into the publish pool, where a missing object leaves the operator
-  // nothing to download and post.
-  it('flags a needs-review library row with no stored object', () => {
-    stubStorageEnv()
-    const db = memDb()
-    seedJob(db, { id: 'j-review', channel: 'chan-a' })
-    db.prepare(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-review', '/nonexistent/final.mp4', '{}', 'needs-review')",
-    ).run()
-    const digest = buildDigest(db, [])
-    expect(digest).toContain(
-      '  job j-review (chan-a) has no stored object — run brainrot library backfill-store',
-    )
-    db.close()
-  })
-
-  // The one excluded state: `library reject` deletes the object on purpose
-  // (design spec decision 7), so a blocked row is not missing an upload —
-  // reporting it would invite the operator to resurrect what they discarded.
-  it('ignores blocked library rows, whose object was deliberately deleted', () => {
-    stubStorageEnv()
-    const db = memDb()
-    seedJob(db, { id: 'j-blocked', channel: 'chan-a' })
-    db.prepare(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-blocked', '/nonexistent/final.mp4', '{}', 'blocked')",
-    ).run()
-    const digest = buildDigest(db, [])
-    expect(digest).not.toContain('j-blocked')
-    db.close()
-  })
-
-  // A row already 'published' on one target can still be eligible for
-  // another target (multi-platform publishing) — it still needs an object
-  // in the bucket just as much as a plain 'ready' row does.
-  it('flags a published library row with no stored object', () => {
-    stubStorageEnv()
-    const db = memDb()
-    seedJob(db, { id: 'j-published', channel: 'chan-a' })
-    db.prepare(
-      "INSERT INTO library (job_id, video_path, metadata_json, state) VALUES ('j-published', '/nonexistent/final.mp4', '{}', 'published')",
-    ).run()
-    const digest = buildDigest(db, [])
-    expect(digest).toContain(
-      '  job j-published (chan-a) has no stored object — run brainrot library backfill-store',
-    )
-    db.close()
-  })
-})
-
-describe('buildDigest — unstored-object action items require storage to be configured', () => {
-  // Object storage is optional: unconfigured, the `store` stage no-ops and
-  // writes no `library_objects` row at all. On that (supported) laptop-only
-  // configuration EVERY finished video would otherwise become an action item
-  // pointing at `library backfill-store` — a command that itself cannot run
-  // without storage. S3 env stubbed EMPTY (not omitted) so this behaves the
-  // same on a machine with a real .env as on a clean checkout.
-  it('reports nothing when storage is unconfigured, even with an unstored ready row', () => {
-    vi.stubEnv('BRAINROT_S3_ENDPOINT', '')
-    vi.stubEnv('BRAINROT_S3_BUCKET', '')
-    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', '')
-    vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', '')
-    const db = memDb()
-    seedJob(db, { id: 'j-unstored', channel: 'chan-a' })
-    seedLibrary(db, 'j-unstored', 'ready')
-    const digest = buildDigest(db, [])
-    expect(digest).not.toContain('j-unstored')
-    expect(digest).not.toContain('backfill-store')
     db.close()
   })
 })

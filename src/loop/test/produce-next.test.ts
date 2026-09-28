@@ -5,7 +5,6 @@ import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { loadChannelConfig } from '../../config/channel.js'
 import { ResumeError, resumeJob } from '../../jobs/resume.js'
-import { stubStorageEnv } from '../../testing/storage.js'
 import { createJob } from '../../jobs/runner.js'
 import { runCli } from '../../testing/run-cli.js'
 import type { JobContext, StageDef } from '../../jobs/types.js'
@@ -108,12 +107,6 @@ beforeEach(() => {
   // Deterministic regardless of the developer's shell or .env: the default
   // $25 global cap.
   vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '')
-  // Object storage is optional now (src/stages/store.ts), so the tick no
-  // longer gates on it. Tests still clear it from stubs rather than the
-  // developer's .env so the reclaim sweep's storeFromEnv() call — reached
-  // only when there is something to reclaim — behaves the same on a machine
-  // with R2 configured and one without.
-  stubStorageEnv()
 })
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -197,24 +190,14 @@ describe('produceNextTick — lease', () => {
   })
 })
 
-// Object storage is optional now (src/stages/store.ts): there is no longer a
-// gate here at all. This is what actually distinguishes the new behaviour
-// from the old — a test that merely checked the tick "succeeds" could pass
-// vacuously if the gate secretly still ran and happened not to fire, so this
-// asserts the tick reaches and runs the pipeline (readyStages, not
-// neverStages) with the S3 env fully unset.
-describe('produceNextTick — object storage not configured', () => {
-  it('produces normally, with no bad-env gate, when storage env is unset', async () => {
+describe('produceNextTick — retired storage configuration', () => {
+  it('ignores legacy storage variables and produces normally', async () => {
     const { db, runsRoot } = setup()
     const topicId = seedTopic(db)
-    for (const key of [
-      'BRAINROT_S3_ENDPOINT',
-      'BRAINROT_S3_BUCKET',
-      'BRAINROT_S3_ACCESS_KEY_ID',
-      'BRAINROT_S3_SECRET_ACCESS_KEY',
-    ]) {
-      vi.stubEnv(key, '')
-    }
+    vi.stubEnv('BRAINROT_S3_ENDPOINT', 'http://127.0.0.1:9100')
+    vi.stubEnv('BRAINROT_S3_BUCKET', 'legacy-bucket')
+    vi.stubEnv('BRAINROT_S3_ACCESS_KEY_ID', 'legacy-access')
+    vi.stubEnv('BRAINROT_S3_SECRET_ACCESS_KEY', 'legacy-secret')
     const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
     expect(result).toEqual({
       action: 'produced',
