@@ -26,8 +26,11 @@ or service container is needed. Remotion's first render may download Chrome.
 
 ```bash
 pnpm install
-pnpm check                  # formatting, lint, both TS projects, default suite
-pnpm build                  # type-check only; does not emit production JS
+pnpm check                  # formatting, lint, CLI/Remotion types, Next build, default suite
+pnpm build                  # CLI/Remotion type-check only
+pnpm dashboard:build        # production Next.js build, including dashboard type-check
+pnpm dashboard:dev          # explicit BRAINROT_ROOT required
+pnpm test:dashboard         # Playwright; build + install Chromium first
 pnpm test                   # mocked providers, real ffmpeg/Remotion
 pnpm test:config             # schema, path rules, tracked channel TOMLs
 pnpm test:scout              # sources, scoring, filtering, queues
@@ -164,7 +167,7 @@ Keep `src/actions/` separated by import boundary:
 - `queue.ts`: action persistence and guarded state transitions.
 - `handlers.ts`: daemon-only implementations; never import into the dashboard.
 
-`src/arch.test.ts` checks the dashboard's transitive import graph. Pipeline,
+`src/arch.test.ts` checks both dashboard trees' transitive runtime imports, including TSX and dynamic imports. Pipeline,
 Remotion, and paid-provider clients must stay outside the HTTP process.
 Storage SDK imports are lazy in handlers and the store stage.
 
@@ -187,7 +190,7 @@ would turn each action into a lease-held noop. `runJob` and `scoutAll` do not
 self-lease, so their action wrappers must do so.
 
 Fast workers drain up to `MAX_FAST_DRAIN` (50) actions and maintain the daemon
-heartbeat. Slow workers complete at most one per unit. `POST /actions` returns
+heartbeat. Slow workers complete at most one per unit. `POST /api/actions` returns
 409 when the daemon heartbeat is stale; this prevents queueing into a dead
 worker, not unauthorized access.
 
@@ -369,12 +372,13 @@ ones. Reclaim uses the same fully-posted predicate as inventory and the queue.
 
 ### The dashboard's read-only guarantee narrows, not disappears
 
-`src/dashboard/` runs without provider or bucket credentials and binds to host
+`dashboard/` is the Next.js App Router frontend; `src/dashboard/` holds shared
+query and HTTP helpers. The service runs without provider or bucket credentials and binds to host
 loopback through Compose. Actions can spend provider budget and render videos;
 keep the loopback binding. The footer identifies its explicit runtime root.
 
 GET routes use `openDbReadonly`: no mkdir, schema application, or migration.
-`POST /actions` uses a separate `openDbActions` handle for one queue insert;
+`POST /api/actions` uses a separate `openDbActions` handle for one queue insert;
 the daemon performs the requested mutation. The database volume must remain
 read-write even for GETs because SQLite WAL readers need shared-memory files.
 
@@ -385,8 +389,18 @@ validate the normalized redirect target as well as raw input: `/..//evil.example
 can normalize into a protocol-relative external URL. The daemon-liveness 409
 check is an operational guard, not an authorization boundary.
 
-Queries return typed data without markup; views return `SafeHtml` without SQL.
-`html.ts` escapes interpolations by default because scraped titles are untrusted.
+Queries return typed data without markup; React Server Components render it.
+React escapes scraped text; `src/dashboard/links.ts` validates external link
+schemes. Never use raw HTML for scraped content. Client components handle forms,
+clipboard controls, and router refreshes. Stable row keys preserve drafts and
+video elements across refreshes. `POST /api/actions` returns JSON acceptance
+with an action ID; confirmation pages remain GET-only until submission.
+
+Database openers live in `src/db/dashboard.ts` without schema or migration
+imports; the dashboard must not import `src/db/index.ts`. Next reads
+config and state at request time, never while building. Its launcher mints one
+CSRF token shared through the server environment across Next bundles/workers.
+Use webpack extension aliases for shared NodeNext `.js` source imports.
 The lightweight `DASHBOARD_STAGE_ORDER` must agree with the pipeline (tested),
 but importing `pipelineStages()` would pull rendering/provider code into HTTP.
 
@@ -496,9 +510,8 @@ a mirrored `dist/` tree for CLI subprocess tests. Do not bundle: CLI entrypoint
 guards, schema lookup, and Remotion paths depend on `import.meta.url` and the
 preserved directory depth. `pnpm build` remains type-checking only.
 
-The builder copies `db/schema.sql`, not dashboard CSS. Production runs source
-through `tsx`; switching the dashboard to `dist/` requires copying its static
-assets and extending `src/testing/dist-layout.test.ts`. No current spawned CLI
+The builder copies `db/schema.sql`. CLI production runs source through `tsx`;
+the dashboard uses its separate Next.js production build in `dashboard/.next`. No current spawned CLI
 test reaches assembly; real rendering is exercised through stage/pipeline tests.
 
 ## Design docs

@@ -8,6 +8,10 @@ export default tseslint.config(
   {
     ignores: [
       'dist',
+      '**/.next/**',
+      'dashboard/next-env.d.ts',
+      'playwright-report',
+      'test-results',
       'coverage',
       'runs',
       'runs-dev',
@@ -20,7 +24,14 @@ export default tseslint.config(
     ],
   },
   {
-    files: ['src/**/*.ts', 'remotion/**/*.ts', 'deploy/**/*.ts', 'vitest.config.ts'],
+    files: [
+      'src/**/*.ts',
+      'remotion/**/*.ts',
+      'deploy/**/*.ts',
+      'scripts/**/*.ts',
+      'dashboard/**/*.ts',
+      'vitest.config.ts',
+    ],
     extends: [...tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
@@ -31,7 +42,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ['remotion/**/*.tsx'],
+    files: ['remotion/**/*.tsx', 'dashboard/**/*.tsx'],
     extends: [
       ...tseslint.configs.recommendedTypeChecked,
       react.configs.flat.recommended,
@@ -71,7 +82,13 @@ export default tseslint.config(
     // Covers the whole test tier, not just the spec files: src/testing/ is the
     // shared testkit and `_*.fixtures.ts` are per-module fixtures, both of
     // which build the same stub adapters and untyped rows the specs do.
-    files: ['**/*.test.ts', 'src/testing/**/*.ts', '**/_*.fixtures.ts'],
+    files: [
+      '**/*.test.ts',
+      '**/*.test.tsx',
+      'dashboard/test/**',
+      'src/testing/**/*.ts',
+      '**/_*.fixtures.ts',
+    ],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',

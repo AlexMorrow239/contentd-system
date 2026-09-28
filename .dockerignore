@@ -1,6 +1,8 @@
 node_modules
 assets
 local/
+# Host runtime state must never be baked into the image.
+/db/
 prod/runs/
 logs
 .git
@@ -20,3 +22,8 @@ pyrightconfig.json
 *.md
 **/__pycache__
 **/.pytest_cache
+
+**/.next/
+**/*.tsbuildinfo
+playwright-report/
+test-results/

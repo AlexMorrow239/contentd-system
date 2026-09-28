@@ -1,24 +1,19 @@
 import { describe, expect, it } from 'vitest'
-import { memDb, seedAction, seedDaemonState } from '../../../testing/db.js'
-import { actionsTableExists, buildActionsPage } from '../actions.js'
+import { memDb, seedAction } from '../../../testing/db.js'
+import { actionsTableExists, hasActiveAction } from '../actions.js'
 
-describe('buildActionsPage', () => {
-  it('reports the daemon stale when nothing has ever stamped', () => {
-    const page = buildActionsPage(memDb(), new Date('2026-08-01T10:00:00Z'))
-    expect(page.daemonStale).toBe(true)
+describe('hasActiveAction', () => {
+  it('is false when every action has finished', () => {
+    const db = memDb()
+    seedAction(db, { status: 'done' })
+    seedAction(db, { status: 'failed' })
+    expect(hasActiveAction(db)).toBe(false)
   })
 
-  it('reports the daemon live inside the heartbeat window', () => {
+  it('is true while an action is pending', () => {
     const db = memDb()
-    seedDaemonState(db, { lastSeenAt: new Date('2026-08-01T10:00:00Z') })
-    expect(buildActionsPage(db, new Date('2026-08-01T10:00:10Z')).daemonStale).toBe(false)
-  })
-
-  it('lists actions newest first', () => {
-    const db = memDb()
-    const a = seedAction(db)
-    const b = seedAction(db)
-    expect(buildActionsPage(db, new Date()).actions.map((r) => r.id)).toEqual([b, a])
+    seedAction(db)
+    expect(hasActiveAction(db)).toBe(true)
   })
 })
 

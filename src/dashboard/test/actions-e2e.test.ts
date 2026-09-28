@@ -4,7 +4,7 @@ import { actionsUnit } from '../../loop/actions-worker.js'
 import { resolvePaths } from '../../config/paths.js'
 import { seedDaemonState, seedTopic } from '../../testing/db.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { createApp } from '../server.js'
+import { submitAction } from '../submission.js'
 import type { DashboardConfig } from '../config.js'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
@@ -19,28 +19,30 @@ describe('dashboard to daemon action round trip', () => {
     mkdirSync(paths.channelsDir, { recursive: true })
     const db = openDb(paths.dbPath)
     const topicId = seedTopic(db, { status: 'candidate' })
-    // The POST /actions liveness gate probes daemon_state on its own handle;
+    // The POST /api/actions liveness gate probes daemon_state on its own handle;
     // without a fresh heartbeat here the round trip never leaves the gate.
     seedDaemonState(db, { lastSeenAt: new Date() })
-    const config: DashboardConfig = { paths, port: 8787 }
+    const config: DashboardConfig = { paths, port: 8787, host: '127.0.0.1' }
 
     const form = new URLSearchParams({
       kind: 'topics.reject',
       csrf: 'tok',
       ids: String(topicId),
-      from: '/topics',
     })
-    const res = await createApp({ config, csrfToken: 'tok' }).request('/actions', {
-      method: 'POST',
-      body: form,
-      headers: {
-        'content-type': 'application/x-www-form-urlencoded',
-        host: '127.0.0.1:8787',
-        origin: 'http://127.0.0.1:8787',
-        'sec-fetch-site': 'same-origin',
-      },
-    })
-    expect(res.status).toBe(303)
+    const res = await submitAction(
+      new Request('http://127.0.0.1:8787/api/actions', {
+        method: 'POST',
+        body: form,
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          host: '127.0.0.1:8787',
+          origin: 'http://127.0.0.1:8787',
+          'sec-fetch-site': 'same-origin',
+        },
+      }),
+      { config, csrfToken: 'tok' },
+    )
+    expect(res.status).toBe(202)
 
     const tick = actionsUnit(db, 'fast', {
       channelsDir: paths.channelsDir,

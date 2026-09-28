@@ -4,9 +4,11 @@ import { resolveBrainrotPaths, envValue, type BrainrotPaths } from '../config/pa
 export interface DashboardConfig {
   paths: BrainrotPaths
   port: number
+  host: string
 }
 
 const DEFAULT_PORT = 8787
+const DEFAULT_HOST = '127.0.0.1'
 
 /** The dashboard uses the same explicit runtime root as the CLI. */
 export function resolveDashboardConfig(env: NodeJS.ProcessEnv = process.env): DashboardConfig {
@@ -22,5 +24,9 @@ export function resolveDashboardConfig(env: NodeJS.ProcessEnv = process.env): Da
     }
     port = parsed
   }
-  return { paths: resolveBrainrotPaths(undefined, env), port }
+  return {
+    paths: resolveBrainrotPaths(undefined, env),
+    port,
+    host: envValue(env, 'BRAINROT_DASHBOARD_HOST') ?? DEFAULT_HOST,
+  }
 }

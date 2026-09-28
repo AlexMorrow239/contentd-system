@@ -1,20 +1,15 @@
 import type { Database } from 'better-sqlite3'
-import { listRecentActions, type ActionRow } from '../../actions/queue.js'
-import { daemonIsStale, readDaemonState } from '../../loop/daemon-state.js'
 
 /** One screen's worth of audit history; the table itself is never pruned. */
 export const ACTIONS_PAGE_LIMIT = 100
 
-export interface ActionsPageData {
-  actions: ActionRow[]
-  daemonStale: boolean
-}
-
-export function buildActionsPage(db: Database, now: Date): ActionsPageData {
-  return {
-    actions: listRecentActions(db, ACTIONS_PAGE_LIMIT),
-    daemonStale: daemonIsStale(readDaemonState(db), now),
-  }
+/** Whether any action is still waiting on or held by a worker. */
+export function hasActiveAction(db: Database): boolean {
+  return (
+    db
+      .prepare("SELECT 1 FROM operator_actions WHERE status IN ('pending', 'running') LIMIT 1")
+      .get() !== undefined
+  )
 }
 
 /**

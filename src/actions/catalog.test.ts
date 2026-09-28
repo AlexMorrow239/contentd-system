@@ -103,10 +103,10 @@ describe('ACTIONS catalog', () => {
   })
 
   it('never declares an argument named kind, csrf or from', () => {
-    // src/dashboard/server.ts's TRANSPORT_FIELDS (`kind`, CSRF_FIELD = 'csrf',
-    // `from`) strips these three from the submitted form before args are
-    // parsed, so an action declaring one of them as a real argument would have
-    // it silently dropped rather than rejected — a bug that would otherwise
+    // src/dashboard/submission.ts strips its transport fields (`kind`,
+    // CSRF_FIELD = 'csrf') before args are parsed, and the confirm
+    // interstitial's query carries `from`, so an action declaring one of them
+    // as a real argument would have it silently dropped or shadowed — a bug that would otherwise
     // stay latent until someone actually added such an action. Turning it into
     // a red test here, ahead of the collision, is cheaper than debugging it
     // through the confirm interstitial later.

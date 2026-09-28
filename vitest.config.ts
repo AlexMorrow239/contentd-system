@@ -9,7 +9,7 @@ const storage = process.env.STORAGE === '1'
 function include(): string[] {
   if (contract) return ['src/**/*.contract.test.ts']
   if (storage) return ['src/**/*.storage.test.ts']
-  return ['src/**/*.test.ts', 'remotion/**/*.test.ts']
+  return ['src/**/*.test.ts', 'remotion/**/*.test.ts', 'dashboard/**/*.test.tsx']
 }
 
 function exclude(): string[] {

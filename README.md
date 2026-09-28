@@ -373,13 +373,32 @@ no hot reload.
 
 ### Dashboard
 
-A web view of the production database, served by the `dashboard` compose
-service:
+A Next.js App Router application served by the `dashboard` Compose service.
+Pages render live SQLite data on the server; React controls submit to the
+operator queue and refresh action status without replacing drafts or players:
 
 ```bash
 docker compose up -d dashboard
 open http://127.0.0.1:8787
 ```
+
+For local development, use an explicitly initialized disposable root (never the
+production database volume from the host):
+
+```bash
+BRAINROT_ROOT=/path/to/disposable-state pnpm dashboard:dev
+pnpm dashboard:build          # builds without runtime state or provider credentials
+BRAINROT_ROOT=/path/to/disposable-state pnpm dashboard:start
+pnpm exec playwright install chromium
+pnpm test:dashboard           # production-server browser tests with disposable fixtures
+```
+
+The dev/start commands use port 8787 by default (`BRAINROT_DASHBOARD_PORT`)
+and bind to host loopback. Compose sets the internal bind address separately.
+The app lives in `dashboard/` and shares the root package and lockfile. Its
+webpack extension mapping preserves the CLI's NodeNext `.js` source imports.
+Build before running browser tests. `pnpm check` includes the production Next.js
+build; browser tests are an additional release check.
 
 Seven pages: `/post`, the manual posting queue described above; an overview
 (job health, spend against the global-day and per-channel-day budget caps,
@@ -397,7 +416,7 @@ Every page it _reads_ still opens the database through a read-only connection
 `-shm` file even to read a WAL database), but the guarantee lives in the
 connection flag, not the mount. What changed is that the dashboard now also
 _writes_, in one narrow way: buttons on the overview, jobs, library, topics
-and post pages queue an operator action (`POST /actions`) that the daemon
+and post pages queue an operator action (`POST /api/actions`) that the daemon
 executes, rather than mutating anything itself. Thirteen actions are wired
 today. Six are fast — `topics reject/requeue`, `library approve`,
 `run digest` and `post mark/unmark` — and seven are slow, meaning they can
@@ -418,7 +437,7 @@ itself — a scope boundary, not a structural limit.
 
 ### The dashboard queues renders and spends money
 
-The dashboard queues operator actions (`POST /actions`) that the daemon
+The dashboard queues operator actions (`POST /api/actions`) that the daemon
 executes. It has **no authentication**. The only things standing between a web
 page you visit and your production pipeline are:
 
@@ -466,7 +485,7 @@ use an SSH port-forward to loopback on both ends — never a published port.
 Actions run inside the daemon under the same leases its workers take, so unlike
 the equivalent CLI commands they never race a live render. The daemon
 must be running for a queued action to execute: the dashboard shows a banner
-and disables the buttons when it is not, and `POST /actions` itself answers
+and disables the buttons when it is not, and `POST /api/actions` itself answers
 409 rather than queue work nothing would drain.
 
 ### Development and release
@@ -479,7 +498,7 @@ their own minimal channel fixtures in temporary directories. There is no
 pnpm test:config    # schema, path rules, and every tracked channel TOML
 pnpm test:scout     # sources, filtering, scoring, deduplication
 pnpm test:pipeline  # stages, job lifecycle, and mocked-provider render tests
-pnpm check         # formatting, lint, both TypeScript projects, full default suite
+pnpm check         # formatting, lint, CLI/Remotion types, Next.js build, default suite
 ```
 
 The full default suite also covers daemon workers, action queues, budgets,
@@ -490,6 +509,7 @@ For a release, run `pnpm check`, then build before restarting the services:
 
 ```bash
 pnpm check
+pnpm test:dashboard
 docker compose build brainrot whisperx
 docker compose up -d --no-build
 ```

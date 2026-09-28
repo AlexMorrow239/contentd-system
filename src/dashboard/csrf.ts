@@ -16,7 +16,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto'
  * cookie/session plumbing in a process that deliberately holds no credentials.
  */
 
-const CSRF_HEADER = 'x-brainrot-csrf'
+export const CSRF_HEADER = 'x-brainrot-csrf'
 /** The hidden form field. Read into the header by the POST route. */
 export const CSRF_FIELD = 'csrf'
 

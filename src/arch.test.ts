@@ -1,4 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import ts from 'typescript'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -34,8 +36,9 @@ function srcFiles(dir: string = SRC_ROOT): Promise<string[]> {
     const nested = await Promise.all(
       entries.map(async (e) => {
         const full = join(dir, e.name)
-        if (e.isDirectory()) return srcFiles(full)
-        return e.name.endsWith('.ts') ? [full] : []
+        if (e.isDirectory())
+          return e.name === '.next' || e.name === 'node_modules' ? [] : srcFiles(full)
+        return /\.tsx?$/.test(e.name) ? [full] : []
       }),
     )
     return nested.flat()
@@ -51,7 +54,17 @@ function srcFiles(dir: string = SRC_ROOT): Promise<string[]> {
  */
 async function moduleFiles(dir: string): Promise<string[]> {
   const files = await srcFiles(dir)
-  return files.filter((f) => !f.endsWith('.test.ts') && !f.includes('.fixtures.'))
+  return files.filter(
+    (f) => !/\.(test|spec)\.tsx?$/.test(f) && !f.includes('/test/') && !f.includes('.fixtures.'),
+  )
+}
+
+/** Both trees that run inside the dashboard's HTTP process. */
+async function dashboardRuntimeFiles(): Promise<string[]> {
+  return [
+    ...(await moduleFiles(join(SRC_ROOT, 'dashboard'))),
+    ...(await moduleFiles(join(SRC_ROOT, '..', 'dashboard'))),
+  ]
 }
 
 /**
@@ -75,8 +88,10 @@ function readSource(file: string): Promise<string | null> {
  */
 function resolveRelativeSpecifier(fromFile: string, spec: string): string | undefined {
   if (!spec.startsWith('.')) return undefined
-  const tsSpec = spec.endsWith('.js') ? `${spec.slice(0, -'.js'.length)}.ts` : spec
-  return join(dirname(fromFile), tsSpec)
+  const base = join(dirname(fromFile), spec.replace(/\.js$/, ''))
+  return [base + '.ts', base + '.tsx', base, join(base, 'index.ts'), join(base, 'index.tsx')].find(
+    (p) => existsSync(p),
+  )
 }
 
 /**
@@ -95,8 +110,34 @@ async function findImportChain(startFiles: string[], target: string): Promise<st
     visited.add(file)
     const source = await readSource(file)
     if (source === null) return null
-    for (const match of source.matchAll(/from\s+'([^']+)'/g)) {
-      const resolved = resolveRelativeSpecifier(file, match[1])
+    const imports: string[] = []
+    const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+    function visit(node: ts.Node): void {
+      if (
+        ts.isImportDeclaration(node) &&
+        !node.importClause?.isTypeOnly &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      )
+        imports.push(node.moduleSpecifier.text)
+      if (
+        ts.isExportDeclaration(node) &&
+        !node.isTypeOnly &&
+        node.moduleSpecifier &&
+        ts.isStringLiteral(node.moduleSpecifier)
+      )
+        imports.push(node.moduleSpecifier.text)
+      if (
+        ts.isCallExpression(node) &&
+        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
+        node.arguments[0] &&
+        ts.isStringLiteral(node.arguments[0])
+      )
+        imports.push(node.arguments[0].text)
+      ts.forEachChild(node, visit)
+    }
+    visit(parsed)
+    for (const spec of imports) {
+      const resolved = resolveRelativeSpecifier(file, spec)
       if (resolved === undefined) continue
       const found = await walk(resolved, [...chain, resolved])
       if (found !== null) return found
@@ -147,7 +188,7 @@ describe('dashboard action isolation', () => {
     // clients into the dashboard process. Same specifier-parsing shape as the
     // "src/stories purity" lint below.
     const target = join(SRC_ROOT, 'actions', 'handlers.ts')
-    const files = await moduleFiles(join(SRC_ROOT, 'dashboard'))
+    const files = await dashboardRuntimeFiles()
     expect(files.length).toBeGreaterThan(0)
 
     const chain = await findImportChain(files, target)
@@ -163,9 +204,24 @@ describe('dashboard action isolation', () => {
     // nothing" instead of "checked everything and found nothing". catalog.ts
     // is real, known-reachable metadata the dashboard is expected to import.
     const target = join(SRC_ROOT, 'actions', 'catalog.ts')
-    const files = await moduleFiles(join(SRC_ROOT, 'dashboard'))
+    const files = await dashboardRuntimeFiles()
     const chain = await findImportChain(files, target)
     expect(chain).not.toBeNull()
+  })
+})
+
+describe('Next dashboard runtime isolation', () => {
+  // actions/handlers.ts has its own test above, with a positive control.
+  it.each([
+    'jobs/pipeline.ts',
+    'providers/anthropic.ts',
+    'providers/elevenlabs.ts',
+    'db/index.ts',
+    'db/migrate.ts',
+  ])('does not reach %s from HTTP code', async (target) => {
+    const files = await dashboardRuntimeFiles()
+    const chain = await findImportChain(files, join(SRC_ROOT, target))
+    expect(chain?.map((f) => relative(SRC_ROOT, f))).toBeUndefined()
   })
 })
 

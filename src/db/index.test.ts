@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { openDb, openDbActions, openDbReadonly } from './index.js'
+import { openDb } from './index.js'
+import { openDbActions, openDbReadonly } from './dashboard.js'
 import { tmpDir } from '../testing/tmp.js'
 import { memDb } from '../testing/db.js'
 

@@ -137,10 +137,10 @@ services:
       context: .
       dockerfile: deploy/docker/Dockerfile
     image: brainrot:latest
-    command: pnpm exec tsx src/dashboard/server.ts
+    command: pnpm dashboard:start
     restart: unless-stopped
     # Deliberately no depends_on: whisperx. The dashboard reads a file and
-    # serves HTML; coupling it to sidecar health would hide the dashboard you
+    # runs Next.js; coupling it to sidecar health would hide the dashboard you
     # would use to diagnose an unhealthy sidecar.
     # Deliberately no provider credentials here. This is the one
     # process that terminates unauthenticated HTTP, and env_file would inject
@@ -150,6 +150,7 @@ services:
     environment:
       BRAINROT_ROOT: /app/state
       BRAINROT_DASHBOARD_PORT: '8787'
+      BRAINROT_DASHBOARD_HOST: '0.0.0.0'
       # Read for the spend panel; must match the brainrot service so the
       # dashboard reports the cap that is actually enforced.
       BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
@@ -158,11 +159,11 @@ services:
       # Loopback-bound on the HOST: unreachable from the network. There is no
       # auth layer, and this binding is what makes that acceptable.
       #
-      # Since the dashboard gained POST /actions this binding is load-bearing
+      # Since the dashboard gained POST /api/actions this binding is load-bearing
       # for more than privacy: a reachable dashboard can already spend real
       # provider budget and queue real renders — produce/resume/scout are
-      # wired into the same queue (src/actions/catalog.ts:102,115,125;
-      # src/actions/handlers.ts:148,173,182). There is no upload path behind
+      # wired into the same queue (src/actions/catalog.ts;
+      # src/actions/handlers.ts). There is no upload path behind
       # any of them anymore, but the render/spend exposure alone is reason
       # enough. Do not change this to 0.0.0.0 or front it with a reverse
       # proxy. See README, "The dashboard queues renders and spends money".
@@ -172,9 +173,9 @@ services:
       # database, so a :ro mount breaks the dashboard outright even for its
       # read routes. The guarantee is narrower than "read-only" now: every GET
       # route opens the db through openDbReadonly (no mkdir, no schema exec,
-      # no migrate); the one write path is POST /actions, a single
+      # no migrate); the one write path is POST /api/actions, a single
       # `INSERT INTO operator_actions` through openDbActions (also no mkdir,
-      # no schema exec, no migrate — see src/db/index.ts). Same named volume
+      # no schema exec, no migrate — see src/db/dashboard.ts). Same named volume
       # as the brainrot service, for the WAL/virtiofs reason documented there
       # — and doubly so here, since this is a SECOND concurrent opener.
       - brainrot-data:/app/state/db

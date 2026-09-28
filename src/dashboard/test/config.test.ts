@@ -19,6 +19,17 @@ describe('resolveDashboardConfig', () => {
     ).toBe(9000)
   })
 
+  it('defaults the host to loopback, treating a blank value as unset', () => {
+    expect(resolveDashboardConfig({ BRAINROT_ROOT: '/app/state' }).host).toBe('127.0.0.1')
+    expect(
+      resolveDashboardConfig({ BRAINROT_ROOT: '/app/state', BRAINROT_DASHBOARD_HOST: ' ' }).host,
+    ).toBe('127.0.0.1')
+    expect(
+      resolveDashboardConfig({ BRAINROT_ROOT: '/app/state', BRAINROT_DASHBOARD_HOST: '0.0.0.0' })
+        .host,
+    ).toBe('0.0.0.0')
+  })
+
   it('rejects a non-numeric port loudly rather than listening somewhere surprising', () => {
     expect(() =>
       resolveDashboardConfig({ BRAINROT_ROOT: '/app/state', BRAINROT_DASHBOARD_PORT: 'eight' }),
