@@ -2,10 +2,16 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import type { QcResult } from '../../../stages/qc.js'
+import type { QcResult } from '../../../../../src/stages/qc.js'
 import { countLibraryEntries, libraryChannels, listLibraryEntries } from '../library.js'
-import { memDb, seedJob, seedLibrary, seedLibraryObject, seedPost } from '../../../testing/db.js'
-import { tmpDir } from '../../../testing/tmp.js'
+import {
+  memDb,
+  seedJob,
+  seedLibrary,
+  seedLibraryObject,
+  seedPost,
+} from '../../../../../src/testing/db.js'
+import { tmpDir } from '../../../../../src/testing/tmp.js'
 
 function seed(): Database {
   const db = memDb()

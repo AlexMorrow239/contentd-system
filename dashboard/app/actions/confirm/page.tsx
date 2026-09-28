@@ -4,7 +4,7 @@ import {
   actionArgNames,
   isActionKind,
 } from '../../../../src/actions/catalog'
-import { sameSitePath } from '../../../../src/dashboard/navigation'
+import { sameSitePath } from '../../../lib/shared/navigation'
 import { ActionForm } from '../../../components/action-form'
 import { DashboardPage, value, type PageProps } from '../../../components/page'
 export default function ConfirmPage(props: PageProps) {

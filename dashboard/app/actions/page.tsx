@@ -3,7 +3,7 @@ import {
   ACTIONS_PAGE_LIMIT,
   actionsTableExists,
   hasActiveAction,
-} from '../../../src/dashboard/queries/actions'
+} from '../../lib/server/queries/actions'
 import { DashboardPage, type PageProps } from '../../components/page'
 import { ActionDetail } from '../../components/ui'
 export default function ActionsPage(props: PageProps) {

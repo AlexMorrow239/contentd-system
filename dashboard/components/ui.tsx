@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import Link from 'next/link'
-import { httpUrlOrNull } from '../../src/dashboard/links'
-import type { LibraryBytes } from '../../src/dashboard/queries/library'
+import { httpUrlOrNull } from '../lib/shared/links'
+import type { LibraryBytes } from '../lib/server/queries/library'
 import type { ActionRow } from '../../src/actions/queue'
 
 export function formatTime(value: string | null): string {

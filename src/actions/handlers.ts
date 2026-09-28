@@ -18,7 +18,7 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
 
 /**
  * Handler implementations. DAEMON ONLY — src/arch.test.ts fails the build if
- * anything under src/dashboard/ imports this module, directly OR
+ * anything under dashboard/ imports this module, directly OR
  * transitively (including via a re-export), because it transitively pulls
  * Remotion and the provider clients into whatever process imports it — the
  * slow lane's handlers reach both. The dashboard reads ./catalog.js instead,

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import type { ActionKind } from '../../src/actions/catalog'
-import { sameSitePath } from '../../src/dashboard/navigation'
+import { sameSitePath } from '../lib/shared/navigation'
 
 export function Navigation() {
   const pathname = usePathname()

@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getJobDetail } from '../../../../src/dashboard/queries/jobs'
+import { getJobDetail } from '../../../lib/server/queries/jobs'
 import { formatUsdMicros } from '../../../../src/money'
 import { DashboardPage, type PageProps } from '../../../components/page'
 import { SafeLink, Status, Table, Video, formatDuration, formatTime } from '../../../components/ui'

@@ -4,7 +4,7 @@ import ts from 'typescript'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
-import { DASHBOARD_STAGE_ORDER } from './dashboard/queries/jobs.js'
+import { DASHBOARD_STAGE_ORDER } from '../dashboard/lib/server/queries/jobs.js'
 import { classify } from './errors.js'
 import { BudgetExceededError } from './jobs/costs.js'
 import { pipelineStages } from './jobs/pipeline.js'
@@ -59,12 +59,9 @@ async function moduleFiles(dir: string): Promise<string[]> {
   )
 }
 
-/** Both trees that run inside the dashboard's HTTP process. */
+/** The tree that runs inside the dashboard's HTTP process. */
 async function dashboardRuntimeFiles(): Promise<string[]> {
-  return [
-    ...(await moduleFiles(join(SRC_ROOT, 'dashboard'))),
-    ...(await moduleFiles(join(SRC_ROOT, '..', 'dashboard'))),
-  ]
+  return moduleFiles(join(SRC_ROOT, '..', 'dashboard'))
 }
 
 /**
@@ -168,14 +165,14 @@ describe('dashboard stage order', () => {
     // wrappers, which a read-only viewer has no business loading. This is the
     // anti-drift guard, and it pays the heavy import once, in test only.
     //
-    // It was previously inside dashboard/queries/test/jobs.test.ts, which is
+    // It was previously inside dashboard/lib/server/queries/test/jobs.test.ts, which is
     // otherwise a set of instant in-memory SQL assertions.
     expect([...DASHBOARD_STAGE_ORDER]).toEqual(pipelineStages().map((s) => s.name))
   })
 })
 
 describe('dashboard action isolation', () => {
-  it('never directly or transitively imports src/actions/handlers.ts from src/dashboard/', async () => {
+  it('never directly or transitively imports src/actions/handlers.ts from dashboard/', async () => {
     // handlers.ts transitively imports Remotion and the provider clients. The
     // dashboard is the one process terminating unauthenticated HTTP; it reads
     // src/actions/catalog.ts, which is pure metadata, and enqueues. Same rule,

@@ -2,7 +2,7 @@ import {
   countLibraryEntries,
   libraryChannels,
   listLibraryEntries,
-} from '../../../src/dashboard/queries/library'
+} from '../../lib/server/queries/library'
 import { LIBRARY_STATES } from '../../../src/jobs/library'
 import { ActionForm } from '../../components/action-form'
 import { DashboardPage, pick, value, type PageProps } from '../../components/page'

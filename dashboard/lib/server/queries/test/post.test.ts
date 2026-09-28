@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { memDb, seedJob, seedLibrary, seedPost, seedTopic } from '../../../testing/db.js'
-import { testChannel } from '../../../testing/channel.js'
+import { memDb, seedJob, seedLibrary, seedPost, seedTopic } from '../../../../../src/testing/db.js'
+import { testChannel } from '../../../../../src/testing/channel.js'
 import { listPostQueue } from '../post.js'
 
 describe('listPostQueue', () => {

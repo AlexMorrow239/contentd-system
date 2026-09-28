@@ -44,7 +44,7 @@ credentials were preserved. No deployment was performed.
 | Scouting              | `src/scout/test/`, `src/scout/sources/test/`                              | Exercises source parsing, filtering, scoring, budgets, and deduplication with controlled inputs.       |
 | Daemon decisions      | `src/loop/test/`, `src/jobs/test/golden-path-loop.test.ts`                | Exercises leases, demand limits, claims, resumptions, and action workers against disposable databases. |
 | Finished video        | `src/jobs/test/golden-path.test.ts`, `src/stages/test/`, `remotion/`      | Uses mocked paid providers and real media tools to validate actual artifacts.                          |
-| Operator interface    | `src/dashboard/**/test/`, `src/cli.test.ts`                               | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
+| Operator interface    | `dashboard/lib/**/test/`, `src/cli.test.ts`                               | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
 | External boundaries   | `*.contract.test.ts`, `*.storage.test.ts`, `sidecar/whisperx/test_app.py` | Keeps paid calls and infrastructure requirements explicit and independently runnable.                  |
 
 ## Recommended next changes, in order

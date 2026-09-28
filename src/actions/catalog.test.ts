@@ -103,7 +103,7 @@ describe('ACTIONS catalog', () => {
   })
 
   it('never declares an argument named kind, csrf or from', () => {
-    // src/dashboard/submission.ts strips its transport fields (`kind`,
+    // dashboard/lib/server/submission.ts strips its transport fields (`kind`,
     // CSRF_FIELD = 'csrf') before args are parsed, and the confirm
     // interstitial's query carries `from`, so an action declaring one of them
     // as a real argument would have it silently dropped or shadowed — a bug that would otherwise

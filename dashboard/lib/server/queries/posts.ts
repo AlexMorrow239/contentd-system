@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import type { Platform } from '../../posts/types.js'
+import type { Platform } from '../../../../src/posts/types.js'
 
 export interface PostLogEntry {
   jobId: string

@@ -1,5 +1,5 @@
 import { tryLoadChannelsDir } from '../../../src/config/channel'
-import { listPostQueue } from '../../../src/dashboard/queries/post'
+import { listPostQueue } from '../../lib/server/queries/post'
 import { DashboardPage, type PageProps } from '../../components/page'
 import { PostCard } from '../../components/post-card'
 export default function PostPage(props: PageProps) {

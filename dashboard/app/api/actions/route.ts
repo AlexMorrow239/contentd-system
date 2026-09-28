@@ -1,5 +1,5 @@
-import { submitAction } from '../../../../src/dashboard/submission'
-import { resolveDashboardConfig } from '../../../../src/dashboard/config'
+import { submitAction } from '../../../lib/server/submission'
+import { resolveDashboardConfig } from '../../../lib/config'
 import { errorMessage } from '../../../../src/errors'
 import { csrfToken } from '../../../lib/runtime'
 export const runtime = 'nodejs'

@@ -1,5 +1,5 @@
 import { tryLoadChannelsDir } from '../../../src/config/channel'
-import { JOB_STATUSES, countJobs, jobChannels, listJobs } from '../../../src/dashboard/queries/jobs'
+import { JOB_STATUSES, countJobs, jobChannels, listJobs } from '../../lib/server/queries/jobs'
 import { formatUsdMicros } from '../../../src/money'
 import { ActionForm } from '../../components/action-form'
 import { DashboardPage, pick, value, type PageProps } from '../../components/page'

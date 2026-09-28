@@ -9,7 +9,7 @@ const storage = process.env.STORAGE === '1'
 function include(): string[] {
   if (contract) return ['src/**/*.contract.test.ts']
   if (storage) return ['src/**/*.storage.test.ts']
-  return ['src/**/*.test.ts', 'remotion/**/*.test.ts', 'dashboard/**/*.test.tsx']
+  return ['src/**/*.test.ts', 'remotion/**/*.test.ts', 'dashboard/**/*.test.{ts,tsx}']
 }
 
 function exclude(): string[] {
@@ -48,7 +48,7 @@ export default defineConfig({
       // test imported, which hides a never-tested module entirely; naming
       // `include` reports every match, so those show up as an explicit 0%.
       // (This is what `all: true` did before Vitest 4 removed the option.)
-      include: ['src/**/*.ts', 'remotion/**/*.{ts,tsx}'],
+      include: ['src/**/*.ts', 'remotion/**/*.{ts,tsx}', 'dashboard/lib/**/*.ts'],
       exclude: [
         '**/*.test.ts',
         '**/*.test.tsx',

@@ -1,4 +1,4 @@
-import { type SpendAgainstCap, type StatusCount } from '../../src/dashboard/queries/overview'
+import { type SpendAgainstCap, type StatusCount } from '../lib/server/queries/overview'
 import { formatUsdMicros } from '../../src/money'
 import { Status } from './ui'
 export function Counts({ counts }: { counts: StatusCount[] }) {

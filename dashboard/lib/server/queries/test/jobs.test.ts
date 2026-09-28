@@ -3,7 +3,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from '../jobs.js'
-import { tmpDir } from '../../../testing/tmp.js'
+import { tmpDir } from '../../../../../src/testing/tmp.js'
 import {
   memDb,
   seedCost,
@@ -12,7 +12,7 @@ import {
   seedLibraryObject,
   seedPost,
   seedStage,
-} from '../../../testing/db.js'
+} from '../../../../../src/testing/db.js'
 
 function seed(): Database {
   const db = memDb()

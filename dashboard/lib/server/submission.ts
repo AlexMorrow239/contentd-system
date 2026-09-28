@@ -1,9 +1,9 @@
-import { openDbActions } from '../db/dashboard.js'
-import { enqueueAction } from '../actions/queue.js'
-import { formToArgs, isActionKind, parseActionArgs } from '../actions/catalog.js'
-import { errorMessage } from '../errors.js'
-import type { DashboardConfig } from './config.js'
-import { CSRF_FIELD, CSRF_HEADER, csrfFailure } from './csrf.js'
+import { openDbActions } from '../../../src/db/dashboard.js'
+import { enqueueAction } from '../../../src/actions/queue.js'
+import { formToArgs, isActionKind, parseActionArgs } from '../../../src/actions/catalog.js'
+import { errorMessage } from '../../../src/errors.js'
+import type { DashboardConfig } from '../config.js'
+import { CSRF_FIELD, CSRF_HEADER, csrfFailure } from '../csrf.js'
 import { daemonStaleFor, withDashboardDb } from './runtime.js'
 
 export interface SubmissionDeps {

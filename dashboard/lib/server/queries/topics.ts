@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
-import { whereClause } from '../../db/sql.js'
-import type { TopicStatus } from '../../scout/topics.js'
+import { whereClause } from '../../../../src/db/sql.js'
+import type { TopicStatus } from '../../../../src/scout/topics.js'
 
 /**
  * Distinct channels straight off the topics table, for the filter dropdown.

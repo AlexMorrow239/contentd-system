@@ -1,4 +1,4 @@
-import { listPostLog } from '../../../src/dashboard/queries/posts'
+import { listPostLog } from '../../lib/server/queries/posts'
 import { DashboardPage, type PageProps } from '../../components/page'
 import { JobLink, SafeLink, Table, formatTime } from '../../components/ui'
 export default function PostsPage(props: PageProps) {

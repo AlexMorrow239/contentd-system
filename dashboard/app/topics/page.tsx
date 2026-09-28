@@ -1,4 +1,4 @@
-import { countTopics, topicChannels } from '../../../src/dashboard/queries/topics'
+import { countTopics, topicChannels } from '../../lib/server/queries/topics'
 import { TOPIC_STATUSES, listTopics } from '../../../src/scout/topics'
 import { ActionForm } from '../../components/action-form'
 import { DashboardPage, pick, value, type PageProps } from '../../components/page'

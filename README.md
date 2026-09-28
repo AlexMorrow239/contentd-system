@@ -442,7 +442,7 @@ executes. It has **no authentication**. The only things standing between a web
 page you visit and your production pipeline are:
 
 1. the loopback binding (`127.0.0.1:8787` in `docker-compose.yml`), and
-2. the same-origin + CSRF-token check in `src/dashboard/csrf.ts`.
+2. the same-origin + CSRF-token check in `dashboard/lib/csrf.ts`.
 
 Nothing wired to the dashboard posts publicly anymore — there is no upload
 adapter left to call. Three of the wired actions **render a video and spend

@@ -1,4 +1,4 @@
-import type { PostCard as PostCardData } from '../../src/dashboard/queries/post'
+import type { PostCard as PostCardData } from '../lib/server/queries/post'
 import { ActionForm } from './action-form'
 import { PasteField } from './controls'
 import { JobLink, SafeLink, Video, formatTime } from './ui'

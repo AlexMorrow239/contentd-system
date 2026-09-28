@@ -3,7 +3,7 @@ import type { Platform } from './types.js'
 
 // The shape of one platform's entry in library.metadata_json's per-platform
 // map — written by the script stage (src/stages/script.ts) and read back by
-// the dashboard's /post page (src/dashboard/queries/post.ts, via
+// the dashboard's /post page (dashboard/lib/server/queries/post.ts, via
 // normalizePlatformMeta below). Both sides share this one definition: a
 // one-sided tighten would silently route valid rows to the
 // synthesized-fallback title path instead of failing loudly.

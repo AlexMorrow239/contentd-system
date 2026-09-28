@@ -167,7 +167,7 @@ Keep `src/actions/` separated by import boundary:
 - `queue.ts`: action persistence and guarded state transitions.
 - `handlers.ts`: daemon-only implementations; never import into the dashboard.
 
-`src/arch.test.ts` checks both dashboard trees' transitive runtime imports, including TSX and dynamic imports. Pipeline,
+`src/arch.test.ts` checks the dashboard's transitive runtime imports, including TSX and dynamic imports. Pipeline,
 Remotion, and paid-provider clients must stay outside the HTTP process.
 Storage SDK imports are lazy in handlers and the store stage.
 
@@ -372,8 +372,10 @@ ones. Reclaim uses the same fully-posted predicate as inventory and the queue.
 
 ### The dashboard's read-only guarantee narrows, not disappears
 
-`dashboard/` is the Next.js App Router frontend; `src/dashboard/` holds shared
-query and HTTP helpers. The service runs without provider or bucket credentials and binds to host
+`dashboard/` contains the Next.js App Router frontend and its supporting code.
+`dashboard/lib/server/` holds query and HTTP helpers; `dashboard/lib/shared/`
+holds browser-safe helpers. Launcher configuration and CSRF utilities live in
+`dashboard/lib/`. The service runs without provider or bucket credentials and binds to host
 loopback through Compose. Actions can spend provider budget and render videos;
 keep the loopback binding. The footer identifies its explicit runtime root.
 
@@ -382,7 +384,7 @@ GET routes use `openDbReadonly`: no mkdir, schema application, or migration.
 the daemon performs the requested mutation. The database volume must remain
 read-write even for GETs because SQLite WAL readers need shared-memory files.
 
-Preserve both CSRF layers in `src/dashboard/csrf.ts`: same-origin proof and the
+Preserve both CSRF layers in `dashboard/lib/csrf.ts`: same-origin proof and the
 boot-generated token. The loopback Host allowlist additionally prevents DNS
 rebinding; matching Origin and Host alone is insufficient. `sameSitePath` must
 validate the normalized redirect target as well as raw input: `/..//evil.example`
@@ -390,7 +392,7 @@ can normalize into a protocol-relative external URL. The daemon-liveness 409
 check is an operational guard, not an authorization boundary.
 
 Queries return typed data without markup; React Server Components render it.
-React escapes scraped text; `src/dashboard/links.ts` validates external link
+React escapes scraped text; `dashboard/lib/shared/links.ts` validates external link
 schemes. Never use raw HTML for scraped content. Client components handle forms,
 clipboard controls, and router refreshes. Stable row keys preserve drafts and
 video elements across refreshes. `POST /api/actions` returns JSON acceptance

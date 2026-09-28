@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { whereClause } from '../../db/sql.js'
+import { whereClause } from '../../../../src/db/sql.js'
 import { libraryBytes, libraryLinks } from './library.js'
 
 // A tuple, not a bare union: the filter dropdowns need the values at runtime,
