@@ -166,13 +166,12 @@ sequenceDiagram
   UI->>HTTP: Refresh action and domain state
 ```
 
-| Lane | Actions                                                                                        | Worker-acquired lease                                        |
-| ---- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Fast | `topics.reject`, `topics.requeue`, `library.approve`, `digest.run`, `post.mark`, `post.unmark` | None                                                         |
-| Slow | `jobs.produce`, `jobs.resume`                                                                  | `produce`                                                    |
-| Slow | `scout.run`                                                                                    | `scout`                                                      |
-| Slow | `produce.next`                                                                                 | None at worker level; the tick acquires `produce` internally |
-| Slow | `library.reject`                                                                               | None                                                         |
+| Lane | Actions                                                                                                          | Worker-acquired lease                                        |
+| ---- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Fast | `topics.reject`, `topics.requeue`, `library.approve`, `library.reject`, `digest.run`, `post.mark`, `post.unmark` | None                                                         |
+| Slow | `jobs.produce`, `jobs.resume`                                                                                    | `produce`                                                    |
+| Slow | `scout.run`                                                                                                      | `scout`                                                      |
+| Slow | `produce.next`                                                                                                   | None at worker level; the tick acquires `produce` internally |
 
 Fast actions do local operations without provider calls, rendering, or lease acquisition. The slow lane is serial: once a handler starts, other slow actions wait even if they need a different lease. The independent automatic scout/produce loops can still run when their leases allow it.
 

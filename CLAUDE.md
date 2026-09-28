@@ -163,17 +163,17 @@ Keep `src/actions/` separated by import boundary:
 Remotion, and paid-provider clients must stay outside the HTTP process.
 
 Fast actions are `topics.reject`, `topics.requeue`, `library.approve`,
-`digest.run`, `post.mark`, and `post.unmark`. They perform no network calls,
-rendering, or lease acquisition. Slow actions are `produce.next`, `jobs.produce`,
-`scout.run`, `jobs.resume`, and `library.reject`.
+`library.reject`, `digest.run`, `post.mark`, and `post.unmark`. They perform no
+network calls, rendering, or lease acquisition. Slow actions are `produce.next`,
+`jobs.produce`, `scout.run`, and `jobs.resume`.
 
 Lease declarations matter:
 
-| Slow action                      | Worker-acquired lease |
-| -------------------------------- | --------------------- |
-| `jobs.produce`, `jobs.resume`    | `produce`             |
-| `scout.run`                      | `scout`               |
-| `produce.next`, `library.reject` | None                  |
+| Slow action                   | Worker-acquired lease |
+| ----------------------------- | --------------------- |
+| `jobs.produce`, `jobs.resume` | `produce`             |
+| `scout.run`                   | `scout`               |
+| `produce.next`                | None                  |
 
 `produce.next` takes its own lease inside `produceNextTick`; declaring it again
 would turn each action into a lease-held noop. `runJob` and `scoutAll` do not

@@ -352,11 +352,11 @@ connection flag, not the mount. What changed is that the dashboard now also
 _writes_, in one narrow way: buttons on the overview, jobs, library, topics
 and post pages queue an operator action (`POST /api/actions`) that the daemon
 executes, rather than mutating anything itself. Eleven actions are wired
-today. Six are fast — `topics reject/requeue`, `library approve`,
-`run digest` and `post mark/unmark` — and five are slow, meaning they can
+today. Seven are fast — `topics reject/requeue`, `library approve/reject`,
+`run digest` and `post mark/unmark` — and four are slow, meaning they can
 run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
-`produce` with a channel you pick and a topic you type (`/jobs`),
-`scout now` (`/topics`) and `library reject` (discard, `/library`). Nothing
+`produce` with a channel you pick and a topic you type (`/jobs`), and
+`scout now` (`/topics`). Nothing
 wired to the dashboard uploads to a platform — posting is the
 paste-and-click `/post` workflow above, not a queued action. What is
 still CLI-only after this phase is `costs`' own seven-day breakdown —
