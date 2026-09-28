@@ -27,7 +27,6 @@ export const VIDEO_HEIGHT = 1920
 export type ShortVideoProps = {
   audioSrc: string
   backgroundSrc: string
-  bgmSrc?: string
   words: WordTiming[]
   style: CaptionStyle
   durationMs: number

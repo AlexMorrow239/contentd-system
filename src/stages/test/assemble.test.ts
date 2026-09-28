@@ -12,8 +12,6 @@ import { tmpDir } from '../../testing/tmp.js'
 import type { JobContext } from '../../jobs/types.js'
 
 /**
- * bgmDir is the only channel field these tests vary; empty dir -> no bgm.
- *
  * The jobId is unique per ctx rather than a fixed 'job-assemble'. assembleStage
  * stages per-job assets into `<serveUrl>/public/<jobId>`, and the cleanup
  * assertion below can only look for that directory by scanning the OS tmpdir —
@@ -22,12 +20,11 @@ import type { JobContext } from '../../jobs/types.js'
  * each other's in-flight public/job-assemble and fail.
  */
 let ctxSeq = 0
-function assembleCtx(bgmDir = tmpDir('brainrot-bgm-')): JobContext {
+function assembleCtx(): JobContext {
   return makeCtx({
     channel: testChannel({
       name: 'testchan',
       bgDir: [tmpDir('brainrot-bg-')],
-      bgmDir,
     }),
     topic: 'test topic',
     jobId: `job-assemble-${process.pid}-${ctxSeq++}`,

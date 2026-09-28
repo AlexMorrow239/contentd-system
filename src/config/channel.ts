@@ -38,7 +38,6 @@ export interface ChannelConfig {
   backlogDays: number
   voice: { volume: string; premium?: PremiumVoiceConfig }
   bgDir: string[]
-  bgmDir: string
   budget: { perVideoUsdMicros: number; perDayUsdMicros: number }
   scriptModel: string
   scout: ScoutConfig
@@ -207,7 +206,6 @@ const rawSchema = z.object({
     (v) => (Array.isArray(v) ? (v as unknown[]) : [v]),
     z.array(z.string()).min(1),
   ),
-  bgm_dir: z.string(),
 })
 
 // Two invariants the flat shape cannot express, both cross-field.
@@ -282,7 +280,6 @@ export function parseChannelToml(text: string, filename: string): ChannelConfig 
         : undefined,
     },
     bgDir: raw.bg_dir,
-    bgmDir: raw.bgm_dir,
     budget: {
       perVideoUsdMicros: usdToMicros(raw.budget.per_video_usd),
       perDayUsdMicros: usdToMicros(raw.budget.per_day_usd),

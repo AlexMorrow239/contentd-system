@@ -39,7 +39,6 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
       },
     },
     bgDir: ['assets/bg'],
-    bgmDir: 'assets/bgm',
     budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { ...DEFAULT_SCOUT },
@@ -55,7 +54,6 @@ export interface ChannelTomlOptions {
   videosPerDay?: number
   scriptModel?: string
   bgDir?: string | string[]
-  bgmDir?: string
   /** Top-level `backlog_days` override. Omitted, the schema default (2) applies. */
   backlogDays?: number
   /** Emitted as a top-level `platforms = [...]` array. Omitted, the default ([]) applies. */
@@ -68,7 +66,7 @@ export interface ChannelTomlOptions {
  * The TOML text for one channel. Always a *loadable* config — tests that want
  * an invalid one build it from `channelTomlLines()` and edit the array.
  *
- * Ordering is load-bearing, not cosmetic: `bg_dir`/`bgm_dir`/`platforms` are
+ * Ordering is load-bearing, not cosmetic: `bg_dir`/`platforms` are
  * top-level keys, so they must precede every `[section]` header, else TOML
  * nests them under the last-opened table and the values silently vanish.
  * `extra` lines are appended *after* the final `[budget]` header, so any
@@ -87,7 +85,6 @@ export function channelTomlLines(opts: ChannelTomlOptions = {}): string[] {
     `videos_per_day = ${opts.videosPerDay ?? 2}`,
     // Required by the schema, so defaulted rather than conditional.
     `bg_dir = ${JSON.stringify(opts.bgDir ?? 'assets/bg')}`,
-    `bgm_dir = ${JSON.stringify(opts.bgmDir ?? 'assets/bgm')}`,
     ...(opts.backlogDays === undefined ? [] : [`backlog_days = ${opts.backlogDays}`]),
     ...(opts.platforms === undefined ? [] : [`platforms = ${JSON.stringify(opts.platforms)}`]),
     '',

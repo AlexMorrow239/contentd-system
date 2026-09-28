@@ -16,12 +16,10 @@ name = "mvp"
 niche = ["space facts", "astronomy"]
 script_model = "claude-sonnet-5"
 
-# bg_dir/bgm_dir MUST stay above every [section] header — TOML nests any
-# top-level key written after a table header under that table, and these two
-# would silently vanish. Paths are relative to the process cwd (/app in the
-# container).
+# bg_dir MUST stay above every [section] header — TOML nests any
+# top-level key written after a table header under that table. Paths are
+# relative to the process cwd (/app in the container).
 bg_dir = "assets/bg"
-bgm_dir = "assets/bgm"
 
 # Pure demand. Nothing here is clipped against a platform cap at config load
 # (the old assertQuotaHeadroom is gone), and there is no runtime quota

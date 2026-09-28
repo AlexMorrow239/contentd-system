@@ -76,7 +76,6 @@ function channelFor(bgDir: string | string[]): ChannelConfig {
   return testChannel({
     name: 'testchan',
     bgDir: Array.isArray(bgDir) ? bgDir : [bgDir],
-    bgmDir: tmpDir('brainrot-bgm-'),
   })
 }
 

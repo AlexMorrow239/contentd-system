@@ -36,12 +36,11 @@ Keys in `.env`:
 ## Seed background footage
 
 Drop vertical-friendly clips into the channel's background folder(s) (default
-`assets/bg/`) and royalty-free music into `assets/bgm/`. The visuals stage picks
+`assets/bg/`). The visuals stage picks
 a clip at random from the pool, avoiding the 5 most recently used per channel.
 
 ```bash
 cp ~/footage/*.mp4 assets/bg/
-cp ~/music/*.mp3  assets/bgm/
 ```
 
 `bg_dir` in a channel TOML accepts either a single path or a list of paths,

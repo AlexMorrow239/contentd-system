@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bundle } from '@remotion/bundler'
@@ -49,16 +49,6 @@ export const assembleStage: StageDef = {
       readFileSync(ctx.artifactPath('captions', 'words.json'), 'utf8'),
     ) as CaptionsArtifact
 
-    // Optional BGM: first *.mp3 in channel.bgmDir (deterministic: sorted).
-    let bgmFile: string | undefined
-    try {
-      bgmFile = readdirSync(ctx.channel.bgmDir)
-        .filter((f) => f.toLowerCase().endsWith('.mp3'))
-        .sort()[0]
-    } catch {
-      bgmFile = undefined
-    }
-
     const serveUrl = await getBundle()
 
     // Remotion SSR dynamic-asset mechanism (verified against remotion.dev):
@@ -73,13 +63,8 @@ export const assembleStage: StageDef = {
         ctx.artifactPath('voice', 'narration.wav'),
         path.join(publicJobDir, 'narration.wav'),
       )
-      if (bgmFile) {
-        copyFileSync(path.join(ctx.channel.bgmDir, bgmFile), path.join(publicJobDir, 'bgm.mp3'))
-      }
-
       const base = {
         audioSrc: `${ctx.jobId}/narration.wav`,
-        bgmSrc: bgmFile ? `${ctx.jobId}/bgm.mp3` : undefined,
         words: captions.words,
         style: CAPTION_STYLE,
         durationMs: voice.durationMs,

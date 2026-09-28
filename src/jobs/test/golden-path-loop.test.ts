@@ -97,8 +97,8 @@ describe('golden-path loop e2e', () => {
 
     // Real channel TOML incl. [scout] and platforms — the same file
     // scoutChannel (loaded via loadChannelsDir here) and produceNextTick
-    // both read. bg/bgm dirs are schema-required strings; fake stages never
-    // read them.
+    // both read. The background directory is schema-required; fake stages never
+    // read it.
     writeFileSync(
       path.join(channelsDir, 'example.toml'),
       [
@@ -107,7 +107,6 @@ describe('golden-path loop e2e', () => {
         'script_model = "claude-sonnet-5"',
         // top-level keys must precede every [section] header (smol-toml scoping)
         'bg_dir = "assets/bg"',
-        'bgm_dir = "assets/bgm"',
         'videos_per_day = 2',
         'platforms = ["youtube"]',
         '',

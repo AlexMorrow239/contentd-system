@@ -179,7 +179,6 @@ describe('brainrot CLI — scout', () => {
     'name = "cli-scout-test"',
     'niche = ["space facts"]',
     'bg_dir = "assets/bg"',
-    'bgm_dir = "assets/bgm"',
     'videos_per_day = 2',
     '',
     '[voice]',

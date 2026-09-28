@@ -465,7 +465,7 @@ the shared helpers rather than re-rolling fixtures locally:
   needs the runtime layout with `db/`, `runs/`, and `channels/`.
 - `channel.ts` — `testChannel(overrides)` for the parsed config;
   `channelToml`/`channelTomlLines`/`writeChannelsDir` for the on-disk TOML.
-  In `channelToml`, `bg_dir`/`bgm_dir` must stay ahead of every `[section]`
+  In `channelToml`, `bg_dir` must stay ahead of every `[section]`
   header or TOML nests them under the last table and the values vanish.
 - `job.ts` — `makeCtx(opts)`, `testScript`, `seedVoiceJson`/`seedWordsJson`/
   `seedScriptJson`.

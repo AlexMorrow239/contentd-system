@@ -20,10 +20,8 @@ describe('golden-path e2e', () => {
   it('resumes past seeded stages and produces a ready video', async () => {
     const workspace = tmpDir('brainrot-e2e-')
     const bgDir = path.join(workspace, 'bg')
-    const bgmDir = path.join(workspace, 'bgm')
     const runsRoot = path.join(workspace, 'runs')
     mkdirSync(bgDir, { recursive: true })
-    mkdirSync(bgmDir, { recursive: true }) // empty -> no bgm
     mkdirSync(runsRoot, { recursive: true })
 
     // One 1080x1920 background clip in the library.
@@ -48,10 +46,9 @@ describe('golden-path e2e', () => {
         'name = "example"',
         'niche = ["space facts", "astronomy"]',
         'script_model = "claude-sonnet-5"',
-        // bg_dir/bgm_dir are top-level keys; they must precede every [section]
+        // bg_dir is a top-level key; it must precede every [section]
         // header, else TOML nests them under the last-opened table (e.g. budget).
         `bg_dir = ${JSON.stringify(bgDir)}`,
-        `bgm_dir = ${JSON.stringify(bgmDir)}`,
         'videos_per_day = 2',
         '',
         '[voice]',
