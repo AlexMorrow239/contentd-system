@@ -22,7 +22,7 @@ built from the same root and `pnpm install`.
 Development needs Node >=22, pnpm, and ffmpeg/ffprobe on PATH. The default
 suite uses mocked providers and disposable fixtures; no `.env`, live daemon,
 or service container is needed. Remotion's first render may download Chrome.
-`prod/channels/` is the only maintained channel directory.
+`docker/state/channels/` is the only maintained channel directory.
 
 ```bash
 pnpm install
@@ -215,7 +215,7 @@ live in the catalog; they do not uniformly mean “this action spends money.”
 
 ### Config: channel TOML is the unit of everything
 
-`prod/channels/*.toml` is the sole maintained source of truth. Compose mounts
+`docker/state/channels/*.toml` is the sole maintained source of truth. Compose mounts
 it at `/app/state/channels`; tests create disposable channel fixtures.
 `src/config/channel.ts` validates TOML with Zod and normalizes to camelCase.
 The file basename must equal `name`, and declared channel names must be unique:
@@ -430,7 +430,7 @@ previously corrupted state. Use container CLI commands for production access.
 
 The database holds jobs/stages, library/object metadata, topics/scout state,
 costs, leases, posting records, operator actions, and daemon liveness. Artifacts
-live under `<root>/runs/<jobId>/<stage>/`, bound to host `prod/runs/`.
+live under `<root>/runs/<jobId>/<stage>/`, bound to host `docker/state/runs/`.
 
 `src/db/schema.sql` describes a fresh database and is executed on each
 `openDb`. Existing-database changes belong in `src/db/migrate.ts`, called after

@@ -5,7 +5,7 @@
 # table: story mode stays in the code, dormant purely because nothing here
 # mentions it. Scaling up is adding TOMLs, not restoring code.
 #
-# prod/channels/ is the sole maintained source of channel configuration.
+# docker/state/channels/ is the sole maintained source of channel configuration.
 # Compose mounts it read-only at /app/state/channels; workers re-read it every
 # tick. Validate changes with pnpm test:config before deployment.
 #

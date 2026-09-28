@@ -61,7 +61,7 @@ services:
   brainrot:
     build:
       context: .
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: docker/Dockerfile
     # Named so the dashboard service can reuse this exact image rather than
     # building a second copy of a ~2 GB layer stack.
     image: brainrot:latest
@@ -117,9 +117,12 @@ services:
       # Mounted at <root>/db rather than the root itself so the root can be a
       # plain image directory with the runs/ and channels/ binds beside this
       # volume, instead of binds nested inside a volume.
+      #
+      # /app/state mirrors ./docker/state on the host, except db/: that one
+      # subdirectory is this named volume, for the reason above.
       - brainrot-data:/app/state/db
-      - ./prod/runs:/app/state/runs # per-job artifacts, inspectable from the host
-      - ./prod/channels:/app/state/channels:ro # production config, re-read every tick
+      - ./docker/state/runs:/app/state/runs # per-job artifacts, inspectable from the host
+      - ./docker/state/channels:/app/state/channels:ro # channel config, re-read every tick
     # Chrome's default 64 MB /dev/shm in Docker is the classic renderer crash.
     shm_size: 1gb
     logging:
@@ -135,7 +138,7 @@ services:
     # on a machine that has not built it yet.
     build:
       context: .
-      dockerfile: deploy/docker/Dockerfile
+      dockerfile: docker/Dockerfile
     image: brainrot:latest
     command: pnpm dashboard:start
     restart: unless-stopped
@@ -179,8 +182,8 @@ services:
       # as the brainrot service, for the WAL/virtiofs reason documented there
       # — and doubly so here, since this is a SECOND concurrent opener.
       - brainrot-data:/app/state/db
-      - ./prod/runs:/app/state/runs:ro # video playback only
-      - ./prod/channels:/app/state/channels:ro
+      - ./docker/state/runs:/app/state/runs:ro # video playback only
+      - ./docker/state/channels:/app/state/channels:ro
     logging:
       driver: json-file
       options:

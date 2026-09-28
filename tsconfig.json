@@ -15,6 +15,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["src", "vitest.config.ts", "deploy", "scripts"],
+  "include": ["src", "vitest.config.ts", "docker/*.ts", "scripts"],
   "exclude": ["node_modules", "dist"]
 }

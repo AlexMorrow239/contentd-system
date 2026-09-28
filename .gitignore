@@ -25,9 +25,11 @@ local/
 # Accidental host runtime state; production SQLite lives in a Docker volume.
 /db/
 
-# The host side of the container's bind mounts. prod/channels/ IS tracked (it
-# is the live channel config); prod/runs/ is disposable render output.
-prod/runs/
+# docker/state/ is the host side of the containers' /app/state binds.
+# docker/state/channels/ IS tracked (it is the live channel config);
+# docker/state/runs/ is disposable render output. The database is not here:
+# it lives in the brainrot-data named volume (see docker-compose.yml).
+docker/state/runs/
 
 **/.next/
 **/*.tsbuildinfo

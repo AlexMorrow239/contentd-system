@@ -22,7 +22,7 @@ cp .env.example .env          # fill in provider keys (see below)
 docker compose up -d whisperx # caption alignment sidecar
 ```
 
-Development runs through disposable test fixtures. `prod/channels/` is the
+Development runs through disposable test fixtures. `docker/state/channels/` is the
 only maintained channel directory; there is no local operational environment
 or channel-promotion copy. Provider keys are needed for production and the
 opt-in contract tests, not for `pnpm test`.
@@ -82,10 +82,10 @@ flag or development voice override.
 Production uses `/app/state` inside the container:
 
 - Per-job artifacts: `/app/state/runs/<jobId>/<stage>/`, visible on the host
-  under `prod/runs/<jobId>/<stage>/`.
-- Finished video: `prod/runs/<jobId>/assemble/final.mp4` on the host.
+  under `docker/state/runs/<jobId>/<stage>/`.
+- Finished video: `docker/state/runs/<jobId>/assemble/final.mp4` on the host.
 - SQLite state: `/app/state/db/brainrot.db` in the `brainrot-data` named volume.
-- Channel configuration: `prod/channels/*.toml`, mounted read-only at
+- Channel configuration: `docker/state/channels/*.toml`, mounted read-only at
   `/app/state/channels`.
 
 Keep run artifacts until their videos are no longer needed or you have verified
@@ -351,7 +351,7 @@ poll at ~1s and 30s respectively for a different queue — see "The dashboard
 queues renders and spends money" below.
 
 Times that matter are container-local (`TZ=America/Chicago`, set in
-`deploy/docker/Dockerfile` and pinned again in `docker-compose.yml`'s
+`docker/Dockerfile` and pinned again in `docker-compose.yml`'s
 `environment:` block — an `env_file` value of the same name would otherwise
 override the image's `ENV`), regardless of the host Mac's own timezone.
 Changing any of the constants above means editing the source and running
@@ -476,7 +476,7 @@ and disables the buttons when it is not, and `POST /api/actions` itself answers
 
 ### Development and release
 
-`prod/channels/` is the source of truth. Edit those TOMLs directly; tests create
+`docker/state/channels/` is the source of truth. Edit those TOMLs directly; tests create
 their own minimal channel fixtures in temporary directories. There is no
 `local/channels/` directory to synchronize or promote.
 
@@ -504,7 +504,7 @@ There is no automatic deployment or CI workflow in this repository. The commands
 above are the release gate and deployment procedure. Rebuilding changes the
 image; it does not require copying channels or recreating database volumes.
 
-Channel edits are live because Compose bind-mounts `prod/channels/` and workers
+Channel edits are live because Compose bind-mounts `docker/state/channels/` and workers
 reload it each tick. To keep a running daemon from consuming an unvalidated edit,
 stop it before editing and restart after `pnpm check` passes. Code-only changes
 can be built while the old image runs. See Recovery below for the existing

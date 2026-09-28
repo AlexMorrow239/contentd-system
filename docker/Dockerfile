@@ -46,6 +46,6 @@ RUN pnpm dashboard:build
 
 # warm-kokoro imports KOKORO_MODEL_ID from src/stages/voice.ts, so unlike the
 # browser layer above it genuinely needs the source copy and must stay below it.
-RUN pnpm exec tsx deploy/docker/warm-kokoro.ts
+RUN pnpm exec tsx docker/warm-kokoro.ts
 
 CMD ["pnpm", "brainrot", "run"]

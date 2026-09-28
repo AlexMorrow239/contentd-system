@@ -3,7 +3,8 @@ assets
 local/
 # Host runtime state must never be baked into the image.
 /db/
-prod/runs/
+# Runtime state is bind-mounted at /app/state, never baked into the image.
+docker/state/
 logs
 .git
 .env

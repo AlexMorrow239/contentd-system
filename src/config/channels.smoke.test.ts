@@ -13,14 +13,14 @@ import { loadChannelsDir } from './channel.js'
  * a single-file run from any directory behaves the same.
  */
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url))
-const PROD_CHANNELS = path.join(REPO_ROOT, 'prod', 'channels')
+const CHANNELS = path.join(REPO_ROOT, 'docker', 'state', 'channels')
 
 describe('checked-in channel configs', () => {
   // The maintained directory must contain a valid config; an empty/missing
   // directory must not turn validation into a vacuous pass.
-  it('every prod/channels/*.toml loads', () => {
-    expect(existsSync(PROD_CHANNELS)).toBe(true)
-    const channels = loadChannelsDir(PROD_CHANNELS)
+  it('every docker/state/channels/*.toml loads', () => {
+    expect(existsSync(CHANNELS)).toBe(true)
+    const channels = loadChannelsDir(CHANNELS)
     expect(channels.length).toBeGreaterThan(0)
   })
 })

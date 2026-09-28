@@ -2,7 +2,7 @@
 
 ## Result
 
-Keep one maintained channel directory: `prod/channels/`. Develop against
+Keep one maintained channel directory: `docker/state/channels/`. Develop against
 short-lived fixtures and run production through Compose. The pipeline already
 has useful module boundaries; replacing those with a second operational
 installation adds state and provider spend without adding repeatable coverage.

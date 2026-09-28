@@ -27,7 +27,7 @@ export default tseslint.config(
     files: [
       'src/**/*.ts',
       'remotion/**/*.ts',
-      'deploy/**/*.ts',
+      'docker/*.ts',
       'scripts/**/*.ts',
       'dashboard/**/*.ts',
       'vitest.config.ts',
