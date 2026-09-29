@@ -1,9 +1,9 @@
 import React from 'react'
 import { AbsoluteFill, Audio, OffthreadVideo, staticFile } from 'remotion'
-import type { ShortVideoProps } from '../../src/remotion-types'
+import type { ShortVideoProps } from '../../daemon/src/remotion-types'
 import { Captions } from './Captions'
 
-// Single source of truth is src/remotion-types.ts; re-exported here so Root.tsx and
+// Single source of truth is daemon/src/remotion-types.ts; re-exported here so Root.tsx and
 // the composition test can keep importing ShortVideoProps from './ShortVideo'.
 export type { ShortVideoProps }
 

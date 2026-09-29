@@ -1,4 +1,4 @@
-import { listRecentActions } from '../../../src/actions/queue'
+import { listRecentActions } from '../../../daemon/src/actions/queue'
 import {
   ACTIONS_PAGE_LIMIT,
   actionsTableExists,

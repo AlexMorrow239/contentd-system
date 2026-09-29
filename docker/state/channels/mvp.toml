@@ -65,7 +65,7 @@ voice_id = "Gubgw9l4dtIoQA9YZHgx"
 
 [scout]
 # Subreddits are bare names; `r/space` is rejected as a source error. Each is
-# read through Arctic Shift (src/scout/sources/reddit.ts), newest posts first.
+# read through Arctic Shift (daemon/src/scout/sources/reddit.ts), newest posts first.
 # Removed and deleted posts are dropped before `fetched` is counted; image
 # posts and AutoModerator threads are dropped before scoring. The archive has
 # no "hot" ranking, so an active subreddit brings fresh posts on most scout

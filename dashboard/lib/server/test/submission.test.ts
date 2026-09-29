@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { openDb } from '../../../../src/db/index.js'
-import { seedDaemonState } from '../../../../src/testing/db.js'
-import { testRoot, trackDb } from '../../../../src/testing/tmp.js'
+import { openDb } from '../../../../daemon/src/db/index.js'
+import { seedDaemonState } from '../../../../daemon/testing/db.js'
+import { testRoot, trackDb } from '../../../../daemon/testing/tmp.js'
 import { submitAction } from '../submission.js'
 
 function setup() {

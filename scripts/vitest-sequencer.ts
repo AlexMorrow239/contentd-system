@@ -14,29 +14,29 @@ import type { TestSpecification } from 'vitest/node'
  * This list had gone stale: it was missing integrations/remotion/remotion.test.ts — 36
  * lines holding a real Remotion bundle, so byte-size ordering scheduled it
  * dead last, the exact failure this sequencer exists to prevent — along with
- * golden-path-loop and every CLI-spawning file. src/testing/sequencer.test.ts
+ * golden-path-loop and every CLI-spawning file. daemon/testing/sequencer.test.ts
  * now fails if an entry stops matching a real file, so a rename cannot
  * silently re-stale it.
  *
  * Suffix matching, not exact paths: moduleId is an absolute path.
  */
 export const SLOW_FIRST = [
-  'src/jobs/test/golden-path.test.ts', // one indivisible e2e render — the suite's floor
-  'src/stages/test/assemble.test.ts', // real Remotion render
-  'src/stages/test/visuals-volume.test.ts', // ffmpeg crop+loop
-  'src/stages/test/qc.test.ts', // ffmpeg analysis passes
+  'daemon/src/jobs/test/golden-path.test.ts', // one indivisible e2e render — the suite's floor
+  'daemon/src/stages/test/assemble.test.ts', // real Remotion render
+  'daemon/src/stages/test/visuals-volume.test.ts', // ffmpeg crop+loop
+  'daemon/src/stages/test/qc.test.ts', // ffmpeg analysis passes
   'integrations/remotion/remotion.test.ts', // bundle() + selectComposition
-  'src/jobs/test/golden-path-loop.test.ts', // scout -> produce e2e
-  // Every CLI-spawning file: a cold `node dist/cli.js` costs seconds, not the
+  'daemon/src/jobs/test/golden-path-loop.test.ts', // scout -> produce e2e
+  // Every CLI-spawning file: a cold `node daemon/dist/cli.js` costs seconds, not the
   // ~0.34s the runCli docstring once claimed, because the entry point pulls in
   // the whole pipeline. cli.test.ts holds every subcommand's subprocess tests
   // alongside its in-process ones — a single file per module, not a facet
   // split.
-  'src/cli.test.ts',
-  'src/testing/run-cli.test.ts',
-  'src/jobs/test/resume.test.ts',
-  'src/loop/test/produce-next.test.ts',
-  'src/media/ffmpeg.test.ts', // real ffmpeg encodes
+  'daemon/src/cli.test.ts',
+  'daemon/testing/run-cli.test.ts',
+  'daemon/src/jobs/test/resume.test.ts',
+  'daemon/src/loop/test/produce-next.test.ts',
+  'daemon/src/media/ffmpeg.test.ts', // real ffmpeg encodes
 ]
 
 function rank(spec: TestSpecification): number {

@@ -1,6 +1,6 @@
 import { test, expect, resetFixture } from './fixtures'
-import { seedAction, seedDaemonState } from '../../src/testing/db'
-import { actionsUnit } from '../../src/loop/actions-worker'
+import { seedAction, seedDaemonState } from '../../daemon/testing/db'
+import { actionsUnit } from '../../daemon/src/loop/actions-worker'
 
 test.beforeEach(({ dashboard }) => resetFixture(dashboard))
 

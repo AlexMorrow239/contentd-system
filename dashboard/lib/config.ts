@@ -1,5 +1,9 @@
-import { BrainrotError } from '../../src/errors.js'
-import { resolveBrainrotPaths, envValue, type BrainrotPaths } from '../../src/config/paths.js'
+import { BrainrotError } from '../../daemon/src/errors.js'
+import {
+  resolveBrainrotPaths,
+  envValue,
+  type BrainrotPaths,
+} from '../../daemon/src/config/paths.js'
 
 export interface DashboardConfig {
   paths: BrainrotPaths

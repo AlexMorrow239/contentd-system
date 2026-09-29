@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { memDb, seedAction } from '../../../../../src/testing/db.js'
+import { memDb, seedAction } from '../../../../../daemon/testing/db.js'
 import { actionsTableExists, hasActiveAction } from '../actions.js'
 
 describe('hasActiveAction', () => {

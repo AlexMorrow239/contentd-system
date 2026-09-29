@@ -1,8 +1,8 @@
 import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
-import { whereClause } from '../../../../src/db/sql.js'
-import type { LibraryState } from '../../../../src/jobs/library.js'
-import { postedPlatforms } from '../../../../src/posts/posts.js'
+import { whereClause } from '../../../../daemon/src/db/sql.js'
+import type { LibraryState } from '../../../../daemon/src/jobs/library.js'
+import { postedPlatforms } from '../../../../daemon/src/posts/posts.js'
 
 export type QcSummary =
   | { kind: 'ok' }

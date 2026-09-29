@@ -3,7 +3,7 @@ import {
   actionArgFieldKind,
   actionArgNames,
   isActionKind,
-} from '../../../../src/actions/catalog'
+} from '../../../../daemon/src/actions/catalog'
 import { sameSitePath } from '../../../lib/shared/navigation'
 import { ActionForm } from '../../../components/action-form'
 import { DashboardPage, value, type PageProps } from '../../../components/page'

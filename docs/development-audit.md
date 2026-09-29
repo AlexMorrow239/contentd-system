@@ -35,23 +35,23 @@ credentials were preserved. No deployment was performed.
 
 ## Existing tests worth keeping
 
-| Concern               | Existing coverage                                                                 | Why it replaces an operational dev channel                                                             |
-| --------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Channel configuration | `src/config/channel.test.ts`, `channels.smoke.test.ts`                            | Validates fixtures and every maintained TOML without starting workers.                                 |
-| Scouting              | `src/scout/test/`, `src/scout/sources/test/`                                      | Exercises source parsing, filtering, scoring, budgets, and deduplication with controlled inputs.       |
-| Daemon decisions      | `src/loop/test/`, `src/jobs/test/golden-path-loop.test.ts`                        | Exercises leases, demand limits, claims, resumptions, and action workers against disposable databases. |
-| Finished video        | `src/jobs/test/golden-path.test.ts`, `src/stages/test/`, `integrations/remotion/` | Uses mocked paid providers and real media tools to validate actual artifacts.                          |
-| Operator interface    | `dashboard/lib/**/test/`, `src/cli.test.ts`                                       | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
-| External boundaries   | `*.contract.test.ts`, `integrations/whisperx/test_app.py`                         | Keeps paid calls and infrastructure requirements explicit and independently runnable.                  |
+| Concern               | Existing coverage                                                                               | Why it replaces an operational dev channel                                                             |
+| --------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Channel configuration | `daemon/src/config/channel.test.ts`, `channels.smoke.test.ts`                                   | Validates fixtures and every maintained TOML without starting workers.                                 |
+| Scouting              | `daemon/src/scout/test/`, `daemon/src/scout/sources/test/`                                      | Exercises source parsing, filtering, scoring, budgets, and deduplication with controlled inputs.       |
+| Daemon decisions      | `daemon/src/loop/test/`, `daemon/src/jobs/test/golden-path-loop.test.ts`                        | Exercises leases, demand limits, claims, resumptions, and action workers against disposable databases. |
+| Finished video        | `daemon/src/jobs/test/golden-path.test.ts`, `daemon/src/stages/test/`, `integrations/remotion/` | Uses mocked paid providers and real media tools to validate actual artifacts.                          |
+| Operator interface    | `dashboard/lib/**/test/`, `daemon/src/cli.test.ts`                                              | Exercises rendering, commands, actions, CSRF, and filesystem containment without production state.     |
+| External boundaries   | `*.contract.test.ts`, `integrations/whisperx/test_app.py`                                       | Keeps paid calls and infrastructure requirements explicit and independently runnable.                  |
 
 ## Recommended next changes, in order
 
 ### 1. Make restarts safe for in-flight jobs
 
-`src/loop/daemon.ts` aborts polling and waits for workers, but does not pass
+`daemon/src/loop/daemon.ts` aborts polling and waits for workers, but does not pass
 cancellation through a running pipeline. `docker-compose.yml` has no
 `stop_grace_period`, so a long render can outlast Docker's default stop window.
-`src/loop/plan-tick.ts` resumes blocked jobs, not orphaned running jobs; the
+`daemon/src/loop/plan-tick.ts` resumes blocked jobs, not orphaned running jobs; the
 operator must recover those manually.
 
 Start with an explicit drain procedure and a measured stop grace period. Then

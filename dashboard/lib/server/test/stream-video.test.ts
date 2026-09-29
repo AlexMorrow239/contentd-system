@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { openDb } from '../../../../src/db/index.js'
+import { openDb } from '../../../../daemon/src/db/index.js'
 import type { DashboardConfig } from '../../config.js'
-import { testRoot } from '../../../../src/testing/tmp.js'
-import { seedJob, seedLibrary } from '../../../../src/testing/db.js'
+import { testRoot } from '../../../../daemon/testing/tmp.js'
+import { seedJob, seedLibrary } from '../../../../daemon/testing/db.js'
 import { streamVideo } from '../stream-video.js'
 import { withDashboardDb } from '../runtime.js'
 function response(config: DashboardConfig, id: string, range?: string): Response {

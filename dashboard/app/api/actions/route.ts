@@ -1,6 +1,6 @@
 import { submitAction } from '../../../lib/server/submission'
 import { resolveDashboardConfig } from '../../../lib/config'
-import { errorMessage } from '../../../../src/errors'
+import { errorMessage } from '../../../../daemon/src/errors'
 import { csrfToken } from '../../../lib/runtime'
 export const runtime = 'nodejs'
 export async function POST(request: Request): Promise<Response> {

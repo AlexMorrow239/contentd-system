@@ -281,7 +281,7 @@ produce, or a scout run whose every channel died.
 ### Cadence
 
 There is no schedule to configure — throughput comes from the poll loop
-itself (`src/loop/daemon.ts`). Each of the daemon's three pipeline workers
+itself (`daemon/src/loop/daemon.ts`). Each of the daemon's three pipeline workers
 (produce, scout, digest) checks demand, does one unit of work if
 there is any, and re-checks immediately; an idle worker sleeps 30 seconds
 (`IDLE_SLEEP_MS`) before its next check, and a worker whose unit throws

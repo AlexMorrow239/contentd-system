@@ -1,13 +1,13 @@
 FROM node:22-bookworm-slim
 
-# ffmpeg/ffprobe  - src/media/ffmpeg.ts:23,47,58 and src/stages/qc.ts:93,132,144
+# ffmpeg/ffprobe  - daemon/src/media/ffmpeg.ts:23,47,58 and daemon/src/stages/qc.ts:93,132,144
 #                   invoke them by bare name through execa.
 # fonts-inter     - integrations/remotion/Root.tsx defaults font:'Inter' and
 #                   Captions.tsx passes it to Chrome as a CSS fontFamily. A
 #                   missing font is a SILENT fallback to generic sans, not an
 #                   error, and QC checks frames and duration but never typeface.
-# tzdata          - src/publish/schedule.ts's publish window/pacing is
-#                   local-wall-clock by design.
+# tzdata          - daemon/src/loop/digest-unit.ts schedules the daily digest
+#                   using local wall-clock time.
 # lib*            - Chrome headless shell's runtime dependency closure.
 # python3/g++     - better-sqlite3 and onnxruntime-node build from source when no
 #                   prebuild matches; failing loudly at build beats failing at 3am.
@@ -44,7 +44,7 @@ COPY --chown=node:node . .
 # Build request-rendered dashboard without provider keys or runtime state.
 RUN pnpm dashboard:build
 
-# warm-kokoro imports KOKORO_MODEL_ID from src/stages/voice.ts, so unlike the
+# warm-kokoro imports KOKORO_MODEL_ID from daemon/src/stages/voice.ts, so unlike the
 # browser layer above it genuinely needs the source copy and must stay below it.
 RUN pnpm exec tsx docker/warm-kokoro.ts
 

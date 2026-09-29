@@ -1,7 +1,7 @@
 import React from 'react'
 import { useCurrentFrame, useVideoConfig } from 'remotion'
-import type { CaptionStyle } from '../../src/remotion-types'
-import type { WordTiming } from '../../src/providers/whisperx'
+import type { CaptionStyle } from '../../daemon/src/remotion-types'
+import type { WordTiming } from '../../daemon/src/providers/whisperx'
 
 // How many words share one on-screen caption page.
 export const WORDS_PER_PAGE = 4

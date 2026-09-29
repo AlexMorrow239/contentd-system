@@ -7,11 +7,11 @@ import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
-import { testRoot, sweep } from '../../src/testing/tmp'
-import { openDb } from '../../src/db/index'
-import type { BrainrotPaths } from '../../src/config/paths'
-import { channelToml, writeChannelsDir, PLATFORM_META } from '../../src/testing/channel'
-import { seedJob, seedLibrary, seedDaemonState, seedTopic } from '../../src/testing/db'
+import { testRoot, sweep } from '../../daemon/testing/tmp'
+import { openDb } from '../../daemon/src/db/index'
+import type { BrainrotPaths } from '../../daemon/src/config/paths'
+import { channelToml, writeChannelsDir, PLATFORM_META } from '../../daemon/testing/channel'
+import { seedJob, seedLibrary, seedDaemonState, seedTopic } from '../../daemon/testing/db'
 
 interface DashboardFixture {
   db: Database

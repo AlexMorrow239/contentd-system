@@ -7,7 +7,7 @@ import tseslint from 'typescript-eslint'
 export default tseslint.config(
   {
     ignores: [
-      'dist',
+      '**/dist/**',
       '**/.next/**',
       'dashboard/next-env.d.ts',
       'playwright-report',
@@ -25,7 +25,8 @@ export default tseslint.config(
   },
   {
     files: [
-      'src/**/*.ts',
+      'daemon/src/**/*.ts',
+      'daemon/testing/**/*.ts',
       'integrations/remotion/**/*.ts',
       'docker/*.ts',
       'scripts/**/*.ts',
@@ -79,14 +80,14 @@ export default tseslint.config(
     // values and object methods detached from their instance — these rules
     // catch real bugs in application code but are just noise in tests.
     //
-    // Covers the whole test tier, not just the spec files: src/testing/ is the
+    // Covers the whole test tier, not just the spec files: daemon/testing/ is the
     // shared testkit and `_*.fixtures.ts` are per-module fixtures, both of
     // which build the same stub adapters and untyped rows the specs do.
     files: [
       '**/*.test.ts',
       '**/*.test.tsx',
       'dashboard/test/**',
-      'src/testing/**/*.ts',
+      'daemon/testing/**/*.ts',
       '**/_*.fixtures.ts',
     ],
     rules: {

@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
-import { parseBudgetWait, type BudgetWait } from '../../../../src/jobs/budget-wait.js'
-import { whereClause } from '../../../../src/db/sql.js'
+import { parseBudgetWait, type BudgetWait } from '../../../../daemon/src/jobs/budget-wait.js'
+import { whereClause } from '../../../../daemon/src/db/sql.js'
 import { libraryBytes, libraryLinks, type LibraryBytes } from './library.js'
 
 // A tuple, not a bare union: the filter dropdowns need the values at runtime,

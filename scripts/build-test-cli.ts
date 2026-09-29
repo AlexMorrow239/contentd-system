@@ -1,6 +1,6 @@
 /**
- * Builds src/ into dist/ so the CLI subprocess tests can spawn
- * `node dist/cli.js` (~0.34s) instead of `pnpm exec tsx src/cli.ts` (~1.15s).
+ * Builds daemon/src/ into daemon/dist/ so the CLI subprocess tests can spawn
+ * `node daemon/dist/cli.js` instead of `pnpm exec tsx daemon/src/cli.ts`.
  * Invoked once per test run from the Vitest globalSetup — production code
  * never calls this, and `pnpm build` remains the type-checking entry point
  * (esbuild only transpiles; it does not type-check).
@@ -9,11 +9,11 @@
  * every import.meta.url-relative asset lookup. The three references in this
  * codebase all survive the mirrored layout that `outbase: SRC` produces:
  *
- *   src/cli.ts:576           main-module guard   -> dist/cli.js vs process.argv[1]
- *   src/db/index.ts:7        ./schema.sql        -> dist/db/schema.sql (copied below)
- *   src/stages/assemble.ts   ../../integrations/remotion/...  -> <repo>/integrations/remotion/index.ts
+ *   daemon/src/cli.ts               main-module guard   -> daemon/dist/cli.js vs process.argv[1]
+ *   daemon/src/db/index.ts          ./schema.sql        -> daemon/dist/db/schema.sql (copied below)
+ *   daemon/src/stages/assemble.ts   ../../../integrations/remotion/...  -> <repo>/integrations/remotion/index.ts
  *
- * The last is why outbase matters: dist/stages/assemble.js walking ../../
+ * The last is why outbase matters: daemon/dist/stages/assemble.js walking ../../../
  * lands on the repo root, so Remotion bundles from real source, not a copy.
  */
 import { build } from 'esbuild'
@@ -22,15 +22,15 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
-const SRC = path.join(REPO_ROOT, 'src')
-const DIST = path.join(REPO_ROOT, 'dist')
+const SRC = path.join(REPO_ROOT, 'daemon', 'src')
+const DIST = path.join(REPO_ROOT, 'daemon', 'dist')
 
-/** Every .ts under src/ except tests and the test-only helpers in src/testing/. */
+/** Every non-test .ts module under daemon/src/. */
 function entryPoints(dir: string = SRC, acc: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const full = path.join(dir, name)
     if (statSync(full).isDirectory()) {
-      if (full !== path.join(SRC, 'testing')) entryPoints(full, acc)
+      entryPoints(full, acc)
     } else if (name.endsWith('.ts') && !name.endsWith('.test.ts')) {
       acc.push(full)
     }
@@ -46,11 +46,11 @@ function expectedOutputs(sources: string[]): Set<string> {
 }
 
 /**
- * Deletes dist/ files that no longer correspond to anything under src/.
+ * Deletes daemon/dist/ files that no longer correspond to anything under daemon/src/.
  *
  * A blanket rmSync(DIST) is not an option — it would race any subprocess
  * already spawned from the tree — but leaving deletions behind forever means a
- * module renamed in src/ keeps a stale twin in dist/ that still imports and
+ * module renamed in daemon/src/ keeps a stale twin in daemon/dist/ that still imports and
  * still runs. Removing only the orphans is safe: nothing current can be
  * executing a file that no longer has a source.
  */
@@ -59,7 +59,7 @@ function pruneOrphans(expected: Set<string>, dir: string = DIST): void {
   try {
     entries = readdirSync(dir)
   } catch {
-    return // first run: dist/ does not exist yet
+    return // first run: daemon/dist/ does not exist yet
   }
   for (const name of entries) {
     const full = path.join(dir, name)

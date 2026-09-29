@@ -36,7 +36,7 @@ pnpm test:config             # schema, path rules, tracked channel TOMLs
 pnpm test:scout              # sources, scoring, filtering, queues
 pnpm test:pipeline           # stages, lifecycle, real render tests
 pnpm test:coverage           # report-only coverage; no thresholds
-pnpm vitest run src/jobs/test/runner.test.ts
+pnpm vitest run daemon/src/jobs/test/runner.test.ts
 ```
 
 Opt-in tiers:
@@ -93,13 +93,13 @@ production operations, and recovery.
 
 ### The pipeline: stages over a JobContext
 
-`src/jobs/pipeline.ts` owns stage order for produce, resume, and produce-next:
+`daemon/src/jobs/pipeline.ts` owns stage order for produce, resume, and produce-next:
 
 ```
 script -> voice -> captions -> visuals -> assemble -> qc
 ```
 
-A `StageDef` runs against `JobContext` (`src/jobs/types.ts`). Read/write artifacts
+A `StageDef` runs against `JobContext` (`daemon/src/jobs/types.ts`). Read/write artifacts
 through `ctx.artifactPath(stage, file)`, under `runs/<jobId>/attempts/<attemptId>/<stage>/`.
 Completed inputs resolve through persisted `job_stages.artifact_dir`; legacy null
 references resolve to `runs/<jobId>/<stage>/`. Never write replacement outputs
@@ -119,7 +119,7 @@ failure or absence. Budget enforcement must not trigger a paid-provider fallback
 
 ### One daemon, five workers share one SQLite file
 
-`src/loop/daemon.ts` starts `produce`, `scout`, `digest`, `actions-fast`, and
+`daemon/src/loop/daemon.ts` starts `produce`, `scout`, `digest`, `actions-fast`, and
 `actions-slow`. It owns process signals, singleton ownership and startup logging;
 `daemon-workers.ts` owns production composition and exposes startup reconciliation
 as `initializeDaemonWork`. Both production units and startup work can be called
@@ -146,7 +146,7 @@ Idle/error sleeps are 30s/60s; fast actions poll at 1s. Identical idle messages
 are deduplicated. Digest runs at/after 08:00 local time once per process-day;
 a same-day restart can produce another report. There is no publishing worker.
 
-`produceNextTick` (`src/loop/produce-next.ts`) loads channels fresh each tick,
+`produceNextTick` (`daemon/src/loop/produce-next.ts`) loads channels fresh each tick,
 reports malformed config as a structured noop, and acquires the `produce`
 lease before mutation. It repairs historical claimed-topic/library mismatches,
 then reconciles abandoned jobs and executes `planTick`. Managed leases renew
@@ -156,7 +156,7 @@ in the same process; labels and PIDs are diagnostic only. Job, stage, finalizati
 and action writes verify ownership inside their transaction. Losing ownership cancels supported work and fences
 late results; known provider charges remain associated with the attempt.
 
-`planTick` (`src/loop/plan-tick.ts`) prefers due recovered jobs, then eligible
+`planTick` (`daemon/src/loop/plan-tick.ts`) prefers due recovered jobs, then eligible
 budget-blocked jobs, then claims
 new topics subject to daily production limits, budgets, and backlog capacity.
 A channel holding `ceil(videos_per_day * backlog_days)` unconsumed videos
@@ -168,7 +168,7 @@ doubles to 30 minutes, and resets on completed stage progress. Ordinary provider
 failures still require explicit resume. Paid-stage replay warns about duplicate
 charges and incomplete accounting.
 
-`fullyPostedClause` (`src/posts/posts.ts`) is shared by inventory, post-queue,
+`fullyPostedClause` (`daemon/src/posts/posts.ts`) is shared by inventory, post-queue,
 and digest readers. Empty `platforms` means nothing is fully posted.
 
 The three lease names are `daemon`, `produce`, and `scout`, all managed with
@@ -187,13 +187,13 @@ scout sources and target platforms has neither candidates nor unposted videos.
 ### The operator-action queue: two more workers, drained fast and slow
 
 The dashboard inserts `operator_actions`; daemon workers execute them.
-Keep `src/actions/` separated by import boundary:
+Keep `daemon/src/actions/` separated by import boundary:
 
 - `catalog.ts`: lightweight metadata and argument schemas, shared with dashboard.
 - `queue.ts`: action persistence and guarded state transitions.
 - `handlers.ts`: daemon-only implementations; never import into the dashboard.
 
-`src/arch.test.ts` checks the dashboard's transitive runtime imports, including TSX and dynamic imports. Pipeline,
+`daemon/src/arch.test.ts` checks the dashboard's transitive runtime imports, including TSX and dynamic imports. Pipeline,
 Remotion, and paid-provider clients must stay outside the HTTP process.
 
 Fast actions are `topics.reject`, `topics.requeue`, `library.approve`,
@@ -244,7 +244,7 @@ live in the catalog; they do not uniformly mean “this action spends money.”
 
 `docker/state/channels/*.toml` is the sole maintained source of truth. Compose mounts
 it at `/app/state/channels`; tests create disposable channel fixtures.
-`src/config/channel.ts` validates TOML with Zod and normalizes to camelCase.
+`daemon/src/config/channel.ts` validates TOML with Zod and normalizes to camelCase.
 The file basename must equal `name`, and declared channel names must be unique:
 resume loads `<channelsDir>/<job.channel>.toml` by filename.
 
@@ -252,14 +252,14 @@ Keep top-level TOML keys before section headers. `platforms` is a top-level
 array of unique `youtube`, `instagram`, and/or `tiktok` entries; empty means no
 posting checklist and no inventory can count as fully posted. Removed
 `[publish]`, `slots`, `[caption_style]`, and `[scout] min_score` settings fail validation.
-Caption styling is shared in code via `CAPTION_STYLE` in `src/remotion-types.ts`.
+Caption styling is shared in code via `CAPTION_STYLE` in `daemon/src/remotion-types.ts`.
 `videos_per_day` limits production; it is not a platform upload quota.
 
 `backlog_days` (default 2) caps unconsumed finished inventory.
 `[scout] queue_days` (default 3) caps candidate depth before a fetch. Neither
 is an expiry timer. A channel without scout sources is fed manually.
 
-`BRAINROT_ROOT` is required unless `--root` is supplied. `src/config/paths.ts`
+`BRAINROT_ROOT` is required unless `--root` is supplied. `daemon/src/config/paths.ts`
 derives `db/brainrot.db`, `runs/`, and `channels/` beneath it. There is no
 implicit host root. Compose supplies `/app/state`; tests supply temporary roots.
 Only `BRAINROT_ROOT` selects paths; obsolete path variables are ignored.
@@ -306,14 +306,14 @@ other non-Arctic Shift scouting code.
 ### Story mode: channels that narrate reddit posts verbatim
 
 `[story]` channels narrate Reddit self-post bodies from Arctic Shift's
-`selftext_html` (`storyBody` in `src/stories/body.ts`).
-The body is assembled locally by `runStoryScript` (`src/stages/script.ts`);
+`selftext_html` (`storyBody` in `daemon/src/stories/body.ts`).
+The body is assembled locally by `runStoryScript` (`daemon/src/stages/script.ts`);
 the model response schema accepts only platform metadata, not narration.
 The hook is still the scout's model-authored topic title. “Verbatim” refers to
 the body source, with sanitization applied before narration.
 
-`src/stories/` is pure: the architecture lint permits only `errors.ts` imports
-from `src/` and bans direct database, filesystem, and network access.
+`daemon/src/stories/` is pure: the architecture lint permits only `errors.ts` imports
+from `daemon/src/` and bans direct database, filesystem, and network access.
 
 Each story part is a separate `topics` row/job/video. Parts share `series_key`,
 carry `body_text`, `part_index`, `part_count`, and `truncated`, and use a dedupe
@@ -346,15 +346,15 @@ relying on pages that query newly added columns.
 
 ### Budget enforcement is layered, not a single check
 
-`src/jobs/costs.ts`'s `assertBudget` is called before every paid provider call
+`daemon/src/jobs/costs.ts`'s `assertBudget` is called before every paid provider call
 and checks, in order: per-video cap (`channel.budget.perVideoUsdMicros`) →
 channel-day cap (UTC) → global-day cap (`BRAINROT_GLOBAL_DAILY_USD`, spans all
 channels). A breach throws `BudgetExceededError` _before_ the call fires.
 Providers that pay for a call that then fails downstream (e.g. a schema-invalid
 LLM response) still have to ledger that spend. The provider tags the thrown
-error via `tagError` (`src/errors.ts`) with `context: { costUsdMicros }`, which
+error via `tagError` (`daemon/src/errors.ts`) with `context: { costUsdMicros }`, which
 leaves the error's identity intact — anthropic keeps throwing a real `ZodError`
-so callers still match `instanceof z.ZodError` — and `src/providers/errors.ts`'s
+so callers still match `instanceof z.ZodError` — and `daemon/src/providers/errors.ts`'s
 `errorCostUsdMicros` reads it back.
 
 Budget refusals persist stage, scope, upcoming cost, observed spend, cap, UTC
@@ -366,8 +366,8 @@ backlog capacity and reuse the original daily job slot.
 
 ### Errors: one vocabulary, two axes
 
-`src/errors.ts` owns `BrainrotError`, `errorMessage`, `classify`, `tagError`,
-`errorContext`, and `isAbortLike`. It imports nothing from `src/`; an architecture
+`daemon/src/errors.ts` owns `BrainrotError`, `errorMessage`, `classify`, `tagError`,
+`errorContext`, and `isAbortLike`. It imports nothing from `daemon/src/`; an architecture
 lint protects that boundary. Domain classes stay with their owning modules.
 
 Errors have a domain (`provider`, `config`, `job`, `scout`, `internal`)
@@ -383,9 +383,9 @@ base constructor's assignment with undefined.
 
 ### Providers and the sidecar
 
-`src/providers/*.ts` wrap external APIs (Anthropic for scripts, ElevenLabs for
+`daemon/src/providers/*.ts` wrap external APIs (Anthropic for scripts, ElevenLabs for
 premium voice, kokoro/edge-tts for the free voice fallback chain).
-`src/providers/whisperx.ts` talks to the Dockerized WhisperX sidecar
+`daemon/src/providers/whisperx.ts` talks to the Dockerized WhisperX sidecar
 (`docker-compose.yml`) for caption word-level alignment — needed whenever a
 job's voice.json wasn't produced by a successful ElevenLabs synth (ElevenLabs
 itself returns word timings directly, no alignment pass needed).
@@ -395,7 +395,7 @@ itself returns word timings directly, no alignment pass needed).
 Posting happens by hand from `/post`. There is no upload adapter, OAuth grant,
 credential store, publishing worker, or platform retry state machine.
 
-`src/posts/types.ts` declares the platform vocabulary; `meta.ts` validates and
+`daemon/src/posts/types.ts` declares the platform vocabulary; `meta.ts` validates and
 normalizes titles/descriptions/hashtags and composes paste fields. YouTube has
 separate title/body/tags; Instagram and TikTok use one caption block.
 
@@ -433,8 +433,8 @@ clipboard controls, and router refreshes. Stable row keys preserve drafts and
 video elements across refreshes. `POST /api/actions` returns JSON acceptance
 with an action ID; confirmation pages remain GET-only until submission.
 
-Database openers live in `src/db/dashboard.ts` without schema or migration
-imports; the dashboard must not import `src/db/index.ts`. Next reads
+Database openers live in `daemon/src/db/dashboard.ts` without schema or migration
+imports; the dashboard must not import `daemon/src/db/index.ts`. Next reads
 config and state at request time, never while building. Its launcher mints one
 CSRF token shared through the server environment across Next bundles/workers.
 Use webpack extension aliases for shared NodeNext `.js` source imports.
@@ -448,8 +448,8 @@ The library's QC verdict comes from `library.qc_json`.
 ### Remotion rendering
 
 `integrations/remotion/` is the actual video composition (React components rendered to
-frames by `@remotion/renderer`), driven by `src/stages/assemble.ts` and
-`src/stages/captions.ts`. It has its own `tsconfig.json` and is type-checked
+frames by `@remotion/renderer`), driven by `daemon/src/stages/assemble.ts` and
+`daemon/src/stages/captions.ts`. It has its own `tsconfig.json` and is type-checked
 separately in `pnpm build`, but is not a separate package — no independent
 install/version.
 
@@ -466,8 +466,8 @@ costs, leases, posting records, operator actions, and daemon liveness. Artifacts
 live under `<root>/runs/<jobId>/attempts/<attemptId>/<stage>/`, bound to host
 `docker/state/runs/`. Legacy canonical stage directories remain readable.
 
-`src/db/schema.sql` describes a fresh database and is executed on each
-`openDb`. Existing-database changes belong in `src/db/migrate.ts`, called after
+`daemon/src/db/schema.sql` describes a fresh database and is executed on each
+`openDb`. Existing-database changes belong in `daemon/src/db/migrate.ts`, called after
 schema application. Each migration probes its precondition and must be
 idempotent. Table rebuilds reuse schema.sql rather than duplicating DDL.
 Data-dependent indexes and indexes over newly migrated columns belong in
@@ -476,7 +476,7 @@ migrate.ts so schema application cannot wedge an older database first.
 
 ### Test layout and conventions
 
-Tests are colocated (`src/**/*.test.ts`, plus `integrations/remotion/**`), in two tiers:
+Tests are colocated (`daemon/src/**/*.test.ts`, plus `integrations/remotion/**`), in two tiers:
 the default hermetic run and `*.contract.test.ts` (`CONTRACT=1`, real API calls;
 paid ones skip without their key and the free Arctic Shift one always runs).
 Compose forwards only explicit production settings.
@@ -484,12 +484,12 @@ Voice selection is solely `[voice.premium]` or the free fallback chain; there
 is no `--dev`, `voice.dev`, or development voice environment override.
 
 **Layout:** more than three test files in a directory go into its `test/`
-subdirectory; `src/` root is exempt for repo-wide tests. Prefer one behavior
+subdirectory; `daemon/src/` root is exempt for repo-wide tests. Prefer one behavior
 file per module; split by genuinely different concerns, not size alone.
 
-**`src/testing/` is the one shared testkit.** The test CLI build excludes it
-from `dist/`; runtime code must not import it. Production runs source through
-`tsx`, so the `dist/` exclusion is not a production isolation guarantee. Use
+**`daemon/testing/` is the one shared testkit.** The test CLI build excludes it
+from `daemon/dist/`; runtime code must not import it. Production runs source through
+`tsx`, so the build exclusion is not a production isolation guarantee. Use
 the shared helpers rather than re-rolling fixtures locally:
 
 - `tmp.ts` — `tmpDir(prefix)`. **The only way to make a temp dir.** It registers
@@ -522,17 +522,17 @@ Conventions:
   a **pass** for work that never ran.
 - Keep real-config smoke tests separate from fixture-based schema tests.
 - A `_<module>.fixtures.ts` holds what only that module needs, and **delegates
-  row SQL to `src/testing/db.ts`** rather than re-issuing INSERTs. That is what
+  row SQL to `daemon/testing/db.ts`** rather than re-issuing INSERTs. That is what
   lets a module keep an ergonomic local call shape (digest ages rows via
   `isoAgo`) without a second copy of the schema.
-- Repo-wide architecture lints go in `src/arch.test.ts`. They are import-heavy
+- Repo-wide architecture lints go in `daemon/src/arch.test.ts`. They are import-heavy
   by nature (proving module A must not load module B means loading B), so they
   are kept out of behavior files that would otherwise be instant.
-- The eslint test-tier rule relaxation covers `**/*.test.ts`, `src/testing/**`
+- The eslint test-tier rule relaxation covers `**/*.test.ts`, `daemon/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
 **Performance.** `scripts/vitest-sequencer.ts` starts known slow files first;
-`src/testing/sequencer.test.ts` verifies its entries still name real files.
+`daemon/testing/sequencer.test.ts` verifies its entries still name real files.
 Use short, low-resolution media fixtures for selection/branching tests. Reserve
 full-size encodes for output-contract tests, and encode shared fixtures once
 in `beforeAll`. Measure the current suite before changing its scheduling;
@@ -540,8 +540,8 @@ historical test counts and timings are not acceptance criteria.
 
 ### Test-only build
 
-Vitest global setup runs `scripts/build-test-cli.ts` to transpile `src/` into
-a mirrored `dist/` tree for CLI subprocess tests. Do not bundle: CLI entrypoint
+Vitest global setup runs `scripts/build-test-cli.ts` to transpile `daemon/src/` into
+a mirrored `daemon/dist/` tree for CLI subprocess tests. Do not bundle: CLI entrypoint
 guards, schema lookup, and Remotion paths depend on `import.meta.url` and the
 preserved directory depth. `pnpm build` remains type-checking only.
 

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { connection } from 'next/server'
 import { Navigation } from '../components/controls'
-import { envValue } from '../../src/config/paths'
+import { envValue } from '../../daemon/src/config/paths'
 import './globals.css'
 export const metadata = { title: 'Brainrot · Admin', description: 'Brainrot operator dashboard' }
 export default async function Layout({ children }: { children: ReactNode }) {

@@ -1,10 +1,10 @@
 import type { Database } from 'better-sqlite3'
-import type { ChannelConfig } from '../../../../src/config/channel.js'
+import type { ChannelConfig } from '../../../../daemon/src/config/channel.js'
 import {
   channelDaySpentMicrosByChannel,
   globalDailyCapMicros,
   globalDaySpentMicros,
-} from '../../../../src/jobs/costs.js'
+} from '../../../../daemon/src/jobs/costs.js'
 
 export interface StatusCount {
   status: string

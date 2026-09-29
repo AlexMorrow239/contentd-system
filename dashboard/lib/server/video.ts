@@ -37,7 +37,7 @@ export function parseRange(
 /**
  * Containment check for a database-sourced video path. runsRoot is now an
  * runtime root path (e.g. '/app/state/runs' in the container — see
- * src/config/paths.ts), and
+ * daemon/src/config/paths.ts), and
  * runner.ts's artifactPath joins jobId/stage/file onto it, so library rows
  * written under this branch hold absolute paths like
  * '/app/state/runs/<jobId>/assemble/final.mp4'. A handful of rows written

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { listPostLog } from '../posts.js'
-import { memDb, seedJob, seedPost } from '../../../../../src/testing/db.js'
+import { memDb, seedJob, seedPost } from '../../../../../daemon/testing/db.js'
 
 describe('listPostLog', () => {
   it('joins the topic off the owning job', () => {

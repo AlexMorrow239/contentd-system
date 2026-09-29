@@ -1,4 +1,4 @@
-import { tryLoadChannelsDir } from '../../../src/config/channel'
+import { tryLoadChannelsDir } from '../../../daemon/src/config/channel'
 import { listPostQueue } from '../../lib/server/queries/post'
 import { DashboardPage, type PageProps } from '../../components/page'
 import { PostCard } from '../../components/post-card'

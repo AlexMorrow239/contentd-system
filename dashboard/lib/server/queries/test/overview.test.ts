@@ -1,8 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import type { ChannelConfig } from '../../../../../src/config/channel.js'
-import { testChannel } from '../../../../../src/testing/channel.js'
-import { memDb, seedCost, seedJob, seedLibrary, seedStage } from '../../../../../src/testing/db.js'
+import type { ChannelConfig } from '../../../../../daemon/src/config/channel.js'
+import { testChannel } from '../../../../../daemon/testing/channel.js'
+import {
+  memDb,
+  seedCost,
+  seedJob,
+  seedLibrary,
+  seedStage,
+} from '../../../../../daemon/testing/db.js'
 import { buildOverview } from '../overview.js'
 
 function channel(name: string, perDayUsdMicros: number): ChannelConfig {

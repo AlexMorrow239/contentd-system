@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { tmpDir } from '../../../../src/testing/tmp.js'
-import { fileDb } from '../../../../src/testing/db.js'
+import { tmpDir } from '../../../../daemon/testing/tmp.js'
+import { fileDb } from '../../../../daemon/testing/db.js'
 import { databaseError, withDashboardDb } from '../runtime.js'
 describe('withDashboardDb', () => {
   it('does not create missing directories or a missing database', () => {
