@@ -15,7 +15,7 @@ backlog_days = 2
 platforms = ["youtube", "instagram"]
 
 [voice]
-voice_id = "Gubgw9l4dtIoQA9YZHgx"
+voice_id = "JBFqnCBsd6RMkjVDRZzb"
 
 [scout]
 subreddits = [
