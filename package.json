@@ -37,6 +37,7 @@
     "@mozilla/readability": "^0.6.0",
     "@remotion/bundler": "^4.0.491",
     "@remotion/cli": "^4.0.491",
+    "@remotion/media": "4.0.491",
     "@remotion/renderer": "^4.0.491",
     "better-sqlite3": "^12.11.1",
     "commander": "^15.0.0",

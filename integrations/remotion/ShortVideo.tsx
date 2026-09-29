@@ -1,5 +1,6 @@
 import React from 'react'
-import { AbsoluteFill, Audio, OffthreadVideo, staticFile } from 'remotion'
+import { Audio, Video } from '@remotion/media'
+import { AbsoluteFill, staticFile } from 'remotion'
 import type { ShortVideoProps } from '../../daemon/src/remotion-types'
 import { Captions } from './Captions'
 
@@ -17,7 +18,7 @@ export const ShortVideo: React.FC<ShortVideoProps> = ({
 }) => {
   return (
     <AbsoluteFill style={{ backgroundColor: 'black' }}>
-      <OffthreadVideo src={staticFile(backgroundSrc)} muted />
+      <Video src={staticFile(backgroundSrc)} muted />
       <Audio src={staticFile(audioSrc)} />
       <Captions words={words} style={style} />
     </AbsoluteFill>

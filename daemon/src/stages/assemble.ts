@@ -59,7 +59,7 @@ export const assembleStage: StageDef = {
     checkpoint(ctx)
 
     // Remotion SSR dynamic-asset mechanism (verified against remotion.dev):
-    // absolute paths are NOT allowed in <OffthreadVideo>/<Audio>. Copy the
+    // absolute paths are NOT allowed in <Video>/<Audio>. Copy the
     // per-job files into the bundle's public/ folder, then reference them with
     // staticFile(). Isolate retries as well as jobs inside the reused bundle.
     const assetNamespace = ctx.attemptId ? `${ctx.jobId}/${ctx.attemptId}` : ctx.jobId
