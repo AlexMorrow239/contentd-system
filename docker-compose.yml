@@ -1,4 +1,19 @@
 services:
+  db-init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: brainrot:latest
+    # Docker creates a fresh named volume as root:root. The application image
+    # runs as the unprivileged `node` user, so it cannot create brainrot.db in
+    # that volume until ownership is handed over once. Keep root confined to
+    # this one-shot initializer; the daemon and dashboard remain unprivileged.
+    user: root
+    command: ['sh', '-c', 'chown -R node:node /app/state/db']
+    restart: 'no'
+    volumes:
+      - brainrot-data:/app/state/db
+
   whisperx:
     build: ./integrations/whisperx
     # Load-bearing for any channel without [voice.premium]: kokoro/edge-tts
@@ -46,6 +61,8 @@ services:
     # table is finite. tini (init: true) reaps them.
     init: true
     depends_on:
+      db-init:
+        condition: service_completed_successfully
       whisperx:
         condition: service_healthy
     # Only declared production settings enter the daemon; host test settings
@@ -109,9 +126,12 @@ services:
     image: brainrot:latest
     command: pnpm dashboard:start
     restart: unless-stopped
-    # Deliberately no depends_on: whisperx. The dashboard reads a file and
-    # runs Next.js; coupling it to sidecar health would hide the dashboard you
-    # would use to diagnose an unhealthy sidecar.
+    # Depend only on volume initialization, not whisperx. The dashboard reads
+    # a file and runs Next.js; coupling it to sidecar health would hide the
+    # dashboard you would use to diagnose an unhealthy sidecar.
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
     # Deliberately no provider credentials here. This is the one
     # process that terminates unauthenticated HTTP, and env_file would inject
     # every key in the host .env — ANTHROPIC_API_KEY, ELEVENLABS_API_KEY, etc
