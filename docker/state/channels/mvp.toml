@@ -1,9 +1,11 @@
-# The MVP channel: one channel, topic mode, cross-posted to YouTube and
-# Instagram, fed by r/space alone. Subreddits are read through the Arctic
-# Shift archive, since reddit.com itself is unreachable keyless (anti-scraping
-# + blocked OAuth approval); it is the only scout source. There is NO `[story]`
-# table: story mode stays in the code, dormant purely because nothing here
-# mentions it. Scaling up is adding TOMLs, not restoring code.
+# The MVP channel: high-energy finance-bro market commentary in topic mode,
+# cross-posted to YouTube and Instagram. It scouts a broad spread of investing,
+# trading, economics, personal-finance, and crypto communities through the
+# Arctic Shift archive, since reddit.com itself is unreachable keyless
+# (anti-scraping + blocked OAuth approval). Reddit is the only scout source.
+# There is NO `[story]` table: story mode stays in the code, dormant purely
+# because nothing here mentions it. Scaling up is adding TOMLs, not restoring
+# code.
 #
 # docker/state/channels/ is the sole maintained source of channel configuration.
 # Compose mounts it read-only at /app/state/channels; workers re-read it every
@@ -13,7 +15,7 @@
 # channel config as <channelsDir>/<job.channel>.toml, so a mismatch wedges
 # resume. loadChannelsDir rejects it at load time rather than at 3am.
 name = "mvp"
-niche = ["space facts", "astronomy"]
+niche = ["high-energy finance bro commentary", "stocks", "options", "crypto", "wealth building"]
 script_model = "claude-sonnet-5"
 
 # bg_dir MUST stay above every [section] header — TOML nests any
@@ -64,19 +66,41 @@ provider = "elevenlabs"
 voice_id = "Gubgw9l4dtIoQA9YZHgx"
 
 [scout]
-# Subreddits are bare names; `r/space` is rejected as a source error. Each is
-# read through Arctic Shift (daemon/src/scout/sources/reddit.ts), newest posts first.
-# Removed and deleted posts are dropped before `fetched` is counted; image
-# posts and AutoModerator threads are dropped before scoring. The archive has
-# no "hot" ranking, so an active subreddit brings fresh posts on most scout
-# attempts, and the queue-full gate (queue_days below) is what bounds scoring
-# spend. Arctic Shift makes no uptime promises: when this source starts
-# erroring, check https://status.arctic-shift.photon-reddit.com.
-subreddits = ["space","spaceporn","NASA","ESA"]
+# Subreddits are bare names; an `r/` prefix is rejected as a source error. Each
+# is read through Arctic Shift (daemon/src/scout/sources/reddit.ts), newest
+# posts first. The mix deliberately spans speculative trading, long-term
+# investing, market analysis, personal finance, economics, and crypto so the
+# channel has both breaking-market hooks and evergreen money topics. Removed
+# and deleted posts are dropped before `fetched` is counted; image posts and
+# AutoModerator threads are dropped before scoring. The archive has no "hot"
+# ranking, so active subreddits bring fresh posts on most scout attempts, and
+# the queue-full gate (queue_days below) is what bounds scoring spend. Arctic
+# Shift makes no uptime promises: when this source starts erroring, check
+# https://status.arctic-shift.photon-reddit.com.
+subreddits = [
+  "wallstreetbets",
+  "stocks",
+  "investing",
+  "StockMarket",
+  "options",
+  "Daytrading",
+  "pennystocks",
+  "SecurityAnalysis",
+  "ValueInvesting",
+  "dividends",
+  "ETFs",
+  "financialindependence",
+  "personalfinance",
+  "finance",
+  "economics",
+  "economy",
+  "CryptoCurrency",
+  "Bitcoin",
+]
 
 # Newest posts fetched per subreddit per scout attempt (Arctic Shift's max is
-# 100). With a single subreddit, a failed fetch is a total scouting outage:
-# the tick reports AllSourcesFailedError until Arctic Shift answers again.
+# 100). A failed community fetch can be absorbed by the rest of this source
+# mix; the tick reports AllSourcesFailedError only when every fetch fails.
 per_source_limit = 25
 # Scout-side depth analogue of backlog_days: the scout skips this channel once
 # it holds ceil(videos_per_day x queue_days) = ceil(15 x 3) = 45 candidate
@@ -86,7 +110,7 @@ queue_days = 3
 
 # 15 renders/day is the dominant cost driver, and it is production — not
 # publishing — that spends: one Sonnet script call per video, plus the scout's
-# Haiku scoring calls. per_video_usd is a generous per-job
+# Haiku scoring calls across the subreddit mix. per_video_usd is a generous per-job
 # ceiling (a breach marks the job `blocked`, not `failed`, and it resumes
 # after a cap change); per_day_usd is 15 x that ceiling with headroom for
 # scout spend.
