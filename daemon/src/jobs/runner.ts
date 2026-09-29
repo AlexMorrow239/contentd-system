@@ -155,8 +155,7 @@ async function execute(
         .prepare('SELECT id FROM operator_actions WHERE job_id=? ORDER BY id DESC LIMIT 1')
         .get(jobId) as { id: number } | undefined
       const possibleDuplicateCharge =
-        job.recovery_stage === 'script' ||
-        (job.recovery_stage === 'voice' && channel.voice.premium !== undefined)
+        job.recovery_stage === 'script' || job.recovery_stage === 'voice'
       // Explicit stderr warning remains visible even when the ordinary logger is silent.
       console.warn(
         JSON.stringify({

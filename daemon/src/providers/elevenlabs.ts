@@ -89,9 +89,8 @@ export async function synthWithTimestamps(opts: {
   fetchImpl?: typeof fetch
 }): Promise<{ wavBytes: Buffer; durationMs: number; words: WordTiming[]; costUsdMicros: number }> {
   opts.signal?.throwIfAborted()
-  // Resolve the key before any network activity: a missing key must fail fast so
-  // the voice stage can fall back to the volume chain at zero spend.
-  const apiKey = opts.apiKey ?? process.env.ELEVENLABS_API_KEY
+  // A missing key fails the voice stage before any network activity or spend.
+  const apiKey = (opts.apiKey ?? process.env.ELEVENLABS_API_KEY)?.trim()
   if (!apiKey) {
     throw new BrainrotError(
       'synthWithTimestamps: missing ElevenLabs API key (pass opts.apiKey or set ELEVENLABS_API_KEY)',

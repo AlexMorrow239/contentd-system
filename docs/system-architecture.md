@@ -27,7 +27,7 @@ flowchart TB
   Scout --> Arctic[Arctic Shift Reddit archive]
   Scout --> Anthropic[Anthropic]
   Pipeline --> Anthropic
-  Pipeline --> Voice[ElevenLabs / local Kokoro / Edge TTS]
+  Pipeline --> Voice[ElevenLabs]
   Pipeline --> Whisper[WhisperX sidecar :8585]
   Assets[Background clips] --> Pipeline
   Pipeline --> Runs[Local runs and final MP4s]
@@ -203,17 +203,17 @@ flowchart LR
   Script[script] --> Voice[voice] --> Captions[captions] --> Visuals[visuals] --> Assemble[assemble] --> QC[qc] --> Commit[Atomic finalization]
 ```
 
-| Stage        | Main work / dependencies                                                                                                                | Output role                                                                |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Script       | Anthropic generates narration and platform metadata; story mode assembles sanitized source body locally and uses the model for metadata | Narration, hook, platform copy                                             |
-| Voice        | Configured ElevenLabs first; otherwise/failure local Kokoro then Edge TTS                                                               | Audio and voice metadata; successful ElevenLabs also supplies word timings |
-| Captions     | Use voice timings when present; otherwise call WhisperX                                                                                 | Word-level caption timings                                                 |
-| Visuals      | Select background assets; loop/crop with ffmpeg; track recent usage                                                                     | Background video inputs                                                    |
-| Assemble     | Remotion React composition, Chrome renderer, ffmpeg                                                                                     | `assemble/final.mp4`                                                       |
-| QC           | Local media checks using probe/ffmpeg and artifacts                                                                                     | QC verdict                                                                 |
-| Finalization | Read artifacts and commit database state                                                                                                | Library upsert, job done, claimed topic used in one transaction            |
+| Stage        | Main work / dependencies                                                                                                                | Output role                                                     |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Script       | Anthropic generates narration and platform metadata; story mode assembles sanitized source body locally and uses the model for metadata | Narration, hook, platform copy                                  |
+| Voice        | Required ElevenLabs voice; missing credentials or provider errors fail the job                                                          | Audio and voice metadata; ElevenLabs also supplies word timings |
+| Captions     | Use voice timings when present; otherwise call WhisperX                                                                                 | Word-level caption timings                                      |
+| Visuals      | Select background assets; loop/crop with ffmpeg; track recent usage                                                                     | Background video inputs                                         |
+| Assemble     | Remotion React composition, Chrome renderer, ffmpeg                                                                                     | `assemble/final.mp4`                                            |
+| QC           | Local media checks using probe/ffmpeg and artifacts                                                                                     | QC verdict                                                      |
+| Finalization | Read artifacts and commit database state                                                                                                | Library upsert, job done, claimed topic used in one transaction |
 
-There are no separate voice/render/QC queues. One `runJob` call awaits each stage. Stage status and committed `artifact_dir` references are the resume checkpoints. New outputs live under `<root>/runs/<jobId>/attempts/<attemptId>/<stage>/`; null references on legacy completed stages resolve to the original `<jobId>/<stage>/` directories. A completed stage is skipped on resume. A failed paid attempt can still have ledgered cost; a retry is not necessarily free. A budget error does not activate the paid-voice fallback path.
+There are no separate voice/render/QC queues. One `runJob` call awaits each stage. Stage status and committed `artifact_dir` references are the resume checkpoints. New outputs live under `<root>/runs/<jobId>/attempts/<attemptId>/<stage>/`; null references on legacy completed stages resolve to the original `<jobId>/<stage>/` directories. A completed stage is skipped on resume. A failed paid attempt can still have ledgered cost; a retry is not necessarily free. A budget error blocks the job before the paid call.
 
 ```mermaid
 stateDiagram-v2
@@ -317,7 +317,7 @@ SIGTERM drains active work with ownership still renewed. A forced kill or sleepi
 host may leave leases until expiry. Second-daemon startup is refused while the
 singleton lease is live. `--force` cannot override live operation ownership.
 SQLite guards state commits; immutable attempt files protect local outputs even
-when Kokoro or a renderer cannot cancel immediately. Known charges remain ledgered
+when a provider or renderer cannot cancel immediately. Known charges remain ledgered
 even after ownership loss; unknown charges cannot be inferred.
 
 Direct CLI produce/resume/scout now coordinate through managed leases. Other

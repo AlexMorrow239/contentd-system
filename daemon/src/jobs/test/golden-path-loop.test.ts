@@ -110,7 +110,7 @@ describe('golden-path loop e2e', () => {
         'platforms = ["youtube"]',
         '',
         '[voice]',
-        'volume = "af_heart"',
+        'voice_id = "EXAVITQu4vr4xnSDxMaL"',
         '',
         '[budget]',
         'per_video_usd = 8.0',

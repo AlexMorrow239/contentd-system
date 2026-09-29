@@ -12,7 +12,7 @@ export type StageStatus = 'pending' | 'running' | 'done' | 'failed'
 
 /**
  * Stage order for the drill-in timeline. Hardcoded rather than imported from
- * jobs/pipeline.ts because that module transitively imports remotion, kokoro
+ * jobs/pipeline.ts because that module transitively imports remotion
  * and the ffmpeg wrappers — a read-only viewer must not pull the renderer
  * into memory. queries/jobs.test.ts asserts this equals
  * pipelineStages().map(s => s.name), so it cannot silently drift.

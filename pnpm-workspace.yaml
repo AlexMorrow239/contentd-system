@@ -1,9 +1,6 @@
 allowBuilds:
   better-sqlite3: true
   esbuild: true
-  msedge-tts: true
-  onnxruntime-node: true
-  protobufjs: true
   sharp: true
 minimumReleaseAgeExclude:
   - '@anthropic-ai/sdk@0.112.3'

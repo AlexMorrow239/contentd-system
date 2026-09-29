@@ -31,12 +31,8 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
     videosPerDay: 2,
     backlogDays: 2,
     voice: {
-      volume: 'af_heart',
-      premium: {
-        provider: 'elevenlabs',
-        voiceId: 'EXAVITQu4vr4xnSDxMaL',
-        modelId: 'eleven_multilingual_v2',
-      },
+      voiceId: 'EXAVITQu4vr4xnSDxMaL',
+      modelId: 'eleven_multilingual_v2',
     },
     bgDir: ['assets/bg'],
     budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
@@ -89,7 +85,7 @@ export function channelTomlLines(opts: ChannelTomlOptions = {}): string[] {
     ...(opts.platforms === undefined ? [] : [`platforms = ${JSON.stringify(opts.platforms)}`]),
     '',
     '[voice]',
-    'volume = "af_heart"',
+    'voice_id = "EXAVITQu4vr4xnSDxMaL"',
     '',
     '[budget]',
     'per_video_usd = 8.0',

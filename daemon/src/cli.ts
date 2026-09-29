@@ -20,7 +20,7 @@ import type { BrainrotPaths } from './config/paths.js'
  * The pipeline, the runner, resume, the two loop ticks, the daemon and the
  * scout are all reached through `await import(...)` inside the actions that
  * need them, never statically at the top of this file. Between them they pull
- * Remotion, kokoro/edge-tts and the Anthropic client, which is ~310ms of
+ * Remotion and the Anthropic client, adding unnecessary
  * startup an operator running `brainrot jobs` or `brainrot topics list` would
  * otherwise pay to read three rows out of SQLite. Commander resolves one
  * action per invocation, so each command loads exactly the graph it runs.

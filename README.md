@@ -30,7 +30,7 @@ opt-in contract tests, not for `pnpm test`.
 Keys in `.env`:
 
 - `ANTHROPIC_API_KEY` — script generation
-- `ELEVENLABS_API_KEY` — premium voice (optional; unset falls back to kokoro/edge-tts)
+- `ELEVENLABS_API_KEY` — required for voice synthesis
 - `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (Compose default 12)
 
 ## Seed background footage
@@ -66,15 +66,21 @@ docker compose start brainrot
 Prints the `JobResult` as one JSON line; exit code `0` on `ready`/`needs-review`,
 `1` on `failed` or `blocked` (a `blocked` status means a budget cap was hit).
 
-A channel that sets `[voice.premium]` (ElevenLabs voiceId/modelId) gets that
-narration provider automatically, with word-level timings (no WhisperX
-dependency on the happy path) — no separate flag or tier needed. It falls back
-to kokoro/edge-tts on failure or when unconfigured. This requires
-`ELEVENLABS_API_KEY` in `.env`.
+ElevenLabs is the only voice provider. Set `ELEVENLABS_API_KEY` in `.env` and
+configure the channel's voice:
 
-Voice selection comes only from the channel: omit `[voice.premium]` to use
-the free chain. Tests mock each provider independently; there is no `--dev`
-flag or development voice override.
+```toml
+[voice]
+voice_id = "Gubgw9l4dtIoQA9YZHgx"
+model = "eleven_multilingual_v2" # optional; this is the default
+```
+
+Missing credentials or an ElevenLabs error fails the job; there is no alternate
+voice provider. The voice must be accessible to your ElevenLabs subscription.
+Migrate old TOMLs by moving `voice_id` and optional `model` from `[voice.premium]`
+into `[voice]` and removing `volume` and `provider`; the old fields are rejected.
+ElevenLabs supplies word timings on the happy path. WhisperX remains available
+for historical audio or missing provider alignment, not for voice synthesis.
 
 ## Where outputs land
 
@@ -382,8 +388,8 @@ Nothing wired to the dashboard posts publicly anymore — there is no upload
 adapter left to call. Three of the wired actions **render a video and spend
 real provider money** on a click: `produce next` and `produce` (a channel
 you pick and a topic you type, from `/jobs`) each run the whole pipeline —
-an Anthropic call for the script, ElevenLabs if the channel configures
-`[voice.premium]`, and a full Remotion render — and `resume` re-runs
+an Anthropic call for the script, ElevenLabs narration using `[voice]`,
+and a full Remotion render — and `resume` re-runs
 whichever of those stages the job has not finished. `scout now` also
 spends real provider money without rendering anything, on topic scoring.
 A separate risk
@@ -521,7 +527,7 @@ backlog capacity and does not create another daily quota slot. Ordinary failed
 jobs still require explicit resume.
 
 A `job-recovery` warning names the job, stage, old/new attempt and linked action.
-Replaying an interrupted script or premium-voice stage can repeat a paid call;
+Replaying an interrupted script or voice stage can repeat a paid call;
 the warning explicitly reports possible duplicate charges and incomplete cost
 accounting. Unknown provider charges cannot be reconstructed automatically.
 

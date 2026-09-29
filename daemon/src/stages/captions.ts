@@ -10,11 +10,9 @@ export interface CaptionsArtifact {
   words: WordTiming[]
 }
 
-// Dual mode: provider-supplied word timings (voice/timings.json, written only
-// by a successful ElevenLabs premium synth) win over the WhisperX sidecar — a
-// premium run whose synth succeeded has no sidecar dependency. Volume runs and
-// premium runs that fell back to kokoro/edge-tts have no timings.json (the
-// voice stage guarantees that) and take the WhisperX path unchanged.
+// ElevenLabs word timings take precedence. WhisperX can still align historical
+// audio or a successful synthesis whose provider alignment was absent/invalid.
+// It never synthesizes replacement audio after a voice failure.
 export const captionsStage: StageDef = {
   name: 'captions',
   async run(ctx: JobContext): Promise<void> {

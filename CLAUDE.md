@@ -114,8 +114,9 @@ idempotency and that transaction boundary. `library.qc_json` carries the
 verdict so dashboard queries do not need to read job artifacts.
 
 `visuals-volume.ts` selects and loops/crops a background clip. Voice selection
-is independent: configured ElevenLabs first, then kokoro/edge-tts on provider
-failure or absence. Budget enforcement must not trigger a paid-provider fallback.
+is independent: ElevenLabs is the only voice provider. `[voice]` requires
+`voice_id` and accepts an optional `model`. Missing credentials or provider
+failures fail the job; there is no alternate voice provider.
 
 ### One daemon, five workers share one SQLite file
 
@@ -389,11 +390,11 @@ base constructor's assignment with undefined.
 ### Providers and the sidecar
 
 `daemon/src/providers/*.ts` wrap external APIs (Anthropic for scripts, ElevenLabs for
-premium voice, kokoro/edge-tts for the free voice fallback chain).
+voice synthesis).
 `daemon/src/providers/whisperx.ts` talks to the Dockerized WhisperX sidecar
-(`docker-compose.yml`) for caption word-level alignment — needed whenever a
-job's voice.json wasn't produced by a successful ElevenLabs synth (ElevenLabs
-itself returns word timings directly, no alignment pass needed).
+(`docker-compose.yml`) for caption word-level alignment — needed whenever
+historical audio has no timings or ElevenLabs returns missing/invalid alignment.
+ElevenLabs normally returns word timings directly, with no alignment pass needed.
 
 ### Posting: manual, per platform
 
@@ -485,7 +486,7 @@ Tests are colocated (`daemon/src/**/*.test.ts`, plus `integrations/remotion/**`)
 the default hermetic run and `*.contract.test.ts` (`CONTRACT=1`, real API calls;
 paid ones skip without their key and the free Arctic Shift one always runs).
 Compose forwards only explicit production settings.
-Voice selection is solely `[voice.premium]` or the free fallback chain; there
+Voice selection is solely `[voice]` with an ElevenLabs `voice_id`; there
 is no `--dev`, `voice.dev`, or development voice environment override.
 
 **Layout:** more than three test files in a directory go into its `test/`

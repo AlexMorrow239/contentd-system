@@ -80,7 +80,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): JobContext {
 export function seedVoiceJson(ctx: JobContext, durationMs = 1000): void {
   writeFileSync(
     ctx.artifactPath('voice', 'voice.json'),
-    JSON.stringify({ provider: 'kokoro', voiceId: 'af_heart', durationMs }),
+    JSON.stringify({ provider: 'elevenlabs', voiceId: ctx.channel.voice.voiceId, durationMs }),
   )
 }
 

@@ -33,6 +33,35 @@ function named(name: string): string[] {
 }
 
 describe('loadChannelConfig', () => {
+  it('loads a flat ElevenLabs voice and defaults its model', () => {
+    const toml = channelToml().replace('voice_id = "EXAVITQu4vr4xnSDxMaL"', 'voice_id = "my-voice"')
+    expect(parseChannelToml(toml, 'example.toml').voice).toEqual({
+      voiceId: 'my-voice',
+      modelId: 'eleven_multilingual_v2',
+    })
+  })
+
+  it.each(['', '   '])('rejects an empty voice ID: %j', (voiceId) => {
+    const toml = channelToml().replace(
+      'voice_id = "EXAVITQu4vr4xnSDxMaL"',
+      `voice_id = "${voiceId}"`,
+    )
+    expect(() => parseChannelToml(toml, 'example.toml')).toThrow(/voice_id/)
+  })
+
+  it('requires a voice configuration', () => {
+    const toml = channelToml().replace('[voice]\nvoice_id = "EXAVITQu4vr4xnSDxMaL"', '')
+    expect(() => parseChannelToml(toml, 'example.toml')).toThrow(/voice/)
+  })
+
+  it.each([
+    'volume = "af_heart"',
+    'provider = "elevenlabs"',
+    '[voice.premium]\nvoice_id = "old-voice"',
+  ])('rejects obsolete voice settings: %s', (setting) => {
+    const toml = channelToml().replace('[budget]', `${setting}\n[budget]`)
+    expect(() => parseChannelToml(toml, 'example.toml')).toThrow(/Unrecognized key/)
+  })
   it('loads a channel without caption styling', () => {
     expect(parseChannelToml(channelToml(), 'example.toml').name).toBe('example')
   })
@@ -46,28 +75,26 @@ describe('loadChannelConfig', () => {
     )
   })
 
-  it('parses a baseline TOML: voice.premium undefined, budget in micros', () => {
+  it('parses a baseline TOML with budget in micros', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
-    expect(cfg.voice.premium).toBeUndefined()
+    expect(cfg.voice.voiceId).toBe('EXAVITQu4vr4xnSDxMaL')
     expect(cfg.budget).toEqual({
       perVideoUsdMicros: 8_000_000,
       perDayUsdMicros: 20_000_000,
     })
   })
 
-  it('defaults [voice.premium] model to eleven_multilingual_v2 when omitted', () => {
+  it('uses an explicitly configured voice model', () => {
     const cfg = loadChannelConfig(
       writeToml([
-        ...PLAN1_LINES,
-        '[voice.premium]',
-        'provider = "elevenlabs"',
-        'voice_id = "EXAVITQu4vr4xnSDxMaL"',
+        ...PLAN1_LINES.flatMap((line) =>
+          line === '[voice]' ? [line, 'model = "custom-model"'] : [line],
+        ),
       ]),
     )
-    expect(cfg.voice.premium).toEqual({
-      provider: 'elevenlabs',
+    expect(cfg.voice).toEqual({
       voiceId: 'EXAVITQu4vr4xnSDxMaL',
-      modelId: 'eleven_multilingual_v2',
+      modelId: 'custom-model',
     })
   })
 
@@ -89,9 +116,7 @@ describe('loadChannelConfig', () => {
   })
 
   it('rejects the removed development voice setting', () => {
-    const lines = PLAN1_LINES.flatMap((l) =>
-      l === 'volume = "af_heart"' ? [l, 'dev = true'] : [l],
-    )
+    const lines = PLAN1_LINES.flatMap((l) => (l === '[voice]' ? [l, 'dev = true'] : [l]))
     expect(() => loadChannelConfig(writeToml(lines))).toThrow(/dev/)
   })
 

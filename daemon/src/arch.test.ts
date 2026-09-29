@@ -376,7 +376,7 @@ describe('daemon runtime isolation', () => {
 describe('dashboard stage order', () => {
   it('matches the real pipeline order', () => {
     // The dashboard hardcodes the order rather than importing pipelineStages()
-    // at runtime — that module pulls in remotion, kokoro and the ffmpeg
+    // at runtime — that module pulls in remotion and the ffmpeg
     // wrappers, which a read-only viewer has no business loading. This is the
     // anti-drift guard, and it pays the heavy import once, in test only.
     //

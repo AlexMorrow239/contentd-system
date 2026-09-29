@@ -209,19 +209,22 @@ describe('synthWithTimestamps', () => {
     expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
   })
 
-  it('throws before any network call when no API key is available, classified as config/invalid', async () => {
-    vi.stubEnv('ELEVENLABS_API_KEY', '')
-    const { impl, calls } = fakeFetch(200, FIXTURE)
-    const err = await synthWithTimestamps({
-      voiceId: 'v',
-      modelId: 'm',
-      text: 'x',
-      fetchImpl: impl,
-    }).catch((e: unknown) => e)
-    expect(err).toMatchObject({ message: expect.stringMatching(/ELEVENLABS_API_KEY/) })
-    expect(classify(err)).toMatchObject({ domain: 'config', kind: 'invalid' })
-    expect(calls).toHaveLength(0)
-  })
+  it.each(['', '   '])(
+    'rejects missing or blank API keys before network activity: %j',
+    async (key) => {
+      vi.stubEnv('ELEVENLABS_API_KEY', key)
+      const { impl, calls } = fakeFetch(200, FIXTURE)
+      const err = await synthWithTimestamps({
+        voiceId: 'v',
+        modelId: 'm',
+        text: 'x',
+        fetchImpl: impl,
+      }).catch((e: unknown) => e)
+      expect(err).toMatchObject({ message: expect.stringMatching(/ELEVENLABS_API_KEY/) })
+      expect(classify(err)).toMatchObject({ domain: 'config', kind: 'invalid' })
+      expect(calls).toHaveLength(0)
+    },
+  )
 
   it('throws with the HTTP status on a non-2xx response, classified as provider/auth for 401', async () => {
     const { impl } = fakeFetch(401, { detail: { status: 'invalid_api_key' } })

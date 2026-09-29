@@ -90,7 +90,7 @@ describe('budgetWaitEligible', () => {
     const db = memDb()
     const raw = wait(101)
     expect(budgetWaitEligible(db, 'job', channel, raw, now)).toBe(false)
-    const changed = { ...channel, voice: { ...channel.voice, premium: undefined } }
+    const changed = { ...channel, voice: { ...channel.voice, voiceId: 'another-voice' } }
     expect(budgetWaitEligible(db, 'job', changed, raw, now)).toBe(true)
     const reparking = JSON.stringify(
       makeBudgetWait(

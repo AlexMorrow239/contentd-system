@@ -52,7 +52,7 @@ describe('golden-path e2e', () => {
         'videos_per_day = 2',
         '',
         '[voice]',
-        'volume = "af_heart"',
+        'voice_id = "EXAVITQu4vr4xnSDxMaL"',
         '',
         '[budget]',
         'per_video_usd = 8.0',

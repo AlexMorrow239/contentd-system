@@ -15,10 +15,6 @@ backlog_days = 2
 platforms = ["youtube", "instagram"]
 
 [voice]
-volume = "af_heart"
-
-[voice.premium]
-provider = "elevenlabs"
 voice_id = "Gubgw9l4dtIoQA9YZHgx"
 
 [scout]

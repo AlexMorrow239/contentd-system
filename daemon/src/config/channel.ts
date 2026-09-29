@@ -9,8 +9,7 @@ function configInvalid(message: string): BrainrotError {
   return new BrainrotError(message, { domain: 'config', kind: 'invalid' })
 }
 
-export interface PremiumVoiceConfig {
-  provider: 'elevenlabs'
+export interface VoiceConfig {
   voiceId: string
   modelId: string
 }
@@ -36,7 +35,7 @@ export interface ChannelConfig {
    * production stops (plan-tick.ts). The one knob for inventory depth.
    */
   backlogDays: number
-  voice: { volume: string; premium?: PremiumVoiceConfig }
+  voice: VoiceConfig
   bgDir: string[]
   budget: { perVideoUsdMicros: number; perDayUsdMicros: number }
   scriptModel: string
@@ -147,14 +146,12 @@ const rawSchema = z.object({
     .default(2),
   voice: z
     .object({
-      volume: z.string(),
-      premium: z
-        .object({
-          provider: z.literal('elevenlabs'),
-          voice_id: z.string(),
-          model: z.string().default(DEFAULT_ELEVENLABS_MODEL_ID),
-        })
-        .optional(),
+      voice_id: z.string().trim().min(1, '[voice] voice_id must not be empty'),
+      model: z
+        .string()
+        .trim()
+        .min(1, '[voice] model must not be empty')
+        .default(DEFAULT_ELEVENLABS_MODEL_ID),
     })
     .strict(),
   scout: z
@@ -270,14 +267,8 @@ export function parseChannelToml(text: string, filename: string): ChannelConfig 
     videosPerDay: raw.videos_per_day,
     backlogDays: raw.backlog_days,
     voice: {
-      volume: raw.voice.volume,
-      premium: raw.voice.premium
-        ? {
-            provider: raw.voice.premium.provider,
-            voiceId: raw.voice.premium.voice_id,
-            modelId: raw.voice.premium.model,
-          }
-        : undefined,
+      voiceId: raw.voice.voice_id,
+      modelId: raw.voice.model,
     },
     bgDir: raw.bg_dir,
     budget: {

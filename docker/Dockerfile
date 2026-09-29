@@ -9,7 +9,7 @@ FROM node:22-bookworm-slim
 # tzdata          - daemon/src/loop/digest-unit.ts schedules the daily digest
 #                   using local wall-clock time.
 # lib*            - Chrome headless shell's runtime dependency closure.
-# python3/g++     - better-sqlite3 and onnxruntime-node build from source when no
+# python3/g++     - better-sqlite3 builds from source when no
 #                   prebuild matches; failing loudly at build beats failing at 3am.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl ffmpeg fontconfig fonts-inter tzdata \
@@ -30,7 +30,7 @@ USER node
 
 # Dependency layers first so a source edit does not reinstall node_modules.
 # pnpm-workspace.yaml is required here, not incidental: its allowBuilds list is
-# what permits better-sqlite3 and onnxruntime-node to run install scripts.
+# what permits better-sqlite3 to run install scripts.
 COPY --chown=node:node package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
@@ -43,9 +43,5 @@ COPY --chown=node:node . .
 
 # Build request-rendered dashboard without provider keys or runtime state.
 RUN pnpm dashboard:build
-
-# warm-kokoro imports KOKORO_MODEL_ID from daemon/src/stages/voice.ts, so unlike the
-# browser layer above it genuinely needs the source copy and must stay below it.
-RUN pnpm exec tsx docker/warm-kokoro.ts
 
 CMD ["pnpm", "brainrot", "run"]
