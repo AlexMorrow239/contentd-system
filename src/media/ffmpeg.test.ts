@@ -32,6 +32,27 @@ beforeAll(async () => {
 }, 60000)
 
 describe('probe', () => {
+  it('rejects a pre-cancelled operation before launching ffprobe', async () => {
+    const lost = new Error('lease lost')
+    await expect(probe('does-not-exist.mp4', AbortSignal.abort(lost))).rejects.toBe(lost)
+  })
+
+  it('terminates a running encode when cancelled', async () => {
+    const controller = new AbortController()
+    const encoding = loopToDuration(
+      fixture,
+      path.join(dir, 'cancelled.mp4'),
+      3_600_000,
+      controller.signal,
+    )
+    const timer = setTimeout(() => controller.abort(new Error('lease lost')), 40)
+    try {
+      await expect(encoding).rejects.toMatchObject({ isCanceled: true })
+    } finally {
+      clearTimeout(timer)
+    }
+  })
+
   it('reports duration, dimensions, audio presence, and fps', async () => {
     const p = await probe(fixture)
     expect(p.width).toBe(640)

@@ -1,3 +1,4 @@
+import { checkpoint } from './ownership.js'
 import { promises as fs } from 'node:fs'
 import type { StageDef, JobContext } from '../jobs/types.js'
 import type { ScriptArtifact } from './script.js'
@@ -17,8 +18,10 @@ export interface CaptionsArtifact {
 export const captionsStage: StageDef = {
   name: 'captions',
   async run(ctx: JobContext): Promise<void> {
+    checkpoint(ctx)
     const words = (await providerWords(ctx)) ?? (await alignedWords(ctx))
     const artifact: CaptionsArtifact = { words }
+    checkpoint(ctx)
     await fs.writeFile(
       ctx.artifactPath('captions', 'words.json'),
       JSON.stringify(artifact, null, 2),
@@ -43,7 +46,9 @@ async function alignedWords(ctx: JobContext): Promise<WordTiming[]> {
     await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
   ) as ScriptArtifact
 
+  checkpoint(ctx)
   const words = await alignTranscript({
+    signal: ctx.signal,
     baseUrl: process.env.WHISPERX_URL ?? 'http://localhost:8585',
     wavPath: ctx.artifactPath('voice', 'narration.wav'),
     transcript: narrationText(script),

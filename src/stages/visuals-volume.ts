@@ -1,3 +1,4 @@
+import { checkpoint } from './ownership.js'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { BrainrotError } from '../errors.js'
@@ -38,6 +39,7 @@ function listMp4sRecursively(dirs: string[]): string[] {
 export const visualsVolumeStage: StageDef = {
   name: 'visuals',
   async run(ctx: JobContext): Promise<void> {
+    checkpoint(ctx)
     const voice = JSON.parse(
       readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
     ) as VoiceMeta
@@ -57,16 +59,23 @@ export const visualsVolumeStage: StageDef = {
 
     const chosenPath = candidates[Math.floor(Math.random() * candidates.length)]
 
-    const p = await probe(chosenPath)
+    checkpoint(ctx)
+    const p = await probe(chosenPath, ctx.signal)
+    checkpoint(ctx)
     const targetMs = voice.durationMs + PAD_MS
     const out = ctx.artifactPath('visuals', 'background.mp4')
     if (p.width === VIDEO_WIDTH && p.height === VIDEO_HEIGHT) {
-      await loopToDuration(chosenPath, out, targetMs)
+      await loopToDuration(chosenPath, out, targetMs, ctx.signal)
     } else {
-      await cropAndLoopToDuration(chosenPath, out, targetMs)
+      await cropAndLoopToDuration(chosenPath, out, targetMs, ctx.signal)
     }
 
-    recordBackgroundUse(ctx.db, ctx.channel.name, chosenPath)
+    ctx.db
+      .transaction(() => {
+        checkpoint(ctx)
+        recordBackgroundUse(ctx.db, ctx.channel.name, chosenPath)
+      })
+      .immediate()
 
     ctx.log.info({ chosen: chosenPath, targetMs, out }, 'visuals: background prepared')
   },

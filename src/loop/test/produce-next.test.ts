@@ -10,7 +10,7 @@ import { runCli } from '../../testing/run-cli.js'
 import type { JobContext, StageDef } from '../../jobs/types.js'
 import { claimTopic } from '../../scout/topics.js'
 import { produceNextTick } from '../produce-next.js'
-import { acquireLease, PRODUCE_LEASE_TTL_MS } from '../lease.js'
+import { acquireLease, LEASE_HEARTBEAT_MS, LeaseLostError, PRODUCE_LEASE_TTL_MS } from '../lease.js'
 import { memDb, seedJob, seedLibrary, seedTopic as seedTopicRow } from '../../testing/db.js'
 import { testRoot, tmpDir } from '../../testing/tmp.js'
 
@@ -110,6 +110,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.useRealTimers()
 })
 
 describe('produceNextTick — produce', () => {
@@ -417,80 +418,91 @@ describe('produceNextTick — resume refusal routing', () => {
 })
 
 describe('produceNextTick — lease heartbeat', () => {
-  it('a stage start pushes the produce lease expiry back into the future', async () => {
-    const { db, runsRoot } = setup()
-    seedTopic(db)
-    let observed = ''
-    // Stage one drifts the expiry into the past (standing in for a render
-    // longer than the 90-min TTL); stage two reads what its own heartbeat left
-    // behind, before the finally-release deletes the row.
-    const stages: StageDef[] = [
-      {
-        name: 'script',
-        async run() {
-          db.prepare(
-            "UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'",
-          ).run()
+  it.each(['produce', 'resume'] as const)(
+    'renews throughout a long %s stage without a stage transition',
+    async (mode) => {
+      vi.useFakeTimers()
+      vi.setSystemTime(new Date('2026-08-01T12:00:00Z'))
+      const { db, runsRoot } = setup()
+      if (mode === 'produce') {
+        seedTopic(db)
+      } else {
+        const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
+        const jobId = createJob(db, channel, { topic: 'parked by budget' })
+        db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
+      }
+      let release!: () => void
+      let entered!: () => void
+      const started = new Promise<void>((resolve) => {
+        entered = resolve
+      })
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const stages: StageDef[] = [
+        {
+          name: 'script',
+          async run() {
+            entered()
+            await gate
+          },
         },
-      },
-      {
-        name: 'qc',
-        async run(ctx: JobContext) {
-          observed = (
-            db.prepare("SELECT expires_at FROM leases WHERE name = 'produce'").get() as {
-              expires_at: string
-            }
-          ).expires_at
-          writeFileSync(
-            ctx.artifactPath('qc', 'qc.json'),
-            JSON.stringify({ passed: true, checks: [] }),
-          )
-        },
-      },
-    ]
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages })
-    expect(result.status).toBe('ready')
-    expect(Date.parse(observed)).toBeGreaterThan(Date.now())
-    db.close()
-  })
+        ...readyStages(),
+      ]
+      const running = produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages })
+      await started
+      const initial = db
+        .prepare("SELECT holder, expires_at FROM leases WHERE name = 'produce'")
+        .get() as { holder: string; expires_at: string }
+      // Renewal must work during one uninterrupted stage lasting beyond the TTL.
+      await vi.advanceTimersByTimeAsync(PRODUCE_LEASE_TTL_MS + LEASE_HEARTBEAT_MS)
+      const renewed = db
+        .prepare("SELECT holder, expires_at FROM leases WHERE name = 'produce'")
+        .get() as { holder: string; expires_at: string }
+      expect(renewed.holder).toBe(initial.holder)
+      expect(Date.parse(renewed.expires_at)).toBe(Date.now() + PRODUCE_LEASE_TTL_MS)
+      expect(acquireLease(db, 'produce', 'competitor', PRODUCE_LEASE_TTL_MS)).toBe(false)
+      release()
+      const result = await running
+      expect(result).toMatchObject({
+        action: mode === 'produce' ? 'produced' : 'resumed',
+        status: 'ready',
+      })
+      expect(vi.getTimerCount()).toBe(0)
+      expect(db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get()).toBeUndefined()
+    },
+  )
 
-  // Same guarantee down the resume path, which is where the long renders are:
-  // a blocked premium job resumes with its expensive stages already done, so
-  // the remaining work is exactly what blew the budget (or the clock) before.
-  it('a resumed job heartbeats the lease too', async () => {
+  it('an expired lease fences stage completion and prevents the next stage from starting', async () => {
     const { db, runsRoot } = setup()
-    const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
-    db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
-    let observed = ''
+    const topicId = seedTopic(db)
+    const nextStage = vi.fn()
     const stages: StageDef[] = [
       {
         name: 'script',
         async run() {
           db.prepare(
-            "UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'",
+            "UPDATE leases SET expires_at = '2020-01-01T00:00:00Z' WHERE name = 'produce'",
           ).run()
+          expect(acquireLease(db, 'produce', 'successor', PRODUCE_LEASE_TTL_MS)).toBe(true)
         },
       },
-      {
-        name: 'qc',
-        async run(ctx: JobContext) {
-          observed = (
-            db.prepare("SELECT expires_at FROM leases WHERE name = 'produce'").get() as {
-              expires_at: string
-            }
-          ).expires_at
-          writeFileSync(
-            ctx.artifactPath('qc', 'qc.json'),
-            JSON.stringify({ passed: true, checks: [] }),
-          )
-        },
-      },
+      { name: 'qc', run: nextStage },
     ]
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages })
-    expect(result.action).toBe('resumed')
-    expect(Date.parse(observed)).toBeGreaterThan(Date.now())
-    db.close()
+    await expect(
+      produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages }),
+    ).rejects.toBeInstanceOf(LeaseLostError)
+    expect(nextStage).not.toHaveBeenCalled()
+    expect(
+      db.prepare("SELECT status, artifact_dir FROM job_stages WHERE stage = 'script'").get(),
+    ).toEqual({ status: 'running', artifact_dir: null })
+    expect(db.prepare('SELECT job_id FROM library').all()).toEqual([])
+    expect(db.prepare('SELECT status FROM topics WHERE id = ?').get(topicId)).toEqual({
+      status: 'claimed',
+    })
+    expect(db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get()).toEqual({
+      holder: 'successor',
+    })
   })
 })
 

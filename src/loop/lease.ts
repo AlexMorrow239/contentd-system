@@ -1,57 +1,128 @@
+import { randomUUID } from 'node:crypto'
 import type { Database } from 'better-sqlite3'
+import { BrainrotError } from '../errors.js'
 
-// Generously above any single job's runtime: a crashed holder self-heals by
-// expiry instead of wedging the loop forever.
-export const PRODUCE_LEASE_TTL_MS = 5_400_000 // 90 min
+export const LEASE_TTL_MS = 300_000
+export const LEASE_HEARTBEAT_MS = 60_000
+export const PRODUCE_LEASE_TTL_MS = LEASE_TTL_MS
 
-/**
- * The holder string every acquire/extend/release must agree on. It is a
- * contract, not a label: `extendLease` and `releaseLease` match on it exactly,
- * so a second spelling of it is one typo away from a lease that cannot be
- * released and an evicted holder that frees its successor's.
- *
- * `suffix` distinguishes two callers inside ONE process — the actions worker's
- * lanes call the same ticks the daemon's own workers do, and a bare pid no
- * longer identifies a single caller there.
- */
-export function leaseHolder(suffix?: string): string {
-  return suffix === undefined ? `pid:${process.pid}` : `pid:${process.pid}:${suffix}`
+export class LeaseLostError extends BrainrotError {
+  constructor(name: string, cause?: unknown) {
+    super(`ownership of ${name} lease was lost`, { domain: 'job', kind: 'conflict', cause })
+    this.name = 'LeaseLostError'
+  }
 }
 
-// Acquire-if-free-or-expired in one synchronous transaction. BEGIN IMMEDIATE
-// takes the write lock up front so a concurrent process cannot interleave
-// between the read and the upsert. ISO-8601 UTC strings compare correctly
-// as strings, so no date parsing is needed in the guard.
+export interface LeaseContext {
+  name: string
+  token: string
+  signal: AbortSignal
+  assertOwned(): void
+  release(): void
+}
+
+export function leaseHolder(label?: string): string {
+  return `pid:${process.pid}:${label ?? 'operation'}:${randomUUID()}`
+}
+
 export function acquireLease(db: Database, name: string, holder: string, ttlMs: number): boolean {
-  const attempt = db.transaction((): boolean => {
-    const now = new Date().toISOString()
-    const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get(name) as
-      { expires_at: string } | undefined
-    if (row !== undefined && row.expires_at > now) return false
-    const expiresAt = new Date(Date.now() + ttlMs).toISOString()
-    db.prepare(
-      'INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?) ' +
-        'ON CONFLICT(name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at',
-    ).run(name, holder, expiresAt)
-    return true
-  })
-  return attempt.immediate()
+  return db
+    .transaction(() => {
+      const now = new Date().toISOString()
+      const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get(name) as
+        { expires_at: string } | undefined
+      if (row !== undefined && row.expires_at > now) return false
+      db.prepare(
+        'INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at',
+      ).run(name, holder, new Date(Date.now() + ttlMs).toISOString())
+      return true
+    })
+    .immediate()
 }
 
-// Heartbeat for work that outlives the TTL (a long render): pushes the expiry
-// a fresh ttl ahead, but ONLY while this holder still owns the lease. A holder
-// already evicted by a takeover gets `false` and stays evicted — re-acquiring
-// here would hand one lease to two live processes.
 export function extendLease(db: Database, name: string, holder: string, ttlMs: number): boolean {
-  const expiresAt = new Date(Date.now() + ttlMs).toISOString()
-  const info = db
-    .prepare('UPDATE leases SET expires_at = ? WHERE name = ? AND holder = ?')
-    .run(expiresAt, name, holder)
-  return info.changes === 1
+  const now = new Date().toISOString()
+  return (
+    db
+      .prepare('UPDATE leases SET expires_at = ? WHERE name = ? AND holder = ? AND expires_at > ?')
+      .run(new Date(Date.now() + ttlMs).toISOString(), name, holder, now).changes === 1
+  )
 }
 
-// Deletes only the caller's own lease: after an expiry takeover the evicted
-// holder's finally-release must not free the new holder's lease.
 export function releaseLease(db: Database, name: string, holder: string): void {
   db.prepare('DELETE FROM leases WHERE name = ? AND holder = ?').run(name, holder)
+}
+
+export function ownsLease(db: Database, name: string, token: string): boolean {
+  return (
+    db
+      .prepare('SELECT 1 FROM leases WHERE name = ? AND holder = ? AND expires_at > ?')
+      .get(name, token, new Date().toISOString()) !== undefined
+  )
+}
+
+/** The timer only requests cancellation. Guarded commits and attempt-local files
+ * remain authoritative when a provider or subprocess cannot cancel promptly. */
+export function acquireManagedLease(
+  db: Database,
+  name: string,
+  parent?: LeaseContext,
+): LeaseContext | null {
+  parent?.assertOwned()
+  const token = leaseHolder(name)
+  if (!acquireLease(db, name, token, LEASE_TTL_MS)) return null
+  const controller = new AbortController()
+  let released = false
+  const lose = (cause?: unknown): void => {
+    if (!controller.signal.aborted) controller.abort(new LeaseLostError(name, cause))
+  }
+  const parentLost = (): void => lose(parent?.signal.reason)
+  parent?.signal.addEventListener('abort', parentLost, { once: true })
+  const assertOwned = (): void => {
+    if (controller.signal.aborted) throw controller.signal.reason
+    try {
+      parent?.assertOwned()
+      if (released || !ownsLease(db, name, token)) throw new LeaseLostError(name)
+    } catch (err) {
+      lose(err)
+      throw controller.signal.reason
+    }
+  }
+  const timer = setInterval(() => {
+    if (controller.signal.aborted) return
+    try {
+      parent?.assertOwned()
+      if (!extendLease(db, name, token, LEASE_TTL_MS)) lose()
+    } catch (err) {
+      lose(err)
+    }
+  }, LEASE_HEARTBEAT_MS)
+  timer.unref()
+  return {
+    name,
+    token,
+    signal: controller.signal,
+    assertOwned,
+    release() {
+      if (released) return
+      released = true
+      clearInterval(timer)
+      parent?.signal.removeEventListener('abort', parentLost)
+      try {
+        releaseLease(db, name, token)
+      } catch (err) {
+        lose(err)
+      }
+    },
+  }
+}
+
+export function requireLease(db: Database, name: string, parent?: LeaseContext): LeaseContext {
+  const lease = acquireManagedLease(db, name, parent)
+  if (lease === null)
+    throw new BrainrotError(`${name} lease is held by another operation`, {
+      domain: 'job',
+      kind: 'conflict',
+    })
+  return lease
 }

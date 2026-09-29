@@ -1,3 +1,4 @@
+import { LeaseLostError, type LeaseContext } from '../loop/lease.js'
 import type { Database } from 'better-sqlite3'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ChannelConfig } from '../config/channel.js'
@@ -91,6 +92,7 @@ async function scoreWithLedger(
   fresh: { candidate: TrendCandidate; hash: string }[],
   result: ScoutChannelResult,
   client?: Anthropic,
+  lease?: LeaseContext,
 ): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
   try {
     // The scout has no job row to hang assertBudget on; gate the estimated
@@ -104,6 +106,7 @@ async function scoreWithLedger(
       recentTitles: recentTopicTitles(db, channel.name),
       story: channel.story !== null,
       client,
+      lease,
     })
   } catch (err) {
     const spent = errorCostUsdMicros(err)
@@ -122,8 +125,15 @@ async function scoreWithLedger(
 export async function scoutChannel(
   db: Database,
   channel: ChannelConfig,
-  opts: { client?: Anthropic; fetchImpl?: FetchLike; now?: Date; force?: boolean } = {},
+  opts: {
+    client?: Anthropic
+    fetchImpl?: FetchLike
+    now?: Date
+    force?: boolean
+    lease?: LeaseContext
+  } = {},
 ): Promise<ScoutChannelResult> {
+  opts.lease?.assertOwned()
   const now = opts.now ?? new Date()
 
   // Recheck gate FIRST — cheaper than the depth query below (a single indexed
@@ -140,7 +150,10 @@ export async function scoutChannel(
   // clock bumps for every channel actually attempted (queue-full, real work,
   // or a scoring failure that throws below), matching what a caller means by
   // "we looked at this channel just now".
-  recordScoutAttempt(db, channel.name, now)
+  db.transaction(() => {
+    opts.lease?.assertOwned()
+    recordScoutAttempt(db, channel.name, now)
+  }).immediate()
 
   // Depth gate — ahead of the source loop, so a channel with enough queued
   // candidates costs neither a network fetch nor a Haiku scoring call. The
@@ -159,13 +172,18 @@ export async function scoutChannel(
   // constructor is what rejects a malformed name.
   for (const subreddit of channel.scout.subreddits) {
     try {
+      opts.lease?.assertOwned()
       candidates.push(
         ...(await redditSource(subreddit, opts.fetchImpl).fetch({
           limit: channel.scout.perSourceLimit,
           timeoutMs: SOURCE_FETCH_TIMEOUT_MS,
+          signal: opts.lease?.signal,
         })),
       )
+      opts.lease?.assertOwned()
     } catch (err) {
+      opts.lease?.assertOwned()
+      if (err instanceof LeaseLostError) throw err
       const entry = `reddit:r/${subreddit}: ${errorMessage(err)}`
       // Spec §4: a failing source "logs a warning" — stderr, since stdout is
       // reserved for the CLI's single JSON line.
@@ -237,7 +255,8 @@ export async function scoutChannel(
   if (fresh.length === 0) return result
 
   result.scored = fresh.length
-  const scored = await scoreWithLedger(db, channel, fresh, result, opts.client)
+  opts.lease?.assertOwned()
+  const scored = await scoreWithLedger(db, channel, fresh, result, opts.client, opts.lease)
   result.costUsdMicros = scored.costUsdMicros
 
   // Topic mode: one row per candidate, exactly as before. Story mode: a
@@ -298,12 +317,21 @@ export async function scoutChannel(
   // keep the charge and lose the hashes, so the next run re-pays Haiku for the
   // very same items. better-sqlite3 nests insertTopics' own transaction as a
   // savepoint, so the wrap is safe.
-  db.transaction(() => {
-    // Sentinel job id: FKs are off by design, and the global-day query sums ALL
-    // costs rows, so scout spend counts toward the operator ceiling.
-    recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', scored.costUsdMicros)
-    insertTopics(db, rows)
-  })()
+  try {
+    db.transaction(() => {
+      opts.lease?.assertOwned()
+      // Sentinel job id: the global-day query sums scout spend too.
+      recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', scored.costUsdMicros)
+      insertTopics(db, rows)
+    }).immediate()
+  } catch (err) {
+    // Ownership can expire between the last scoring check and this commit.
+    // Its transaction rolled back; retain the paid response without topics.
+    if (err instanceof LeaseLostError || opts.lease?.signal.aborted) {
+      recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', scored.costUsdMicros)
+    }
+    throw err
+  }
   return result
 }
 
@@ -344,12 +372,18 @@ export class AllChannelsScoringFailedError extends ScoutRunFailedError {
 // One scout pass per invocation, matching the other two loops. Generously above
 // a full multi-channel fetch + Haiku scoring pass; a crashed holder self-heals
 // by expiry rather than wedging the loop.
-export const SCOUT_LEASE_TTL_MS = 1_800_000 // 30 min
+export const SCOUT_LEASE_TTL_MS = 300_000 // managed renewal every minute
 
 export async function scoutAll(
   db: Database,
   channels: ChannelConfig[],
-  opts: { client?: Anthropic; fetchImpl?: FetchLike; now?: Date; force?: boolean } = {},
+  opts: {
+    client?: Anthropic
+    fetchImpl?: FetchLike
+    now?: Date
+    force?: boolean
+    lease?: LeaseContext
+  } = {},
 ): Promise<ScoutChannelResult[]> {
   const results: ScoutChannelResult[] = []
   // Channels that failed the budget gate rather than scoring itself. The
@@ -375,6 +409,8 @@ export async function scoutAll(
       failedSources += result.sourceErrors.length
       results.push(result)
     } catch (err) {
+      opts.lease?.assertOwned()
+      if (err instanceof LeaseLostError) throw err
       // A channel that threw did reach its sources (the gate returns, never
       // throws), so its sources still count.
       totalSources += sourceCount

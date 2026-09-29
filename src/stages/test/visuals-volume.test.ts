@@ -95,6 +95,24 @@ function usedFile(ctx: JobContext): string {
 }
 
 describe('visualsVolumeStage', () => {
+  it('checks ownership inside the background-usage transaction', async () => {
+    const bgDir = tmpDir('brainrot-bg-')
+    placeClip(path.join(bgDir, 'clip.mp4'))
+    const ctx = selectionCtx(channelFor(bgDir))
+    const lost = new Error('lease lost before background usage commit')
+    let guardedCommit = false
+    ctx.assertOwned = () => {
+      if (ctx.db.inTransaction) {
+        guardedCommit = true
+        throw lost
+      }
+    }
+    await expect(visualsVolumeStage.run(ctx)).rejects.toBe(lost)
+    expect(guardedCommit).toBe(true)
+    expect(ctx.db.prepare('SELECT COUNT(*) AS n FROM bg_usage').get()).toEqual({ n: 0 })
+    expect(ctx.db.inTransaction).toBe(false)
+  })
+
   it('crops+loops a chosen clip to background.mp4 and records bg_usage', async () => {
     const bgDir = tmpDir('brainrot-bg-')
     placeClip(path.join(bgDir, 'clip1.mp4'), outputSource)

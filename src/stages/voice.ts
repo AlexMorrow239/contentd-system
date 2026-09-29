@@ -1,3 +1,4 @@
+import { checkpoint } from './ownership.js'
 import { promises as fs } from 'node:fs'
 import { KokoroTTS, type GenerateOptions } from 'kokoro-js'
 import { MsEdgeTTS, type OUTPUT_FORMAT } from 'msedge-tts'
@@ -124,6 +125,7 @@ interface PcmSection {
  * while the video keeps running).
  */
 async function synthChunked(
+  ctx: JobContext,
   text: string,
   provider: string,
   synth: (chunk: string) => Promise<PcmChunk>,
@@ -132,7 +134,9 @@ async function synthChunked(
   let sampleRate = 0
   let channels = 0
   for (const chunk of splitForTts(text)) {
+    checkpoint(ctx)
     const pcm = await synth(chunk)
+    checkpoint(ctx)
     parts.push(trimTrailingSilence(pcm.data, pcm.sampleRate, Math.max(1, pcm.channels)))
     sampleRate = pcm.sampleRate
     channels = pcm.channels
@@ -154,15 +158,17 @@ async function synthChunked(
  * hint the backend might honor.
  */
 async function synthHookAndBody(
+  ctx: JobContext,
   hook: string,
   body: string,
   provider: string,
   synth: (chunk: string) => Promise<PcmChunk>,
   wavPath: string,
 ): Promise<void> {
-  const hookPcm = await synthChunked(hook, provider, synth)
-  const bodyPcm = await synthChunked(body, provider, synth)
+  const hookPcm = await synthChunked(ctx, hook, provider, synth)
+  const bodyPcm = await synthChunked(ctx, body, provider, synth)
   const silence = silencePcm(HOOK_PAUSE_MS, hookPcm.sampleRate, hookPcm.channels)
+  checkpoint(ctx)
   await fs.writeFile(
     wavPath,
     encodePcmWav(
@@ -205,12 +211,15 @@ export function resetKokoro(): void {
 }
 
 async function synthKokoro(
+  ctx: JobContext,
   hook: string,
   body: string,
   voiceId: string,
   wavPath: string,
 ): Promise<void> {
+  checkpoint(ctx)
   const tts = await getKokoro()
+  checkpoint(ctx)
   const synth = async (chunk: string): Promise<PcmChunk> => {
     // ctx.channel.voice.volume is a runtime-configured string; kokoro-js types the
     // `voice` option as a narrow union of built-in voice names. Narrow the config
@@ -218,12 +227,19 @@ async function synthKokoro(
     const audio = await tts.generate(chunk, { voice: voiceId as GenerateOptions['voice'] })
     return { data: pcmFromFloat32(audio.audio), sampleRate: audio.sampling_rate, channels: 1 }
   }
-  await synthHookAndBody(hook, body, 'kokoro', synth, wavPath)
+  await synthHookAndBody(ctx, hook, body, 'kokoro', synth, wavPath)
 }
 
-async function synthEdge(hook: string, body: string, wavPath: string): Promise<void> {
+async function synthEdge(
+  ctx: JobContext,
+  hook: string,
+  body: string,
+  wavPath: string,
+): Promise<void> {
+  checkpoint(ctx)
   const tts = new MsEdgeTTS()
   await tts.setMetadata(EDGE_VOICE, EDGE_FORMAT)
+  checkpoint(ctx)
 
   // Edge TTS is a cloud service with no local context window, but its input limits
   // are undocumented and could not be exercised here (the endpoint currently answers
@@ -235,11 +251,14 @@ async function synthEdge(hook: string, body: string, wavPath: string): Promise<v
     // eslint-disable-next-line @typescript-eslint/await-thenable
     const { audioStream } = await tts.toStream(chunk)
     const buffers: Buffer[] = []
-    for await (const b of audioStream as AsyncIterable<Uint8Array>) buffers.push(Buffer.from(b))
+    for await (const b of audioStream as AsyncIterable<Uint8Array>) {
+      checkpoint(ctx)
+      buffers.push(Buffer.from(b))
+    }
     const wav = parseWav(Buffer.concat(buffers))
     return { data: wav.data, sampleRate: wav.sampleRate, channels: wav.channels }
   }
-  await synthHookAndBody(hook, body, 'edge-tts', synth, wavPath)
+  await synthHookAndBody(ctx, hook, body, 'edge-tts', synth, wavPath)
 }
 
 // ElevenLabs' eleven_multilingual_v2 model (the only premium model this repo
@@ -258,6 +277,7 @@ const BREAK_TAG_FRAGMENT = /^<\/?break\b|^time\s*=|^\/?>$/i
 export const voiceStage: StageDef = {
   name: 'voice',
   async run(ctx: JobContext): Promise<void> {
+    checkpoint(ctx)
     const script = JSON.parse(
       await fs.readFile(ctx.artifactPath('script', 'script.json'), 'utf8'),
     ) as ScriptArtifact
@@ -270,6 +290,7 @@ export const voiceStage: StageDef = {
     // previous failed attempt would caption audio it was never measured against.
     // Remove it before any synthesis; only a VALIDATED ElevenLabs success
     // recreates it (below, after the duration guard).
+    checkpoint(ctx)
     await fs.rm(timingsPath, { force: true })
 
     let provider: VoiceMeta['provider'] | undefined
@@ -296,12 +317,15 @@ export const voiceStage: StageDef = {
       // delivered, a failure legitimately means "use the volume chain".
       let synth: Awaited<ReturnType<typeof synthWithTimestamps>> | undefined
       try {
+        checkpoint(ctx)
         synth = await synthWithTimestamps({
+          signal: ctx.signal,
           voiceId: premiumVoice.voiceId,
           modelId: premiumVoice.modelId,
           text: elevenText,
         })
       } catch (err) {
+        checkpoint(ctx)
         // The timings write is deferred past the duration guard, so this
         // attempt cannot have created timings.json — the rm is defense in
         // depth against the write ever drifting back into the try.
@@ -314,7 +338,8 @@ export const voiceStage: StageDef = {
         // fallible local write. A failure below is a local fault, not a
         // provider one — it surfaces as a stage error rather than a silent
         // downgrade that would strand this charge unrecorded.
-        recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros)
+        recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros, ctx.attemptId)
+        checkpoint(ctx)
         await fs.writeFile(wavPath, synth.wavBytes)
         provider = 'elevenlabs'
         voiceId = premiumVoice.voiceId
@@ -326,16 +351,18 @@ export const voiceStage: StageDef = {
 
     if (provider === undefined) {
       try {
-        await synthKokoro(script.hook, body, ctx.channel.voice.volume, wavPath)
+        await synthKokoro(ctx, script.hook, body, ctx.channel.voice.volume, wavPath)
         provider = 'kokoro'
         voiceId = ctx.channel.voice.volume
       } catch (kokoroErr) {
+        checkpoint(ctx)
         ctx.log.warn({ err: kokoroErr }, 'kokoro TTS failed; falling back to edge-tts')
         try {
-          await synthEdge(script.hook, body, wavPath)
+          await synthEdge(ctx, script.hook, body, wavPath)
           provider = 'edge-tts'
           voiceId = EDGE_VOICE
         } catch (edgeErr) {
+          checkpoint(ctx)
           throw new BrainrotError(
             `voice synthesis failed: kokoro=${String(kokoroErr)}; edge=${String(edgeErr)}`,
             { domain: 'provider', kind: 'transient' },
@@ -364,10 +391,12 @@ export const voiceStage: StageDef = {
     // disk. Writing timings.json any earlier would break the ABSENT guarantee:
     // a truncation throw above must leave nothing for captions to trust.
     if (premiumWords !== undefined) {
+      checkpoint(ctx)
       await fs.writeFile(timingsPath, JSON.stringify({ words: premiumWords }, null, 2))
     }
 
     const meta: VoiceMeta = { provider, voiceId, durationMs }
+    checkpoint(ctx)
     await fs.writeFile(ctx.artifactPath('voice', 'voice.json'), JSON.stringify(meta, null, 2))
   },
 }

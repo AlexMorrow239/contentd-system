@@ -133,7 +133,11 @@ describe('golden-path e2e', () => {
     expect(p.durationMs).toBeGreaterThanOrEqual(2800) // ~3s from seeded voice.json
     expect(p.durationMs).toBeLessThanOrEqual(3400)
 
-    const qc = JSON.parse(readFileSync(path.join(runDir, 'qc', 'qc.json'), 'utf8')) as {
+    const checkpoint = db
+      .prepare("SELECT artifact_dir FROM job_stages WHERE job_id = ? AND stage = 'qc'")
+      .get(jobId) as { artifact_dir: string }
+    expect(checkpoint.artifact_dir).toContain(path.join(runDir, 'attempts'))
+    const qc = JSON.parse(readFileSync(path.join(checkpoint.artifact_dir, 'qc.json'), 'utf8')) as {
       passed: boolean
     }
     expect(qc.passed).toBe(true)

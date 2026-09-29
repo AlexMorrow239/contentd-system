@@ -85,9 +85,11 @@ async function forcedToolCompletion<T>(opts: {
   system: string
   content: string | Anthropic.ContentBlockParam[]
   schema: z.ZodType<T>
+  signal?: AbortSignal
   maxTokens?: number
   client?: Anthropic
 }): Promise<{ data: T; cost: LlmUsageCost }> {
+  opts.signal?.throwIfAborted()
   const client = opts.client ?? new Anthropic()
 
   // Resolve the price BEFORE the paid API call: a model absent from PRICE_TABLE
@@ -108,31 +110,34 @@ async function forcedToolCompletion<T>(opts: {
   }) as Anthropic.Tool.InputSchema
   stripIntegerBounds(inputSchema)
 
-  const response = await client.messages.create({
-    model: opts.model,
-    max_tokens: opts.maxTokens ?? 2048,
-    // Disable thinking: forced tool_choice is a deterministic structured
-    // extraction, not a reasoning task; avoids the forced-tool/thinking
-    // incompatibility and needless thinking-token spend on Sonnet 5.
-    thinking: { type: 'disabled' },
-    system: opts.system,
-    messages: [{ role: 'user', content: opts.content }],
-    tools: [
-      {
-        name: 'emit',
-        description: 'Return the structured result. You MUST call this tool exactly once.',
-        input_schema: inputSchema,
-        // Constrained decoding: the API guarantees the tool input conforms to
-        // input_schema. Without it, Sonnet stringifies large nested arrays (the
-        // scenes format) in roughly half of forced tool calls, and hand-written
-        // stringified JSON can carry typos coerceJsonStrings cannot repair
-        // (observed live 2026-07-20: `"motionPrompt">` for `"motionPrompt":`).
-        // The coercion retry below stays as defense in depth.
-        strict: true,
-      },
-    ],
-    tool_choice: { type: 'tool', name: 'emit' },
-  })
+  const response = await client.messages.create(
+    {
+      model: opts.model,
+      max_tokens: opts.maxTokens ?? 2048,
+      // Disable thinking: forced tool_choice is a deterministic structured
+      // extraction, not a reasoning task; avoids the forced-tool/thinking
+      // incompatibility and needless thinking-token spend on Sonnet 5.
+      thinking: { type: 'disabled' },
+      system: opts.system,
+      messages: [{ role: 'user', content: opts.content }],
+      tools: [
+        {
+          name: 'emit',
+          description: 'Return the structured result. You MUST call this tool exactly once.',
+          input_schema: inputSchema,
+          // Constrained decoding: the API guarantees the tool input conforms to
+          // input_schema. Without it, Sonnet stringifies large nested arrays (the
+          // scenes format) in roughly half of forced tool calls, and hand-written
+          // stringified JSON can carry typos coerceJsonStrings cannot repair
+          // (observed live 2026-07-20: `"motionPrompt">` for `"motionPrompt":`).
+          // The coercion retry below stays as defense in depth.
+          strict: true,
+        },
+      ],
+      tool_choice: { type: 'tool', name: 'emit' },
+    },
+    { signal: opts.signal },
+  )
 
   // Cost is fixed by the usage the paid call already reported. Compute it BEFORE
   // any inspection of the response so EVERY failure below can carry the spend to
@@ -183,6 +188,7 @@ export async function structuredCompletion<T>(opts: {
   system: string
   prompt: string
   schema: z.ZodType<T>
+  signal?: AbortSignal
   maxTokens?: number
   client?: Anthropic // injected in tests; defaults to a real client
 }): Promise<{ data: T; cost: LlmUsageCost }> {
@@ -194,6 +200,7 @@ export async function structuredCompletion<T>(opts: {
     schema: opts.schema,
     maxTokens: opts.maxTokens,
     client: opts.client,
+    signal: opts.signal,
   })
 }
 
@@ -214,6 +221,7 @@ export async function visionJudgment<T>(opts: {
   prompt: string
   imagePaths: string[]
   schema: z.ZodType<T>
+  signal?: AbortSignal
   maxTokens?: number
   client?: Anthropic // injected in tests; defaults to a real client
 }): Promise<{ data: T; cost: LlmUsageCost }> {
@@ -248,5 +256,6 @@ export async function visionJudgment<T>(opts: {
     schema: opts.schema,
     maxTokens: opts.maxTokens,
     client: opts.client,
+    signal: opts.signal,
   })
 }

@@ -22,6 +22,17 @@ function row<T>(db: Database, sql: string, ...params: unknown[]): T {
   return db.prepare(sql).get(...params) as T
 }
 
+function committedArtifact(db: Database, jobId: string, stage: StageName, file: string): string {
+  const { artifact_dir } = row<{ artifact_dir: string }>(
+    db,
+    'SELECT artifact_dir FROM job_stages WHERE job_id = ? AND stage = ?',
+    jobId,
+    stage,
+  )
+  expect(artifact_dir).toContain(join(jobId, 'attempts'))
+  return join(artifact_dir, file)
+}
+
 // Fake happy-path stages: script writes script.json, assemble writes final.mp4,
 // qc writes qc.json with the given pass flag, and the others drop a marker.
 function buildStages(calls: StageName[], opts: { qcPassed?: boolean } = {}): StageDef[] {
@@ -92,7 +103,7 @@ describe('runJob', () => {
     const result = await runJob(db, channel, jobId, buildStages(calls), { runsRoot })
 
     expect(result.status).toBe('ready')
-    expect(result.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
+    expect(result.videoPath).toBe(committedArtifact(db, jobId, 'assemble', 'final.mp4'))
     expect(existsSync(result.videoPath!)).toBe(true)
     expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
 
@@ -112,7 +123,7 @@ describe('runJob', () => {
       jobId,
     )
     expect(lib.state).toBe('ready')
-    expect(lib.video_path).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
+    expect(lib.video_path).toBe(result.videoPath)
     expect(JSON.parse(lib.metadata_json).youtube.title).toBe('Space')
   })
 
@@ -122,7 +133,7 @@ describe('runJob', () => {
     const jobId = createJob(db, channel, { topic: 'space' })
     await runJob(db, channel, jobId, buildStages([], { qcPassed: false }), { runsRoot })
 
-    const raw = readFileSync(join(runsRoot, jobId, 'qc', 'qc.json'), 'utf8')
+    const raw = readFileSync(committedArtifact(db, jobId, 'qc', 'qc.json'), 'utf8')
     const lib = row<{ qc_json: string }>(db, 'SELECT qc_json FROM library WHERE job_id = ?', jobId)
     // Re-serialized from the gate's own read, so content — not bytes — is the
     // contract: everything qc.json carries lands in the column.
@@ -233,12 +244,11 @@ describe('runJob', () => {
     const heartbeat = vi.fn()
     await runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat })
 
-    // The produce lease is kept alive by work, not by the clock: four stages
-    // ran, so four extensions.
+    // The compatibility callback observes only stages that actually execute.
     expect(heartbeat).toHaveBeenCalledTimes(4)
   })
 
-  it('a throwing heartbeat never kills the job', async () => {
+  it('a throwing heartbeat stops execution before a stage can run', async () => {
     const { db, runsRoot } = setup()
     const channel = testChannel()
     const jobId = createJob(db, channel, { topic: 'space' })
@@ -246,12 +256,11 @@ describe('runJob', () => {
     const heartbeat = vi.fn(() => {
       throw new Error('database is locked')
     })
-    const result = await runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat })
-
-    // Best-effort keep-alive: a failed extension risks a lease takeover, which
-    // is exactly the pre-heartbeat behavior — not worth losing a live render.
-    expect(result.status).toBe('ready')
-    expect(calls).toEqual([...STAGE_ORDER])
+    await expect(
+      runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat }),
+    ).rejects.toThrow('database is locked')
+    expect(calls).toEqual([])
+    expect(db.prepare('SELECT job_id FROM library WHERE job_id = ?').get(jobId)).toBeUndefined()
   })
 
   it('artifactPath creates each stage directory on demand', async () => {
@@ -262,7 +271,7 @@ describe('runJob', () => {
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
       async run(ctx: JobContext) {
-        const dir = join(runsRoot, jobId, name)
+        const dir = join(ctx.runDir, name)
         seen[`${name}:before`] = existsSync(dir)
         const file = name === 'qc' ? 'qc.json' : name === 'assemble' ? 'final.mp4' : `${name}.txt`
         const p = ctx.artifactPath(name, file)
@@ -328,11 +337,13 @@ describe('runJob', () => {
     const first = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
     expect(first.status).toBe('ready')
 
-    // Second run: every stage is already 'done', so the runner skips straight to the
-    // final library upsert + job-done update. It must not throw a PRIMARY KEY conflict.
+    // The persisted result must be returned without creating a new attempt.
     const second = await runJob(db, channel, jobId, buildStages([]), { runsRoot })
     expect(second.status).toBe('ready')
-    expect(second.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
+    expect(second.videoPath).toBe(first.videoPath)
+    expect(
+      db.prepare('SELECT id FROM execution_attempts WHERE job_id = ?').all(jobId),
+    ).toHaveLength(1)
 
     expect(
       row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library WHERE job_id = ?', jobId).n,

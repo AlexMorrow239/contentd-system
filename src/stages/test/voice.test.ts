@@ -127,6 +127,48 @@ describe('parseWavDurationMs', () => {
 })
 
 describe('voiceStage', () => {
+  it('ledgers late premium audio without writing it or starting a fallback', async () => {
+    const ctx = premiumCtx()
+    const controller = new AbortController()
+    ctx.signal = controller.signal
+    const lost = new Error('lease lost')
+    vi.mocked(synthWithTimestamps).mockImplementationOnce(async () => {
+      controller.abort(lost)
+      return elevenSynthResult()
+    })
+    await expect(voiceStage.run(ctx)).rejects.toBe(lost)
+    expect(ctx.db.prepare('SELECT SUM(usd_micros) AS cost FROM costs').get()).toEqual({
+      cost: elevenSynthResult().costUsdMicros,
+    })
+    await expect(fs.stat(ctx.artifactPath('voice', 'narration.wav'))).rejects.toThrow()
+    expect(KokoroTTS.from_pretrained).not.toHaveBeenCalled()
+  })
+
+  it('does not start synthesis when the attempt is already cancelled', async () => {
+    const ctx = ctxWithScript()
+    const lost = new Error('lease lost')
+    ctx.signal = AbortSignal.abort(lost)
+    await expect(voiceStage.run(ctx)).rejects.toBe(lost)
+    expect(KokoroTTS.from_pretrained).not.toHaveBeenCalled()
+    expect(MsEdgeTTS).not.toHaveBeenCalled()
+  })
+
+  it('stops after an in-flight chunk and never falls back after cancellation', async () => {
+    const ctx = ctxWithScript()
+    const controller = new AbortController()
+    ctx.signal = controller.signal
+    const lost = new Error('lease lost')
+    const generate = vi.fn(async (text: string) => {
+      controller.abort(lost)
+      return chunkAudio(text)
+    })
+    vi.mocked(KokoroTTS.from_pretrained).mockResolvedValue({ generate } as never)
+    await expect(voiceStage.run(ctx)).rejects.toBe(lost)
+    expect(generate).toHaveBeenCalledTimes(1)
+    expect(MsEdgeTTS).not.toHaveBeenCalled()
+    await expect(fs.stat(ctx.artifactPath('voice', 'narration.wav'))).rejects.toThrow()
+  })
+
   it('uses kokoro on the happy path and writes wav + meta', async () => {
     const ctx = ctxWithScript()
     const generate = vi.fn(async (t: string) => chunkAudio(t))

@@ -111,6 +111,30 @@ export function migrate(db: Database): void {
   if (tableExists(db, 'library') && !hasColumn(db, 'library', 'qc_json')) {
     db.exec('ALTER TABLE library ADD COLUMN qc_json TEXT')
   }
+  const executionColumns: Record<string, [string, string][]> = {
+    jobs: [
+      ['active_attempt_id', 'TEXT'],
+      ['recovery_pending', 'INTEGER NOT NULL DEFAULT 0'],
+      ['recovery_count', 'INTEGER NOT NULL DEFAULT 0'],
+      ['recovery_stage', 'TEXT'],
+      ['previous_attempt_id', 'TEXT'],
+      ['retry_after', 'TEXT'],
+      ['budget_wait_json', 'TEXT'],
+    ],
+    job_stages: [['artifact_dir', 'TEXT']],
+    costs: [['attempt_id', 'TEXT']],
+    operator_actions: [
+      ['owner_token', 'TEXT'],
+      ['job_id', 'TEXT'],
+    ],
+  }
+  for (const [table, columns] of Object.entries(executionColumns)) {
+    if (!tableExists(db, table)) continue
+    for (const [column, type] of columns) {
+      if (!hasColumn(db, table, column))
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`)
+    }
+  }
   migratePublishesToPosts(db)
   addTopicStoryColumns(db)
 }

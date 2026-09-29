@@ -1,3 +1,4 @@
+import { checkpoint } from './ownership.js'
 import { promises as fs, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { z } from 'zod'
@@ -189,10 +190,12 @@ export function createScriptStage(client?: Anthropic): StageDef {
   return {
     name: 'script',
     async run(ctx: JobContext): Promise<void> {
+      checkpoint(ctx)
       const artifact =
         ctx.story === undefined
           ? await runTopicScript(ctx, client)
           : await runStoryScript(ctx, ctx.story, client)
+      checkpoint(ctx)
       await fs.writeFile(
         ctx.artifactPath('script', 'script.json'),
         JSON.stringify(artifact, null, 2),
@@ -222,13 +225,15 @@ async function completionWithLedger<T>(
   },
   client?: Anthropic,
 ): Promise<T> {
+  checkpoint(ctx)
   try {
-    const { data, cost } = await structuredCompletion({ ...opts, client })
-    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros)
+    const { data, cost } = await structuredCompletion({ ...opts, client, signal: ctx.signal })
+    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros, ctx.attemptId)
     return data
   } catch (err) {
     const paid = errorCostUsdMicros(err)
-    if (paid !== undefined) recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid)
+    if (paid !== undefined)
+      recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid, ctx.attemptId)
     throw err
   }
 }

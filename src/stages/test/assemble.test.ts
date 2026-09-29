@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { execa } from 'execa'
+import { makeCancelSignal } from '@remotion/renderer'
 import { existsSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -151,6 +152,65 @@ function mockRenderer(): void {
 }
 
 describe('assembleStage bundle robustness', () => {
+  it('cancels an in-flight render and cleans only its attempt assets', async () => {
+    const serveUrl = tmpDir('brainrot-serveurl-')
+    vi.doMock('@remotion/bundler', () => ({ bundle: vi.fn().mockResolvedValue(serveUrl) }))
+    const controller = new AbortController()
+    const lost = new Error('lease lost')
+    const render = vi.fn(
+      async (opts: {
+        inputProps: { audioSrc: string }
+        cancelSignal: (callback: () => void) => void
+      }) => {
+        expect(opts.inputProps.audioSrc).toContain('/attempt-a/narration.wav')
+        expect(existsSync(path.join(serveUrl, 'public', opts.inputProps.audioSrc))).toBe(true)
+        await new Promise<void>((_resolve, reject) => {
+          opts.cancelSignal(() => reject(lost))
+          controller.abort(lost)
+        })
+      },
+    )
+    vi.doMock('@remotion/renderer', () => ({
+      makeCancelSignal,
+      selectComposition: vi.fn().mockResolvedValue({ id: 'ShortVideo' }),
+      renderMedia: render,
+    }))
+    vi.resetModules()
+    const { assembleStage: freshStage } = await import('../assemble.js')
+    const ctx = assembleCtx()
+    ctx.signal = controller.signal
+    ctx.attemptId = 'attempt-a'
+    seedRenderInputs(ctx)
+    await expect(freshStage.run(ctx)).rejects.toBe(lost)
+    expect(render).toHaveBeenCalledTimes(1)
+    expect(existsSync(path.join(serveUrl, 'public', ctx.jobId, ctx.attemptId))).toBe(false)
+  })
+
+  it('does not render when ownership is lost while selecting composition', async () => {
+    const serveUrl = tmpDir('brainrot-serveurl-')
+    vi.doMock('@remotion/bundler', () => ({ bundle: vi.fn().mockResolvedValue(serveUrl) }))
+    let owned = true
+    const lost = new Error('lease lost')
+    const render = vi.fn()
+    vi.doMock('@remotion/renderer', () => ({
+      selectComposition: vi.fn(async () => {
+        owned = false
+        return { id: 'ShortVideo' }
+      }),
+      renderMedia: render,
+    }))
+    vi.resetModules()
+    const { assembleStage: freshStage } = await import('../assemble.js')
+    const ctx = assembleCtx()
+    ctx.assertOwned = () => {
+      if (!owned) throw lost
+    }
+    seedRenderInputs(ctx)
+    await expect(freshStage.run(ctx)).rejects.toBe(lost)
+    expect(render).not.toHaveBeenCalled()
+    expect(existsSync(path.join(serveUrl, 'public', ctx.jobId))).toBe(false)
+  })
+
   afterEach(() => {
     vi.doUnmock('@remotion/bundler')
     vi.doUnmock('@remotion/renderer')

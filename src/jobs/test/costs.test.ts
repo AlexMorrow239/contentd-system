@@ -40,6 +40,39 @@ afterEach(() => {
 })
 
 describe('recordCost + assertBudget', () => {
+  it('records the stage attempt responsible for a charge', () => {
+    const db = tempDb()
+    recordCost(db, 'job-1', 'anthropic', 'script', 1500, 'attempt-1')
+    expect(db.prepare('SELECT attempt_id FROM costs').get()).toEqual({ attempt_id: 'attempt-1' })
+  })
+
+  it.each([
+    { scope: 'per-video', perVideo: 100, perDay: 1000, global: '1' },
+    { scope: 'channel-day', perVideo: 1000, perDay: 100, global: '1' },
+    { scope: 'global-day', perVideo: 1000, perDay: 1000, global: '0.0001' },
+  ])('records structured $scope refusal details', ({ scope, perVideo, perDay, global }) => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', global)
+    const db = tempDb()
+    const ch = channel('chan-a', { perVideoUsdMicros: perVideo, perDayUsdMicros: perDay })
+    const jobId = seedJob(db, ch)
+    recordCost(db, jobId, 'anthropic', 'script', 80)
+    let error: unknown
+    try {
+      assertBudget(db, ch, jobId, 30)
+    } catch (err) {
+      error = err
+    }
+    expect(error).toMatchObject({
+      details: {
+        scope,
+        upcomingUsdMicros: 30,
+        spentUsdMicros: 80,
+        capUsdMicros: 100,
+        utcDay: new Date().toISOString().slice(0, 10),
+      },
+    })
+  })
+
   it('records a cost row', () => {
     const db = tempDb()
     recordCost(db, 'job-1', 'anthropic', 'script', 1_500_000)

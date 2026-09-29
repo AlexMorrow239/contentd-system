@@ -162,7 +162,11 @@ describe('resumeJob', () => {
     const stagesFor = vi.fn(() => fakeStages(calls))
     const result = await resumeJob(db, jobId, { runsRoot, channelsDir, stagesFor })
     expect(result.status).toBe('ready')
-    expect(result.videoPath).toBe(join(runsRoot, jobId, 'assemble', 'final.mp4'))
+    const assemble = db
+      .prepare("SELECT artifact_dir FROM job_stages WHERE job_id = ? AND stage = 'assemble'")
+      .get(jobId) as { artifact_dir: string }
+    expect(assemble.artifact_dir).toContain(join(runsRoot, jobId, 'attempts'))
+    expect(result.videoPath).toBe(join(assemble.artifact_dir, 'final.mp4'))
     expect(calls).toEqual(['script', 'voice', 'captions', 'visuals', 'assemble', 'qc'])
     expect(stagesFor).toHaveBeenCalledTimes(1)
     const topic = db.prepare('SELECT status FROM topics WHERE job_id = ?').get(jobId) as {

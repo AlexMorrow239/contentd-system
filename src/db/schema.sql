@@ -3,12 +3,15 @@ CREATE TABLE IF NOT EXISTS jobs (
   topic TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued'
     CHECK (status IN ('queued','running','failed','done','blocked')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  finished_at TEXT
+  finished_at TEXT,
+  active_attempt_id TEXT, recovery_pending INTEGER NOT NULL DEFAULT 0,
+  recovery_count INTEGER NOT NULL DEFAULT 0, recovery_stage TEXT, previous_attempt_id TEXT,
+  retry_after TEXT, budget_wait_json TEXT
 );
 CREATE TABLE IF NOT EXISTS job_stages (
   job_id TEXT NOT NULL REFERENCES jobs(id), stage TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','done','failed')),
-  error TEXT, started_at TEXT, finished_at TEXT,
+  error TEXT, started_at TEXT, finished_at TEXT, artifact_dir TEXT,
   PRIMARY KEY (job_id, stage)
 );
 CREATE TABLE IF NOT EXISTS library (
@@ -28,7 +31,7 @@ CREATE TABLE IF NOT EXISTS library (
 );
 CREATE TABLE IF NOT EXISTS costs (
   id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES jobs(id),
-  provider TEXT NOT NULL, operation TEXT NOT NULL, usd_micros INTEGER NOT NULL,
+  provider TEXT NOT NULL, operation TEXT NOT NULL, usd_micros INTEGER NOT NULL, attempt_id TEXT,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
 CREATE TABLE IF NOT EXISTS bg_usage (
@@ -131,7 +134,7 @@ CREATE TABLE IF NOT EXISTS operator_actions (
   result TEXT,                        -- JSON, the handler's return value
   error TEXT,
   error_kind TEXT,                    -- classify()'s kind
-  notice TEXT
+  notice TEXT, owner_token TEXT, job_id TEXT
 );
 -- The workers' hot path: "oldest pending row in this lane".
 CREATE INDEX IF NOT EXISTS ix_operator_actions_queue
@@ -147,3 +150,10 @@ CREATE TABLE IF NOT EXISTS daemon_state (
   started_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS execution_attempts (
+  id TEXT PRIMARY KEY, job_id TEXT NOT NULL, owner_token TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('running','done','failed','blocked','interrupted')),
+  started_at TEXT NOT NULL, finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_attempts_job ON execution_attempts(job_id);

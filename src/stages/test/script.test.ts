@@ -54,6 +54,24 @@ const VALID_SCRIPT = {
 }
 
 describe('scriptStage', () => {
+  it('ledgers a paid response after ownership loss without writing an artifact', async () => {
+    const ctx = makeCtx()
+    const controller = new AbortController()
+    ctx.signal = controller.signal
+    const lost = new Error('lease lost')
+    const { client, create } = fakeClient(undefined)
+    create.mockImplementation(() => {
+      controller.abort(lost)
+      return emitToolUse(VALID_SCRIPT, { input_tokens: 100, output_tokens: 100 })
+    })
+    await expect(createScriptStage(client).run(ctx)).rejects.toBe(lost)
+    expect(ctx.db.prepare('SELECT SUM(usd_micros) AS cost FROM costs').get()).toEqual({
+      cost: 1800,
+    })
+    await expect(fs.stat(ctx.artifactPath('script', 'script.json'))).rejects.toThrow()
+    expect(create.mock.calls[0][1]).toEqual({ signal: controller.signal })
+  })
+
   it('writes script.json, records cost, and forces the emit tool with the script schema', async () => {
     const ctx = makeCtx({ channel: testChannel() })
     const { client, create } = fakeClient(

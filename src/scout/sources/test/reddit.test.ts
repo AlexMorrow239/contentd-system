@@ -76,6 +76,35 @@ describe('SOURCE_FETCH_TIMEOUT_MS', () => {
 })
 
 describe('redditSource', () => {
+  it('rejects a cancelled fetch before starting the request', async () => {
+    const lost = new Error('lease lost')
+    const fetchImpl = vi.fn()
+    await expect(
+      redditSource('space', fetchImpl).fetch({
+        limit: 10,
+        timeoutMs: 1000,
+        signal: AbortSignal.abort(lost),
+      }),
+    ).rejects.toBe(lost)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('forwards caller cancellation to the source request', async () => {
+    const controller = new AbortController()
+    const lost = new Error('lease lost')
+    const fetchImpl: FetchLike = async (_input, init) => {
+      controller.abort(lost)
+      init?.signal?.throwIfAborted()
+      return new Response('{"data":[]}')
+    }
+    await expect(
+      redditSource('space', fetchImpl).fetch({
+        limit: 10,
+        timeoutMs: 1000,
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(lost)
+  })
   it("GETs the subreddit's newest posts from Arctic Shift with the UA and a timeout", async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
     const { impl, calls } = fakeFetch(200, SEARCH_JSON)

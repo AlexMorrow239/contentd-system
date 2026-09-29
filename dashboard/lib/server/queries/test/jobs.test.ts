@@ -90,6 +90,42 @@ describe('jobChannels', () => {
 })
 
 describe('getJobDetail', () => {
+  it('exposes persisted budget waits and retry deadlines without changing state', () => {
+    const db = seed()
+    const wait = {
+      version: 1,
+      stage: 'voice',
+      reason: 'per-video budget exceeded',
+      utcDay: '2026-09-29',
+      configFingerprint: 'abc',
+      details: {
+        scope: 'per-video',
+        upcomingUsdMicros: 2_000_000,
+        spentUsdMicros: 7_000_000,
+        capUsdMicros: 8_000_000,
+        utcDay: '2026-09-29',
+      },
+    }
+    db.prepare('UPDATE jobs SET budget_wait_json = ?, retry_after = ? WHERE id = ?').run(
+      JSON.stringify(wait),
+      '2026-09-29T12:01:00.000Z',
+      'j1',
+    )
+    db.pragma('query_only = ON')
+    expect(getJobDetail(db, 'j1')).toMatchObject({
+      budgetWait: wait,
+      retryAfter: '2026-09-29T12:01:00.000Z',
+    })
+  })
+
+  it('tolerates old or malformed budget metadata', () => {
+    const db = seed()
+    expect(getJobDetail(db, 'j1')?.budgetWait).toBeNull()
+    expect(getJobDetail(db, 'j1')?.retryAfter).toBeNull()
+    db.prepare('UPDATE jobs SET budget_wait_json = ? WHERE id = ?').run('{broken', 'j1')
+    expect(getJobDetail(db, 'j1')?.budgetWait).toBeNull()
+  })
+
   it('returns null for an unknown job', () => {
     const db = seed()
     expect(getJobDetail(db, 'nope')).toBeNull()

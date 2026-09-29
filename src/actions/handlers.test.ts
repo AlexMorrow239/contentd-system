@@ -1,3 +1,4 @@
+import { acquireManagedLease, LeaseLostError } from '../loop/lease.js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -5,7 +6,7 @@ import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../testing/channel.js'
 import { memDb, seedJob, seedLibrary, seedTopic } from '../testing/db.js'
-import { postedPlatforms } from '../posts/posts.js'
+import { postedPlatforms, markPosted } from '../posts/posts.js'
 import { tmpDir } from '../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
 import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
@@ -21,6 +22,41 @@ function ctx(db: Database): ActionContext {
 }
 
 describe('action handlers', () => {
+  it.each([
+    ['topics.reject', { ids: ['1'] }],
+    ['topics.requeue', { id: '1' }],
+    ['library.approve', { jobIds: ['j1'] }],
+    ['library.reject', { jobIds: ['j1'] }],
+    ['post.mark', { jobId: 'j1', platform: 'youtube' }],
+    ['post.unmark', { jobId: 'j1', platform: 'youtube' }],
+  ] as const)('%s fences its domain mutation inside a transaction', async (kind, args) => {
+    const db = memDb()
+    seedJob(db, 'j1')
+    seedLibrary(db, 'j1', { state: 'needs-review' })
+    seedTopic(db, { status: kind === 'topics.requeue' ? 'claimed' : 'candidate', jobId: null })
+    if (kind === 'post.unmark') markPosted(db, { jobId: 'j1', platform: 'youtube' })
+    const snapshot = () =>
+      ['topics', 'library', 'posts'].map((table) => db.prepare(`SELECT * FROM ${table}`).all())
+    const before = snapshot()
+    const lease = acquireManagedLease(db, 'daemon')!
+    const lost = new LeaseLostError('daemon')
+    const guarded = vi.fn(() => {
+      // The dispatch check succeeds. Simulate loss when the write lock is
+      // acquired; the guard must reject before any domain row can change.
+      if (db.inTransaction) throw lost
+    })
+    try {
+      await expect(
+        runAction({ ...ctx(db), daemonLease: { ...lease, assertOwned: guarded } }, kind, args),
+      ).rejects.toBe(lost)
+      expect(guarded).toHaveBeenCalledTimes(2)
+      expect(db.inTransaction).toBe(false)
+      expect(snapshot()).toEqual(before)
+    } finally {
+      lease.release()
+    }
+  })
+
   it('has exactly one handler per catalog entry', () => {
     // `ACTION_HANDLERS`'s mapped type already makes a missing handler a
     // compile error — this is cheap insurance against a future `as any` cast

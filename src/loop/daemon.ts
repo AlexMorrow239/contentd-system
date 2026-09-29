@@ -2,11 +2,12 @@ import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
 import { errorMessage } from '../errors.js'
 import { localDay } from '../time.js'
-import { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } from '../scout/scout.js'
+import { ScoutRunFailedError, scoutAll } from '../scout/scout.js'
 import type { ScoutChannelResult } from '../scout/scout.js'
 import { FAST_IDLE_SLEEP_MS, actionsUnit } from './actions-worker.js'
 import { buildDigest } from './digest.js'
-import { acquireLease, leaseHolder, releaseLease } from './lease.js'
+import { acquireManagedLease, requireLease, type LeaseContext } from './lease.js'
+import { reconcileActions } from '../actions/queue.js'
 import { configErrorNoop, produceNextTick } from './produce-next.js'
 
 export const IDLE_SLEEP_MS = 30_000
@@ -94,11 +95,20 @@ export const DIGEST_HOUR = 8
 
 export function produceUnit(
   db: Database,
-  opts: { channelsDir: string; runsRoot: string; tick?: typeof produceNextTick },
+  opts: {
+    channelsDir: string
+    runsRoot: string
+    tick?: typeof produceNextTick
+    daemonLease?: LeaseContext
+  },
 ): () => Promise<UnitResult> {
   const tick = opts.tick ?? produceNextTick
   return async () => {
-    const result = await tick(db, { channelsDir: opts.channelsDir, runsRoot: opts.runsRoot })
+    const result = await tick(db, {
+      channelsDir: opts.channelsDir,
+      runsRoot: opts.runsRoot,
+      daemonLease: opts.daemonLease,
+    })
     return { worked: result.action !== 'noop', line: { ...result } }
   }
 }
@@ -113,7 +123,12 @@ export function produceUnit(
  */
 export function scoutUnit(
   db: Database,
-  opts: { channelsDir: string; now?: () => Date; scout?: typeof scoutAll },
+  opts: {
+    channelsDir: string
+    now?: () => Date
+    scout?: typeof scoutAll
+    daemonLease?: LeaseContext
+  },
 ): () => Promise<UnitResult> {
   const scout = opts.scout ?? scoutAll
   return async () => {
@@ -123,14 +138,14 @@ export function scoutUnit(
       return { worked: false, line: { ...configErrorNoop(loaded.error) } }
     }
     if (loaded.channels.length === 0) return { worked: false }
-    const holder = leaseHolder()
-    if (!acquireLease(db, 'scout', holder, SCOUT_LEASE_TTL_MS)) {
+    const lease = acquireManagedLease(db, 'scout', opts.daemonLease)
+    if (lease === null) {
       return { worked: false, line: { action: 'noop', reason: 'lease-held' } }
     }
     try {
       let results: ScoutChannelResult[]
       try {
-        results = await scout(db, loaded.channels, { now })
+        results = await scout(db, loaded.channels, { now, lease })
       } catch (err) {
         if (err instanceof ScoutRunFailedError) {
           return {
@@ -161,7 +176,7 @@ export function scoutUnit(
       }
       return { worked: true, line: { action: 'scouted', channels: results } }
     } finally {
-      releaseLease(db, 'scout', holder)
+      lease.release()
     }
   }
 }
@@ -198,73 +213,95 @@ export async function runDaemon(
     signal?: AbortSignal
   },
 ): Promise<void> {
-  // Always an INTERNAL controller, even when the caller supplies a signal: a
-  // worker can reject from outside its unit's try/catch (an emit that EPIPEs
-  // on a closed stdout, an injected sleep that rejects), and the daemon must
-  // be able to stop the other three itself. Sharing the caller's signal gave
-  // it no such handle — Promise.all rejected on the first failure while three
-  // workers kept looping, and cli.ts's `finally` then closed the shared
-  // better-sqlite3 handle under them.
-  const controller = new AbortController()
-  const signal = controller.signal
-  if (opts.signal === undefined) {
-    process.once('SIGTERM', () => controller.abort())
-    process.once('SIGINT', () => controller.abort())
-  } else if (opts.signal.aborted) {
-    controller.abort()
-  } else {
-    opts.signal.addEventListener('abort', () => controller.abort(), { once: true })
-  }
-  const emit =
-    opts.emit ??
-    ((line: Record<string, unknown>) => process.stdout.write(JSON.stringify(line) + '\n'))
-  const deps: WorkerDeps = {
-    emit,
-    sleep: opts.sleep ?? ((ms) => abortableSleep(ms, signal)),
-  }
-  emit({ action: 'daemon-started', pid: process.pid })
-  // A rejecting worker aborts the rest; allSettled then waits for every one
-  // of them to actually leave its loop, so runDaemon never returns (or
-  // rejects) while a worker is still touching the db — which is exactly what
-  // cli.ts's `finally { db.close() }` would otherwise race.
-  const supervise = (
-    name: string,
-    unit: () => Promise<UnitResult>,
-    workerOpts: { idleSleepMs?: number } = {},
-  ): Promise<void> =>
-    runWorker(name, unit, signal, deps, workerOpts).catch((err: unknown) => {
+  const daemonLease = requireLease(db, 'daemon')
+  try {
+    reconcileActions(db, daemonLease, opts.now?.())
+    // Always an INTERNAL controller, even when the caller supplies a signal: a
+    // worker can reject from outside its unit's try/catch (an emit that EPIPEs
+    // on a closed stdout, an injected sleep that rejects), and the daemon must
+    // be able to stop the other three itself. Sharing the caller's signal gave
+    // it no such handle — Promise.all rejected on the first failure while three
+    // workers kept looping, and cli.ts's `finally` then closed the shared
+    // better-sqlite3 handle under them.
+    const controller = new AbortController()
+    const signal = controller.signal
+    daemonLease.signal.addEventListener('abort', () => controller.abort(), { once: true })
+    if (opts.signal === undefined) {
+      process.once('SIGTERM', () => controller.abort())
+      process.once('SIGINT', () => controller.abort())
+    } else if (opts.signal.aborted) {
       controller.abort()
-      throw err
-    })
-  const settled = await Promise.allSettled([
-    supervise('produce', produceUnit(db, opts)),
-    supervise('scout', scoutUnit(db, { channelsDir: opts.channelsDir, now: opts.now })),
-    supervise('digest', digestUnit(db, { channelsDir: opts.channelsDir, now: opts.now })),
-    // The operator-action lanes. actions-fast also carries the daemon
-    // heartbeat the dashboard reads to tell "queued" from "queued into the
-    // void", which is why it polls at FAST_IDLE_SLEEP_MS rather than the 30s
-    // default.
-    supervise(
-      'actions-fast',
-      actionsUnit(db, 'fast', {
-        channelsDir: opts.channelsDir,
-        runsRoot: opts.runsRoot,
-        now: opts.now,
-      }),
-      { idleSleepMs: FAST_IDLE_SLEEP_MS },
-    ),
-    supervise(
-      'actions-slow',
-      actionsUnit(db, 'slow', {
-        channelsDir: opts.channelsDir,
-        runsRoot: opts.runsRoot,
-        now: opts.now,
-      }),
-    ),
-  ])
-  // Surface the failure only after every worker has left its loop. A second
-  // worker rejecting during the cascade is almost always a consequence of the
-  // first, so the earliest one in worker order is the one worth reporting.
-  const failed = settled.find((outcome) => outcome.status === 'rejected')
-  if (failed?.status === 'rejected') throw failed.reason
+    } else {
+      opts.signal.addEventListener('abort', () => controller.abort(), { once: true })
+    }
+    const emit =
+      opts.emit ??
+      ((line: Record<string, unknown>) => process.stdout.write(JSON.stringify(line) + '\n'))
+    const deps: WorkerDeps = {
+      emit,
+      sleep: opts.sleep ?? ((ms) => abortableSleep(ms, signal)),
+    }
+    emit({ action: 'daemon-started', pid: process.pid })
+    // A rejecting worker aborts the rest; allSettled then waits for every one
+    // of them to actually leave its loop, so runDaemon never returns (or
+    // rejects) while a worker is still touching the db — which is exactly what
+    // cli.ts's `finally { db.close() }` would otherwise race.
+    const supervise = (
+      name: string,
+      unit: () => Promise<UnitResult>,
+      workerOpts: { idleSleepMs?: number } = {},
+    ): Promise<void> =>
+      runWorker(
+        name,
+        () => {
+          daemonLease.assertOwned()
+          return unit()
+        },
+        signal,
+        deps,
+        workerOpts,
+      ).catch((err: unknown) => {
+        controller.abort()
+        throw err
+      })
+    const settled = await Promise.allSettled([
+      supervise('produce', produceUnit(db, { ...opts, daemonLease })),
+      supervise(
+        'scout',
+        scoutUnit(db, { channelsDir: opts.channelsDir, now: opts.now, daemonLease }),
+      ),
+      supervise('digest', digestUnit(db, { channelsDir: opts.channelsDir, now: opts.now })),
+      // The operator-action lanes. actions-fast also carries the daemon
+      // heartbeat the dashboard reads to tell "queued" from "queued into the
+      // void", which is why it polls at FAST_IDLE_SLEEP_MS rather than the 30s
+      // default.
+      supervise(
+        'actions-fast',
+        actionsUnit(db, 'fast', {
+          channelsDir: opts.channelsDir,
+          runsRoot: opts.runsRoot,
+          now: opts.now,
+          daemonLease,
+        }),
+        { idleSleepMs: FAST_IDLE_SLEEP_MS },
+      ),
+      supervise(
+        'actions-slow',
+        actionsUnit(db, 'slow', {
+          channelsDir: opts.channelsDir,
+          runsRoot: opts.runsRoot,
+          now: opts.now,
+          daemonLease,
+        }),
+      ),
+    ])
+    // Surface the failure only after every worker has left its loop. A second
+    // worker rejecting during the cascade is almost always a consequence of the
+    // first, so the earliest one in worker order is the one worth reporting.
+    const failed = settled.find((outcome) => outcome.status === 'rejected')
+    if (failed?.status === 'rejected') throw failed.reason
+    if (daemonLease.signal.aborted) throw daemonLease.signal.reason
+  } finally {
+    daemonLease.release()
+  }
 }

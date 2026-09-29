@@ -1,3 +1,4 @@
+import { checkpoint } from './ownership.js'
 import { readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { execa } from 'execa'
@@ -89,12 +90,13 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
   return {
     name: 'qc',
     async run(ctx: JobContext): Promise<void> {
+      checkpoint(ctx)
       const finalPath = ctx.artifactPath('assemble', 'final.mp4')
       const voice = readJson<VoiceMeta>(ctx.artifactPath('voice', 'voice.json'))
       if (voice === undefined) {
         throw new Error(`qc: unreadable voice artifact ${ctx.artifactPath('voice', 'voice.json')}`)
       }
-      const p = await probe(finalPath)
+      const p = await probe(finalPath, ctx.signal)
       const checks: QcResult['checks'] = []
 
       checks.push({
@@ -113,10 +115,11 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
         detail: p.hasAudio ? 'audio stream present' : 'no audio stream',
       })
 
+      checkpoint(ctx)
       const { stderr: analysis } = await execa(
         'ffmpeg',
         ['-i', finalPath, '-af', 'volumedetect', '-vf', ANALYSIS_VF, '-f', 'null', '-'],
-        { reject: false },
+        { reject: false, cancelSignal: ctx.signal },
       )
 
       const meanDb = parseMeanVolumeDb(analysis)
@@ -175,6 +178,7 @@ export function qcStage(opts?: { minMs?: number; maxMs?: number }): StageDef {
       })
 
       const result: QcResult = { passed: checks.every((c) => c.passed), checks }
+      checkpoint(ctx)
       writeFileSync(ctx.artifactPath('qc', 'qc.json'), JSON.stringify(result, null, 2))
       ctx.log.info({ passed: result.passed }, 'qc: complete')
     },

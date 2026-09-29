@@ -6,6 +6,7 @@ import {
   globalDaySpentMicros,
   jobSpentMicros,
 } from '../jobs/costs.js'
+import { parseBudgetWait } from '../jobs/budget-wait.js'
 import { pendingInventory } from '../jobs/library.js'
 import { formatUsdMicros } from '../money.js'
 import { candidateTopicCount, claimedTopicCount } from '../scout/topics.js'
@@ -253,9 +254,14 @@ export function buildDigest(
   // sunk and its topic still 'claimed'.
   const blockedJobs = db
     .prepare(
-      "SELECT id, channel FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
+      "SELECT id, channel, budget_wait_json, retry_after FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
     )
-    .all() as { id: string; channel: string }[]
+    .all() as {
+    id: string
+    channel: string
+    budget_wait_json: string | null
+    retry_after: string | null
+  }[]
   if (blockedJobs.length > 0) {
     const byName = new Map(channels.map((c) => [c.name, c]))
     // The other half of every dead-end remedy below: a blocked job usually
@@ -280,6 +286,17 @@ export function buildDigest(
         lines.push(
           `${head} — no channel config named ${j.channel} in the channels dir — restore ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
         )
+        continue
+      }
+      const wait = parseBudgetWait(j.budget_wait_json)
+      if (wait !== null) {
+        const estimate =
+          wait.details === null
+            ? ''
+            : ` — next call ${formatUsdMicros(wait.details.upcomingUsdMicros)}; recorded spend ${formatUsdMicros(wait.details.spentUsdMicros)} of ${formatUsdMicros(wait.details.capUsdMicros)} ${wait.details.scope} cap`
+        const retry =
+          j.retry_after === null ? '' : ` — next eligibility check no earlier than ${j.retry_after}`
+        lines.push(`${head} — budget wait at ${wait.stage}: ${wait.reason}${estimate}${retry}`)
         continue
       }
       const capMicros = channel.budget.perVideoUsdMicros

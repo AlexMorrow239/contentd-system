@@ -41,6 +41,32 @@ export default async function JobPage(props: PageProps & { params: Promise<{ id:
                 </dd>
               </dl>
             </section>
+            {detail.budgetWait && (
+              <section className="panel">
+                <h2>Budget wait</h2>
+                <p>{detail.budgetWait.reason}</p>
+                <dl className="facts">
+                  <dt>Stage</dt>
+                  <dd>{detail.budgetWait.stage}</dd>
+                  {detail.budgetWait.details && (
+                    <>
+                      <dt>Next call estimate</dt>
+                      <dd>{formatUsdMicros(detail.budgetWait.details.upcomingUsdMicros)}</dd>
+                      <dt>Recorded spend / cap</dt>
+                      <dd>
+                        {formatUsdMicros(detail.budgetWait.details.spentUsdMicros)} /{' '}
+                        {formatUsdMicros(detail.budgetWait.details.capUsdMicros)} (
+                        {detail.budgetWait.details.scope}, {detail.budgetWait.utcDay} UTC)
+                      </dd>
+                    </>
+                  )}
+                </dl>
+                <p>The next call is checked against current budgets before production resumes.</p>
+              </section>
+            )}
+            {detail.retryAfter && (
+              <p>Next eligibility check no earlier than {formatTime(detail.retryAfter)}.</p>
+            )}
             {detail.bytes && (
               <section className="panel">
                 <h2>Video</h2>

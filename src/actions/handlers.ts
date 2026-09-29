@@ -1,3 +1,5 @@
+import type { LeaseContext } from '../loop/lease.js'
+import { linkActionJob } from '../jobs/execution.js'
 import type { Database } from 'better-sqlite3'
 import { loadChannelsDir, tryLoadChannelsDir } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
@@ -32,6 +34,9 @@ import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
  * and the worker publishes when actions wait on a held lease.
  */
 export interface ActionContext {
+  actionId?: number
+  lease?: LeaseContext
+  daemonLease?: LeaseContext
   db: Database
   now: Date
   channelsDir: string
@@ -62,51 +67,64 @@ type Handler<K extends ActionKind> = (
   deps?: HandlerDeps,
 ) => Promise<unknown>
 
+/** Keep the ownership check and synchronous domain write under one write lock.
+ * The async boundary only converts synchronous errors into rejected promises. */
+// eslint-disable-next-line @typescript-eslint/require-await
+async function mutateOwned<T extends Record<string, unknown>>(
+  ctx: ActionContext,
+  mutate: () => T,
+): Promise<T> {
+  return ctx.db
+    .transaction(() => {
+      ctx.daemonLease?.assertOwned()
+      ctx.lease?.assertOwned()
+      return mutate()
+    })
+    .immediate()
+}
+
 export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'topics.reject': (ctx, args) =>
-    Promise.resolve({ rejected: rejectTopics(ctx.db, args.ids), requested: args.ids.length }),
+    mutateOwned(ctx, () => ({
+      rejected: rejectTopics(ctx.db, args.ids),
+      requested: args.ids.length,
+    })),
 
-  // Each handler below is genuinely synchronous, but stays `async` so a
-  // thrown error becomes a rejected Promise rather than a synchronous throw —
-  // the sole caller is `async runAction`, but a future direct
-  // `ACTION_HANDLERS[k](ctx, args).catch(...)` must not blow past the
-  // `.catch`. require-await doesn't know
-  // that distinction, hence the per-handler disable.
-  // eslint-disable-next-line @typescript-eslint/require-await
-  'topics.requeue': async (ctx, args) => {
-    const outcome = requeueTopic(ctx.db, args.id)
-    if (!outcome.ok) {
-      // 'job-active' is someone else holding the topic (its job is still
-      // live) — errors.ts defines that as 'conflict', not 'refused'. The
-      // CLI's `topics requeue` reports the same structured detail
-      // (status / jobId / jobStatus) on stdout; it travels here as context
-      // so the dashboard can render it too.
-      const kind =
-        outcome.reason === 'unknown'
-          ? 'not-found'
-          : outcome.reason === 'job-active'
-            ? 'conflict'
-            : 'refused'
-      const context =
-        outcome.reason === 'job-active'
-          ? { jobId: outcome.jobId, jobStatus: outcome.jobStatus }
-          : outcome.reason === 'not-claimed'
-            ? { status: outcome.status }
-            : undefined
-      throw new BrainrotError(`topic ${args.id} not requeued: ${outcome.reason}`, {
-        domain: 'job',
-        kind,
-        context,
-      })
-    }
-    return { ok: true }
-  },
+  'topics.requeue': (ctx, args) =>
+    mutateOwned(ctx, () => {
+      const outcome = requeueTopic(ctx.db, args.id)
+      if (!outcome.ok) {
+        // 'job-active' is someone else holding the topic (its job is still
+        // live) — errors.ts defines that as 'conflict', not 'refused'. The
+        // CLI's `topics requeue` reports the same structured detail
+        // (status / jobId / jobStatus) on stdout; it travels here as context
+        // so the dashboard can render it too.
+        const kind =
+          outcome.reason === 'unknown'
+            ? 'not-found'
+            : outcome.reason === 'job-active'
+              ? 'conflict'
+              : 'refused'
+        const context =
+          outcome.reason === 'job-active'
+            ? { jobId: outcome.jobId, jobStatus: outcome.jobStatus }
+            : outcome.reason === 'not-claimed'
+              ? { status: outcome.status }
+              : undefined
+        throw new BrainrotError(`topic ${args.id} not requeued: ${outcome.reason}`, {
+          domain: 'job',
+          kind,
+          context,
+        })
+      }
+      return { ok: true }
+    }),
 
   'library.approve': (ctx, args) =>
-    Promise.resolve({
+    mutateOwned(ctx, () => ({
       approved: approveLibrary(ctx.db, args.jobIds),
       requested: args.jobIds.length,
-    }),
+    })),
 
   'digest.run': (ctx) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
@@ -129,6 +147,9 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     (deps?.produceNextTick ?? produceNextTick)(ctx.db, {
       channelsDir: ctx.channelsDir,
       runsRoot: ctx.runsRoot,
+      lease: ctx.lease,
+      daemonLease: ctx.daemonLease,
+      actionId: ctx.actionId,
     }),
 
   'jobs.produce': async (ctx, args, deps) => {
@@ -142,7 +163,14 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
         kind: 'not-found',
       })
     }
-    const jobId = createJob(ctx.db, channel, { topic: args.topic })
+    const jobId = ctx.db
+      .transaction(() => {
+        ctx.lease?.assertOwned()
+        const id = createJob(ctx.db, channel, { topic: args.topic })
+        linkActionJob(ctx.db, ctx.actionId, id, ctx.daemonLease)
+        return id
+      })
+      .immediate()
     // Publish the job id the instant it exists. If this process is killed
     // mid-render the action row goes `failed` while the JOB stays resumable —
     // and because failAction no longer clears `notice` (Task 1), this line is
@@ -150,6 +178,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     ctx.setNotice(`job ${jobId}`)
     return (deps?.runJob ?? runJob)(ctx.db, channel, jobId, pipelineStages(), {
       runsRoot: ctx.runsRoot,
+      lease: ctx.lease,
     })
   },
 
@@ -175,7 +204,10 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     // `failAction` stores a message and a kind, not a result. Accepted — the
     // failure message names the systemic cause, which is the actionable part.
     return {
-      channels: await (deps?.scoutAll ?? scoutAll)(ctx.db, loaded.channels, { force: true }),
+      channels: await (deps?.scoutAll ?? scoutAll)(ctx.db, loaded.channels, {
+        force: true,
+        lease: ctx.lease,
+      }),
     }
   },
 
@@ -186,33 +218,36 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'jobs.resume': (ctx, args, deps) =>
     (deps?.resumeJob ?? resumeJob)(ctx.db, args.jobId, {
       runsRoot: ctx.runsRoot,
+      lease: ctx.lease,
+      daemonLease: ctx.daemonLease,
+      actionId: ctx.actionId,
       channelsDir: ctx.channelsDir,
     }),
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  'post.mark': async (ctx, args) => {
-    // No channel is passed: the form only has a job id, and markPosted
-    // resolves the channel from the job itself (throwing not-found for an
-    // unknown id), which is what makes a misfiled row structurally impossible
-    // rather than something each caller has to remember.
-    markPosted(ctx.db, { jobId: args.jobId, platform: args.platform, url: args.url })
-    return { jobId: args.jobId, platform: args.platform, posted: true }
-  },
+  'post.mark': (ctx, args) =>
+    mutateOwned(ctx, () => {
+      // No channel is passed: the form only has a job id, and markPosted
+      // resolves the channel from the job itself (throwing not-found for an
+      // unknown id), which is what makes a misfiled row structurally impossible
+      // rather than something each caller has to remember.
+      markPosted(ctx.db, { jobId: args.jobId, platform: args.platform, url: args.url })
+      return { jobId: args.jobId, platform: args.platform, posted: true }
+    }),
 
-  // eslint-disable-next-line @typescript-eslint/require-await
-  'post.unmark': async (ctx, args) => ({
-    jobId: args.jobId,
-    platform: args.platform,
-    // Reported, not thrown: unmarking something already gone is the operator
-    // getting the state they asked for, not a failure.
-    removed: unmarkPosted(ctx.db, args.jobId, args.platform),
-  }),
+  'post.unmark': (ctx, args) =>
+    mutateOwned(ctx, () => ({
+      jobId: args.jobId,
+      platform: args.platform,
+      // Reported, not thrown: unmarking something already gone is the operator
+      // getting the state they asked for, not a failure.
+      removed: unmarkPosted(ctx.db, args.jobId, args.platform),
+    })),
 
   'library.reject': (ctx, args) =>
-    Promise.resolve({
+    mutateOwned(ctx, () => ({
       rejected: rejectLibrary(ctx.db, args.jobIds),
       requested: args.jobIds.length,
-    }),
+    })),
 }
 
 /**
@@ -229,6 +264,8 @@ export async function runAction(
   kind: ActionKind,
   rawArgs: unknown,
 ): Promise<unknown> {
+  ctx.daemonLease?.assertOwned()
+  ctx.lease?.assertOwned()
   const args = parseActionArgs(kind, rawArgs)
   const handler = ACTION_HANDLERS[kind] as (ctx: ActionContext, args: unknown) => Promise<unknown>
   return handler(ctx, args)

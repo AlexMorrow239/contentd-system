@@ -33,7 +33,7 @@ describe('leases schema', () => {
 describe('acquireLease', () => {
   it('acquires a free lease and stamps holder + expiry exactly ttl ahead', () => {
     const db = memDb()
-    expect(PRODUCE_LEASE_TTL_MS).toBe(5_400_000)
+    expect(PRODUCE_LEASE_TTL_MS).toBe(300_000)
     const before = Date.now()
     expect(acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
     const row = db
@@ -125,13 +125,27 @@ describe('releaseLease', () => {
 })
 
 describe('extendLease', () => {
+  it('never revives an expired lease, even for its recorded holder', () => {
+    const db = memDb()
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-01T00:00:00Z'))
+    acquireLease(db, 'produce', 'old-owner', PRODUCE_LEASE_TTL_MS)
+    vi.advanceTimersByTime(PRODUCE_LEASE_TTL_MS)
+    expect(extendLease(db, 'produce', 'old-owner', PRODUCE_LEASE_TTL_MS)).toBe(false)
+    expect(acquireLease(db, 'produce', 'new-owner', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(extendLease(db, 'produce', 'old-owner', PRODUCE_LEASE_TTL_MS)).toBe(false)
+    expect(db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get()).toEqual({
+      holder: 'new-owner',
+    })
+  })
+
   it('pushes the expiry a fresh ttl ahead for the holding process', () => {
     const db = memDb()
     acquireLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)
-    // A drifted expiry stands in for a render that outlived its lease.
-    db.prepare(
-      "UPDATE leases SET expires_at = '2020-01-01T00:00:00.000Z' WHERE name = 'produce'",
-    ).run()
+    // A live lease approaching expiry is still renewable.
+    db.prepare("UPDATE leases SET expires_at = ? WHERE name = 'produce'").run(
+      new Date(Date.now() + 1_000).toISOString(),
+    )
     const before = Date.now()
     expect(extendLease(db, 'produce', 'pid:100', PRODUCE_LEASE_TTL_MS)).toBe(true)
     const row = db

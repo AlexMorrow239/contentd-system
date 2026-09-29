@@ -158,6 +158,8 @@ describe('schemas', () => {
       'error',
       'error_kind',
       'notice',
+      'owner_token',
+      'job_id',
     ])
     expect(() =>
       db

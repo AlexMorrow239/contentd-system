@@ -82,9 +82,11 @@ export async function synthWithTimestamps(opts: {
   voiceId: string
   modelId: string
   text: string
+  signal?: AbortSignal
   apiKey?: string
   fetchImpl?: typeof fetch
 }): Promise<{ wavBytes: Buffer; durationMs: number; words: WordTiming[]; costUsdMicros: number }> {
+  opts.signal?.throwIfAborted()
   // Resolve the key before any network activity: a missing key must fail fast so
   // the voice stage can fall back to the volume chain at zero spend.
   const apiKey = opts.apiKey ?? process.env.ELEVENLABS_API_KEY
@@ -111,9 +113,12 @@ export async function synthWithTimestamps(opts: {
       method: 'POST',
       headers: { 'xi-api-key': apiKey, 'content-type': 'application/json' },
       body: JSON.stringify({ text: opts.text, model_id: opts.modelId }),
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: opts.signal
+        ? AbortSignal.any([opts.signal, AbortSignal.timeout(TIMEOUT_MS)])
+        : AbortSignal.timeout(TIMEOUT_MS),
     })
   } catch (err) {
+    opts.signal?.throwIfAborted()
     if (isAbortLike(err)) {
       throw new BrainrotError(
         `synthWithTimestamps: elevenlabs request timed out after ${TIMEOUT_MS}ms`,

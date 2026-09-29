@@ -245,6 +245,35 @@ describe('buildDigest — failed-job list cap', () => {
 })
 
 describe('buildDigest — blocked jobs that cannot resume', () => {
+  it('reports the actual refused call and earliest retry even with positive headroom', () => {
+    const db = memDb()
+    seedJob(db, { id: 'j-wait', channel: 'chan-a', status: 'blocked' })
+    seedCost(db, 'j-wait', 7_000_000)
+    db.prepare('UPDATE jobs SET budget_wait_json = ?, retry_after = ? WHERE id = ?').run(
+      JSON.stringify({
+        version: 1,
+        stage: 'voice',
+        reason: 'per-video budget exceeded',
+        utcDay: '2026-09-29',
+        configFingerprint: 'abc',
+        details: {
+          scope: 'per-video',
+          upcomingUsdMicros: 2_000_000,
+          spentUsdMicros: 7_000_000,
+          capUsdMicros: 8_000_000,
+          utcDay: '2026-09-29',
+        },
+      }),
+      '2026-09-29T12:01:00.000Z',
+      'j-wait',
+    )
+    const digest = buildDigest(db, [testChannel({ name: 'chan-a' })])
+    expect(digest).toContain('budget wait at voice: per-video budget exceeded')
+    expect(digest).toContain('next call $2.00; recorded spend $7.00 of $8.00 per-video cap')
+    expect(digest).toContain('next eligibility check no earlier than 2026-09-29T12:01:00.000Z')
+    expect(digest).not.toContain('per-video budget left — awaiting the resume pass')
+  })
+
   // Remedies must name commands that exist: there is no way to "reject" a
   // blocked job (library reject only touches library rows, which a blocked
   // job never has), so these lines name `resume` and, when the job still

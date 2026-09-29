@@ -5,7 +5,7 @@ import type { Database } from 'better-sqlite3'
 import { Command } from 'commander'
 import { errorMessage } from './errors.js'
 import { loadChannelConfig, tryLoadChannelsDir } from './config/channel.js'
-import { acquireLease, leaseHolder, releaseLease } from './loop/lease.js'
+import { acquireManagedLease, requireLease } from './loop/lease.js'
 import { openDb } from './db/index.js'
 import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
@@ -126,18 +126,28 @@ program
     const { pipelineStages } = await import('./jobs/pipeline.js')
     const { createJob, exitCodeFor, runJob } = await import('./jobs/runner.js')
     await withDb(opts, async (db, paths) => {
-      const jobId = createJob(db, channel, { topic: opts.topic })
-      const result = await runJob(db, channel, jobId, pipelineStages(), {
-        runsRoot: paths.runsRoot,
-      })
-      // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
-      // event loop alive, letting the process drain stdout and exit on its own.
-      db.close()
-      process.stdout.write(JSON.stringify(result) + '\n')
-      // Set exitCode (not process.exit) so a piped stdout flushes fully before exit —
-      // process.exit can truncate the JSON line mid-write. exit 0 for ready/needs-review;
-      // exit 1 for failed AND blocked (the JSON line carries the finer distinction).
-      process.exitCode = exitCodeFor(result)
+      const lease = requireLease(db, 'produce')
+      try {
+        const jobId = db
+          .transaction(() => {
+            lease.assertOwned()
+            return createJob(db, channel, { topic: opts.topic })
+          })
+          .immediate()
+        const result = await runJob(db, channel, jobId, pipelineStages(), {
+          runsRoot: paths.runsRoot,
+          lease,
+        })
+        // better-sqlite3 is synchronous, so close the handle now; nothing else keeps the
+        // event loop alive, letting the process drain stdout and exit on its own.
+        process.stdout.write(JSON.stringify(result) + '\n')
+        // Set exitCode (not process.exit) so a piped stdout flushes fully before exit —
+        // process.exit can truncate the JSON line mid-write. exit 0 for ready/needs-review;
+        // exit 1 for failed AND blocked (the JSON line carries the finer distinction).
+        process.exitCode = exitCodeFor(result)
+      } finally {
+        lease.release()
+      }
     })
   })
 
@@ -163,19 +173,19 @@ program
       return
     }
     const channels = loaded.channels
-    const { SCOUT_LEASE_TTL_MS, ScoutRunFailedError, scoutAll } = await import('./scout/scout.js')
+    const { ScoutRunFailedError, scoutAll } = await import('./scout/scout.js')
     await withDb(opts, async (db) => {
       // Same lease discipline as the produce loop: two overlapping scout
       // runs would race the global-budget check and double-spend. A held lease is
       // a benign no-op, exit 0. The pid-tagged holder means an expiry takeover can
       // never be released by the evicted process (releaseLease matches on holder).
-      const holder = leaseHolder()
-      if (!acquireLease(db, 'scout', holder, SCOUT_LEASE_TTL_MS)) {
+      const lease = acquireManagedLease(db, 'scout')
+      if (lease === null) {
         process.stdout.write(JSON.stringify({ action: 'noop', reason: 'lease-held' }) + '\n')
         return
       }
       try {
-        const results = await scoutAll(db, channels, { force: opts.force })
+        const results = await scoutAll(db, channels, { force: opts.force, lease })
         // One cron-greppable JSON line; diagnostics went to stderr.
         process.stdout.write(JSON.stringify({ channels: results }) + '\n')
       } catch (err) {
@@ -188,7 +198,7 @@ program
         console.error(err.message)
         process.exitCode = 1
       } finally {
-        releaseLease(db, 'scout', holder)
+        lease.release()
       }
     })
   })

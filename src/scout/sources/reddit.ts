@@ -129,7 +129,8 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
     })
   return {
     id,
-    async fetch({ limit, timeoutMs }: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
+    async fetch({ limit, timeoutMs, signal }: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
+      signal?.throwIfAborted()
       // sort=desc is newest first. The archive has no "hot" ranking, and its
       // scores stay near zero for the first ~36h, so recency is the order.
       const params = new URLSearchParams({
@@ -144,9 +145,12 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
       // per second") that one GET per subreddit per attempt never nears it.
       const res = await fetchImpl(`${ARCTIC_SHIFT_BASE_URL}/api/posts/search?${params}`, {
         headers: { 'User-Agent': REDDIT_USER_AGENT },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+          : AbortSignal.timeout(timeoutMs),
       })
       const body = parseJson(await res.text())
+      signal?.throwIfAborted()
       const error = apiError(body)
       if (!res.ok) throw fail(`responded ${res.status}${error === undefined ? '' : `: ${error}`}`)
       if (error !== undefined) throw fail(`returned an error: ${error}`)

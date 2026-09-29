@@ -1,26 +1,8 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
-import {
-  channelDaySpentMicros,
-  globalDailyCapMicros,
-  globalDaySpentMicros,
-  jobSpentMicros,
-} from '../jobs/costs.js'
+import { budgetWaitEligible } from '../jobs/budget-wait.js'
 import { pendingInventory } from '../jobs/library.js'
 import { eligibleTopic } from '../scout/topics.js'
-
-// Resuming under this headroom would only re-park the job 'blocked' at the
-// next budget checkpoint — the tick is better spent on new work (spec §6).
-export const RESUME_MIN_HEADROOM_USD_MICROS = 2_000_000
-
-// The same minimum step against a cap that may be smaller than $2 (a per-video
-// cap always is; a modest channel's daily cap can be). A flat floor would lock
-// such a cap's jobs out of resume permanently, even at zero spend — so take a
-// quarter of the cap whenever that is the smaller number. The global cap is
-// operator-scale, so it keeps the absolute floor.
-function resumeFloorMicros(capMicros: number): number {
-  return Math.min(RESUME_MIN_HEADROOM_USD_MICROS, Math.floor(capMicros / 4))
-}
 
 export type TickPlan =
   | { kind: 'resume'; jobId: string; channel: string }
@@ -44,28 +26,41 @@ export function backlogCap(channel: ChannelConfig): number {
 export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
   const byName = new Map(channels.map((c) => [c.name, c]))
 
-  // RESUME PASS: blocked jobs were healthy when parked — recovering their
-  // sunk cost beats spending on new work. Oldest first; an ineligible job is
-  // skipped, not terminal (a later one may belong to a channel with headroom).
-  const blocked = db
+  const now = new Date()
+  let anyBacklogged = false
+  const hasCapacity = (channel: ChannelConfig): boolean => {
+    const backlogged =
+      pendingInventory(db, {
+        channel: channel.name,
+        declared: channel.platforms,
+      }) >= backlogCap(channel)
+    if (backlogged) anyBacklogged = true
+    return !backlogged
+  }
+
+  // Recover interrupted attempts first, then budget waits. Every resume obeys
+  // the inventory ceiling; retry deadlines stop rapid re-entry after refusal.
+  const resumable = db
     .prepare(
-      "SELECT id, channel FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
+      `SELECT id, channel, status, budget_wait_json FROM jobs
+       WHERE ((status = 'queued' AND recovery_pending = 1) OR status = 'blocked')
+         AND (retry_after IS NULL OR retry_after <= ?)
+       ORDER BY CASE WHEN status = 'queued' THEN 0 ELSE 1 END, created_at ASC, id ASC`,
     )
-    .all() as { id: string; channel: string }[]
-  const globalRemainingMicros = globalDailyCapMicros() - globalDaySpentMicros(db)
-  for (const job of blocked) {
+    .all(now.toISOString()) as {
+    id: string
+    channel: string
+    status: string
+    budget_wait_json: string | null
+  }[]
+  for (const job of resumable) {
     const channel = byName.get(job.channel)
-    if (channel === undefined) continue // channel TOML no longer in the dir
-    // Per-video first, and unlike the day caps it never resets: a job parked
-    // at its own cap can ONLY re-block, and — same created_at, oldest first —
-    // it would head the queue every tick forever, starving every channel.
-    const perVideoCapMicros = channel.budget.perVideoUsdMicros
-    const perVideoRemainingMicros = perVideoCapMicros - jobSpentMicros(db, job.id)
-    if (perVideoRemainingMicros < resumeFloorMicros(perVideoCapMicros)) continue
-    const channelRemainingMicros =
-      channel.budget.perDayUsdMicros - channelDaySpentMicros(db, job.channel)
-    if (channelRemainingMicros < resumeFloorMicros(channel.budget.perDayUsdMicros)) continue
-    if (globalRemainingMicros < RESUME_MIN_HEADROOM_USD_MICROS) continue
+    if (channel === undefined || !hasCapacity(channel)) continue
+    if (
+      job.status === 'blocked' &&
+      !budgetWaitEligible(db, job.id, channel, job.budget_wait_json, now)
+    )
+      continue
     return { kind: 'resume', jobId: job.id, channel: job.channel }
   }
 
@@ -81,7 +76,6 @@ export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
   // with no declared platforms is gated the same way — nothing drains it, so
   // it fills once and then waits for the operator to post or discard videos
   // by hand.
-  let anyBacklogged = false
   const candidates = channels
     .map((channel) => {
       const today = jobsToday(channel.name)

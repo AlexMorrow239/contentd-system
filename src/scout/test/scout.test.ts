@@ -1,3 +1,4 @@
+import { acquireManagedLease, LeaseLostError } from '../../loop/lease.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
 import { BudgetExceededError } from '../../jobs/costs.js'
@@ -15,7 +16,7 @@ import {
   scoutChannel,
 } from '../scout.js'
 import type { ScoutChannelResult } from '../scout.js'
-import { lastScoutAttemptAt } from '../scout-state.js'
+import { lastScoutAttemptAt, recordScoutAttempt } from '../scout-state.js'
 import { SCOUT_SCORE_CHUNK_SIZE } from '../score.js'
 import { memDb, seedScoutState, seedTopic } from '../../testing/db.js'
 import { emitToolUse, fakeClient } from '../../testing/anthropic.js'
@@ -61,6 +62,62 @@ afterEach(() => {
 })
 
 describe('scoutChannel', () => {
+  it('ledgers a stale paid score and stops before the next chunk or channel', async () => {
+    const db = memDb()
+    const lease = acquireManagedLease(db, 'scout')!
+    const fetchImpl = fetchStub({
+      'subreddit=space': redditFeed(
+        Array.from({ length: SCOUT_SCORE_CHUNK_SIZE + 1 }, (_, i) => ({
+          name: `t3_${i.toString(36)}`,
+          title: `Story ${i}`,
+        })),
+      ),
+    })
+    const { client, create } = fakeClient(undefined)
+    const successorTime = new Date('2030-01-01T00:00:00Z')
+    create.mockImplementation(() => {
+      db.prepare("UPDATE leases SET holder = 'successor' WHERE name = 'scout'").run()
+      recordScoutAttempt(db, 'chan-a', successorTime)
+      return emitScores([{ candidateIndex: 0, score: 90, topic: 'Late topic', reason: 'good' }])
+    })
+    try {
+      await expect(
+        scoutAll(db, [scoutedChannel(), scoutedChannel({}, 'chan-b')], {
+          lease,
+          client,
+          fetchImpl,
+        }),
+      ).rejects.toBeInstanceOf(LeaseLostError)
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(create.mock.calls[0][1]).toEqual({ signal: lease.signal })
+      expect(db.prepare('SELECT SUM(usd_micros) AS cost FROM costs').get()).toEqual({ cost: 2000 })
+      expect(db.prepare('SELECT COUNT(*) AS n FROM topics').get()).toEqual({ n: 0 })
+      expect(lastScoutAttemptAt(db, 'chan-a')).toEqual(successorTime)
+      expect(lastScoutAttemptAt(db, 'chan-b')).toBeNull()
+    } finally {
+      lease.release()
+    }
+  })
+
+  it('does not contain source cancellation or fetch another subreddit', async () => {
+    const db = memDb()
+    const lease = acquireManagedLease(db, 'scout')!
+    const fetchImpl = vi.fn(async (_input, init) => {
+      db.prepare("UPDATE leases SET holder = 'successor' WHERE name = 'scout'").run()
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      lease.assertOwned()
+      return new Response('{}')
+    })
+    try {
+      await expect(
+        scoutAll(db, [scoutedChannel({ subreddits: ['space', 'science'] })], { lease, fetchImpl }),
+      ).rejects.toBeInstanceOf(LeaseLostError)
+      expect(fetchImpl).toHaveBeenCalledTimes(1)
+    } finally {
+      lease.release()
+    }
+  })
+
   it('fetches, scores, inserts, and ledgers under the scout sentinel', async () => {
     const db = memDb()
     const channel = scoutedChannel() // gate is SCOUT_MIN_SCORE (80), not per-channel

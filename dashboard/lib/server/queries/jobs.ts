@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { parseBudgetWait, type BudgetWait } from '../../../../src/jobs/budget-wait.js'
 import { whereClause } from '../../../../src/db/sql.js'
 import { libraryBytes, libraryLinks, type LibraryBytes } from './library.js'
 
@@ -125,6 +126,8 @@ export interface JobCostRow {
 
 export interface JobDetail {
   job: JobListRow
+  budgetWait: BudgetWait | null
+  retryAfter: string | null
   stages: StageRow[]
   costs: JobCostRow[]
   libraryState: string | null
@@ -136,8 +139,12 @@ export interface JobDetail {
 }
 
 export function getJobDetail(db: Database, jobId: string): JobDetail | null {
-  const row = db.prepare(`SELECT ${JOB_COLUMNS} FROM jobs WHERE jobs.id = ?`).get(jobId) as
-    DbJobRow | undefined
+  const row = db
+    .prepare(
+      `SELECT ${JOB_COLUMNS}, jobs.budget_wait_json, jobs.retry_after FROM jobs WHERE jobs.id = ?`,
+    )
+    .get(jobId) as
+    (DbJobRow & { budget_wait_json: string | null; retry_after: string | null }) | undefined
   if (row === undefined) return null
 
   const stageRows = db
@@ -196,6 +203,8 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
 
   return {
     job: toJobRow(row),
+    budgetWait: parseBudgetWait(row.budget_wait_json),
+    retryAfter: row.retry_after,
     stages,
     costs,
     libraryState: libraryRow?.state ?? null,

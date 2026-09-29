@@ -27,6 +27,7 @@ export interface TrendCandidate {
 export interface TrendSourceFetchOpts {
   limit: number
   timeoutMs: number
+  signal?: AbortSignal
 }
 
 export interface TrendSource {

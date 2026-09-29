@@ -50,6 +50,41 @@ describe('estimateTtsCostMicros', () => {
 })
 
 describe('synthWithTimestamps', () => {
+  it('propagates caller cancellation during a request without relabeling it as timeout', async () => {
+    const controller = new AbortController()
+    const lost = new Error('lease lost')
+    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      controller.abort(lost)
+      init?.signal?.throwIfAborted()
+      throw new Error('caller signal was not propagated')
+    })
+    await expect(
+      synthWithTimestamps({
+        voiceId: 'v',
+        modelId: 'm',
+        text: 'hello',
+        apiKey: 'test',
+        signal: controller.signal,
+        fetchImpl,
+      }),
+    ).rejects.toBe(lost)
+  })
+
+  it('does not call the endpoint for an already cancelled request', async () => {
+    const lost = new Error('lease lost')
+    const fetchImpl = vi.fn()
+    await expect(
+      synthWithTimestamps({
+        voiceId: 'v',
+        modelId: 'm',
+        text: 'hello',
+        apiKey: 'test',
+        signal: AbortSignal.abort(lost),
+        fetchImpl,
+      }),
+    ).rejects.toBe(lost)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
   it('POSTs the synthesis request and returns wav bytes plus grouped word timings', async () => {
     const { impl, calls } = fakeFetch(200, FIXTURE)
     const res = await synthWithTimestamps({

@@ -11,8 +11,10 @@ export async function alignTranscript(opts: {
   baseUrl: string
   wavPath: string
   transcript: string
+  signal?: AbortSignal
   timeoutMs?: number
 }): Promise<WordTiming[]> {
+  opts.signal?.throwIfAborted()
   const bytes = await readFile(opts.wavPath)
   const form = new FormData()
   form.append('audio', new Blob([bytes], { type: 'audio/wav' }), 'narration.wav')
@@ -21,14 +23,18 @@ export async function alignTranscript(opts: {
   // Without a timeout a hung sidecar wedges the align stage forever. Abort the fetch
   // after timeoutMs and rethrow with a message that names the sidecar and the budget.
   const timeoutMs = opts.timeoutMs ?? 120_000
+  opts.signal?.throwIfAborted()
   let res: Response
   try {
     res = await fetch(`${opts.baseUrl}/align`, {
       method: 'POST',
       body: form,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: opts.signal
+        ? AbortSignal.any([opts.signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
     })
   } catch (err) {
+    opts.signal?.throwIfAborted()
     if (isAbortLike(err)) {
       throw new BrainrotError(`alignTranscript: whisperx align timed out after ${timeoutMs}ms`, {
         domain: 'provider',

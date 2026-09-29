@@ -80,14 +80,15 @@ flag or development voice override.
 
 Production uses `/app/state` inside the container:
 
-- Per-job artifacts: `/app/state/runs/<jobId>/<stage>/`, visible on the host
-  under `docker/state/runs/<jobId>/<stage>/`.
-- Finished video: `docker/state/runs/<jobId>/assemble/final.mp4` on the host.
+- Per-job artifacts: `/app/state/runs/<jobId>/attempts/<attemptId>/<stage>/`, visible on the host
+  under `docker/state/runs/<jobId>/attempts/<attemptId>/<stage>/`.
+- Finished video: the committed assemble stage’s `final.mp4`, linked from the library.
 - SQLite state: `/app/state/db/brainrot.db` in the `brainrot-data` named volume.
 - Channel configuration: `docker/state/channels/*.toml`, mounted read-only at
   `/app/state/channels`.
 
-Finished videos remain at `runs/<jobId>/assemble/final.mp4`. Keep those local
+Finished videos remain in their committed attempt directories (legacy videos
+retain `runs/<jobId>/assemble/final.mp4`). Keep those local
 files until their videos are no longer needed: if one is deleted or goes missing,
 the application cannot recover it. Tests use temporary directories cleaned up
 after each file.
@@ -177,7 +178,7 @@ worker polls in a tight loop: check demand, do one unit of work if there is
 any, and re-check immediately; an idle worker sleeps 30 seconds before
 checking again, and a worker whose unit throws logs the error and sleeps 60
 seconds rather than taking the daemon down. `scout` fills the topic queue,
-`produce` performs one unit of work per pass (resume one blocked job or
+`produce` performs one unit of work per pass (resume one interrupted/budget-blocked job or
 produce one video), and `digest` prints a daily report once per local day.
 There is no `publish` worker — nothing in this codebase uploads to a
 platform, so there is nothing left to schedule; posting is the manual `/post`
@@ -409,8 +410,8 @@ and your provider budgets — it can still trigger real renders and real
 provider spend, even with no upload path left. If you need remote access,
 use an SSH port-forward to loopback on both ends — never a published port.
 
-Actions run inside the daemon under the same leases its workers take, so unlike
-the equivalent CLI commands they never race a live render. The daemon
+Actions run inside the daemon under the same operation leases used by its
+workers and by CLI produce/resume/scout commands. The daemon
 must be running for a queued action to execute: the dashboard shows a banner
 and disables the buttons when it is not, and `POST /api/actions` itself answers
 409 rather than queue work nothing would drain.
@@ -500,70 +501,78 @@ anything that recreates volumes.
 
 ### Recovery
 
-Everything else that renders or mutates job state goes through the
-container, not the host — same binary, same filesystem layout, no drift.
-Manual commands take no lease of their own, so a hand-run invocation can
-execute concurrently with a live daemon worker and both may act on the same
-job/topic — `produce-next` holds the `produce` lease, but a manual command
-never does. Stop the daemon first, then run the command as a one-shot
-container: `docker compose exec` requires a running service, and `stop` just
-took it down, so recovery commands use `docker compose run --rm --no-deps`
-instead — it starts a fresh container from the same image, with the same env
-and mounts, and `--no-deps` keeps it from pulling `whisperx` back up as a
-side effect.
+Run production commands inside the container so SQLite and local artifact paths
+use the same filesystem as the daemon. CLI `produce`, `resume`, `produce-next`
+and `scout` now acquire the same managed leases as dashboard actions. A busy
+lease refuses the CLI command; `--force` never overrides live ownership.
+
+The daemon holds a separate singleton lease. Every managed lease lasts five
+minutes and renews every minute, including during long stages. A second daemon
+is refused before startup recovery changes any rows. An expired owner cannot
+renew, commit results, or release a successor's lease.
+
+**Automatic crash recovery preserves progress.** After acquiring production
+ownership, the daemon marks abandoned attempts interrupted and schedules the
+same queued/running job for resume. Completed stages and the topic claim stay
+attached to that job. Recovery waits 30 seconds after the first interruption,
+doubles after each consecutive interruption without stage progress, and caps
+at 30 minutes. Any completed stage resets that backoff. Recovery respects
+backlog capacity and does not create another daily quota slot. Ordinary failed
+jobs still require explicit resume.
+
+A `job-recovery` warning names the job, stage, old/new attempt and linked action.
+Replaying an interrupted script or premium-voice stage can repeat a paid call;
+the warning explicitly reports possible duplicate charges and incomplete cost
+accounting. Unknown provider charges cannot be reconstructed automatically.
+
+An interrupted render action keeps its job link and recovery notice. A modern
+action interrupted before committing a job link is requeued. Legacy actions
+without a reliable job link are left failed rather than replayed; recovery of
+their existing jobs is independent. If the linked job already finalized, the
+action result is reconstructed from its library row.
+
+Budget-blocked jobs persist the refused call's estimate and wait at least 60
+seconds. Automatic resume requires that estimate to fit the current per-video,
+channel-day and global-day limits. Day caps reset at UTC midnight; per-video
+spend does not. Changed configuration allows a probe. Unknown/legacy refusals
+get one probe, then wait for a configuration/day change. Job detail and digest
+show the requirement and waiting reason. Explicit resume bypasses the retry
+delay, but not budget checks or live ownership.
+
+```bash
+# A failed job can be resumed while the daemon runs, if produce is currently free.
+docker compose exec brainrot pnpm brainrot resume <jobId>
+```
+
+For break-glass maintenance, stop the daemon and use a one-shot container:
 
 ```bash
 docker compose stop brainrot
-docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId>
-docker compose run --rm --no-deps brainrot pnpm brainrot library approve <jobIds...>
+docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId> --force
 docker compose start brainrot
 ```
 
-The same pattern covers `produce` and `library reject`. Restart the daemon
-(`docker compose start brainrot`) once recovery is done — its workers stay
-paused until you do.
+SIGTERM/SIGINT stops polling and drains active work while renewing ownership.
+A forced container kill leaves leases until expiry; do not delete them while an
+owner might still run. When leases expire, the next production tick reconciles
+abandoned work. A sleeping host can likewise lose ownership: old work stops at
+its next checkpoint and recovers through a new attempt.
 
-- **A stranded topic can be returned to the queue.** A topic stays `claimed`
-  for as long as its job might still run, so a job abandoned for good leaves
-  its topic bound forever. `pnpm brainrot topics requeue <id>` returns it to
-  `candidate` and unbinds the dead job; it refuses only while a `queued` or
-  `running` job still holds the topic. A `blocked` job's topic can be
-  requeued — that job sits out the resume pass until an operator repairs the
-  config behind it, and unbinding is safe because a later resume of that job
-  keys its `used` flip on `job_id`, which by then matches nothing.
-
-- **A daemon restart aborts interrupted production automatically.** Before
-  starting workers, the daemon marks leftover `queued`/`running` jobs and
-  their running stages `failed`, records the interruption on active stages,
-  and clears the old `produce` lease immediately. No lease deletion or
-  90-minute expiry wait is needed. This assumes one daemon per database;
-  stop any manual production command before starting the daemon.
-
-  Their claimed topics return to the candidate queue, unbound from the old
-  job. Normal production creates a fresh job and starts from the script
-  stage; it does not reuse the interrupted run's progress. Old job records,
-  stage history, artifacts, and incurred costs remain for inspection. Daily
-  budgets and production quotas still apply and may delay the fresh attempt.
-  Manual jobs without a queue topic are marked failed but are not requeued.
-
-  SIGTERM/SIGINT stops polling but lets an active render finish. Docker may
-  kill it after its stop grace period; the next daemon startup performs the
-  cleanup above. Until that startup, a killed job may still show `running`.
+**Deployment:** stop all old daemon and CLI writers, back up the SQLite volume,
+then start one updated daemon so the normal opener applies additive migrations.
+Legacy unexpired leases are honored (an old produce lease can last 90 minutes).
+Old completed stage paths and library videos remain readable. New stage outputs
+are isolated per execution attempt, and SQLite records which directories were
+successfully committed. No cloud copy or cloud cleanup is involved; retain local
+artifacts needed by completed checkpoints. This change adds no file-retention policy.
 
 ### Operational caveats
 
-- **A sleeping Mac pauses the daemon, but nothing is "missed" — there is no
-  schedule to fall behind on.** The old cron loop fired at specific wall-clock
-  times; a machine asleep at one of those moments lost that firing outright,
-  and supercronic never made it up. The daemon has no firings to lose:
-  triggers are demand-based, not scheduled, so a slept-through period is
-  simply picked up at the next wake. The instant the machine wakes and the
-  container resumes, each worker's next poll sees whatever demand piled up
-  (topics to scout, videos to produce) and acts on it right away,
-  subject to the same gates as always — `videos_per_day`, `backlog_days`. A
-  channel that stayed under its `videos_per_day` count while the machine
-  slept simply stays due; there is still no makeup once that count is met
-  for the day.
+- **A sleeping Mac pauses all work.** Demand remains queued, but a sleep longer
+  than the lease TTL loses ownership. The old daemon cancels when it wakes;
+  the service restart acquires new ownership and reconciles interrupted jobs.
+  Recovery then obeys persisted retry delays and backlog capacity. Daily quota
+  still follows the current UTC day; there is no production catch-up quota.
 - **Docker Desktop must be set to start at login**, or nothing runs after a
   reboot and there is no alarm that fires — the failure looks identical to an
   idle day.
@@ -592,7 +601,7 @@ paused until you do.
   happens whenever the operator gets to `/post`.
   A `{"worker":"produce","action":"noop","reason":"lease-held"}` line is
   normal while a long render from an earlier unit is still running — `scout`
-  takes a lease of its own (30 min) and prints the same shape of line if a
+  takes a managed lease of its own (5 min, renewed every minute) and prints the same shape of line if a
   previous scout run is still going.
 
 ## Tests

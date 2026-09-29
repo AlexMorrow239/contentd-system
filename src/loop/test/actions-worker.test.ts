@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { getAction } from '../../actions/queue.js'
-import { memDb, seedAction, seedTopic } from '../../testing/db.js'
-import { acquireLease } from '../lease.js'
+import { memDb, seedAction, seedJob, seedTopic } from '../../testing/db.js'
+import { acquireLease, LeaseLostError, requireLease } from '../lease.js'
+import { linkActionJob } from '../../jobs/execution.js'
 import { readDaemonState } from '../daemon-state.js'
 import type { UnitResult } from '../daemon.js'
 import {
@@ -143,18 +144,66 @@ describe('actionsUnit', () => {
     expect(acquireLease(db, 'scout', 'next-caller', 1_000)).toBe(true)
   })
 
-  it('fails rows left running by a dead daemon, once, on the first poll', async () => {
+  it('leaves running rows for daemon-owned startup reconciliation', async () => {
     const db = memDb()
     const stale = seedAction(db, { status: 'running' })
     const tick = unit(db)
     await tick()
-    expect(getAction(db, stale)?.status).toBe('failed')
-    expect(getAction(db, stale)?.error).toContain('daemon restart')
-    // A row that starts running AFTER the sweep must survive the next poll.
+    expect(getAction(db, stale)?.status).toBe('running')
+    // Lane startup cannot classify ownership or repair another worker's rows.
     const live = seedAction(db, { status: 'running' })
     await tick()
     expect(getAction(db, live)?.status).toBe('running')
   })
+
+  it.each(['scout.run', 'jobs.produce'] as const)(
+    'reconciles %s after child ownership is lost while the daemon remains live',
+    async (kind) => {
+      const db = memDb()
+      const daemonLease = requireLease(db, 'daemon')
+      const id = seedAction(db, { kind, lane: 'slow', args: '{}' })
+      const jobId =
+        kind === 'jobs.produce' ? seedJob(db, 'interrupted-render', { status: 'running' }) : null
+      const operation = kind === 'scout.run' ? 'scout' : 'produce'
+      const tick = actionsUnit(db, 'slow', {
+        channelsDir: '/unused',
+        runsRoot: '/unused',
+        daemonLease,
+        run: async (ctx) => {
+          if (jobId) linkActionJob(db, id, jobId, daemonLease)
+          db.prepare('UPDATE leases SET expires_at = ? WHERE name = ?').run(
+            '2000-01-01T00:00:00Z',
+            operation,
+          )
+          expect(acquireLease(db, operation, 'successor-operation', 300_000)).toBe(true)
+          ctx.lease!.assertOwned()
+        },
+      })
+      try {
+        // The worker may surface the ownership error; its action still needs
+        // reconciliation by the current daemon before the next idle poll.
+        await tick().catch((err: unknown) => {
+          expect(err).toBeInstanceOf(LeaseLostError)
+        })
+        daemonLease.assertOwned()
+        const action = getAction(db, id)
+        expect(action).toMatchObject({ status: 'failed', jobId })
+        expect(action?.error).toMatch(/interrupt|ownership|lease/i)
+        if (jobId) {
+          expect(action?.notice).toContain(jobId)
+          expect(db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId)).toEqual({
+            status: 'running',
+          })
+        }
+        expect(db.prepare('SELECT holder FROM leases WHERE name = ?').get(operation)).toEqual({
+          holder: 'successor-operation',
+        })
+        expect(await tick()).toEqual({ worked: false })
+      } finally {
+        daemonLease.release()
+      }
+    },
+  )
 
   it('takes only its own lane', async () => {
     const db = memDb()
@@ -384,10 +433,8 @@ describe('actionsUnit', () => {
   // scout.run is really slow-lane, catalog-wise, but this row's `lane`
   // column is forced to 'fast' to exercise the generic mechanism: any lease
   // acquired through this path now always uses SLOW_ACTION_LEASE_TTL_MS
-  // (there is no separate fast-lane TTL any more, since no fast-registered
-  // action leases), but the heartbeat must still gate on the row's actual
-  // lane, not on "a lease was declared".
-  it('leaves the fast lane with no heartbeat, even when it acquires a lease', async () => {
+  // regardless of its lane. Every managed lease requires periodic renewal.
+  it('renews every managed lease, even on an artificially fast-lane action', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
     try {
@@ -406,7 +453,8 @@ describe('actionsUnit', () => {
       })
       await unit()
       expect(expiryDuringRun).toBe(new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString())
-      expect(timersDuringRun).toBe(0)
+      expect(timersDuringRun).toBe(1)
+      expect(vi.getTimerCount()).toBe(0)
     } finally {
       vi.useRealTimers()
     }

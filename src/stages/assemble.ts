@@ -1,8 +1,9 @@
+import { checkpoint } from './ownership.js'
 import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { bundle } from '@remotion/bundler'
-import { renderMedia, selectComposition } from '@remotion/renderer'
+import { makeCancelSignal, renderMedia, selectComposition } from '@remotion/renderer'
 import type { JobContext, StageDef } from '../jobs/types.js'
 import { CAPTION_STYLE, type ShortVideoProps } from '../remotion-types.js'
 import type { CaptionsArtifact } from './captions.js'
@@ -45,6 +46,7 @@ function getBundle(): Promise<string> {
 export const assembleStage: StageDef = {
   name: 'assemble',
   async run(ctx: JobContext): Promise<void> {
+    checkpoint(ctx)
     const voice = JSON.parse(
       readFileSync(ctx.artifactPath('voice', 'voice.json'), 'utf8'),
     ) as VoiceMeta
@@ -52,22 +54,28 @@ export const assembleStage: StageDef = {
       readFileSync(ctx.artifactPath('captions', 'words.json'), 'utf8'),
     ) as CaptionsArtifact
 
+    checkpoint(ctx)
     const serveUrl = await getBundle()
+    checkpoint(ctx)
 
     // Remotion SSR dynamic-asset mechanism (verified against remotion.dev):
     // absolute paths are NOT allowed in <OffthreadVideo>/<Audio>. Copy the
     // per-job files into the bundle's public/ folder, then reference them with
-    // staticFile(). Namespace by jobId so a reused bundle never collides.
-    const publicJobDir = path.join(serveUrl, 'public', ctx.jobId)
+    // staticFile(). Isolate retries as well as jobs inside the reused bundle.
+    const assetNamespace = ctx.attemptId ? `${ctx.jobId}/${ctx.attemptId}` : ctx.jobId
+    const publicJobDir = path.join(serveUrl, 'public', assetNamespace)
     mkdirSync(publicJobDir, { recursive: true })
     const outPath = ctx.artifactPath('assemble', 'final.mp4')
+    const cancellation = ctx.signal ? makeCancelSignal() : undefined
+    if (cancellation) ctx.signal?.addEventListener('abort', cancellation.cancel, { once: true })
     try {
+      checkpoint(ctx)
       copyFileSync(
         ctx.artifactPath('voice', 'narration.wav'),
         path.join(publicJobDir, 'narration.wav'),
       )
       const base = {
-        audioSrc: `${ctx.jobId}/narration.wav`,
+        audioSrc: `${assetNamespace}/narration.wav`,
         words: captions.words,
         style: CAPTION_STYLE,
         durationMs: voice.durationMs,
@@ -77,21 +85,26 @@ export const assembleStage: StageDef = {
         ctx.artifactPath('visuals', 'background.mp4'),
         path.join(publicJobDir, 'background.mp4'),
       )
-      const props: ShortVideoProps = { ...base, backgroundSrc: `${ctx.jobId}/background.mp4` }
+      const props: ShortVideoProps = { ...base, backgroundSrc: `${assetNamespace}/background.mp4` }
 
+      checkpoint(ctx)
       const composition = await selectComposition({
         serveUrl,
         id: 'ShortVideo',
         inputProps: props,
       })
+      checkpoint(ctx)
       await renderMedia({
+        cancelSignal: cancellation?.cancelSignal,
         composition,
         serveUrl,
         codec: 'h264',
         outputLocation: outPath,
         inputProps: props,
       })
+      checkpoint(ctx)
     } finally {
+      if (cancellation) ctx.signal?.removeEventListener('abort', cancellation.cancel)
       // The bundle is memoized for the whole process, so per-job assets would
       // otherwise accumulate under public/ for the process lifetime. Distinct
       // jobId subdirs keep concurrent jobs isolated; removing only ours is safe.

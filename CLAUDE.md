@@ -100,7 +100,10 @@ script -> voice -> captions -> visuals -> assemble -> qc
 ```
 
 A `StageDef` runs against `JobContext` (`src/jobs/types.ts`). Read/write artifacts
-through `ctx.artifactPath(stage, file)`, under `runs/<jobId>/<stage>/`.
+through `ctx.artifactPath(stage, file)`, under `runs/<jobId>/attempts/<attemptId>/<stage>/`.
+Completed inputs resolve through persisted `job_stages.artifact_dir`; legacy null
+references resolve to `runs/<jobId>/<stage>/`. Never write replacement outputs
+into an earlier attempt’s directories.
 `runJob` persists stage status and skips stages already `done`, making resume
 reusable without repeating successful work. Errors mark a job `failed`;
 `BudgetExceededError` marks it `blocked`.
@@ -125,23 +128,32 @@ a same-day restart can produce another report. There is no publishing worker.
 `produceNextTick` (`src/loop/produce-next.ts`) loads channels fresh each tick,
 reports malformed config as a structured noop, and acquires the `produce`
 lease before mutation. It repairs historical claimed-topic/library mismatches,
-then executes `planTick`. Stage-start heartbeats extend the lease; ownership checks prevent
-an expired holder from releasing a successor's lease.
+then reconciles abandoned jobs and executes `planTick`. Managed leases renew
+every 60 seconds with a five-minute TTL; expired tokens cannot renew or release
+a successor’s lease. Job, stage, finalization, and action writes verify ownership
+inside their transaction. Losing ownership cancels supported work and fences
+late results; known provider charges remain associated with the attempt.
 
-`planTick` (`src/loop/plan-tick.ts`) prefers eligible blocked jobs, then claims
+`planTick` (`src/loop/plan-tick.ts`) prefers due recovered jobs, then eligible
+budget-blocked jobs, then claims
 new topics subject to daily production limits, budgets, and backlog capacity.
 A channel holding `ceil(videos_per_day * backlog_days)` unconsumed videos
 pauses production. Videos do not expire; posting to all declared platforms or
 discarding them frees capacity. Discard changes library state but keeps the
-local video file. Running jobs orphaned by a crash are not automatically resumed.
+local video file. Abandoned jobs automatically resume with their original topic
+claim and completed checkpoints. Persisted crash backoff starts at 30 seconds,
+doubles to 30 minutes, and resets on completed stage progress. Ordinary provider
+failures still require explicit resume. Paid-stage replay warns about duplicate
+charges and incomplete accounting.
 
 `fullyPostedClause` (`src/posts/posts.ts`) is shared by inventory, post-queue,
 and digest readers. Empty `platforms` means nothing is fully posted.
 
-The two lease names are `produce` and `scout`. Scout's lease TTL is 30 minutes.
-Manual `produce`, `resume`, library mutations, and topic reject/requeue bypass
-leases; stop the daemon before using them. The dashboard enqueues actions whose
-workers coordinate the necessary leases; prefer it for routine operations.
+The three lease names are `daemon`, `produce`, and `scout`, all managed with
+the same TTL and renewal interval. Acquire singleton daemon ownership before
+reconciliation or worker startup. CLI produce/resume/scout share operation
+leases with dashboard actions and daemon workers; `--force` never overrides a
+live owner. Stop the daemon before direct CLI library/topic mutations.
 
 `scoutChannel` stores scores >= `SCOUT_MIN_SCORE` (80). Its persisted
 `scout_state` recheck cadence is `SCOUT_RECHECK_MS` (20 minutes); `scout --force`
@@ -176,8 +188,9 @@ Lease declarations matter:
 | `produce.next`                | None                  |
 
 `produce.next` takes its own lease inside `produceNextTick`; declaring it again
-would turn each action into a lease-held noop. `runJob` and `scoutAll` do not
-self-lease, so their action wrappers must do so.
+would turn each action into a lease-held noop. Pass acquired contexts inward to
+avoid double acquisition. `runJob` self-acquires when no context is supplied;
+scouting callers acquire and pass their context.
 
 Fast workers drain up to `MAX_FAST_DRAIN` (50) actions and maintain the daemon
 heartbeat. Slow workers complete at most one per unit. `POST /api/actions` returns
@@ -189,14 +202,16 @@ repeated acquire/write attempts for the same held lease. `ACTION_SCAN_WINDOW`
 bounds the pending rows inspected; rows beyond that window can remain blocked
 from consideration until earlier rows clear. A later poll alone does not fix it.
 
-Worker-acquired slow leases use a five-minute TTL and 60-second heartbeat.
-This does not shorten `produce.next`'s self-acquired 90-minute lease. Heartbeat
-timers are unref'd and cleared when handlers finish.
+All operation leases use a five-minute TTL and 60-second heartbeat. Timers are
+unref’d and cleared when handlers finish; normal shutdown maintains ownership
+until active work drains. Lease loss cancels instead.
 
-A restart marks leftover running action rows failed. Preserve failure notices:
-`jobs.produce` records its new job ID there before rendering, and the operator
-needs that ID for recovery. This repairs the action row, not the interrupted job
-or its orphaned lease. Successful start/completion clears the notice.
+Startup reconciles actions owned by expired daemon tokens. Job creation, topic
+claim, and structured action linkage commit together. Linked interrupted render
+actions retain a recovery notice while their job recovers; finalized jobs repair
+the action outcome. Modern unlinked render actions return to pending. Legacy
+actions recover saved job IDs where possible; ambiguous outcomes and non-render
+actions fail with context rather than replaying unknown side effects.
 
 `produce.next` retains the tick result even when it describes failure or a noop;
 marking the action failed would discard that result. `scout.run` forces a fresh
@@ -320,6 +335,13 @@ leaves the error's identity intact — anthropic keeps throwing a real `ZodError
 so callers still match `instanceof z.ZodError` — and `src/providers/errors.ts`'s
 `errorCostUsdMicros` reads it back.
 
+Budget refusals persist stage, scope, upcoming cost, observed spend, cap, UTC
+day, and parsed-config/global-cap fingerprint. Automatic selection waits at
+least 60 seconds and checks the recorded upcoming cost against all current
+limits. Unknown refusals wait for a config/day change after one probe. Explicit
+resume bypasses waiting, never budget enforcement. Both recovery classes obey
+backlog capacity and reuse the original daily job slot.
+
 ### Errors: one vocabulary, two axes
 
 `src/errors.ts` owns `BrainrotError`, `errorMessage`, `classify`, `tagError`,
@@ -419,7 +441,8 @@ previously corrupted state. Use container CLI commands for production access.
 
 The database holds jobs/stages, library metadata, topics/scout state,
 costs, leases, posting records, operator actions, and daemon liveness. Artifacts
-live under `<root>/runs/<jobId>/<stage>/`, bound to host `docker/state/runs/`.
+live under `<root>/runs/<jobId>/attempts/<attemptId>/<stage>/`, bound to host
+`docker/state/runs/`. Legacy canonical stage directories remain readable.
 
 `src/db/schema.sql` describes a fresh database and is executed on each
 `openDb`. Existing-database changes belong in `src/db/migrate.ts`, called after

@@ -7,13 +7,8 @@ import { createJob, runJob } from '../jobs/runner.js'
 import type { JobResult } from '../jobs/runner.js'
 import type { StageDef } from '../jobs/types.js'
 import { claimTopic } from '../scout/topics.js'
-import {
-  acquireLease,
-  extendLease,
-  leaseHolder,
-  PRODUCE_LEASE_TTL_MS,
-  releaseLease,
-} from './lease.js'
+import { acquireManagedLease, type LeaseContext } from './lease.js'
+import { linkActionJob, reconcileJobs } from '../jobs/execution.js'
 import { planTick } from './plan-tick.js'
 
 export interface TickResult {
@@ -68,6 +63,9 @@ export async function produceNextTick(
     channelsDir: string
     runsRoot: string
     stagesFor?: () => StageDef[]
+    lease?: LeaseContext
+    daemonLease?: LeaseContext
+    actionId?: number
   },
 ): Promise<TickResult> {
   const stagesFor = opts.stagesFor ?? pipelineStages
@@ -88,34 +86,11 @@ export async function produceNextTick(
     return configErrorNoop(loaded.error)
   }
   const channels = loaded.channels
-  // A held lease is the NORMAL case while a long render from the previous
-  // cron firing is still running — benign no-op, exit 0 at the CLI. The
-  // pid-tagged holder means an expiry takeover can never be released by the
-  // evicted process (releaseLease matches on holder).
-  //
-  // KNOWN GAP: `actions-worker.ts`'s slow lane also calls this tick
-  // in-process now, as a second caller sharing this same pid — until this
-  // branch, `holder` uniquely identified one caller and lease.ts:43-44's
-  // evicted-holder guarantee held exactly. It no longer does: a stalled
-  // in-process caller's `finally`-release can now delete a live caller's
-  // lease. Not fixed here (leaseHolder takes the suffix that would fix it,
-  // but it has to be threaded through both ticks) — currently bounded because
-  // topic claiming is transactional, so this collision cannot double-claim a
-  // topic.
-  const holder = leaseHolder()
-  if (!acquireLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)) {
-    return { action: 'noop', reason: 'lease-held' }
-  }
+  const lease = opts.lease ?? acquireManagedLease(db, 'produce', opts.daemonLease)
+  if (lease === null) return { action: 'noop', reason: 'lease-held' }
   try {
-    // A render longer than the lease TTL would otherwise let the next cron
-    // firing start a second tick on top of this one. extendLease matches on
-    // holder, so a lease already taken over is never re-acquired here. BOTH
-    // work paths get this same callback: a resumed render is exactly as long
-    // as a fresh one, and it is the resume path that runs the jobs already
-    // known to be slow.
-    const heartbeat = (): void => {
-      extendLease(db, 'produce', holder, PRODUCE_LEASE_TTL_MS)
-    }
+    lease.assertOwned()
+    reconcileJobs(db, lease)
     // Repair sweep. The crash window it was written for is closed: runJob's
     // final gate now flips the topic to 'used' inside the same transaction as
     // the library row, so the two writes commit together. It is kept for the
@@ -123,9 +98,12 @@ export async function produceNextTick(
     // job already in the library stays claimed forever, since resume refuses a
     // 'done' job and nothing else can recover it. Idempotent and cheap; run it
     // inside the lease before planning this tick.
-    db.prepare(
-      "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
-    ).run()
+    db.transaction(() => {
+      lease.assertOwned()
+      db.prepare(
+        "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
+      ).run()
+    }).immediate()
     const plan = planTick(db, channels)
 
     if (plan.kind === 'noop') {
@@ -133,15 +111,17 @@ export async function produceNextTick(
     }
 
     if (plan.kind === 'resume') {
-      // planTick only surfaces blocked jobs, so force stays unset: taking
-      // over a 'running' job is an operator decision, never the loop's.
+      // Reconciliation has already queued abandoned jobs; no running takeover
+      // or forced resume is needed here.
       let result: JobResult
       try {
         result = await resumeJob(db, plan.jobId, {
           runsRoot: opts.runsRoot,
           channelsDir: opts.channelsDir,
           stagesFor,
-          heartbeat,
+          lease,
+          actionId: opts.actionId,
+          daemonLease: opts.daemonLease,
         })
       } catch (err) {
         // A ResumeError is a refusal, not a crash — one JSON line, exit 0,
@@ -176,15 +156,19 @@ export async function produceNextTick(
     // createJob's internal transaction as a savepoint, so the wrap is safe.
     let jobId: string
     try {
-      jobId = db.transaction(() => {
-        const id = createJob(db, channel, { topic: plan.topic })
-        if (!claimTopic(db, plan.topicId, id)) {
-          throw new ClaimConflictError(
-            `topic ${plan.topicId} is no longer claimable (status changed since planning)`,
-          )
-        }
-        return id
-      })()
+      jobId = db
+        .transaction(() => {
+          lease.assertOwned()
+          const id = createJob(db, channel, { topic: plan.topic })
+          if (!claimTopic(db, plan.topicId, id)) {
+            throw new ClaimConflictError(
+              `topic ${plan.topicId} is no longer claimable (status changed since planning)`,
+            )
+          }
+          linkActionJob(db, opts.actionId, id, opts.daemonLease)
+          return id
+        })
+        .immediate()
     } catch (err) {
       // `topics reject` landing inside the plan→claim window: the job row rolled
       // back with the throw and the next tick simply plans again.
@@ -199,10 +183,10 @@ export async function produceNextTick(
     // topic is never re-claimed or lost.
     const result = await runJob(db, channel, jobId, stagesFor(), {
       runsRoot: opts.runsRoot,
-      heartbeat,
+      lease,
     })
     return { action: 'produced', jobId, topicId: plan.topicId, status: result.status }
   } finally {
-    releaseLease(db, 'produce', holder)
+    if (!opts.lease) lease.release()
   }
 }

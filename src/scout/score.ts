@@ -1,3 +1,4 @@
+import type { LeaseContext } from '../loop/lease.js'
 import type Anthropic from '@anthropic-ai/sdk'
 import { z } from 'zod'
 import { structuredCompletion } from '../providers/anthropic.js'
@@ -194,6 +195,7 @@ export async function scoreCandidates(opts: {
   recentTitles: string[]
   story?: boolean
   client?: Anthropic
+  lease?: LeaseContext
 }): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
   const byIndex = new Map<number, ScoredCandidate>()
   let totalCostUsdMicros = 0
@@ -203,6 +205,7 @@ export async function scoreCandidates(opts: {
 
   try {
     for (let offset = 0; offset < opts.candidates.length; offset += SCOUT_SCORE_CHUNK_SIZE) {
+      opts.lease?.assertOwned()
       const chunk = opts.candidates.slice(offset, offset + SCOUT_SCORE_CHUNK_SIZE)
       const { data, cost } = await structuredCompletion({
         model: SCOUT_MODEL,
@@ -213,8 +216,10 @@ export async function scoreCandidates(opts: {
         schema: ScoresSchema,
         maxTokens: SCOUT_MAX_TOKENS,
         client: opts.client,
+        signal: opts.lease?.signal,
       })
       totalCostUsdMicros += cost.usdMicros
+      opts.lease?.assertOwned()
 
       // The model's list is untrusted: out-of-range indexes (either side) are
       // dropped, scores are clamped to 0-100 (the wire schema cannot carry

@@ -1,5 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { classify, errorMessage } from '../errors.js'
+import { ownsLease, type LeaseContext } from '../loop/lease.js'
 import { ACTIONS, type ActionKind, type ActionLane } from './catalog.js'
 
 export type ActionStatus = 'pending' | 'running' | 'done' | 'failed'
@@ -18,11 +19,13 @@ export interface ActionRow {
   error: string | null
   errorKind: string | null
   notice: string | null
+  ownerToken: string | null
+  jobId: string | null
 }
 
 const COLUMNS = `id, kind, lane, args, status, requested_by AS requestedBy,
   created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt,
-  result, error, error_kind AS errorKind, notice`
+  result, error, error_kind AS errorKind, notice, owner_token AS ownerToken, job_id AS jobId`
 
 /**
  * The lane is read from the catalog, never from the caller: the lane decides
@@ -55,26 +58,41 @@ export function pendingActions(db: Database, lane: ActionLane, limit: number): A
  * `changes === 0` rather than double-running the action — so no explicit
  * transaction is needed for the two lane workers to share this table safely.
  */
-export function startAction(db: Database, id: number, now: Date): boolean {
+export function startAction(db: Database, id: number, now: Date, owner?: LeaseContext): boolean {
+  owner?.assertOwned()
   return (
     db
       .prepare(
-        "UPDATE operator_actions SET status = 'running', started_at = ?, notice = NULL WHERE id = ? AND status = 'pending'",
+        "UPDATE operator_actions SET status = 'running', started_at = ?, owner_token = ?, notice = NULL, error = NULL, error_kind = NULL, result = NULL, finished_at = NULL WHERE id = ? AND status = 'pending'",
       )
-      .run(now.toISOString(), id).changes === 1
+      .run(now.toISOString(), owner?.token ?? null, id).changes === 1
   )
 }
 
-export function completeAction(db: Database, id: number, result: unknown, now: Date): void {
+export function completeAction(
+  db: Database,
+  id: number,
+  result: unknown,
+  now: Date,
+  owner?: LeaseContext,
+): void {
+  owner?.assertOwned()
   db.prepare(
-    "UPDATE operator_actions SET status = 'done', result = ?, finished_at = ?, notice = NULL WHERE id = ?",
-  ).run(JSON.stringify(result ?? null), now.toISOString(), id)
+    "UPDATE operator_actions SET status = 'done', result = ?, finished_at = ?, notice = NULL WHERE id = ? AND status = 'running' AND owner_token IS ?",
+  ).run(JSON.stringify(result ?? null), now.toISOString(), id, owner?.token ?? null)
 }
 
-export function failAction(db: Database, id: number, err: unknown, now: Date): void {
+export function failAction(
+  db: Database,
+  id: number,
+  err: unknown,
+  now: Date,
+  owner?: LeaseContext,
+): void {
+  owner?.assertOwned()
   db.prepare(
-    "UPDATE operator_actions SET status = 'failed', error = ?, error_kind = ?, finished_at = ? WHERE id = ?",
-  ).run(errorMessage(err), classify(err).kind, now.toISOString(), id)
+    "UPDATE operator_actions SET status = 'failed', error = ?, error_kind = ?, finished_at = ? WHERE id = ? AND status = 'running' AND owner_token IS ?",
+  ).run(errorMessage(err), classify(err).kind, now.toISOString(), id, owner?.token ?? null)
 }
 
 /**
@@ -118,4 +136,111 @@ export function failRunningActions(db: Database, lane: ActionLane, now: Date): n
        WHERE lane = ? AND status = 'running'`,
     )
     .run(now.toISOString(), lane).changes
+}
+
+/** Called only after daemon ownership is acquired, before workers start. */
+export function reconcileActions(db: Database, owner: LeaseContext, now = new Date()): number {
+  return db
+    .transaction(() => {
+      owner.assertOwned()
+      const rows = db
+        .prepare(`SELECT ${COLUMNS} FROM operator_actions WHERE status='running'`)
+        .all() as ActionRow[]
+      let count = 0
+      for (const row of rows) {
+        if (row.ownerToken && ownsLease(db, 'daemon', row.ownerToken)) continue
+        reconcileActionRow(db, row, now, 'interrupted by a daemon restart')
+        count++
+      }
+      return count
+    })
+    .immediate()
+}
+
+/** The current daemon reconciles its action after a child operation loses ownership.
+ * This is independent of the stale operation's result and never mutates its job. */
+export function reconcileInterruptedAction(
+  db: Database,
+  id: number,
+  owner: LeaseContext,
+  operation: LeaseContext,
+  now = new Date(),
+): boolean {
+  return db
+    .transaction(() => {
+      owner.assertOwned()
+      if (!operation.signal.aborted && ownsLease(db, operation.name, operation.token)) return false
+      const row = getAction(db, id)
+      if (!row || row.status !== 'running' || row.ownerToken !== owner.token) return false
+      reconcileActionRow(db, row, now, 'interrupted after operation ownership was lost')
+      return true
+    })
+    .immediate()
+}
+
+function reconcileActionRow(db: Database, row: ActionRow, now: Date, reason: string): void {
+  // Old writers had no atomic linkage. Recover only explicit known IDs;
+  // absence of a link on those rows is not proof that no job was created.
+  if (row.ownerToken === null && row.jobId === null) {
+    let legacyId: unknown
+    if (row.kind === 'jobs.produce') legacyId = /^job ([A-Za-z0-9_-]+)$/.exec(row.notice ?? '')?.[1]
+    if (row.kind === 'jobs.resume') {
+      try {
+        legacyId = (JSON.parse(row.args) as { jobId?: unknown }).jobId
+      } catch {
+        /* ambiguous legacy action */
+      }
+    }
+    if (typeof legacyId === 'string' && db.prepare('SELECT 1 FROM jobs WHERE id=?').get(legacyId)) {
+      row.jobId = legacyId
+      db.prepare('UPDATE operator_actions SET job_id=? WHERE id=?').run(legacyId, row.id)
+    }
+  }
+  const completed = row.jobId
+    ? (db
+        .prepare(
+          "SELECT l.state,l.video_path FROM library l JOIN jobs j ON j.id=l.job_id WHERE j.id=? AND j.status='done'",
+        )
+        .get(row.jobId) as { state: string; video_path: string } | undefined)
+    : undefined
+  if (completed) {
+    db.prepare(
+      "UPDATE operator_actions SET status='done',result=?,finished_at=?,notice=NULL WHERE id=?",
+    ).run(
+      JSON.stringify({
+        jobId: row.jobId,
+        status: completed.state,
+        videoPath: completed.video_path,
+      }),
+      now.toISOString(),
+      row.id,
+    )
+  } else if (
+    row.jobId === null &&
+    row.ownerToken !== null &&
+    ['jobs.produce', 'jobs.resume', 'produce.next'].includes(row.kind)
+  ) {
+    db.prepare(
+      "UPDATE operator_actions SET status='pending',owner_token=NULL,started_at=NULL,notice='interrupted before job linkage; queued again' WHERE id=?",
+    ).run(row.id)
+  } else {
+    const ambiguous =
+      row.jobId === null &&
+      row.ownerToken === null &&
+      ['jobs.produce', 'jobs.resume', 'produce.next'].includes(row.kind)
+    const notice = row.jobId
+      ? `job ${row.jobId}; interrupted; automatic recovery scheduled`
+      : ambiguous
+        ? 'legacy action has unknown outcome; existing jobs recover independently'
+        : row.notice
+    db.prepare(
+      "UPDATE operator_actions SET status='failed',error=?,error_kind=?,finished_at=?,notice=? WHERE id=?",
+    ).run(
+      ambiguous ? 'legacy action has unknown outcome; not replayed' : reason,
+      ambiguous ? 'unknown-outcome' : 'internal',
+      now.toISOString(),
+      notice,
+      row.id,
+    )
+  }
 }

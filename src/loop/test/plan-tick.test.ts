@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { recordCost } from '../../jobs/costs.js'
+import { BudgetExceededError, recordCost } from '../../jobs/costs.js'
+import { makeBudgetWait } from '../../jobs/budget-wait.js'
 import { testChannel } from '../../testing/channel.js'
-import { planTick, RESUME_MIN_HEADROOM_USD_MICROS } from '../plan-tick.js'
+import { planTick } from '../plan-tick.js'
 import {
   memDb,
   seedJob as seedJobRow,
@@ -76,10 +77,6 @@ afterEach(() => {
 })
 
 describe('planTick basics', () => {
-  it('exports the resume headroom constant in micro-USD', () => {
-    expect(RESUME_MIN_HEADROOM_USD_MICROS).toBe(2_000_000)
-  })
-
   it('noops when there are no blocked jobs and no topics', () => {
     const db = memDb()
     expect(planTick(db, [testChannel()])).toEqual(NOOP)
@@ -129,87 +126,88 @@ describe('resume pass', () => {
   })
 })
 
-describe('resume pass skip conditions', () => {
-  const cases: {
-    reason: string
-    expected: 'no-eligible-work'
-    seed: (db: Database) => void
-  }[] = [
-    {
-      reason: 'channel-day headroom is under the resume minimum',
-      expected: 'no-eligible-work',
-      seed: (db) => {
-        seedJob(db, { id: 'job-parked', status: 'blocked' })
-        // $20 channel-day cap − $18.50 spent today = $1.50 < $2 headroom
-        const spender = seedJob(db)
-        recordCost(db, spender, 'fal', 'video', 18_500_000)
-      },
-    },
-    {
-      reason: 'global-day headroom is under the resume minimum',
-      expected: 'no-eligible-work',
-      seed: (db) => {
-        seedJob(db, { id: 'job-parked', status: 'blocked' })
-        // Jobless sentinel spend: invisible to the channel-day JOIN, counted
-        // by the global sum. $25 default cap − $23.50 = $1.50 < $2 headroom.
-        recordCost(db, 'scout:test', 'anthropic', 'scout-score', 23_500_000)
-      },
-    },
-  ]
-
-  it.each(cases)('skips the blocked job when $reason', ({ expected, seed }) => {
+describe('resume eligibility', () => {
+  it('parks a known unaffordable next call despite positive per-video headroom', () => {
     const db = memDb()
-    seed(db)
-    expect(planTick(db, [testChannel()])).toEqual({
-      kind: 'noop',
-      reason: expected,
-    })
-    db.close()
-  })
-})
-
-describe('resume pass per-video headroom', () => {
-  it('skips a blocked job at its per-video cap so the claim pass still runs', () => {
-    const db = memDb()
+    const ch = testChannel()
     seedJob(db, { id: 'job-capped', status: 'blocked' })
-    // The whole $8 per-video cap is already spent: resuming could only
-    // re-block at the first checkpoint, and the job keeps its place at the
-    // head of the oldest-first queue — every channel starves forever.
-    recordCost(db, 'job-capped', 'fal', 'video', 8_000_000)
+    recordCost(db, 'job-capped', 'anthropic', 'script', 7_000_000)
+    const wait = makeBudgetWait(
+      new BudgetExceededError('over cap', {
+        scope: 'per-video',
+        upcomingUsdMicros: 1_500_000,
+        spentUsdMicros: 7_000_000,
+        capUsdMicros: 8_000_000,
+        utcDay: new Date().toISOString().slice(0, 10),
+      }),
+      ch,
+      'voice',
+    )
+    db.prepare('UPDATE jobs SET budget_wait_json = ? WHERE id = ?').run(
+      JSON.stringify(wait),
+      'job-capped',
+    )
     const topicId = seedTopic(db)
-    expect(planTick(db, [testChannel()])).toMatchObject({
-      kind: 'produce',
-      topicId,
-    })
-    db.close()
+    expect(planTick(db, [ch])).toMatchObject({ kind: 'produce', topicId })
   })
 
-  it('resumes while a full minimum step of per-video headroom remains', () => {
+  it('resumes an affordable next call with less than the obsolete headroom floor', () => {
     const db = memDb()
+    const ch = testChannel()
     seedJob(db, { id: 'job-parked', status: 'blocked' })
-    // $8 cap − $6 spent = exactly the $2 step: the guard is strictly-less, so
-    // this job is still worth resuming.
-    recordCost(db, 'job-parked', 'fal', 'video', 6_000_000)
-    expect(planTick(db, [testChannel()])).toMatchObject({
-      kind: 'resume',
-      jobId: 'job-parked',
-    })
-    db.close()
+    recordCost(db, 'job-parked', 'anthropic', 'script', 7_500_000)
+    const wait = makeBudgetWait(
+      new BudgetExceededError('old day exhausted', {
+        scope: 'channel-day',
+        upcomingUsdMicros: 500_000,
+        spentUsdMicros: 20_000_000,
+        capUsdMicros: 20_000_000,
+        utcDay: '2020-01-01',
+      }),
+      ch,
+      'voice',
+    )
+    db.prepare('UPDATE jobs SET budget_wait_json = ? WHERE id = ?').run(
+      JSON.stringify(wait),
+      'job-parked',
+    )
+    expect(planTick(db, [ch])).toMatchObject({ kind: 'resume', jobId: 'job-parked' })
   })
 
-  it('scales the floor down for a channel whose whole daily budget is under $2', () => {
+  it('selects due recovery work before older blocked jobs without writing the plan', () => {
     const db = memDb()
-    seedJob(db, { id: 'job-parked', status: 'blocked' })
-    // A $1.50/day channel can never clear the absolute $2 floor, so a flat
-    // floor would lock its blocked jobs out permanently — even at zero spend.
-    const ch = testChannel({
-      budget: { perVideoUsdMicros: 1_000_000, perDayUsdMicros: 1_500_000 },
-    })
-    expect(planTick(db, [ch])).toMatchObject({
+    seedJob(db, { id: 'blocked', status: 'blocked', createdAt: '2020-01-01T00:00:00.000Z' })
+    seedJob(db, { id: 'recovery', status: 'queued' })
+    db.prepare('UPDATE jobs SET recovery_pending = 1, retry_after = ? WHERE id = ?').run(
+      '2020-01-01T00:00:00.000Z',
+      'recovery',
+    )
+    db.pragma('query_only = ON')
+    expect(planTick(db, [testChannel()])).toEqual({
       kind: 'resume',
-      jobId: 'job-parked',
+      jobId: 'recovery',
+      channel: 'test',
     })
-    db.close()
+  })
+
+  it.each(['queued', 'blocked'])('skips a %s job before its retry deadline', (status) => {
+    const db = memDb()
+    const jobId = seedJob(db, { status })
+    db.prepare('UPDATE jobs SET recovery_pending = 1, retry_after = ? WHERE id = ?').run(
+      '2999-01-01T00:00:00.000Z',
+      jobId,
+    )
+    const topicId = seedTopic(db)
+    expect(planTick(db, [testChannel()])).toMatchObject({ kind: 'produce', topicId })
+  })
+
+  it('skips an ordinary queued job and a recovery job whose channel was removed', () => {
+    const db = memDb()
+    seedJob(db, { id: 'ordinary', status: 'queued' })
+    seedJob(db, { id: 'ghost', status: 'queued', channel: 'ghost' })
+    db.prepare('UPDATE jobs SET recovery_pending = 1 WHERE id = ?').run('ghost')
+    const topicId = seedTopic(db)
+    expect(planTick(db, [testChannel()])).toMatchObject({ kind: 'produce', topicId })
   })
 })
 
@@ -243,12 +241,13 @@ describe('claim pass quota', () => {
 
   it('counts blocked jobs toward the claim quota too', () => {
     const db = memDb()
-    // Sentinel spend empties GLOBAL headroom so the resume pass skips the
-    // blocked job; the claim pass must then see its slot as taken.
-    seedJob(db, { status: 'blocked' })
-    recordCost(db, 'scout:test', 'anthropic', 'scout-score', 23_500_000)
+    const jobId = seedJob(db, { status: 'blocked' })
     seedTopic(db)
     const ch = testChannel({ videosPerDay: 1 })
+    db.prepare('UPDATE jobs SET budget_wait_json = ? WHERE id = ?').run(
+      JSON.stringify(makeBudgetWait(new BudgetExceededError('unknown cap'), ch, 'script')),
+      jobId,
+    )
     expect(planTick(db, [ch])).toEqual(NOOP)
     db.close()
   })
@@ -341,19 +340,19 @@ describe('claim pass backlog gate', () => {
     db.close()
   })
 
-  it('still resumes a blocked job on a backlogged channel', () => {
+  it.each(['blocked', 'queued'])('waits to resume a %s job on a backlogged channel', (status) => {
     const db = memDb()
     const channel = testChannel({ name: 'chan-a', videosPerDay: 2, backlogDays: 2 })
-    seedJob(db, { id: 'job-blocked', channel: 'chan-a', status: 'blocked' })
+    seedJob(db, { id: 'job-blocked', channel: 'chan-a', status })
+    db.prepare('UPDATE jobs SET recovery_pending = 1 WHERE id = ?').run('job-blocked')
     for (const id of ['job-1', 'job-2', 'job-3', 'job-4']) {
       seedJob(db, { id, channel: 'chan-a', createdAt: '2026-07-26T00:00:00.000Z' })
       seedLibrary(db, id, { state: 'ready', createdAt: '2026-07-26T00:00:00.000Z' })
     }
 
     expect(planTick(db, [channel])).toEqual({
-      kind: 'resume',
-      jobId: 'job-blocked',
-      channel: 'chan-a',
+      kind: 'noop',
+      reason: 'backlog-full',
     })
     db.close()
   })

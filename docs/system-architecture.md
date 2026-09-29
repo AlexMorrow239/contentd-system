@@ -1,6 +1,6 @@
 # Current system architecture and queue map
 
-Source snapshot: 2026-09-28. This maps the checked-out implementation and Compose configuration, not observed production queue depths or deployed image versions. Historical design documents and obsolete comments are not authoritative.
+Source snapshot: 2026-09-29. This maps the checked-out implementation and Compose configuration, not observed production queue depths or deployed image versions. Historical design documents and obsolete comments are not authoritative.
 
 ## 1. System boundary
 
@@ -65,7 +65,7 @@ There is no Redis/RabbitMQ-style message broker. Work is discovered by polling S
 | Review inventory     | `library.state = needs-review`                                            | Completed pipeline with QC issues | Human approval/discard actions | Counts toward backlog but does not appear in `/post`                                                                              |
 | Manual posting queue | Query of ready library rows missing at least one configured platform post | Pipeline or approval              | Human                          | Oldest library creation time, then job ID; default page limit 200                                                                 |
 
-`jobs.status = queued` is a persisted pre-execution state, not a generic job queue drained by a worker. New production creates a job and immediately calls its runner. The automatic planner only selects blocked jobs for recovery; a stranded queued job needs explicit resume.
+`jobs.status = queued` is a persisted pre-execution state, not a generic job queue drained by a worker. New production creates a job and immediately calls its runner. After operation-lease acquisition, reconciliation marks abandoned queued/running jobs for automatic recovery. The planner selects due interrupted jobs first, then affordable blocked jobs, then new topics.
 
 ## 3. How the queues feed and throttle one another
 
@@ -112,8 +112,9 @@ flowchart TD
   Config -->|no| Noop[Return noop with reason]
   Config -->|yes| Lease{Acquire produce lease?}
   Lease -->|no| Noop
-  Lease -->|yes| Repair[Repair historical claimed topics already in library]
-  Repair --> Resume{Eligible blocked job?}
+  Lease -->|yes| Reconcile[Reconcile abandoned attempts]
+  Reconcile --> Repair[Repair historical claimed topics already in library]
+  Repair --> Resume{Due recovered or affordable blocked job with backlog capacity?}
   Resume -->|yes - oldest first| Run[Resume unfinished stages]
   Resume -->|no| Channels[Filter channels by daily new-job count and backlog]
   Channels --> Fair[Sort by fraction of daily quota used, then channel name]
@@ -127,7 +128,7 @@ flowchart TD
 
 The quota counts **all jobs created today**, including failed jobs; it is not a count of successful videos or platform uploads. Across channels, the planner chooses the least-filled daily quota first. Inside a channel, it chooses the highest-scored candidate.
 
-Blocked-job resumes precede the quota/backlog pass and do not apply those new-job gates. Their budget headroom must be at least `min($2, floor(cap_in_micros / 4))` against both per-video and channel-day caps, plus $2 against the global-day cap. A per-video cap does not reset at midnight.
+Interrupted and budget-blocked jobs precede new production, oldest first within each group, and obey backlog capacity. They reuse the existing daily quota slot. A blocked job waits at least 60 seconds and resumes only when its recorded upcoming estimate fits all three caps, or once to probe changed configuration. Unknown requirements wait for a config/day change after the first probe. Per-video spend does not reset at midnight.
 
 New-job selection itself does not preflight budgets. Paid stages enforce per-video, channel-day, and global-day limits before provider calls; a selected job can therefore become blocked. Scout scoring uses the global-day budget and records spend under `scout:<channel>`, sharing the global allowance with production. These checks are not an atomic reservation of all future spend across concurrent work.
 
@@ -175,13 +176,19 @@ sequenceDiagram
 
 Fast actions do local operations without provider calls, rendering, or lease acquisition. The slow lane is serial: once a handler starts, other slow actions wait even if they need a different lease. The independent automatic scout/produce loops can still run when their leases allow it.
 
-Leases are two **global names**, `produce` and `scout`, not per-channel locks. They prevent normal overlap between automatic and operator-triggered work of the same class. Scouting and production can run concurrently.
+Leases have three **global names**: `daemon` enforces one daemon, and `produce`/`scout` coordinate operation ownership across daemon, actions and CLI. They are not per-channel locks. They prevent normal overlap between automatic and operator-triggered work of the same class. Scouting and production can run concurrently.
 
-| Caller                                 | Lease                | TTL        | Renewal                             |
-| -------------------------------------- | -------------------- | ---------- | ----------------------------------- |
-| Automatic production or `produce.next` | `produce`            | 90 minutes | At each unfinished stage start      |
-| Automatic scouting                     | `scout`              | 30 minutes | No periodic renewal in scout loop   |
-| Action worker for declared slow leases | `produce` or `scout` | 5 minutes  | Every 60 seconds while handler runs |
+| Caller                                           | Lease     | TTL       | Renewal                                    |
+| ------------------------------------------------ | --------- | --------- | ------------------------------------------ |
+| Daemon                                           | `daemon`  | 5 minutes | Every 60 seconds, including graceful drain |
+| Production, resume, produce-next (CLI or daemon) | `produce` | 5 minutes | Every 60 seconds                           |
+| Scouting (CLI or daemon)                         | `scout`   | 5 minutes | Every 60 seconds                           |
+
+Every acquisition has a fresh random owner token. Expired owners cannot renew.
+Lost ownership aborts supported I/O and fences transactional state changes.
+Stage files live under unique attempt directories; a late renderer cannot overwrite
+a replacement's files. Completed checkpoints reference immutable directories.
+Cancellation cannot retract a paid request already accepted by a provider.
 
 Each poll inspects at most 50 pending rows. A lease-blocked action remains pending and can be skipped in favor of later work inside that window. If the first 50 remain blocked, row 51 remains unseen on subsequent polls until earlier rows clear. There is no priority boost for operator production over the automatic producer.
 
@@ -206,7 +213,7 @@ flowchart LR
 | QC           | Local media checks using probe/ffmpeg and artifacts                                                                                     | QC verdict                                                                 |
 | Finalization | Read artifacts and commit database state                                                                                                | Library upsert, job done, claimed topic used in one transaction            |
 
-There are no separate voice/render/QC queues. One `runJob` call awaits each stage. Stage status and files under `<root>/runs/<jobId>/<stage>/` are the resume checkpoints. A completed stage is skipped on resume. A failed paid attempt can still have ledgered cost; a retry is not necessarily free. A budget error does not activate the paid-voice fallback path.
+There are no separate voice/render/QC queues. One `runJob` call awaits each stage. Stage status and committed `artifact_dir` references are the resume checkpoints. New outputs live under `<root>/runs/<jobId>/attempts/<attemptId>/<stage>/`; null references on legacy completed stages resolve to the original `<jobId>/<stage>/` directories. A completed stage is skipped on resume. A failed paid attempt can still have ledgered cost; a retry is not necessarily free. A budget error does not activate the paid-voice fallback path.
 
 ```mermaid
 stateDiagram-v2
@@ -221,6 +228,7 @@ stateDiagram-v2
   state "Job lifecycle" as Jobs {
     [*] --> queued: createJob
     queued --> running: run or explicit resume
+    running --> queued: expired owner reconciled with backoff
     running --> failed: stage or finalization error
     running --> blocked: budget breach
     failed --> running: explicit resume
@@ -242,6 +250,7 @@ Sources: [pipeline order](../src/jobs/pipeline.ts), [runner](../src/jobs/runner.
 ```mermaid
 erDiagram
   TOPICS o|--o| JOBS : "optional binding by job_id"
+  JOBS ||--o{ EXECUTION_ATTEMPTS : ownership
   JOBS ||--o{ JOB_STAGES : checkpoints
   JOBS ||--o| LIBRARY : produces
   JOBS ||--o{ POSTS : "manual platform records"
@@ -250,21 +259,23 @@ erDiagram
 
 This diagram shows application relationships, not enforced foreign keys. Database opening explicitly disables SQLite foreign-key enforcement. Scout cost rows use synthetic IDs without job rows, and topic/job one-to-one binding is maintained by application logic rather than a unique `topics.job_id` constraint.
 
-| Table              | Responsibility                                                                     |
-| ------------------ | ---------------------------------------------------------------------------------- |
-| `topics`           | Discovery history, scores, candidate/claim state, story payloads and deduplication |
-| `scout_state`      | Persisted last-attempt time per channel                                            |
-| `jobs`             | Production identity, channel, topic, status and timestamps                         |
-| `job_stages`       | Per-stage execution checkpoints and errors                                         |
-| `library`          | Finished video path, platform metadata, QC verdict and review state                |
-| `posts`            | Actual manual posting records by video/platform                                    |
-| `costs`            | Provider spend in integer USD micros                                               |
-| `bg_usage`         | Recent background usage by channel                                                 |
-| `leases`           | Global production/scouting ownership and expiry                                    |
-| `operator_actions` | Durable command queue, results, errors and audit history                           |
-| `daemon_state`     | Single-row daemon heartbeat                                                        |
+| Table                | Responsibility                                                                     |
+| -------------------- | ---------------------------------------------------------------------------------- |
+| `topics`             | Discovery history, scores, candidate/claim state, story payloads and deduplication |
+| `scout_state`        | Persisted last-attempt time per channel                                            |
+| `jobs`               | Production identity, channel, topic, status and timestamps                         |
+| `job_stages`         | Per-stage execution checkpoints and errors                                         |
+| `library`            | Finished video path, platform metadata, QC verdict and review state                |
+| `posts`              | Actual manual posting records by video/platform                                    |
+| `costs`              | Provider spend in integer USD micros                                               |
+| `bg_usage`           | Recent background usage by channel                                                 |
+| `execution_attempts` | Owner token, job, outcome, start/end timestamps for each execution                 |
+| `leases`             | Global production/scouting ownership and expiry                                    |
+| `operator_actions`   | Durable command queue, results, errors and audit history                           |
+| `daemon_state`       | Single-row daemon heartbeat                                                        |
 
-Finished videos remain at `runs/<jobId>/assemble/final.mp4`. The dashboard reports
+Finished videos remain in the committed assemble attempt directory; legacy
+`runs/<jobId>/assemble/final.mp4` paths stay valid. The dashboard reports
 each one as `local` or `missing` from that path alone. Discard marks the library
 row blocked but keeps the local file; if a local video is deleted, the application
 cannot recover it.
@@ -284,34 +295,48 @@ Sources: [schema](../src/db/schema.sql), [migrations](../src/db/migrate.ts), [da
 | Slow actions             | Idle poll every 30 seconds; one action per unit; recheck immediately after work                                             |
 | Thrown worker-unit error | Log and sleep 60 seconds; no daemon-wide failure merely from one bad unit                                                   |
 | Stale daemon heartbeat   | Dashboard refuses new action submissions once heartbeat age exceeds 60 seconds                                              |
-| Restart                  | Each action lane marks its leftover running actions failed; pending actions remain available                                |
+| Restart                  | Ownership-aware reconciliation repairs actions before workers start; production ticks schedule abandoned jobs               |
 
 An attempted scout pass records its timestamp before the depth check and fetch. Consequently, a queue-full pass or failed scoring attempt can delay the next automatic attempt by 20 minutes even if capacity becomes available sooner.
 
-Failed actions have no automatic retry/dead-letter dispatcher. Failed jobs are not automatically retried. Budget-blocked jobs are eligible for automatic recovery; running jobs orphaned by a crash are not. Restart repair of an action does not repair its job or release its abandoned lease. An expired lease can be taken over on a later acquire.
+Interrupted jobs resume automatically after expired ownership is reconciled, preserving
+job ID, topic binding, and done checkpoints. Ordinary failed jobs remain manual.
+Recovery backoff is persisted: 30 seconds doubling to 30 minutes for consecutive
+interruptions without stage progress, reset by a completed stage. Both recovered
+and budget-blocked jobs wait for backlog capacity. A `job-recovery` warning records
+old/new attempt, job, action and possible duplicate paid charges.
 
-SIGTERM stops polling and idle waits, but does not cancel the active render. Container termination may interrupt it after the stop timeout. Explicit recovery skips completed stages; forced recovery of a running job is a CLI operation after ensuring the original owner is stopped.
+Daemon-owned actions reconcile once before workers start. Linked unfinished jobs
+recover independently while their interrupted actions retain a failure notice;
+already-finalized jobs reconstruct the action result. Modern render actions with
+no committed job link requeue safely. Legacy ambiguous actions and non-render
+actions are not blindly replayed. Topic/job/action linkage commits atomically for
+newly created production jobs.
 
-Two implementation limits matter when interpreting lease safety:
+SIGTERM drains active work with ownership still renewed. A forced kill or sleeping
+host may leave leases until expiry. Second-daemon startup is refused while the
+singleton lease is live. `--force` cannot override live operation ownership.
+SQLite guards state commits; immutable attempt files protect local outputs even
+when Kokoro or a renderer cannot cancel immediately. Known charges remain ledgered
+even after ownership loss; unknown charges cannot be inferred.
 
-- `produceNextTick` uses a holder based only on the process PID. Automatic production and a `produce.next` action in the same process can therefore have the same holder identity. If a lease expires and the second invocation takes over, the earlier invocation can renew/release that same identity. The code explicitly notes this gap; transactional topic claiming does not make all overlapping execution safe.
-- Production renews at stage boundaries, not continuously. Slow action lease renewal is periodic, but a lost lease does not abort its active handler. These are cooperative coordination mechanisms, not fencing tokens that stop an expired worker from making provider calls.
-
-Direct CLI mutations have different coordination from dashboard actions. In particular, manual produce/resume and several library/topic mutations bypass leases. The operator runbook calls for stopping the daemon before break-glass mutations. The architecture assumes one daemon; action startup repair is not a multi-daemon work-stealing protocol.
+Direct CLI produce/resume/scout now coordinate through managed leases. Other
+break-glass mutations still follow the operator runbook. This remains a single-daemon
+system with serial production and serial slow actions, not a distributed scheduler.
 
 Sources: [worker loops](../src/loop/daemon.ts), [action execution](../src/loop/actions-worker.ts), [heartbeat](../src/loop/daemon-state.ts), [scout attempt gating](../src/scout/scout.ts), [production lease use](../src/loop/produce-next.ts), [operator runbook](../README.md).
 
 ## 9. Reading a stalled system
 
-| Symptom                                            | First state to inspect                                      | Likely explanation                                                                        |
-| -------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Topics exist but no new videos                     | Jobs created today; pending inventory; leases; blocked jobs | Quota, backlog, held lease, or recovery taking priority                                   |
-| No new topics                                      | Candidate depth, scout timestamp, source/scoring results    | Queue full, 20-minute gate, filtered/known sources, scoring failure or global spend limit |
-| Posting queue empty but backlog full               | Needs-review library and channel platforms                  | Review inventory counts toward backlog; empty platform list produces no cards             |
-| Slow action pending while other activity continues | Action notice and lease expiry                              | Waiting for produce/scout ownership, serial slow work, or 50-row scan window              |
-| Action done but no video appeared                  | Action result, job status, stage errors                     | Noop, budget block, failed job, or needs-review result                                    |
-| Restarted daemon but render never resumed          | Job status and saved action notice                          | Orphaned running/queued jobs require explicit recovery                                    |
-| Finished video is unavailable                      | Local run path                                              | The local file was moved or deleted and cannot be recovered by the application            |
-| Fully posted video reappears                       | Current platform list and posts rows                        | Unmark or newly declared destination changes completion                                   |
+| Symptom                                            | First state to inspect                                      | Likely explanation                                                                                  |
+| -------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Topics exist but no new videos                     | Jobs created today; pending inventory; leases; blocked jobs | Quota, backlog, held lease, or recovery taking priority                                             |
+| No new topics                                      | Candidate depth, scout timestamp, source/scoring results    | Queue full, 20-minute gate, filtered/known sources, scoring failure or global spend limit           |
+| Posting queue empty but backlog full               | Needs-review library and channel platforms                  | Review inventory counts toward backlog; empty platform list produces no cards                       |
+| Slow action pending while other activity continues | Action notice and lease expiry                              | Waiting for produce/scout ownership, serial slow work, or 50-row scan window                        |
+| Action done but no video appeared                  | Action result, job status, stage errors                     | Noop, budget block, failed job, or needs-review result                                              |
+| Restarted daemon but render never resumed          | Job status and saved action notice                          | Wait for lease expiry, persisted recovery delay and backlog capacity; inspect job-recovery warnings |
+| Finished video is unavailable                      | Local run path                                              | The local file was moved or deleted and cannot be recovered by the application                      |
+| Fully posted video reappears                       | Current platform list and posts rows                        | Unmark or newly declared destination changes completion                                             |
 
 For an individual item, trace **action ID → result/notice job ID → jobs/job_stages → library → posts**. For automatic production, start from **topic ID → topics.job_id**. These are the identities connecting the queue views; there is no single shared queue position spanning discovery, rendering, and posting.

@@ -1,12 +1,11 @@
 import type { Database } from 'better-sqlite3'
-import pino from 'pino'
 import { ACTIONS, isActionKind, type ActionLane, type ActionLease } from '../actions/catalog.js'
 import { runAction, type ActionContext } from '../actions/handlers.js'
 import {
   completeAction,
   failAction,
-  failRunningActions,
   pendingActions,
+  reconcileInterruptedAction,
   setActionNotice,
   startAction,
   type ActionRow,
@@ -14,12 +13,12 @@ import {
 import { BrainrotError } from '../errors.js'
 import type { UnitResult } from './daemon.js'
 import { DAEMON_HEARTBEAT_MS, stampDaemonSeen } from './daemon-state.js'
-import { acquireLease, extendLease, leaseHolder, releaseLease } from './lease.js'
-
-// Same construction as src/jobs/runner.ts:62 — inert by default (LOG_LEVEL
-// unset means 'silent'), so this stays a no-op for every deployment that
-// hasn't opted in.
-const log = pino({ level: process.env.LOG_LEVEL ?? 'silent' })
+import {
+  acquireManagedLease,
+  LEASE_TTL_MS,
+  LEASE_HEARTBEAT_MS,
+  type LeaseContext,
+} from './lease.js'
 
 /** The fast lane's poll. A row mutation must feel immediate, not 30s away. */
 export const FAST_IDLE_SLEEP_MS = 1_000
@@ -50,24 +49,8 @@ export const MAX_FAST_DRAIN = 50
  */
 export const ACTION_SCAN_WINDOW = MAX_FAST_DRAIN
 
-/**
- * The slow lane's own lease TTL, deliberately far below the leases' own
- * defaults (`produce` is 90 minutes). A slow action can legitimately run for
- * minutes, so unlike the fast lane it cannot simply use a short fixed window —
- * it holds a SHORT window and refreshes it below. What that buys is the orphan
- * case: a SIGKILL mid-render heals the action row via `failRunningActions` but
- * NOT the lease, so with the 90-minute default the daemon's own produce worker
- * would stall for 90 minutes. Five is the cost of the same crash now.
- */
-export const SLOW_ACTION_LEASE_TTL_MS = 300_000
-
-/**
- * How often a running slow action pushes its lease expiry out. Five beats fit
- * inside one TTL, which is the tolerance for a synchronous stretch that starves
- * the event loop (a render is mostly async — headless browser and spawned
- * ffmpeg — but nothing here guarantees that).
- */
-export const SLOW_ACTION_HEARTBEAT_MS = 60_000
+export const SLOW_ACTION_LEASE_TTL_MS = LEASE_TTL_MS
+export const SLOW_ACTION_HEARTBEAT_MS = LEASE_HEARTBEAT_MS
 
 /**
  * One lane's drain. `fast` clears up to MAX_FAST_DRAIN actions per call;
@@ -88,6 +71,7 @@ export function actionsUnit(
     runsRoot: string
     now?: () => Date
     run?: typeof runAction
+    daemonLease?: LeaseContext
   },
 ): () => Promise<UnitResult> {
   const run = opts.run ?? runAction
@@ -96,11 +80,6 @@ export function actionsUnit(
   // reading it fresh at each row transition is what lets those columns carry
   // real elapsed time.
   const clock = opts.now ?? ((): Date => new Date())
-  // Startup repair, run once. Within one daemon process a 'running' row on the
-  // first poll can only be from a dead process, so no age threshold has to be
-  // guessed — and guessing one would sweep a legitimately long action out from
-  // under itself.
-  let swept = false
   let lastHeartbeat = 0
   const budget = lane === 'fast' ? MAX_FAST_DRAIN : 1
 
@@ -108,15 +87,15 @@ export function actionsUnit(
     // Poll-level `now`: only the heartbeat throttle and the startup sweep are
     // genuinely per-poll decisions. Per-row work reads `clock()` again below.
     const now = clock()
-    if (!swept) {
-      swept = true
-      failRunningActions(db, lane, now)
-    }
+    opts.daemonLease?.assertOwned()
     // The heartbeat rides the fast lane only: the slow lane can legitimately
     // sit inside one action for minutes, which would read as a dead daemon.
     if (lane === 'fast' && now.getTime() - lastHeartbeat >= DAEMON_HEARTBEAT_MS) {
       lastHeartbeat = now.getTime()
-      stampDaemonSeen(db, process.pid, now)
+      db.transaction(() => {
+        opts.daemonLease?.assertOwned()
+        stampDaemonSeen(db, process.pid, now)
+      }).immediate()
     }
 
     const done: number[] = []
@@ -137,6 +116,7 @@ export function actionsUnit(
         lane,
         clock,
         run,
+        daemonLease: opts.daemonLease,
       })
       if (outcome.blockedBy !== undefined) {
         blockedLease ??= outcome.blockedBy
@@ -169,104 +149,88 @@ async function executeOne(
     lane: ActionLane
     clock: () => Date
     run: typeof runAction
+    daemonLease?: LeaseContext
   },
 ): Promise<{ blockedBy?: ActionLease; lostClaim?: boolean }> {
+  const mutate = <T>(fn: () => T): T =>
+    db
+      .transaction(() => {
+        deps.daemonLease?.assertOwned()
+        return fn()
+      })
+      .immediate()
   if (!isActionKind(row.kind)) {
-    startAction(db, row.id, deps.clock())
-    failAction(
-      db,
-      row.id,
-      new BrainrotError(`unknown action kind ${JSON.stringify(row.kind)}`, {
-        domain: 'config',
-        kind: 'invalid',
-      }),
-      deps.clock(),
-    )
+    mutate(() => {
+      if (startAction(db, row.id, deps.clock(), deps.daemonLease))
+        failAction(
+          db,
+          row.id,
+          new BrainrotError(`unknown action kind ${JSON.stringify(row.kind)}`, {
+            domain: 'config',
+            kind: 'invalid',
+          }),
+          deps.clock(),
+          deps.daemonLease,
+        )
+    })
     return {}
   }
-
-  const lease = ACTIONS[row.kind].lease
-  let holder: string | undefined
-  let beat: ReturnType<typeof setInterval> | undefined
-  if (lease !== undefined) {
-    holder = leaseHolder(`action:${row.id}`)
-    // Every kind that declares a lease (`jobs.produce`, `scout.run`,
-    // `jobs.resume`) is slow-lane, so this always
-    // resolves to the slow TTL in practice — there is no separate fast-lane
-    // TTL any more, since no fast action leases.
-    if (!acquireLease(db, lease, holder, SLOW_ACTION_LEASE_TTL_MS)) {
-      // Guarded on the text actually changing: the fast lane polls every 1s,
-      // so an unconditional write here is one WAL write per second per
-      // blocked row for as long as the lease is held — exactly the churn
-      // DAEMON_HEARTBEAT_MS throttles the heartbeat stamp against, above.
-      const text = `waiting for the ${lease} lease`
-      if (row.notice !== text) setActionNotice(db, row.id, text)
-      return { blockedBy: lease }
-    }
-    // The heartbeat still gates on lane === 'slow' explicitly, rather than
-    // being implied by "any action that leases is slow": the mechanism stays
-    // generic so a future fast action that legitimately needs a lease is not
-    // silently starved of a heartbeat.
-    if (deps.lane === 'slow') {
-      // `let holder` doesn't narrow inside a closure even though it was just
-      // assigned above; capture it as a const so the interval callback below
-      // sees `string`, not `string | undefined`.
-      const activeHolder = holder
-      beat = setInterval(() => {
-        // `false` is not acted on by re-acquiring: there is no abort channel
-        // on ActionContext to stop the handler mid-flight, and re-acquiring
-        // here would hand this lease to two live processes. It requires BOTH
-        // five consecutive missed beats (so the row has actually passed its
-        // expiry) AND another process calling acquireLease in that gap —
-        // extendLease matches on holder only and never re-checks expires_at,
-        // so a merely-late beat on an otherwise-unclaimed lease still
-        // succeeds. `produce-next`'s own heartbeat ignores it for the same
-        // no-abort-channel reason. It is still worth a log line: this is the
-        // daemon's own mutual exclusion silently failing, and until now
-        // nothing recorded that it happened.
-        if (!extendLease(db, lease, activeHolder, SLOW_ACTION_LEASE_TTL_MS)) {
-          log.warn({ lease, actionId: row.id }, 'lease heartbeat failed')
-        }
-      }, SLOW_ACTION_HEARTBEAT_MS)
-      // Never hold the process open: on SIGTERM the daemon must be able to
-      // exit once the in-flight action settles.
-      beat.unref()
-    }
+  const name = ACTIONS[row.kind].lease
+  const lease = name ? acquireManagedLease(db, name, deps.daemonLease) : undefined
+  if (lease === null) {
+    const notice = `waiting for the ${name!} lease`
+    if (row.notice !== notice) mutate(() => setActionNotice(db, row.id, notice))
+    return { blockedBy: name }
   }
-
   try {
-    // The status guard in startAction is the claim; losing it means another
-    // caller already took this row, so this poll performed no terminal
-    // transition on it and must not count it as work done.
     const startedAt = deps.clock()
-    if (!startAction(db, row.id, startedAt)) return { lostClaim: true }
-    let args: unknown
-    try {
-      args = JSON.parse(row.args)
-    } catch {
-      failAction(
-        db,
-        row.id,
-        new BrainrotError('args column is not valid JSON', { domain: 'config', kind: 'invalid' }),
-        deps.clock(),
-      )
-      return {}
-    }
+    if (!mutate(() => startAction(db, row.id, startedAt, deps.daemonLease)))
+      return { lostClaim: true }
     const ctx: ActionContext = {
       db,
       now: startedAt,
       channelsDir: deps.channelsDir,
       runsRoot: deps.runsRoot,
-      setNotice: (text) => setActionNotice(db, row.id, text),
+      actionId: row.id,
+      lease,
+      daemonLease: deps.daemonLease,
+      setNotice: (text) =>
+        mutate(() => {
+          lease?.assertOwned()
+          db.prepare(
+            "UPDATE operator_actions SET notice=? WHERE id=? AND status='running' AND owner_token IS ?",
+          ).run(text, row.id, deps.daemonLease?.token ?? null)
+        }),
     }
     try {
-      completeAction(db, row.id, await deps.run(ctx, row.kind, args), deps.clock())
+      let args: unknown
+      try {
+        args = JSON.parse(row.args)
+      } catch {
+        throw new BrainrotError('args column is not valid JSON', {
+          domain: 'config',
+          kind: 'invalid',
+        })
+      }
+      const result = await deps.run(ctx, row.kind, args)
+      mutate(() => {
+        lease?.assertOwned()
+        completeAction(db, row.id, result, deps.clock(), deps.daemonLease)
+      })
     } catch (err) {
-      failAction(db, row.id, err, deps.clock())
+      // A stale owner leaves the running row for reconciliation, never overwrites it.
+      deps.daemonLease?.assertOwned()
+      if (
+        lease &&
+        deps.daemonLease &&
+        reconcileInterruptedAction(db, row.id, deps.daemonLease, lease, deps.clock())
+      )
+        return {}
+      lease?.assertOwned()
+      mutate(() => failAction(db, row.id, err, deps.clock(), deps.daemonLease))
     }
     return {}
   } finally {
-    if (beat !== undefined) clearInterval(beat)
-    if (lease !== undefined && holder !== undefined) releaseLease(db, lease, holder)
+    lease?.release()
   }
 }
