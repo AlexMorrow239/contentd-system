@@ -2,6 +2,12 @@ import path from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { openDb } from '../src/db/index.js'
 import { tmpDir, trackDb } from './tmp.js'
+import { systemTime, type TimeSource } from '../src/time.js'
+
+const fixtureTimes = new WeakMap<Database, TimeSource>()
+export function fixtureTime(db: Database): TimeSource {
+  return fixtureTimes.get(db) ?? systemTime
+}
 
 /**
  * Db scaffolding for tests. Two open helpers plus one seed builder per table,
@@ -16,8 +22,10 @@ import { tmpDir, trackDb } from './tmp.js'
  */
 
 /** In-memory db, closed after the file finishes. The default for unit tests. */
-export function memDb(): Database {
-  return trackDb(openDb(':memory:'))
+export function memDb(time: TimeSource = systemTime): Database {
+  const db = trackDb(openDb(':memory:'))
+  fixtureTimes.set(db, time)
+  return db
 }
 
 /**
@@ -25,10 +33,15 @@ export function memDb(): Database {
  * Needed when a test spawns the CLI (a subprocess cannot see `:memory:`) or
  * asserts on WAL/concurrency behavior.
  */
-export function fileDb(name = 'brainrot.db'): { db: Database; dbPath: string; root: string } {
+export function fileDb(
+  name = 'brainrot.db',
+  time: TimeSource = systemTime,
+): { db: Database; dbPath: string; root: string } {
   const root = tmpDir('brainrot-db-')
   const dbPath = path.join(root, name)
-  return { db: trackDb(openDb(dbPath)), dbPath, root }
+  const db = trackDb(openDb(dbPath))
+  fixtureTimes.set(db, time)
+  return { db, dbPath, root }
 }
 
 export interface JobRow {
@@ -40,27 +53,26 @@ export interface JobRow {
   finishedAt: string | null
 }
 
-export function seedJob(db: Database, id: string, overrides: Partial<JobRow> = {}): string {
+export function seedJob(
+  db: Database,
+  id: string,
+  overrides: Partial<JobRow> = {},
+  time: TimeSource = fixtureTime(db),
+): string {
   const row = {
     channel: 'chan-a',
     tier: 'volume',
     topic: 'seeded topic',
     status: 'done',
-    createdAt: null,
+    createdAt: time.now().toISOString(),
     finishedAt: null,
     ...overrides,
   }
-  // created_at has a schema default; passing NULL would override it with NULL,
-  // so the column is only named when the caller pinned a value.
-  if (row.createdAt === null) {
-    db.prepare(
-      'INSERT INTO jobs (id, channel, tier, topic, status, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(id, row.channel, row.tier, row.topic, row.status, row.finishedAt)
-  } else {
-    db.prepare(
-      'INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).run(id, row.channel, row.tier, row.topic, row.status, row.createdAt, row.finishedAt)
-  }
+  row.createdAt ??= time.now().toISOString()
+
+  db.prepare(
+    'INSERT INTO jobs (id, channel, tier, topic, status, created_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(id, row.channel, row.tier, row.topic, row.status, row.createdAt, row.finishedAt)
   return id
 }
 
@@ -101,24 +113,21 @@ export function seedLibrary(
   db: Database,
   jobId: string,
   overrides: Partial<LibraryRow> = {},
+  time: TimeSource = fixtureTime(db),
 ): void {
   const row = {
     videoPath: `/runs/${jobId}/assemble/final.mp4`,
     metadataJson: '{}',
     state: 'ready',
     qcJson: null,
-    createdAt: null,
+    createdAt: time.now().toISOString(),
     ...overrides,
   }
-  if (row.createdAt === null) {
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state, qc_json) VALUES (?, ?, ?, ?, ?)',
-    ).run(jobId, row.videoPath, row.metadataJson, row.state, row.qcJson)
-  } else {
-    db.prepare(
-      'INSERT INTO library (job_id, video_path, metadata_json, state, qc_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).run(jobId, row.videoPath, row.metadataJson, row.state, row.qcJson, row.createdAt)
-  }
+  row.createdAt ??= time.now().toISOString()
+
+  db.prepare(
+    'INSERT INTO library (job_id, video_path, metadata_json, state, qc_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(jobId, row.videoPath, row.metadataJson, row.state, row.qcJson, row.createdAt)
 }
 
 export interface TopicRow {
@@ -139,7 +148,11 @@ export interface TopicRow {
 }
 
 /** Returns the autoincrement id, which most topic tests assert on. */
-export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): number {
+export function seedTopic(
+  db: Database,
+  overrides: Partial<TopicRow> = {},
+  time: TimeSource = fixtureTime(db),
+): number {
   const title = overrides.title ?? 'A seeded topic'
   const row = {
     channel: 'chan-a',
@@ -154,7 +167,7 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     reason: 'seeded',
     status: 'candidate',
     jobId: null,
-    createdAt: null,
+    createdAt: time.now().toISOString(),
     seriesKey: null,
     partIndex: null,
     partCount: null,
@@ -190,10 +203,8 @@ export function seedTopic(db: Database, overrides: Partial<TopicRow> = {}): numb
     row.partIndex,
     row.partCount,
   ]
-  if (row.createdAt !== null) {
-    cols.push('created_at')
-    vals.push(row.createdAt)
-  }
+  cols.push('created_at')
+  vals.push(row.createdAt ?? time.now().toISOString())
   const info = db
     .prepare(`INSERT INTO topics (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`)
     .run(...vals)
@@ -216,13 +227,14 @@ export function seedPost(
     url: string | null
     postedAt: string
   }> = {},
+  time: TimeSource = fixtureTime(db),
 ): void {
   const row = {
     jobId: 'job-1',
     channel: 'alpha',
     platform: 'youtube',
     url: null as string | null,
-    postedAt: new Date().toISOString(),
+    postedAt: time.now().toISOString(),
     ...overrides,
   }
   db.prepare(
@@ -239,28 +251,19 @@ export function seedCost(
     usdMicros: number
     createdAt: string | null
   }> = {},
+  time: TimeSource = fixtureTime(db),
 ): void {
-  const createdAt = overrides.createdAt ?? null
-  if (createdAt === null) {
-    db.prepare(
-      'INSERT INTO costs (job_id, provider, operation, usd_micros) VALUES (?, ?, ?, ?)',
-    ).run(
-      jobId,
-      overrides.provider ?? 'anthropic',
-      overrides.operation ?? 'script',
-      overrides.usdMicros ?? 1000,
-    )
-  } else {
-    db.prepare(
-      'INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).run(
-      jobId,
-      overrides.provider ?? 'anthropic',
-      overrides.operation ?? 'script',
-      overrides.usdMicros ?? 1000,
-      createdAt,
-    )
-  }
+  const createdAt = overrides.createdAt ?? time.now().toISOString()
+
+  db.prepare(
+    'INSERT INTO costs (job_id, provider, operation, usd_micros, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).run(
+    jobId,
+    overrides.provider ?? 'anthropic',
+    overrides.operation ?? 'script',
+    overrides.usdMicros ?? 1000,
+    createdAt,
+  )
 }
 
 export interface ActionRowSeed {
@@ -279,14 +282,18 @@ export interface ActionRowSeed {
 }
 
 /** Returns the autoincrement id, which the queue tests assert on. */
-export function seedAction(db: Database, overrides: Partial<ActionRowSeed> = {}): number {
+export function seedAction(
+  db: Database,
+  overrides: Partial<ActionRowSeed> = {},
+  time: TimeSource = fixtureTime(db),
+): number {
   const row = {
     kind: 'topics.reject',
     lane: 'fast',
     args: '{"ids":[1]}',
     status: 'pending',
     requestedBy: 'dashboard',
-    createdAt: null,
+    createdAt: time.now().toISOString(),
     startedAt: null,
     finishedAt: null,
     result: null,
@@ -321,12 +328,8 @@ export function seedAction(db: Database, overrides: Partial<ActionRowSeed> = {})
     row.errorKind,
     row.notice,
   ]
-  // created_at has a schema default; naming it with NULL would override the
-  // default with NULL, so it is only named when the caller pinned a value.
-  if (row.createdAt !== null) {
-    cols.push('created_at')
-    vals.push(row.createdAt)
-  }
+  cols.push('created_at')
+  vals.push(row.createdAt ?? time.now().toISOString())
   const info = db
     .prepare(
       `INSERT INTO operator_actions (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,

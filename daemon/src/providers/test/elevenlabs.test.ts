@@ -209,28 +209,6 @@ describe('synthWithTimestamps', () => {
     expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'invalid' })
   })
 
-  it('classifies a timed-out/aborted request as provider/transient', async () => {
-    // synthWithTimestamps has no injectable timeoutMs (unlike whisperx's
-    // alignTranscript), and its TIMEOUT_MS is a fixed 120s -- far too slow to
-    // wait out for real in a test. The fetchImpl seam it does expose lets this
-    // simulate the same isAbortLike(err) branch directly: reject with the shape
-    // AbortSignal.timeout() produces on expiry.
-    const impl: typeof fetch = async () => {
-      throw Object.assign(new Error('The operation was aborted due to timeout'), {
-        name: 'TimeoutError',
-      })
-    }
-    const err = await synthWithTimestamps({
-      voiceId: 'v',
-      modelId: 'm',
-      text: 'x',
-      apiKey: 'k',
-      fetchImpl: impl,
-    }).catch((e: unknown) => e)
-    expect(errorMessage(err)).toMatch(/elevenlabs request timed out/)
-    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
-  })
-
   it('throws before any network call when no API key is available, classified as config/invalid', async () => {
     vi.stubEnv('ELEVENLABS_API_KEY', '')
     const { impl, calls } = fakeFetch(200, FIXTURE)

@@ -397,6 +397,7 @@ describe('voiceStage with [voice.premium] configured (elevenlabs)', () => {
 
     expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(synthWithTimestamps)).toHaveBeenCalledWith({
+      time: ctx.time,
       voiceId: 'EXAVITQu4vr4xnSDxMaL',
       modelId: 'eleven_multilingual_v2',
       text: PREMIUM_NARRATION_WITH_BREAK,

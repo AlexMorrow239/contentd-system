@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import { tryLoadChannelsDir } from '../config/channel.js'
-import { localDay } from '../time.js'
+import { localDay, systemTime, type TimeSource } from '../time.js'
 import { buildDigest } from './digest.js'
 import type { UnitResult, WorkerUnit } from './worker-contract.js'
 
@@ -11,16 +11,17 @@ export const DIGEST_HOUR = 8
  * report whose only delivery is the log stream. */
 export function digestUnit(
   db: Database,
-  opts: { channelsDir: string; now?: () => Date },
+  opts: { channelsDir: string; time?: TimeSource },
 ): WorkerUnit {
   let lastDay: string | undefined
+  const time = opts.time ?? systemTime
   // Synchronous inner: buildDigest is a pure SQLite read with nothing to await,
   // so the promise exists only because every unit shares one signature.
   const tick = (): UnitResult => {
-    const now = opts.now?.() ?? new Date()
+    const now = time.now()
     if (now.getHours() < DIGEST_HOUR || lastDay === localDay(now)) return { worked: false }
     const loaded = tryLoadChannelsDir(opts.channelsDir)
-    const text = buildDigest(db, loaded.channels, { channelsError: loaded.error })
+    const text = buildDigest(db, loaded.channels, { channelsError: loaded.error, time })
     lastDay = localDay(now)
     return { worked: true, line: { action: 'digest', text } }
   }

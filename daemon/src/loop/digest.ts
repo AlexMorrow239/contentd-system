@@ -13,6 +13,7 @@ import { candidateTopicCount, claimedTopicCount } from '../scout/topics.js'
 import { fullyPostedClause } from '../posts/posts.js'
 import type { Platform } from '../posts/types.js'
 import { backlogCap } from './plan-tick.js'
+import { systemTime, type TimeSource } from '../time.js'
 
 // A job 'running' longer than this has almost certainly lost its process —
 // real runs finish in minutes. Digest-only visibility: auto-resume never
@@ -52,7 +53,12 @@ function formatAge(ms: number): string {
  * count (pendingInventory) and this age describe the same set of rows because
  * both take the predicate from `fullyPostedClause`.
  */
-function oldestUnpostedAge(db: Database, channel: string, declared: readonly Platform[]): string {
+function oldestUnpostedAge(
+  db: Database,
+  channel: string,
+  declared: readonly Platform[],
+  now: Date,
+): string {
   const unposted = fullyPostedClause(declared, { alias: 'l', match: 'not-fully' })
   const row = db
     .prepare(
@@ -61,7 +67,7 @@ function oldestUnpostedAge(db: Database, channel: string, declared: readonly Pla
          AND ${unposted.sql}`,
     )
     .get(channel, ...unposted.params) as { oldest: string | null }
-  return row.oldest === null ? '—' : formatAge(Date.now() - Date.parse(row.oldest))
+  return row.oldest === null ? '—' : formatAge(now.getTime() - Date.parse(row.oldest))
 }
 
 /**
@@ -81,8 +87,11 @@ function oldestUnpostedAge(db: Database, channel: string, declared: readonly Pla
 export function buildDigest(
   db: Database,
   channels: ChannelConfig[],
-  opts: { channelsError?: string } = {},
+  opts: { channelsError?: string; time?: TimeSource } = {},
 ): string {
+  const now = (opts.time ?? systemTime).now()
+  const day = now.toISOString().slice(0, 10)
+  const cutoff = new Date(now.getTime() - 86_400_000).toISOString()
   const lines: string[] = []
 
   lines.push('Topics (last 24h)')
@@ -91,10 +100,10 @@ export function buildDigest(
       `SELECT channel, COUNT(*) AS scouted,
               SUM(CASE WHEN status = 'candidate' THEN 1 ELSE 0 END) AS candidate,
               SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) AS rejected
-       FROM topics WHERE datetime(created_at) >= datetime('now', '-1 day')
+       FROM topics WHERE datetime(created_at) >= datetime(?)
        GROUP BY channel ORDER BY channel`,
     )
-    .all() as {
+    .all(cutoff) as {
     channel: string
     scouted: number
     candidate: number
@@ -120,10 +129,10 @@ export function buildDigest(
               SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) AS failed,
               SUM(CASE WHEN j.status = 'blocked' THEN 1 ELSE 0 END) AS blocked
        FROM jobs j LEFT JOIN library l ON l.job_id = j.id
-       WHERE datetime(j.created_at) >= datetime('now', '-1 day')
+       WHERE datetime(j.created_at) >= datetime(?)
        GROUP BY j.channel ORDER BY j.channel`,
     )
-    .all() as {
+    .all(cutoff) as {
     channel: string
     total: number
     ready: number
@@ -142,14 +151,14 @@ export function buildDigest(
   lines.push('', 'Spend today (UTC)')
   // One GROUP BY for the whole set rather than a SUM per channel. A channel
   // with no spend today is ABSENT from the map, not zero — hence the ?? 0.
-  const spentByChannel = channelDaySpentMicrosByChannel(db)
+  const spentByChannel = channelDaySpentMicrosByChannel(db, day)
   for (const channel of channels) {
     lines.push(
       `  ${channel.name}: ${formatUsdMicros(spentByChannel.get(channel.name) ?? 0)} of ${formatUsdMicros(channel.budget.perDayUsdMicros)}`,
     )
   }
   lines.push(
-    `  global: ${formatUsdMicros(globalDaySpentMicros(db))} of ${formatUsdMicros(globalDailyCapMicros())}`,
+    `  global: ${formatUsdMicros(globalDaySpentMicros(db, day))} of ${formatUsdMicros(globalDailyCapMicros())}`,
   )
 
   // Posting: the manual operator's whole action list. A channel at its backlog
@@ -174,7 +183,7 @@ export function buildDigest(
     if (channel.platforms.length === 0) continue
     const pending = pendingByChannel.get(channel.name) ?? 0
     if (pending === 0) continue
-    const oldest = oldestUnpostedAge(db, channel.name, channel.platforms)
+    const oldest = oldestUnpostedAge(db, channel.name, channel.platforms, now)
     const held = pending >= backlogCap(channel) ? ' — production held' : ''
     lines.push(`  ${channel.name.padEnd(14)} ${pending} unposted (oldest ${oldest})${held}`)
   }
@@ -215,7 +224,7 @@ export function buildDigest(
   // minutes ago is live, and telling the operator to resume it with --force
   // would double-run the render. Both sides are ISO-8601 UTC with millisecond
   // 'Z' (schema default shape), so a lexicographic compare is a time compare.
-  const zombieCutoff = new Date(Date.now() - ZOMBIE_RUNNING_MS).toISOString()
+  const zombieCutoff = new Date(now.getTime() - ZOMBIE_RUNNING_MS).toISOString()
   const zombies = db
     .prepare(
       `SELECT j.id AS id, j.channel AS channel,
@@ -236,7 +245,7 @@ export function buildDigest(
   // lexicographic compare is a time compare): a job stuck 'queued' past the
   // threshold was stranded before its first status write and only resume can
   // recover it.
-  const strandedCutoff = new Date(Date.now() - STRANDED_QUEUED_MS).toISOString()
+  const strandedCutoff = new Date(now.getTime() - STRANDED_QUEUED_MS).toISOString()
   const strandedQueued = db
     .prepare(
       "SELECT id, channel FROM jobs WHERE status = 'queued' AND created_at <= ? ORDER BY created_at ASC",

@@ -1,3 +1,4 @@
+import { createTestTime } from '../../../testing/time.js'
 import { acquireManagedLease, LeaseLostError } from '../../loop/lease.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type Anthropic from '@anthropic-ai/sdk'
@@ -537,7 +538,7 @@ describe('scoutChannel', () => {
     const now = new Date(2026, 6, 28, 12, 0, 0)
     seedScoutState(db, 'chan-a', new Date(now.getTime() - 5 * 60_000))
 
-    const result = await scoutChannel(db, channel, { fetchImpl, now })
+    const result = await scoutChannel(db, channel, { fetchImpl, time: createTestTime(now) })
 
     expect(result.skipped).toBe('recheck-not-due')
     expect(fetchImpl).not.toHaveBeenCalled()
@@ -550,7 +551,7 @@ describe('scoutChannel', () => {
     seedScoutState(db, 'chan-a', new Date(now.getTime() - SCOUT_RECHECK_MS))
     const fetchImpl = vi.fn(() => Promise.reject(new Error('source down')))
 
-    const result = await scoutChannel(db, channel, { fetchImpl, now })
+    const result = await scoutChannel(db, channel, { fetchImpl, time: createTestTime(now) })
 
     expect(result.skipped).toBeUndefined()
     expect(fetchImpl).toHaveBeenCalled()
@@ -572,7 +573,10 @@ describe('scoutChannel', () => {
     }
     const now = new Date(2026, 6, 28, 12, 0, 0)
 
-    const result = await scoutChannel(db, channel, { fetchImpl: vi.fn(), now })
+    const result = await scoutChannel(db, channel, {
+      fetchImpl: vi.fn(),
+      time: createTestTime(now),
+    })
 
     expect(result.skipped).toBe('queue-full')
     expect(lastScoutAttemptAt(db, 'chan-a')).toEqual(now)
@@ -588,9 +592,9 @@ describe('scoutChannel', () => {
     })
     const { client } = fakeClient(emitScores([]))
 
-    await expect(scoutChannel(db, channel, { client, fetchImpl, now })).rejects.toThrow(
-      BudgetExceededError,
-    )
+    await expect(
+      scoutChannel(db, channel, { client, fetchImpl, time: createTestTime(now) }),
+    ).rejects.toThrow(BudgetExceededError)
     expect(lastScoutAttemptAt(db, 'chan-a')).toEqual(now)
   })
 
@@ -601,7 +605,11 @@ describe('scoutChannel', () => {
     seedScoutState(db, 'chan-a', new Date(now.getTime() - 1))
     const fetchImpl = vi.fn(() => Promise.reject(new Error('source down')))
 
-    const result = await scoutChannel(db, channel, { fetchImpl, now, force: true })
+    const result = await scoutChannel(db, channel, {
+      fetchImpl,
+      time: createTestTime(now),
+      force: true,
+    })
 
     expect(result.skipped).toBeUndefined()
     expect(fetchImpl).toHaveBeenCalled()

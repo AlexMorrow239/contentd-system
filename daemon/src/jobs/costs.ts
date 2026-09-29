@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
+import { systemTime, type TimeSource } from '../time.js'
 
 // Operator-level safety net across ALL channels (design spec §5).
 const DEFAULT_GLOBAL_DAILY_USD = 25
@@ -30,10 +31,11 @@ export function recordCost(
   operation: string,
   usdMicros: number,
   attemptId?: string,
+  time: TimeSource = systemTime,
 ): void {
   db.prepare(
-    'INSERT INTO costs (job_id, provider, operation, usd_micros, attempt_id) VALUES (?, ?, ?, ?, ?)',
-  ).run(jobId, provider, operation, usdMicros, attemptId ?? null)
+    'INSERT INTO costs (job_id, provider, operation, usd_micros, attempt_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(jobId, provider, operation, usdMicros, attemptId ?? null, time.now().toISOString())
 }
 
 // Parsed at call time (not module load) so tests and long-lived processes see
@@ -58,13 +60,17 @@ export function globalDailyCapMicros(): number {
 // Today's UTC spend attributed to one channel. costs has no channel column:
 // attribution JOINs through the jobs table, so non-job sentinel rows
 // ('scout:<channel>') are invisible here — accepted at ~$0.01/day scale.
-export function channelDaySpentMicros(db: Database, channel: string, day?: string): number {
+export function channelDaySpentMicros(
+  db: Database,
+  channel: string,
+  day: string = systemTime.now().toISOString().slice(0, 10),
+): number {
   const row = db
     .prepare(
       'SELECT COALESCE(SUM(c.usd_micros), 0) AS total FROM costs c JOIN jobs j ON c.job_id = j.id ' +
-        `WHERE j.channel = ? AND substr(c.created_at, 1, 10) = ${day === undefined ? "strftime('%Y-%m-%d','now')" : '?'}`,
+        'WHERE j.channel = ? AND substr(c.created_at, 1, 10) = ?',
     )
-    .get(channel, ...(day === undefined ? [] : [day])) as { total: number }
+    .get(channel, day) as { total: number }
   return row.total
 }
 
@@ -77,19 +83,21 @@ export function channelDaySpentMicros(db: Database, channel: string, day?: strin
  * A channel with no spend today has NO entry: a caller reading the map must
  * default to 0 rather than treat absence as missing data.
  *
- * `day` is a 'YYYY-MM-DD' UTC date; omitted means today, resolved by the same
- * strftime expression the singular form uses so the two can never disagree
- * about where the day boundary falls.
+ * `day` is a 'YYYY-MM-DD' UTC date; standalone callers default to today.
+ * Time-scoped operations pass their captured UTC day to every spending query.
  */
-export function channelDaySpentMicrosByChannel(db: Database, day?: string): Map<string, number> {
+export function channelDaySpentMicrosByChannel(
+  db: Database,
+  day: string = systemTime.now().toISOString().slice(0, 10),
+): Map<string, number> {
   const rows = db
     .prepare(
       'SELECT j.channel AS channel, COALESCE(SUM(c.usd_micros), 0) AS total FROM costs c ' +
         'JOIN jobs j ON c.job_id = j.id ' +
-        `WHERE substr(c.created_at, 1, 10) = ${day === undefined ? "strftime('%Y-%m-%d','now')" : '?'} ` +
+        'WHERE substr(c.created_at, 1, 10) = ? ' +
         'GROUP BY j.channel',
     )
-    .all(...(day === undefined ? [] : [day])) as { channel: string; total: number }[]
+    .all(day) as { channel: string; total: number }[]
   return new Map(rows.map((row) => [row.channel, row.total]))
 }
 
@@ -106,12 +114,15 @@ export function jobSpentMicros(db: Database, jobId: string): number {
 
 // Today's UTC spend across ALL costs rows — deliberately no jobs JOIN, so
 // sentinel scout rows count toward the global cap.
-export function globalDaySpentMicros(db: Database, day?: string): number {
+export function globalDaySpentMicros(
+  db: Database,
+  day: string = systemTime.now().toISOString().slice(0, 10),
+): number {
   const row = db
     .prepare(
-      `SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE substr(created_at, 1, 10) = ${day === undefined ? "strftime('%Y-%m-%d','now')" : '?'}`,
+      'SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE substr(created_at, 1, 10) = ?',
     )
-    .get(...(day === undefined ? [] : [day])) as { total: number }
+    .get(day) as { total: number }
   return row.total
 }
 
@@ -126,25 +137,34 @@ export interface DaySpend {
  * sentinel scout rows are included; unlike it, a day with no rows is simply
  * absent rather than reported as zero.
  */
-export function daySpendBreakdown(db: Database, days: number): DaySpend[] {
+export function daySpendBreakdown(
+  db: Database,
+  days: number,
+  time: TimeSource = systemTime,
+): DaySpend[] {
   return db
     .prepare(
       `SELECT substr(created_at, 1, 10) AS day, SUM(usd_micros) AS micros
        FROM costs
-       WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
+       WHERE created_at >= ?
        GROUP BY day
        ORDER BY day DESC`,
     )
-    .all(`-${days} days`) as DaySpend[]
+    .all(new Date(time.now().getTime() - days * 86_400_000).toISOString()) as DaySpend[]
 }
 
 // The global-day check extracted from assertBudget so the scout — which has
 // no job and therefore cannot use assertBudget — gates its Haiku spend
 // against the same ceiling. Cap is resolved BEFORE the db read so a
 // malformed env crashes without touching the ledger, exactly as before.
-export function assertGlobalDayBudget(db: Database, upcomingUsdMicros: number): void {
+export function assertGlobalDayBudget(
+  db: Database,
+  upcomingUsdMicros: number,
+  time: TimeSource = systemTime,
+  day?: string,
+): void {
   const globalCapMicros = globalDailyCapMicros()
-  const utcDay = new Date().toISOString().slice(0, 10)
+  const utcDay = day ?? time.now().toISOString().slice(0, 10)
   const spentUsdMicros = globalDaySpentMicros(db, utcDay)
   const globalDayProjected = spentUsdMicros + upcomingUsdMicros
   if (globalDayProjected > globalCapMicros) {
@@ -178,11 +198,12 @@ export function assertBudget(
   channel: ChannelConfig,
   jobId: string,
   upcomingUsdMicros: number,
+  time: TimeSource = systemTime,
 ): void {
   // Invalid operator configuration must fail before a narrower cap can throw
   // a budget refusal; otherwise failure bookkeeping could mask the config error.
   globalDailyCapMicros()
-  const utcDay = new Date().toISOString().slice(0, 10)
+  const utcDay = time.now().toISOString().slice(0, 10)
   const perVideoCap = channel.budget.perVideoUsdMicros
   const jobProjected = jobSpentMicros(db, jobId) + upcomingUsdMicros
   if (jobProjected > perVideoCap) {
@@ -212,5 +233,5 @@ export function assertBudget(
     )
   }
 
-  assertGlobalDayBudget(db, upcomingUsdMicros)
+  assertGlobalDayBudget(db, upcomingUsdMicros, time, utcDay)
 }

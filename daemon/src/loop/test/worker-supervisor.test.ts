@@ -1,6 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { runWorkers } from '../worker-supervisor.js'
-import { abortableSleep } from '../timers.js'
+import { createTestTime, type TestTime } from '../../../testing/time.js'
+
+let time: TestTime
+beforeEach(() => {
+  time = createTestTime(0)
+})
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -27,6 +32,7 @@ describe('runWorkers', () => {
       ],
       {
         signal: controller.signal,
+        time,
         emit: () => {},
       },
     )
@@ -40,6 +46,11 @@ describe('runWorkers', () => {
     const failed = deferred()
     let activeFinished = false
     let settled = false
+    const sleep = time.sleep
+    vi.spyOn(time, 'sleep').mockImplementation((ms, signal) => {
+      sleeping.resolve(signal!)
+      return sleep(ms, signal)
+    })
     const running = runWorkers(
       [
         {
@@ -61,12 +72,9 @@ describe('runWorkers', () => {
       ],
       {
         signal: controller.signal,
+        time,
         emit: () => {
           throw new Error('output failed')
-        },
-        sleep: (ms, signal) => {
-          sleeping.resolve(signal)
-          return abortableSleep(ms, signal)
         },
       },
     )
@@ -97,13 +105,15 @@ describe('runWorkers', () => {
     const external = new AbortController()
     const remove = vi.spyOn(external.signal, 'removeEventListener')
     const entered = deferred()
+    const sleep = time.sleep
+    vi.spyOn(time, 'sleep').mockImplementation((ms, signal) => {
+      entered.resolve()
+      return sleep(ms, signal)
+    })
     const running = runWorkers([{ name: 'idle', unit: async () => ({ worked: false }) }], {
       signal: external.signal,
+      time,
       emit: () => {},
-      sleep: (ms, signal) => {
-        entered.resolve()
-        return abortableSleep(ms, signal)
-      },
     })
     await entered.promise
     external.abort()
@@ -112,6 +122,9 @@ describe('runWorkers', () => {
   })
 
   it('selects failures in specification order and cleans listeners on failure', async () => {
+    vi.spyOn(time, 'sleep').mockImplementation(async (ms) => {
+      throw new Error(`sleep ${ms}`)
+    })
     const external = new AbortController()
     const remove = vi.spyOn(external.signal, 'removeEventListener')
     await expect(
@@ -122,10 +135,8 @@ describe('runWorkers', () => {
         ],
         {
           signal: external.signal,
+          time,
           emit: () => {},
-          sleep: async (ms) => {
-            throw new Error(`sleep ${ms}`)
-          },
         },
       ),
     ).rejects.toThrow('sleep 1')

@@ -32,7 +32,7 @@ export async function runWorker(
       // Deliberately NOT deduped, unlike idle lines: a unit failing the same
       // way for the tenth minute running is the signal, not noise.
       deps.emit({ worker: name, action: 'worker-error', error: errorMessage(err) })
-      await deps.sleep(ERROR_SLEEP_MS)
+      await deps.time.sleep(ERROR_SLEEP_MS, signal)
       continue
     }
     if (result.worked) {
@@ -47,6 +47,6 @@ export async function runWorker(
         deps.emit({ worker: name, ...result.line })
       }
     }
-    await deps.sleep(idleSleepMs)
+    await deps.time.sleep(idleSleepMs, signal)
   }
 }

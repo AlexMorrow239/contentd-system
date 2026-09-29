@@ -2,6 +2,7 @@ import type { Database } from 'better-sqlite3'
 import { classify, errorMessage } from '../errors.js'
 import { ownsLease, type LeaseContext } from '../loop/lease.js'
 import { ACTIONS, type ActionKind, type ActionLane } from './catalog.js'
+import { resolveTime, systemTime, type TimeSource } from '../time.js'
 
 export type ActionStatus = 'pending' | 'running' | 'done' | 'failed'
 
@@ -34,13 +35,20 @@ const COLUMNS = `id, kind, lane, args, status, requested_by AS requestedBy,
  */
 export function enqueueAction(
   db: Database,
-  opts: { kind: ActionKind; args: unknown; requestedBy: string },
+  opts: { kind: ActionKind; args: unknown; requestedBy: string; time?: TimeSource },
 ): number {
   const info = db
     .prepare(
-      'INSERT INTO operator_actions (kind, lane, args, status, requested_by) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO operator_actions (kind, lane, args, status, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?)',
     )
-    .run(opts.kind, ACTIONS[opts.kind].lane, JSON.stringify(opts.args), 'pending', opts.requestedBy)
+    .run(
+      opts.kind,
+      ACTIONS[opts.kind].lane,
+      JSON.stringify(opts.args),
+      'pending',
+      opts.requestedBy,
+      (opts.time ?? systemTime).now().toISOString(),
+    )
   return Number(info.lastInsertRowid)
 }
 
@@ -139,7 +147,8 @@ export function failRunningActions(db: Database, lane: ActionLane, now: Date): n
 }
 
 /** Called only after daemon ownership is acquired, before workers start. */
-export function reconcileActions(db: Database, owner: LeaseContext, now = new Date()): number {
+export function reconcileActions(db: Database, owner: LeaseContext): number {
+  const now = owner.time.now()
   return db
     .transaction(() => {
       owner.assertOwned()
@@ -148,7 +157,7 @@ export function reconcileActions(db: Database, owner: LeaseContext, now = new Da
         .all() as ActionRow[]
       let count = 0
       for (const row of rows) {
-        if (row.ownerToken && ownsLease(db, 'daemon', row.ownerToken)) continue
+        if (row.ownerToken && ownsLease(db, 'daemon', row.ownerToken, owner.time)) continue
         reconcileActionRow(db, row, now, 'interrupted by a daemon restart')
         count++
       }
@@ -164,12 +173,14 @@ export function reconcileInterruptedAction(
   id: number,
   owner: LeaseContext,
   operation: LeaseContext,
-  now = new Date(),
 ): boolean {
+  const time = resolveTime(undefined, owner, operation)
+  const now = time.now()
   return db
     .transaction(() => {
       owner.assertOwned()
-      if (!operation.signal.aborted && ownsLease(db, operation.name, operation.token)) return false
+      if (!operation.signal.aborted && ownsLease(db, operation.name, operation.token, time))
+        return false
       const row = getAction(db, id)
       if (!row || row.status !== 'running' || row.ownerToken !== owner.token) return false
       reconcileActionRow(db, row, now, 'interrupted after operation ownership was lost')

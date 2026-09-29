@@ -3,6 +3,7 @@ import type { ChannelConfig } from '../config/channel.js'
 import { budgetWaitEligible } from '../jobs/budget-wait.js'
 import { pendingInventory } from '../jobs/library.js'
 import { eligibleTopic } from '../scout/topics.js'
+import { systemTime, type TimeSource } from '../time.js'
 
 export type TickPlan =
   | { kind: 'resume'; jobId: string; channel: string }
@@ -23,10 +24,14 @@ export function backlogCap(channel: ChannelConfig): number {
 
 // Pure decision function: SELECTs only. produce-next executes the plan and
 // owns every write, so a crashed tick never leaves half a decision behind.
-export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
+export function planTick(
+  db: Database,
+  channels: ChannelConfig[],
+  time: TimeSource = systemTime,
+): TickPlan {
   const byName = new Map(channels.map((c) => [c.name, c]))
 
-  const now = new Date()
+  const now = time.now()
   let anyBacklogged = false
   const hasCapacity = (channel: ChannelConfig): boolean => {
     const backlogged =
@@ -67,10 +72,10 @@ export function planTick(db: Database, channels: ChannelConfig[]): TickPlan {
   // CLAIM PASS: a slot is consumed at job creation regardless of outcome — a
   // deterministic failure must not burn the whole day's budget on retries.
   const quotaStmt = db.prepare(
-    'SELECT COUNT(*) AS n FROM jobs WHERE channel = ? ' +
-      "AND substr(created_at, 1, 10) = strftime('%Y-%m-%d','now')",
+    'SELECT COUNT(*) AS n FROM jobs WHERE channel = ? ' + 'AND substr(created_at, 1, 10) = ?',
   )
-  const jobsToday = (name: string): number => (quotaStmt.get(name) as { n: number }).n
+  const jobsToday = (name: string): number =>
+    (quotaStmt.get(name, now.toISOString().slice(0, 10)) as { n: number }).n
   // Depth gate, ahead of the daily rate gate: producing into a full backlog
   // consumes local capacity faster than videos are handled. A channel
   // with no declared platforms is gated the same way — nothing drains it, so

@@ -1,4 +1,5 @@
 import type { Database } from 'better-sqlite3'
+import { systemTime, type TimeSource } from '../time.js'
 
 /**
  * How far back the visuals stage looks to avoid repeating a background clip.
@@ -20,10 +21,15 @@ export function recentBackgrounds(
   return rows.map((r) => r.file)
 }
 
-export function recordBackgroundUse(db: Database, channel: string, file: string): void {
+export function recordBackgroundUse(
+  db: Database,
+  channel: string,
+  file: string,
+  time: TimeSource = systemTime,
+): void {
   db.prepare('INSERT INTO bg_usage (channel, file, used_at) VALUES (?, ?, ?)').run(
     channel,
     file,
-    new Date().toISOString(),
+    time.now().toISOString(),
   )
 }

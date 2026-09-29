@@ -17,7 +17,7 @@ export function beginAttempt(db: Database, jobId: string, lease: LeaseContext): 
         const attempt = db
           .prepare('SELECT owner_token FROM execution_attempts WHERE id=? AND status=?')
           .get(job.active_attempt_id, 'running') as { owner_token: string } | undefined
-        if (attempt && ownsLease(db, 'produce', attempt.owner_token))
+        if (attempt && ownsLease(db, 'produce', attempt.owner_token, lease.time))
           throw new BrainrotError(`job ${jobId} already has a live attempt`, {
             domain: 'job',
             kind: 'conflict',
@@ -26,7 +26,7 @@ export function beginAttempt(db: Database, jobId: string, lease: LeaseContext): 
       const id = randomUUID()
       db.prepare(
         'INSERT INTO execution_attempts (id,job_id,owner_token,status,started_at) VALUES (?,?,?,?,?)',
-      ).run(id, jobId, lease.token, 'running', new Date().toISOString())
+      ).run(id, jobId, lease.token, 'running', lease.time.now().toISOString())
       db.prepare(
         "UPDATE jobs SET status='running',active_attempt_id=?,finished_at=NULL,recovery_pending=0 WHERE id=?",
       ).run(id, jobId)
@@ -51,7 +51,8 @@ export function assertAttempt(
     throw new LeaseLostError('produce')
 }
 
-export function reconcileJobs(db: Database, lease: LeaseContext, now = new Date()): number {
+export function reconcileJobs(db: Database, lease: LeaseContext): number {
+  const now = lease.time.now()
   return db
     .transaction(() => {
       lease.assertOwned()
@@ -70,7 +71,7 @@ export function reconcileJobs(db: Database, lease: LeaseContext, now = new Date(
       }[]
       let recovered = 0
       for (const job of jobs) {
-        if (job.owner_token && ownsLease(db, 'produce', job.owner_token)) continue
+        if (job.owner_token && ownsLease(db, 'produce', job.owner_token, lease.time)) continue
         const stage = db
           .prepare(
             "SELECT stage FROM job_stages WHERE job_id=? AND status='running' ORDER BY rowid LIMIT 1",

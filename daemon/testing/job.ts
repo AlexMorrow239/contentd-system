@@ -10,6 +10,7 @@ import type { StoryPart } from '../src/stories/types.js'
 import { testChannel, PLATFORM_META } from './channel.js'
 import { memDb } from './db.js'
 import { tmpDir } from './tmp.js'
+import { systemTime, type TimeSource } from '../src/time.js'
 
 /**
  * JobContext and stage-artifact fixtures.
@@ -37,6 +38,7 @@ export function testScript(opts: { hook?: string; segments?: string[] } = {}): S
 }
 
 export interface MakeCtxOptions {
+  time?: TimeSource
   channel?: ChannelConfig
   topic?: string
   /** Fixed job id, for tests that assert on paths. Default: a real createJob id. */
@@ -49,15 +51,17 @@ export interface MakeCtxOptions {
 }
 
 export function makeCtx(opts: MakeCtxOptions = {}): JobContext {
+  const time = opts.time ?? systemTime
   const channel = opts.channel ?? testChannel()
   const topic = opts.topic ?? 'Why the Moon is drifting away'
   const db = opts.db ?? memDb()
   // createJob is skipped when the caller pinned an id: those tests seed
   // artifacts directly and never read the jobs row back.
-  const jobId = opts.jobId ?? createJob(db, channel, { topic })
+  const jobId = opts.jobId ?? createJob(db, channel, { topic, time })
   const runDir = opts.runDir ?? tmpDir('brainrot-videos-')
   return {
     jobId,
+    time,
     db,
     channel,
     topic,

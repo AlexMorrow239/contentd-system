@@ -1,4 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { createTestTime } from '../../../testing/time.js'
+import { requireLease } from '../../loop/lease.js'
+import { describe, expect, it } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { Database } from 'better-sqlite3'
@@ -232,35 +234,44 @@ describe('runJob', () => {
     ).toBe('{}')
   })
 
-  it('heartbeat fires once per stage actually run, never for skipped ones', async () => {
+  it('renews ownership while one stage runs beyond the lease TTL', async () => {
+    const time = createTestTime(0)
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space' })
-    db.prepare(
-      "UPDATE job_stages SET status = 'done' WHERE job_id = ? AND stage IN ('script','voice')",
-    ).run(jobId)
-
-    const calls: StageName[] = []
-    const heartbeat = vi.fn()
-    await runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat })
-
-    // The compatibility callback observes only stages that actually execute.
-    expect(heartbeat).toHaveBeenCalledTimes(4)
+    const jobId = createJob(db, channel, { topic: 'space', time })
+    const stages = buildStages([])
+    const original = stages[0].run
+    stages[0].run = async (ctx) => {
+      await time.advanceBy(360_000)
+      ctx.assertOwned!()
+      await original(ctx)
+    }
+    expect(await runJob(db, channel, jobId, stages, { runsRoot, time })).toMatchObject({
+      status: 'ready',
+    })
+    expect(time.pendingTimerCount()).toBe(0)
   })
 
-  it('a throwing heartbeat stops execution before a stage can run', async () => {
+  it('rejects conflicting clocks before starting any stage', async () => {
+    const time = createTestTime(0)
     const { db, runsRoot } = setup()
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'space' })
+    const jobId = createJob(db, channel, { topic: 'space', time })
+    const lease = requireLease(db, 'produce', undefined, { time })
     const calls: StageName[] = []
-    const heartbeat = vi.fn(() => {
-      throw new Error('database is locked')
-    })
-    await expect(
-      runJob(db, channel, jobId, buildStages(calls), { runsRoot, heartbeat }),
-    ).rejects.toThrow('database is locked')
-    expect(calls).toEqual([])
-    expect(db.prepare('SELECT job_id FROM library WHERE job_id = ?').get(jobId)).toBeUndefined()
+    try {
+      await expect(
+        runJob(db, channel, jobId, buildStages(calls), {
+          runsRoot,
+          lease,
+          time: createTestTime(0),
+        }),
+      ).rejects.toThrow('conflicting time sources')
+      expect(calls).toEqual([])
+      expect(db.prepare('SELECT * FROM execution_attempts').all()).toEqual([])
+    } finally {
+      lease.release()
+    }
   })
 
   it('artifactPath creates each stage directory on demand', async () => {

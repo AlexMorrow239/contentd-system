@@ -228,18 +228,18 @@ async function completionWithLedger<T>(
   checkpoint(ctx)
   try {
     const { data, cost } = await structuredCompletion({ ...opts, client, signal: ctx.signal })
-    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros, ctx.attemptId)
+    recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', cost.usdMicros, ctx.attemptId, ctx.time)
     return data
   } catch (err) {
     const paid = errorCostUsdMicros(err)
     if (paid !== undefined)
-      recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid, ctx.attemptId)
+      recordCost(ctx.db, ctx.jobId, 'anthropic', 'script', paid, ctx.attemptId, ctx.time)
     throw err
   }
 }
 
 async function runTopicScript(ctx: JobContext, client?: Anthropic): Promise<ScriptArtifact> {
-  assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS)
+  assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_SCRIPT_COST_MICROS, ctx.time)
   return await completionWithLedger(
     ctx,
     {
@@ -266,7 +266,7 @@ async function runStoryScript(
   part: StoryPart,
   client?: Anthropic,
 ): Promise<ScriptArtifact> {
-  assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_STORY_META_COST_MICROS)
+  assertBudget(ctx.db, ctx.channel, ctx.jobId, ESTIMATED_STORY_META_COST_MICROS, ctx.time)
   const sanitizedBody = sanitizeStory(part.bodyText)
   const { platformMeta } = await completionWithLedger(
     ctx,

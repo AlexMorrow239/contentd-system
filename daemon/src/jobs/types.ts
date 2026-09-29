@@ -12,6 +12,7 @@ export const STAGE_ORDER = ['script', 'voice', 'captions', 'visuals', 'assemble'
 export type StageName = (typeof STAGE_ORDER)[number]
 
 export interface JobContext {
+  time: import('../time.js').TimeSource
   signal?: AbortSignal
   assertOwned?: () => void
   attemptId?: string

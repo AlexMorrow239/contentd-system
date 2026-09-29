@@ -1,3 +1,4 @@
+import { createDeadline, systemTime, type TimeSource } from '../time.js'
 import { encodePcmWav, parseWavDurationMs } from '../media/wav.js'
 import { BrainrotError, isAbortLike, isAuthStatus } from '../errors.js'
 import type { WordTiming } from './whisperx.js'
@@ -82,6 +83,7 @@ export async function synthWithTimestamps(opts: {
   voiceId: string
   modelId: string
   text: string
+  time?: TimeSource
   signal?: AbortSignal
   apiKey?: string
   fetchImpl?: typeof fetch
@@ -107,16 +109,49 @@ export async function synthWithTimestamps(opts: {
 
   // Same guard as whisperx.ts: a hung TTS endpoint must not wedge the voice
   // stage forever. Abort after TIMEOUT_MS and rethrow with a named message.
-  let res: Response
+  const deadline = createDeadline(opts.time ?? systemTime, TIMEOUT_MS, opts.signal)
   try {
-    res = await fetchImpl(url, {
+    const res = await fetchImpl(url, {
       method: 'POST',
       headers: { 'xi-api-key': apiKey, 'content-type': 'application/json' },
       body: JSON.stringify({ text: opts.text, model_id: opts.modelId }),
-      signal: opts.signal
-        ? AbortSignal.any([opts.signal, AbortSignal.timeout(TIMEOUT_MS)])
-        : AbortSignal.timeout(TIMEOUT_MS),
+      signal: deadline.signal,
     })
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '')
+      throw new BrainrotError(`synthWithTimestamps: elevenlabs responded ${res.status}: ${raw}`, {
+        domain: 'provider',
+        kind: isAuthStatus(res.status) ? 'auth' : 'transient',
+      })
+    }
+
+    const body = (await res.json()) as WithTimestampsResponse
+    // A 200 without audio has nothing for the voice stage to fall back to, so it
+    // is a hard failure — named so the log says which provider produced it.
+    if (typeof body.audio_base64 !== 'string' || body.audio_base64.length === 0) {
+      throw new BrainrotError('synthWithTimestamps: elevenlabs response carried no audio_base64', {
+        domain: 'provider',
+        kind: 'invalid',
+      })
+    }
+    const pcm = Buffer.from(body.audio_base64, 'base64')
+    const wavBytes = encodePcmWav([pcm], PCM_SAMPLE_RATE, PCM_CHANNELS)
+    const durationMs = parseWavDurationMs(wavBytes)
+    // No alignment, or one we cannot trust → empty words. The voice stage (Task
+    // 11) still writes timings.json; captions treats words.length === 0 as "no
+    // provider timings" and falls through to WhisperX, so the paid audio is never
+    // wasted — a downgrade worth one stderr line, not a failed job.
+    let words: WordTiming[] = []
+    if (body.alignment) {
+      if (alignmentIsUsable(body.alignment)) {
+        words = groupCharactersIntoWords(body.alignment)
+      } else {
+        console.error(
+          'synthWithTimestamps: elevenlabs alignment is malformed; falling back to WhisperX timings',
+        )
+      }
+    }
+    return { wavBytes, durationMs, words, costUsdMicros }
   } catch (err) {
     opts.signal?.throwIfAborted()
     if (isAbortLike(err)) {
@@ -126,40 +161,7 @@ export async function synthWithTimestamps(opts: {
       )
     }
     throw err
+  } finally {
+    deadline.dispose()
   }
-  if (!res.ok) {
-    const raw = await res.text().catch(() => '')
-    throw new BrainrotError(`synthWithTimestamps: elevenlabs responded ${res.status}: ${raw}`, {
-      domain: 'provider',
-      kind: isAuthStatus(res.status) ? 'auth' : 'transient',
-    })
-  }
-
-  const body = (await res.json()) as WithTimestampsResponse
-  // A 200 without audio has nothing for the voice stage to fall back to, so it
-  // is a hard failure — named so the log says which provider produced it.
-  if (typeof body.audio_base64 !== 'string' || body.audio_base64.length === 0) {
-    throw new BrainrotError('synthWithTimestamps: elevenlabs response carried no audio_base64', {
-      domain: 'provider',
-      kind: 'invalid',
-    })
-  }
-  const pcm = Buffer.from(body.audio_base64, 'base64')
-  const wavBytes = encodePcmWav([pcm], PCM_SAMPLE_RATE, PCM_CHANNELS)
-  const durationMs = parseWavDurationMs(wavBytes)
-  // No alignment, or one we cannot trust → empty words. The voice stage (Task
-  // 11) still writes timings.json; captions treats words.length === 0 as "no
-  // provider timings" and falls through to WhisperX, so the paid audio is never
-  // wasted — a downgrade worth one stderr line, not a failed job.
-  let words: WordTiming[] = []
-  if (body.alignment) {
-    if (alignmentIsUsable(body.alignment)) {
-      words = groupCharactersIntoWords(body.alignment)
-    } else {
-      console.error(
-        'synthWithTimestamps: elevenlabs alignment is malformed; falling back to WhisperX timings',
-      )
-    }
-  }
-  return { wavBytes, durationMs, words, costUsdMicros }
 }

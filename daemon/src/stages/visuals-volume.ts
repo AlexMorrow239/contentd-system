@@ -73,7 +73,7 @@ export const visualsVolumeStage: StageDef = {
     ctx.db
       .transaction(() => {
         checkpoint(ctx)
-        recordBackgroundUse(ctx.db, ctx.channel.name, chosenPath)
+        recordBackgroundUse(ctx.db, ctx.channel.name, chosenPath, ctx.time)
       })
       .immediate()
 

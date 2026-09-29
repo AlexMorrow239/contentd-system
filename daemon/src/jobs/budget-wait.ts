@@ -53,7 +53,7 @@ export function makeBudgetWait(
   err: unknown,
   channel: ChannelConfig,
   stage: string,
-  now = new Date(),
+  now: Date,
 ): BudgetWait {
   return {
     version: 1,
@@ -72,7 +72,7 @@ export function budgetWaitEligible(
   jobId: string,
   channel: ChannelConfig,
   raw: string | null,
-  now = new Date(),
+  now: Date,
 ): boolean {
   const wait = parseBudgetWait(raw)
   if (wait === null) return true

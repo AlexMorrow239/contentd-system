@@ -6,19 +6,21 @@ import { scoutUnit } from './scout-unit.js'
 import { digestUnit } from './digest-unit.js'
 import type { LeaseContext } from './lease.js'
 import type { WorkerSpec } from './worker-contract.js'
+import { resolveTime, type TimeSource } from '../time.js'
 
 export const FAST_IDLE_SLEEP_MS = 1_000
 
 /** Startup recovery is work too: callers may exercise it without a loop. */
-export function initializeDaemonWork(db: Database, lease: LeaseContext, now?: Date): void {
-  reconcileActions(db, lease, now)
+export function initializeDaemonWork(db: Database, lease: LeaseContext): void {
+  reconcileActions(db, lease)
 }
 
 /** Construct each stateful unit once; the runtime repeatedly invokes it. */
 export function createDaemonWorkers(
   db: Database,
-  opts: { channelsDir: string; runsRoot: string; now?: () => Date; daemonLease?: LeaseContext },
+  opts: { channelsDir: string; runsRoot: string; time?: TimeSource; daemonLease?: LeaseContext },
 ): WorkerSpec[] {
+  opts = { ...opts, time: resolveTime(opts.time, opts.daemonLease) }
   return [
     { name: 'produce', unit: produceUnit(db, opts) },
     { name: 'scout', unit: scoutUnit(db, opts) },

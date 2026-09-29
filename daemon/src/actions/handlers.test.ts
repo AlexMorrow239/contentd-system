@@ -1,3 +1,4 @@
+import { createTestTime } from '../../testing/time.js'
 import { acquireManagedLease, LeaseLostError } from '../loop/lease.js'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -14,7 +15,7 @@ import { ACTION_HANDLERS, runAction, type ActionContext } from './handlers.js'
 function ctx(db: Database): ActionContext {
   return {
     db,
-    now: new Date('2026-08-01T10:00:00Z'),
+    time: createTestTime(new Date('2026-08-01T10:00:00Z')),
     channelsDir: '/nonexistent/channels',
     runsRoot: '/nonexistent/runs',
     setNotice: () => {},
@@ -47,7 +48,11 @@ describe('action handlers', () => {
     })
     try {
       await expect(
-        runAction({ ...ctx(db), daemonLease: { ...lease, assertOwned: guarded } }, kind, args),
+        runAction(
+          { ...ctx(db), time: lease.time, daemonLease: { ...lease, assertOwned: guarded } },
+          kind,
+          args,
+        ),
       ).rejects.toBe(lost)
       expect(guarded).toHaveBeenCalledTimes(2)
       expect(db.inTransaction).toBe(false)
@@ -133,11 +138,24 @@ describe('action handlers', () => {
     const db = memDb()
     const tick = vi.fn().mockResolvedValue({ action: 'produced', jobId: 'j1', status: 'ready' })
     const result = await ACTION_HANDLERS['produce.next'](
-      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+      {
+        db,
+        time: createTestTime(new Date('2040-01-01T00:00:00Z')),
+        channelsDir: '/ch',
+        runsRoot: '/runs',
+        setNotice: () => {},
+      },
       {},
       { produceNextTick: tick },
     )
-    expect(tick).toHaveBeenCalledWith(db, { channelsDir: '/ch', runsRoot: '/runs' })
+    expect(tick).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        channelsDir: '/ch',
+        runsRoot: '/runs',
+        time: expect.objectContaining({ now: expect.any(Function) }),
+      }),
+    )
     expect(result).toEqual({ action: 'produced', jobId: 'j1', status: 'ready' })
   })
 
@@ -145,7 +163,13 @@ describe('action handlers', () => {
     const db = memDb()
     const tick = vi.fn().mockResolvedValue({ action: 'noop', reason: 'lease-held' })
     const result = await ACTION_HANDLERS['produce.next'](
-      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+      {
+        db,
+        time: createTestTime(new Date('2040-01-01T00:00:00Z')),
+        channelsDir: '/ch',
+        runsRoot: '/runs',
+        setNotice: () => {},
+      },
       {},
       { produceNextTick: tick },
     )
@@ -159,7 +183,13 @@ describe('action handlers', () => {
     const scout = vi.fn().mockResolvedValue([{ channel: 'a', inserted: 2 }])
     const dir = writeChannelsDir({ 'a.toml': channelToml({ name: 'a' }) }, tmpDir('scout-action'))
     const result = await ACTION_HANDLERS['scout.run'](
-      { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+      {
+        db,
+        time: createTestTime(new Date('2040-01-01T00:00:00Z')),
+        channelsDir: dir,
+        runsRoot: '/runs',
+        setNotice: () => {},
+      },
       {},
       { scoutAll: scout },
     )
@@ -168,7 +198,10 @@ describe('action handlers', () => {
     expect(scout).toHaveBeenCalledWith(
       db,
       expect.arrayContaining([expect.objectContaining({ name: 'a' })]),
-      { force: true },
+      expect.objectContaining({
+        force: true,
+        time: expect.objectContaining({ now: expect.any(Function) }),
+      }),
     )
     expect(result).toEqual({ channels: [{ channel: 'a', inserted: 2 }] })
   })
@@ -179,7 +212,13 @@ describe('action handlers', () => {
     writeFileSync(join(dir, 'bad.toml'), 'name = ')
     const scout = vi.fn()
     const result = await ACTION_HANDLERS['scout.run'](
-      { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+      {
+        db,
+        time: createTestTime(new Date('2040-01-01T00:00:00Z')),
+        channelsDir: dir,
+        runsRoot: '/runs',
+        setNotice: () => {},
+      },
       {},
       { scoutAll: scout },
     )
@@ -200,11 +239,25 @@ describe('action handlers', () => {
     const db = memDb()
     const resume = vi.fn().mockResolvedValue({ jobId: 'j1', status: 'ready' })
     const result = await ACTION_HANDLERS['jobs.resume'](
-      { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+      {
+        db,
+        time: createTestTime(new Date('2040-01-01T00:00:00Z')),
+        channelsDir: '/ch',
+        runsRoot: '/runs',
+        setNotice: () => {},
+      },
       { jobId: 'j1' },
       { resumeJob: resume },
     )
-    expect(resume).toHaveBeenCalledWith(db, 'j1', { runsRoot: '/runs', channelsDir: '/ch' })
+    expect(resume).toHaveBeenCalledWith(
+      db,
+      'j1',
+      expect.objectContaining({
+        runsRoot: '/runs',
+        channelsDir: '/ch',
+        time: expect.objectContaining({ now: expect.any(Function) }),
+      }),
+    )
     expect(result).toEqual({ jobId: 'j1', status: 'ready' })
   })
 
@@ -213,7 +266,13 @@ describe('action handlers', () => {
     const resume = vi.fn().mockRejectedValue(new Error('job j9 is already done'))
     await expect(
       ACTION_HANDLERS['jobs.resume'](
-        { db, now: new Date(), channelsDir: '/ch', runsRoot: '/runs', setNotice: () => {} },
+        {
+          db,
+          time: createTestTime(new Date('2040-01-01T00:00:00Z')),
+          channelsDir: '/ch',
+          runsRoot: '/runs',
+          setNotice: () => {},
+        },
         { jobId: 'j9' },
         { resumeJob: resume },
       ),
@@ -240,7 +299,7 @@ describe('action handlers', () => {
     const result = await ACTION_HANDLERS['jobs.produce'](
       {
         db,
-        now: new Date(),
+        time: createTestTime(new Date('2040-01-01T00:00:00Z')),
         channelsDir: dir,
         runsRoot: '/runs',
         setNotice: (t) => notices.push(t),
@@ -265,7 +324,13 @@ describe('action handlers', () => {
     )
     await expect(
       ACTION_HANDLERS['jobs.produce'](
-        { db, now: new Date(), channelsDir: dir, runsRoot: '/runs', setNotice: () => {} },
+        {
+          db,
+          time: createTestTime(new Date('2040-01-01T00:00:00Z')),
+          channelsDir: dir,
+          runsRoot: '/runs',
+          setNotice: () => {},
+        },
         { channel: 'beta', topic: 't' },
         {},
       ),

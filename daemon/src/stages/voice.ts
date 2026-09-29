@@ -311,7 +311,7 @@ export const voiceStage: StageDef = {
       // instead of silently downgrading the voice. Estimated off the actual
       // (SSML-augmented) text sent — never under-reserve against the shorter
       // plain narration.
-      assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(elevenText))
+      assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(elevenText), ctx.time)
 
       // ONLY the provider call is fallback-eligible: while nothing has been
       // delivered, a failure legitimately means "use the volume chain".
@@ -320,6 +320,7 @@ export const voiceStage: StageDef = {
         checkpoint(ctx)
         synth = await synthWithTimestamps({
           signal: ctx.signal,
+          time: ctx.time,
           voiceId: premiumVoice.voiceId,
           modelId: premiumVoice.modelId,
           text: elevenText,
@@ -338,7 +339,15 @@ export const voiceStage: StageDef = {
         // fallible local write. A failure below is a local fault, not a
         // provider one — it surfaces as a stage error rather than a silent
         // downgrade that would strand this charge unrecorded.
-        recordCost(ctx.db, ctx.jobId, 'elevenlabs', 'tts', synth.costUsdMicros, ctx.attemptId)
+        recordCost(
+          ctx.db,
+          ctx.jobId,
+          'elevenlabs',
+          'tts',
+          synth.costUsdMicros,
+          ctx.attemptId,
+          ctx.time,
+        )
         checkpoint(ctx)
         await fs.writeFile(wavPath, synth.wavBytes)
         provider = 'elevenlabs'

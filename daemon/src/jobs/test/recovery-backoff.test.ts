@@ -1,5 +1,11 @@
+import { beforeEach } from 'vitest'
+import { createTestTime, type TestTime } from '../../../testing/time.js'
+let time: TestTime
+beforeEach(() => {
+  time = createTestTime(new Date('2026-08-01T12:00:00Z'))
+})
 import { writeFileSync } from 'node:fs'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { openDb } from '../../db/index.js'
 import { fileDb } from '../../../testing/db.js'
 import { testChannel } from '../../../testing/channel.js'
@@ -10,22 +16,20 @@ import { beginAttempt, reconcileJobs } from '../execution.js'
 import { createJob, runJob } from '../runner.js'
 
 const start = new Date('2026-09-29T12:00:00.000Z')
-afterEach(() => vi.useRealTimers())
 
 describe('persisted crash recovery backoff', () => {
   it('doubles repeated interruption delays up to thirty minutes across database reopens', () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(start)
-    const fixture = fileDb()
+    time.setNow(start)
+    const fixture = fileDb(undefined, time)
     let db = fixture.db
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'repeated interruption' })
+    const jobId = createJob(db, channel, { time, topic: 'repeated interruption' })
     const attempts: string[] = []
     const expectedDelays = [
       30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000, 1_800_000,
     ]
     for (const [index, delay] of expectedDelays.entries()) {
-      const executionLease = requireLease(db, 'produce')
+      const executionLease = requireLease(db, 'produce', undefined, { time })
       attempts.push(beginAttempt(db, jobId, executionLease))
       db.prepare("UPDATE job_stages SET status='running' WHERE job_id=? AND stage='script'").run(
         jobId,
@@ -33,10 +37,10 @@ describe('persisted crash recovery backoff', () => {
       executionLease.release()
       db.close()
       db = trackDb(openDb(fixture.dbPath))
-      const lease = requireLease(db, 'produce')
-      const interruptedAt = new Date()
+      const lease = requireLease(db, 'produce', undefined, { time })
+      const interruptedAt = time.now()
       try {
-        expect(reconcileJobs(db, lease, interruptedAt)).toBe(1)
+        expect(reconcileJobs(db, lease)).toBe(1)
         const row = db
           .prepare(
             'SELECT recovery_count,recovery_pending,retry_after,previous_attempt_id FROM jobs WHERE id=?',
@@ -54,17 +58,21 @@ describe('persisted crash recovery backoff', () => {
           previous_attempt_id: attempts[index],
         })
         // Reconciliation itself cannot count another crash or move the deadline.
-        expect(reconcileJobs(db, lease, interruptedAt)).toBe(0)
+        expect(reconcileJobs(db, lease)).toBe(0)
         expect(db.prepare('SELECT retry_after FROM jobs WHERE id=?').get(jobId)).toEqual({
           retry_after: row.retry_after,
         })
       } finally {
         lease.release()
       }
-      vi.setSystemTime(new Date(interruptedAt.getTime() + delay - 1))
-      expect(planTick(db, [channel])).toEqual({ kind: 'noop', reason: 'no-eligible-work' })
-      vi.setSystemTime(new Date(interruptedAt.getTime() + delay))
-      expect(planTick(db, [channel])).toEqual({ kind: 'resume', jobId, channel: channel.name })
+      time.setNow(new Date(interruptedAt.getTime() + delay - 1))
+      expect(planTick(db, [channel], time)).toEqual({ kind: 'noop', reason: 'no-eligible-work' })
+      time.setNow(new Date(interruptedAt.getTime() + delay))
+      expect(planTick(db, [channel], time)).toEqual({
+        kind: 'resume',
+        jobId,
+        channel: channel.name,
+      })
     }
     expect(
       db.prepare("SELECT COUNT(*) AS n FROM execution_attempts WHERE status='interrupted'").get(),
@@ -73,15 +81,14 @@ describe('persisted crash recovery backoff', () => {
   })
 
   it('resets the delay only after a completed checkpoint, then starts the next interrupted stage at thirty seconds', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(start)
-    const { db, root } = fileDb()
+    time.setNow(start)
+    const { db, root } = fileDb(undefined, time)
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'progress resets backoff' })
+    const jobId = createJob(db, channel, { time, topic: 'progress resets backoff' })
     db.prepare(
       'UPDATE jobs SET recovery_count=5,recovery_pending=1,recovery_stage=?,previous_attempt_id=?,retry_after=? WHERE id=?',
     ).run('script', 'older-attempt', '2026-09-29T11:59:00.000Z', jobId)
-    const lease = requireLease(db, 'produce')
+    const lease = requireLease(db, 'produce', undefined, { time })
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       await expect(
@@ -119,12 +126,12 @@ describe('persisted crash recovery backoff', () => {
               },
             },
           ],
-          { runsRoot: root, lease },
+          { time, runsRoot: root, lease },
         ),
       ).rejects.toBeInstanceOf(LeaseLostError)
-      const successor = requireLease(db, 'produce')
+      const successor = requireLease(db, 'produce', undefined, { time })
       try {
-        expect(reconcileJobs(db, successor, start)).toBe(1)
+        expect(reconcileJobs(db, successor)).toBe(1)
         expect(
           db
             .prepare('SELECT recovery_count,recovery_stage,retry_after FROM jobs WHERE id=?')

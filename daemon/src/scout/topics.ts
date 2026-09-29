@@ -1,3 +1,4 @@
+import { systemTime, type TimeSource } from '../time.js'
 import type { Database } from 'better-sqlite3'
 import type { StoryPart } from '../stories/types.js'
 
@@ -110,13 +111,18 @@ function toTopicRow(row: DbTopicRow): TopicRow {
 // INSERT OR IGNORE on UNIQUE (channel, dedupe_hash): re-inserting a known item
 // is a no-op, so the returned count is rows actually written. One transaction —
 // a mid-run crash loses the whole batch, never half of it.
-export function insertTopics(db: Database, rows: NewTopic[]): number {
+export function insertTopics(
+  db: Database,
+  rows: NewTopic[],
+  time: TimeSource = systemTime,
+): number {
   const stmt = db.prepare(
     'INSERT OR IGNORE INTO topics (channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status, ' +
-      'body_text, series_key, part_index, part_count, truncated) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'body_text, series_key, part_index, part_count, truncated, created_at) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   )
   const insertAll = db.transaction((batch: NewTopic[]) => {
+    const createdAt = time.now().toISOString()
     let inserted = 0
     for (const t of batch) {
       inserted += stmt.run(
@@ -135,6 +141,7 @@ export function insertTopics(db: Database, rows: NewTopic[]): number {
         t.partIndex ?? null,
         t.partCount ?? null,
         t.truncated === true ? 1 : 0,
+        createdAt,
       ).changes
     }
     return inserted

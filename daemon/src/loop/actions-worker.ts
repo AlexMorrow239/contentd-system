@@ -11,7 +11,8 @@ import {
   type ActionRow,
 } from '../actions/queue.js'
 import { BrainrotError } from '../errors.js'
-import type { StartInterval, UnitResult } from './worker-contract.js'
+import type { UnitResult } from './worker-contract.js'
+import { resolveTime, type TimeSource } from '../time.js'
 import { DAEMON_HEARTBEAT_MS, stampDaemonSeen } from './daemon-state.js'
 import {
   acquireManagedLease,
@@ -66,10 +67,9 @@ export function actionsUnit(
   opts: {
     channelsDir: string
     runsRoot: string
-    now?: () => Date
+    time?: TimeSource
     run?: typeof runAction
     daemonLease?: LeaseContext
-    startInterval?: StartInterval
     pid?: number
   },
 ): () => Promise<UnitResult> {
@@ -78,17 +78,20 @@ export function actionsUnit(
   // finished_at === started_at for a slow action taking seconds or minutes;
   // reading it fresh at each row transition is what lets those columns carry
   // real elapsed time.
-  const clock = opts.now ?? ((): Date => new Date())
-  let lastHeartbeat = 0
+  const time = resolveTime(opts.time, opts.daemonLease)
+  let lastHeartbeat: number | undefined
   const budget = lane === 'fast' ? MAX_FAST_DRAIN : 1
 
   return async (): Promise<UnitResult> => {
     // The heartbeat throttle uses poll time; row transitions read the clock again.
-    const now = clock()
+    const now = time.now()
     opts.daemonLease?.assertOwned()
     // The heartbeat rides the fast lane only: the slow lane can legitimately
     // sit inside one action for minutes, which would read as a dead daemon.
-    if (lane === 'fast' && now.getTime() - lastHeartbeat >= DAEMON_HEARTBEAT_MS) {
+    if (
+      lane === 'fast' &&
+      (lastHeartbeat === undefined || now.getTime() - lastHeartbeat >= DAEMON_HEARTBEAT_MS)
+    ) {
       lastHeartbeat = now.getTime()
       db.transaction(() => {
         opts.daemonLease?.assertOwned()
@@ -112,10 +115,9 @@ export function actionsUnit(
         channelsDir: opts.channelsDir,
         runsRoot: opts.runsRoot,
         lane,
-        clock,
+        time,
         run,
         daemonLease: opts.daemonLease,
-        startInterval: opts.startInterval,
       })
       if (outcome.blockedBy !== undefined) {
         blockedLease ??= outcome.blockedBy
@@ -146,10 +148,9 @@ async function executeOne(
     channelsDir: string
     runsRoot: string
     lane: ActionLane
-    clock: () => Date
+    time: TimeSource
     run: typeof runAction
     daemonLease?: LeaseContext
-    startInterval?: StartInterval
   },
 ): Promise<{ blockedBy?: ActionLease; lostClaim?: boolean }> {
   const mutate = <T>(fn: () => T): T =>
@@ -161,7 +162,7 @@ async function executeOne(
       .immediate()
   if (!isActionKind(row.kind)) {
     mutate(() => {
-      if (startAction(db, row.id, deps.clock(), deps.daemonLease))
+      if (startAction(db, row.id, deps.time.now(), deps.daemonLease))
         failAction(
           db,
           row.id,
@@ -169,7 +170,7 @@ async function executeOne(
             domain: 'config',
             kind: 'invalid',
           }),
-          deps.clock(),
+          deps.time.now(),
           deps.daemonLease,
         )
     })
@@ -177,7 +178,7 @@ async function executeOne(
   }
   const name = ACTIONS[row.kind].lease
   const lease = name
-    ? acquireManagedLease(db, name, deps.daemonLease, { startInterval: deps.startInterval })
+    ? acquireManagedLease(db, name, deps.daemonLease, { time: deps.time })
     : undefined
   if (lease === null) {
     const notice = `waiting for the ${name!} lease`
@@ -185,12 +186,12 @@ async function executeOne(
     return { blockedBy: name }
   }
   try {
-    const startedAt = deps.clock()
+    const startedAt = deps.time.now()
     if (!mutate(() => startAction(db, row.id, startedAt, deps.daemonLease)))
       return { lostClaim: true }
     const ctx: ActionContext = {
       db,
-      now: startedAt,
+      time: deps.time,
       channelsDir: deps.channelsDir,
       runsRoot: deps.runsRoot,
       actionId: row.id,
@@ -217,7 +218,7 @@ async function executeOne(
       const result = await deps.run(ctx, row.kind, args)
       mutate(() => {
         lease?.assertOwned()
-        completeAction(db, row.id, result, deps.clock(), deps.daemonLease)
+        completeAction(db, row.id, result, deps.time.now(), deps.daemonLease)
       })
     } catch (err) {
       // A stale owner leaves the running row for reconciliation, never overwrites it.
@@ -225,11 +226,11 @@ async function executeOne(
       if (
         lease &&
         deps.daemonLease &&
-        reconcileInterruptedAction(db, row.id, deps.daemonLease, lease, deps.clock())
+        reconcileInterruptedAction(db, row.id, deps.daemonLease, lease)
       )
         return {}
       lease?.assertOwned()
-      mutate(() => failAction(db, row.id, err, deps.clock(), deps.daemonLease))
+      mutate(() => failAction(db, row.id, err, deps.time.now(), deps.daemonLease))
     }
     return {}
   } finally {

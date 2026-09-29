@@ -1,5 +1,5 @@
 import { runWorker } from './worker-loop.js'
-import { abortableSleep } from './timers.js'
+import { systemTime, type TimeSource } from '../time.js'
 import type { WorkerDeps, WorkerSpec } from './worker-contract.js'
 
 /** Stop siblings on failure and join every active unit before returning. */
@@ -8,7 +8,7 @@ export async function runWorkers(
   opts: {
     signal: AbortSignal
     emit: WorkerDeps['emit']
-    sleep?: (ms: number, signal: AbortSignal) => Promise<void>
+    time?: TimeSource
   },
 ): Promise<void> {
   const controller = new AbortController()
@@ -18,7 +18,7 @@ export async function runWorkers(
   try {
     const deps: WorkerDeps = {
       emit: opts.emit,
-      sleep: (ms) => (opts.sleep ?? abortableSleep)(ms, controller.signal),
+      time: opts.time ?? systemTime,
     }
     const settled = await Promise.allSettled(
       workers.map(({ name, unit, idleSleepMs }) =>

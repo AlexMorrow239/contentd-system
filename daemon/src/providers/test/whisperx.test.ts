@@ -101,49 +101,4 @@ describe('alignTranscript', () => {
       { word: 'there', startMs: 400, endMs: 600 },
     ])
   })
-
-  it('times out against a sidecar that never responds', async () => {
-    const wavPath = await tmpWav()
-    // A server that accepts the request but never sends a response.
-    const hung = http.createServer(() => {
-      /* intentionally never ends the response */
-    })
-    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve))
-    const hungUrl = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`
-    try {
-      await expect(
-        alignTranscript({ baseUrl: hungUrl, wavPath, transcript: 'x', timeoutMs: 200 }),
-      ).rejects.toThrow(/whisperx align timed out after 200ms/)
-    } finally {
-      hung.closeAllConnections?.()
-      await new Promise<void>((resolve) => hung.close(() => resolve()))
-    }
-  })
-})
-
-describe('whisperx error classification', () => {
-  it('classifies a timeout as provider/transient', async () => {
-    const wavPath = await tmpWav()
-    // Same hung-server technique as the timeout test above: alignTranscript
-    // does not accept an injectable fetch, so the timeout has to be produced
-    // for real rather than stubbed.
-    const hung = http.createServer(() => {
-      /* intentionally never ends the response */
-    })
-    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve))
-    const hungUrl = `http://127.0.0.1:${(hung.address() as AddressInfo).port}`
-    try {
-      const err = await alignTranscript({
-        baseUrl: hungUrl,
-        wavPath,
-        transcript: 'x',
-        timeoutMs: 200,
-      }).catch((e: unknown) => e)
-      expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
-      expect(errorMessage(err)).toBe('alignTranscript: whisperx align timed out after 200ms')
-    } finally {
-      hung.closeAllConnections?.()
-      await new Promise<void>((resolve) => hung.close(() => resolve()))
-    }
-  })
 })

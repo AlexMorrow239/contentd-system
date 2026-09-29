@@ -1,3 +1,4 @@
+import { createTestTime } from '../../../testing/time.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -248,26 +249,34 @@ describe('resumeJob', () => {
 
   // The produce tick's lease has to survive a resumed render exactly as it
   // survives a fresh one — a resumed job is the one already known to be slow.
-  it('forwards the heartbeat to runJob: one call per stage actually run', async () => {
+  it('renews ownership during a resumed stage beyond the lease TTL', async () => {
     const jobId = seedJob('blocked')
     db.prepare(
       "UPDATE job_stages SET status = 'done' WHERE job_id = ? AND stage IN ('script','voice')",
     ).run(jobId)
     const calls: string[] = []
-    const heartbeat = vi.fn()
+    const time = createTestTime(0)
     const result = await resumeJob(db, jobId, {
       runsRoot,
       channelsDir,
-      stagesFor: () => fakeStages(calls),
-      heartbeat,
+      time,
+      stagesFor: () =>
+        fakeStages(calls).map((stage) => ({
+          ...stage,
+          run: async (ctx) => {
+            await time.advanceBy(360_000)
+            ctx.assertOwned!()
+            await stage.run(ctx)
+          },
+        })),
     })
     expect(result.status).toBe('ready')
     // progress, not the clock: four stages left to run, four extensions
     expect(calls).toEqual(['captions', 'visuals', 'assemble', 'qc'])
-    expect(heartbeat).toHaveBeenCalledTimes(4)
+    expect(time.pendingTimerCount()).toBe(0)
   })
 
-  it('resumes without a heartbeat (the manual CLI holds no lease)', async () => {
+  it('acquires and releases ownership for standalone resume', async () => {
     const jobId = seedJob('blocked')
     const result = await resumeJob(db, jobId, {
       runsRoot,

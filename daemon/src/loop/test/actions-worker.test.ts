@@ -1,3 +1,9 @@
+import { beforeEach } from 'vitest'
+import { createTestTime, type TestTime } from '../../../testing/time.js'
+let time: TestTime
+beforeEach(() => {
+  time = createTestTime(new Date('2026-08-01T12:00:00Z'))
+})
 import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { getAction } from '../../actions/queue.js'
@@ -15,9 +21,9 @@ import {
 
 function unit(db: Database, lane: 'fast' | 'slow' = 'fast'): () => Promise<UnitResult> {
   return actionsUnit(db, lane, {
+    time,
     channelsDir: '/nonexistent/channels',
     runsRoot: '/nonexistent/runs',
-    now: () => new Date('2026-08-01T10:00:00Z'),
   })
 }
 
@@ -29,15 +35,20 @@ function leaseExpiry(db: Database, name: string): string {
 
 describe('actionsUnit', () => {
   it('uses the supplied process identity for the heartbeat', async () => {
-    const db = memDb()
-    await actionsUnit(db, 'fast', { channelsDir: '/unused', runsRoot: '/unused', pid: 1234 })()
+    const db = memDb(time)
+    await actionsUnit(db, 'fast', {
+      time,
+      channelsDir: '/unused',
+      runsRoot: '/unused',
+      pid: 1234,
+    })()
     expect(readDaemonState(db)?.pid).toBe(1234)
   })
 
   it.each(['success', 'failure', 'malformed', 'lost-claim'] as const)(
     'cancels the injected interval and releases the lease after %s',
     async (outcome) => {
-      const db = memDb()
+      const db = memDb(time)
       const id = seedAction(db, {
         kind: 'scout.run',
         lane: 'slow',
@@ -45,17 +56,21 @@ describe('actionsUnit', () => {
       })
       let cancelled = 0
       let handlerCalls = 0
+      const startInterval = time.startInterval
+      vi.spyOn(time, 'startInterval').mockImplementation((callback, ms) => {
+        const cancel = startInterval(callback, ms)
+        if (outcome === 'lost-claim')
+          db.prepare("UPDATE operator_actions SET status='running' WHERE id=?").run(id)
+        return () => {
+          expect(db.prepare("SELECT holder FROM leases WHERE name='scout'").get()).toBeDefined()
+          cancel()
+          cancelled++
+        }
+      })
       await actionsUnit(db, 'slow', {
+        time,
         channelsDir: '/unused',
         runsRoot: '/unused',
-        startInterval: () => {
-          if (outcome === 'lost-claim')
-            db.prepare("UPDATE operator_actions SET status='running' WHERE id=?").run(id)
-          return () => {
-            expect(db.prepare("SELECT holder FROM leases WHERE name='scout'").get()).toBeDefined()
-            cancelled++
-          }
-        },
         run: async () => {
           handlerCalls++
           if (outcome === 'failure') throw new Error('handler failed')
@@ -72,16 +87,13 @@ describe('actionsUnit', () => {
   )
 
   it('keeps an action pending when interval setup fails and releases its lease', async () => {
-    const db = memDb()
+    const db = memDb(time)
     const id = seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
+    vi.spyOn(time, 'startInterval').mockImplementationOnce(() => {
+      throw new Error('interval unavailable')
+    })
     await expect(
-      actionsUnit(db, 'slow', {
-        channelsDir: '/unused',
-        runsRoot: '/unused',
-        startInterval: () => {
-          throw new Error('interval unavailable')
-        },
-      })(),
+      actionsUnit(db, 'slow', { time, channelsDir: '/unused', runsRoot: '/unused' })(),
     ).rejects.toThrow('interval unavailable')
     expect(getAction(db, id)?.status).toBe('pending')
     expect(db.prepare('SELECT * FROM leases').all()).toEqual([])
@@ -90,12 +102,12 @@ describe('actionsUnit', () => {
   it('is silently idle on an empty queue', async () => {
     // A 1s poll must emit a STABLE idle line (or none) or runWorker's dedupe
     // cannot suppress it, and a quiet night becomes 86,400 log lines.
-    const result = await unit(memDb())()
+    const result = await unit(memDb(time))()
     expect(result).toEqual({ worked: false })
   })
 
   it('executes a pending fast action and records its result', async () => {
-    const db = memDb()
+    const db = memDb(time)
     const topic = seedTopic(db)
     const id = seedAction(db, { kind: 'topics.reject', args: JSON.stringify({ ids: [topic] }) })
     const result = await unit(db)()
@@ -106,7 +118,7 @@ describe('actionsUnit', () => {
   })
 
   it('drains several fast actions in one poll', async () => {
-    const db = memDb()
+    const db = memDb(time)
     const a = seedTopic(db, { title: 'a' })
     const b = seedTopic(db, { title: 'b' })
     const first = seedAction(db, { kind: 'topics.reject', args: JSON.stringify({ ids: [a] }) })
@@ -117,7 +129,7 @@ describe('actionsUnit', () => {
   })
 
   it('records a handler failure without taking the worker down', async () => {
-    const db = memDb()
+    const db = memDb(time)
     // A candidate topic (the seedTopic default) is not claimed — requeueTopic
     // refuses it, which is a real handler throw this test can observe without
     // stubbing anything.
@@ -139,8 +151,8 @@ describe('actionsUnit', () => {
   // fast-registered kind — there isn't one.
 
   it('leaves a lease-blocked action pending and explains the wait', async () => {
-    const db = memDb()
-    acquireLease(db, 'scout', 'someone-else', 60_000)
+    const db = memDb(time)
+    acquireLease(db, 'scout', 'someone-else', 60_000, time)
     const id = seedAction(db, { kind: 'scout.run', args: '{}' })
     const result = await unit(db)()
     expect(result.worked).toBe(false)
@@ -152,8 +164,8 @@ describe('actionsUnit', () => {
     // Otherwise a long-running action holding a lease stalls every trivial
     // row mutation queued behind it — head-of-line blocking the lanes exist
     // to avoid.
-    const db = memDb()
-    acquireLease(db, 'scout', 'someone-else', 60_000)
+    const db = memDb(time)
+    acquireLease(db, 'scout', 'someone-else', 60_000, time)
     const blocked = seedAction(db, { kind: 'scout.run', args: '{}' })
     const topic = seedTopic(db)
     const runnable = seedAction(db, {
@@ -166,12 +178,12 @@ describe('actionsUnit', () => {
   })
 
   it('attempts a held lease once per poll, skipping later rows that need it', async () => {
-    const db = memDb()
+    const db = memDb(time)
     seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
     seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
     seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
     // Someone else holds it for the whole poll.
-    expect(acquireLease(db, 'scout', 'pid:other', 60_000)).toBe(true)
+    expect(acquireLease(db, 'scout', 'pid:other', 60_000, time)).toBe(true)
 
     const result = await unit(db)()
 
@@ -193,18 +205,18 @@ describe('actionsUnit', () => {
   })
 
   it('releases the lease it took', async () => {
-    const db = memDb()
+    const db = memDb(time)
     // channelsDir is '/nonexistent/channels' (see `unit`), so scout.run's
     // handler folds the load failure into a benign noop rather than throwing
     // — this test only cares that the lease is freed either way.
     seedAction(db, { kind: 'scout.run', args: '{}' })
     await unit(db)()
     // A lease left held would wedge the scout worker for its whole TTL.
-    expect(acquireLease(db, 'scout', 'next-caller', 1_000)).toBe(true)
+    expect(acquireLease(db, 'scout', 'next-caller', 1_000, time)).toBe(true)
   })
 
   it('leaves running rows for daemon-owned startup reconciliation', async () => {
-    const db = memDb()
+    const db = memDb(time)
     const stale = seedAction(db, { status: 'running' })
     const tick = unit(db)
     await tick()
@@ -218,13 +230,14 @@ describe('actionsUnit', () => {
   it.each(['scout.run', 'jobs.produce'] as const)(
     'reconciles %s after child ownership is lost while the daemon remains live',
     async (kind) => {
-      const db = memDb()
-      const daemonLease = requireLease(db, 'daemon')
+      const db = memDb(time)
+      const daemonLease = requireLease(db, 'daemon', undefined, { time })
       const id = seedAction(db, { kind, lane: 'slow', args: '{}' })
       const jobId =
         kind === 'jobs.produce' ? seedJob(db, 'interrupted-render', { status: 'running' }) : null
       const operation = kind === 'scout.run' ? 'scout' : 'produce'
       const tick = actionsUnit(db, 'slow', {
+        time,
         channelsDir: '/unused',
         runsRoot: '/unused',
         daemonLease,
@@ -234,7 +247,7 @@ describe('actionsUnit', () => {
             '2000-01-01T00:00:00Z',
             operation,
           )
-          expect(acquireLease(db, operation, 'successor-operation', 300_000)).toBe(true)
+          expect(acquireLease(db, operation, 'successor-operation', 300_000, time)).toBe(true)
           ctx.lease!.assertOwned()
         },
       })
@@ -265,63 +278,59 @@ describe('actionsUnit', () => {
   )
 
   it('takes only its own lane', async () => {
-    const db = memDb()
+    const db = memDb(time)
     const slow = seedAction(db, { lane: 'slow', kind: 'produce' })
     await unit(db, 'fast')()
     expect(getAction(db, slow)?.status).toBe('pending')
   })
 
   it('stamps the daemon heartbeat from the fast lane only', async () => {
-    const db = memDb()
+    const db = memDb(time)
     await unit(db, 'fast')()
     expect(readDaemonState(db)?.pid).toBe(process.pid)
 
-    const other = memDb()
+    const other = memDb(time)
     await unit(other, 'slow')()
     expect(readDaemonState(other)).toBeNull()
   })
 
   it('throttles the heartbeat rather than writing every poll', async () => {
-    const db = memDb()
-    const clock = vi.fn<() => Date>()
-    clock
-      .mockReturnValueOnce(new Date('2026-08-01T10:00:00Z'))
-      .mockReturnValueOnce(new Date('2026-08-01T10:00:01Z'))
-      .mockReturnValue(new Date('2026-08-01T10:00:20Z'))
+    const db = memDb(time)
+    time.setNow(new Date('2026-08-01T10:00:00Z'))
     const tick = actionsUnit(db, 'fast', {
+      time,
       channelsDir: '/nonexistent',
       runsRoot: '/nonexistent',
-      now: clock,
     })
     await tick()
+    await time.advanceBy(1_000)
     await tick()
     expect(readDaemonState(db)?.lastSeenAt).toBe('2026-08-01T10:00:00.000Z')
+    await time.advanceBy(19_000)
     await tick()
     expect(readDaemonState(db)?.lastSeenAt).toBe('2026-08-01T10:00:20.000Z')
   })
 
   it('threads the clock per row so a slow action records real elapsed time, not poll skew', async () => {
     // A single frozen Date per poll would stamp started_at === finished_at
-    // for an action that genuinely takes minutes. Inject a clock with
-    // increasing values and assert the two columns land on DIFFERENT reads.
-    const db = memDb()
+    // for an action taking minutes. Advance the shared source during the
+    // handler and assert that completion reads its updated time.
+    const db = memDb(time)
     const topic = seedTopic(db)
     const id = seedAction(db, {
       lane: 'slow',
       kind: 'topics.reject',
       args: JSON.stringify({ ids: [topic] }),
     })
-    const times = [
-      '2026-08-01T10:00:00.000Z', // poll-level now (sweep + heartbeat gate)
-      '2026-08-01T10:00:05.000Z', // started_at
-      '2026-08-01T10:10:00.000Z', // finished_at, ten minutes later
-    ]
-    let i = 0
-    const clock = vi.fn<() => Date>(() => new Date(times[Math.min(i++, times.length - 1)]))
+    time.setNow(new Date('2026-08-01T10:00:05Z'))
     const tick = actionsUnit(db, 'slow', {
+      time,
       channelsDir: '/nonexistent',
       runsRoot: '/nonexistent',
-      now: clock,
+      run: async () => {
+        await time.advanceBy(595_000)
+        return {}
+      },
     })
     await tick()
     const row = getAction(db, id)
@@ -333,7 +342,7 @@ describe('actionsUnit', () => {
   it('still executes at most one action per poll on the slow lane, given two runnable rows', async () => {
     // The scan-window widening (fix for head-of-line starvation) must not
     // also widen the completion budget: slow stays one-per-poll.
-    const db = memDb()
+    const db = memDb(time)
     const a = seedTopic(db, { title: 'slow-a' })
     const b = seedTopic(db, { title: 'slow-b' })
     const first = seedAction(db, {
@@ -358,8 +367,8 @@ describe('actionsUnit', () => {
     // two lease-blocked rows in a row idled the lane forever, even with
     // runnable work at position 3. The scan window must be wide enough to
     // reach past them.
-    const db = memDb()
-    acquireLease(db, 'scout', 'someone-else', 60_000)
+    const db = memDb(time)
+    acquireLease(db, 'scout', 'someone-else', 60_000, time)
     const blockedA = seedAction(db, { lane: 'slow', kind: 'scout.run', args: '{}' })
     const blockedB = seedAction(db, { lane: 'slow', kind: 'scout.run', args: '{}' })
     const topic = seedTopic(db)
@@ -376,7 +385,7 @@ describe('actionsUnit', () => {
   })
 
   it('fails a same-lane row with an unknown kind, naming the kind', async () => {
-    const db = memDb()
+    const db = memDb(time)
     const id = seedAction(db, { lane: 'fast', kind: 'not-a-real-kind' })
     const result = await unit(db, 'fast')()
     expect(result.worked).toBe(true)
@@ -386,7 +395,7 @@ describe('actionsUnit', () => {
   })
 
   it('fails a row whose args column is not valid JSON, rather than leaving it pending', async () => {
-    const db = memDb()
+    const db = memDb(time)
     const id = seedAction(db, { kind: 'topics.reject', args: '{not valid json' })
     const result = await unit(db)()
     expect(result.worked).toBe(true)
@@ -397,7 +406,7 @@ describe('actionsUnit', () => {
 
   it('drains at most MAX_FAST_DRAIN actions in one poll, leaving the rest pending', async () => {
     const ids: number[] = []
-    const db = memDb()
+    const db = memDb(time)
     for (let i = 0; i < MAX_FAST_DRAIN + 1; i++) {
       const topic = seedTopic(db, { title: `bulk-${i}` })
       ids.push(seedAction(db, { kind: 'topics.reject', args: JSON.stringify({ ids: [topic] }) }))
@@ -417,76 +426,66 @@ describe('actionsUnit', () => {
   // the FAST lane instead.
 
   it('acquires a slow action lease with the slow TTL, not the lease default', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
-    try {
-      const db = memDb()
-      seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
-      let expiryDuringRun = ''
-      const unit = actionsUnit(db, 'slow', {
-        channelsDir: 'c',
-        runsRoot: 'r',
-        run: () => {
-          expiryDuringRun = leaseExpiry(db, 'scout')
-          return Promise.resolve({ ok: true })
-        },
-      })
-      await unit()
-      expect(expiryDuringRun).toBe(new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString())
-    } finally {
-      vi.useRealTimers()
-    }
+    time.setNow(new Date('2026-08-01T00:00:00.000Z'))
+    const db = memDb(time)
+    seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
+    let expiryDuringRun = ''
+    const unit = actionsUnit(db, 'slow', {
+      time,
+      channelsDir: 'c',
+      runsRoot: 'r',
+      run: () => {
+        expiryDuringRun = leaseExpiry(db, 'scout')
+        return Promise.resolve({ ok: true })
+      },
+    })
+    await unit()
+    expect(expiryDuringRun).toBe(
+      new Date(time.now().getTime() + SLOW_ACTION_LEASE_TTL_MS).toISOString(),
+    )
   })
 
   it('refreshes a slow action lease while the handler is still running', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
-    try {
-      const db = memDb()
-      seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
-      let release!: () => void
-      const gate = new Promise<void>((resolve) => {
-        release = resolve
-      })
-      const unit = actionsUnit(db, 'slow', {
-        channelsDir: 'c',
-        runsRoot: 'r',
-        run: async () => {
-          await gate
-          return { ok: true }
-        },
-      })
-      const running = unit()
-      await vi.advanceTimersByTimeAsync(0)
-      const before = leaseExpiry(db, 'scout')
-      await vi.advanceTimersByTimeAsync(SLOW_ACTION_HEARTBEAT_MS)
-      const after = leaseExpiry(db, 'scout')
-      expect(after > before).toBe(true)
-      release()
-      await running
-    } finally {
-      vi.useRealTimers()
-    }
+    time.setNow(new Date('2026-08-01T00:00:00.000Z'))
+    const db = memDb(time)
+    seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const unit = actionsUnit(db, 'slow', {
+      time,
+      channelsDir: 'c',
+      runsRoot: 'r',
+      run: async () => {
+        await gate
+        return { ok: true }
+      },
+    })
+    const running = unit()
+    await time.advanceBy(0)
+    const before = leaseExpiry(db, 'scout')
+    await time.advanceBy(SLOW_ACTION_HEARTBEAT_MS)
+    const after = leaseExpiry(db, 'scout')
+    expect(after > before).toBe(true)
+    release()
+    await running
   })
 
   it('stops refreshing once the handler settles, win or lose', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
-    try {
-      const db = memDb()
-      seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
-      const unit = actionsUnit(db, 'slow', {
-        channelsDir: 'c',
-        runsRoot: 'r',
-        run: () => Promise.reject(new Error('boom')),
-      })
-      await unit()
-      // The lease row is gone (released in the finally), so a surviving interval
-      // would be extending nothing — assert the timer itself is cleared.
-      expect(vi.getTimerCount()).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
+    time.setNow(new Date('2026-08-01T00:00:00.000Z'))
+    const db = memDb(time)
+    seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
+    const unit = actionsUnit(db, 'slow', {
+      time,
+      channelsDir: 'c',
+      runsRoot: 'r',
+      run: () => Promise.reject(new Error('boom')),
+    })
+    await unit()
+    // The lease row is gone (released in the finally), so a surviving interval
+    // would be extending nothing — assert the timer itself is cleared.
+    expect(time.pendingTimerCount()).toBe(0)
   })
 
   // scout.run is really slow-lane, catalog-wise, but this row's `lane`
@@ -494,28 +493,26 @@ describe('actionsUnit', () => {
   // acquired through this path now always uses SLOW_ACTION_LEASE_TTL_MS
   // regardless of its lane. Every managed lease requires periodic renewal.
   it('renews every managed lease, even on an artificially fast-lane action', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-08-01T00:00:00.000Z'))
-    try {
-      const db = memDb()
-      seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
-      let expiryDuringRun = ''
-      let timersDuringRun = -1
-      const unit = actionsUnit(db, 'fast', {
-        channelsDir: 'c',
-        runsRoot: 'r',
-        run: () => {
-          expiryDuringRun = leaseExpiry(db, 'scout')
-          timersDuringRun = vi.getTimerCount()
-          return Promise.resolve({ ok: true })
-        },
-      })
-      await unit()
-      expect(expiryDuringRun).toBe(new Date(Date.now() + SLOW_ACTION_LEASE_TTL_MS).toISOString())
-      expect(timersDuringRun).toBe(1)
-      expect(vi.getTimerCount()).toBe(0)
-    } finally {
-      vi.useRealTimers()
-    }
+    time.setNow(new Date('2026-08-01T00:00:00.000Z'))
+    const db = memDb(time)
+    seedAction(db, { kind: 'scout.run', lane: 'fast', args: '{}' })
+    let expiryDuringRun = ''
+    let timersDuringRun = -1
+    const unit = actionsUnit(db, 'fast', {
+      time,
+      channelsDir: 'c',
+      runsRoot: 'r',
+      run: () => {
+        expiryDuringRun = leaseExpiry(db, 'scout')
+        timersDuringRun = time.pendingTimerCount()
+        return Promise.resolve({ ok: true })
+      },
+    })
+    await unit()
+    expect(expiryDuringRun).toBe(
+      new Date(time.now().getTime() + SLOW_ACTION_LEASE_TTL_MS).toISOString(),
+    )
+    expect(timersDuringRun).toBe(1)
+    expect(time.pendingTimerCount()).toBe(0)
   })
 })

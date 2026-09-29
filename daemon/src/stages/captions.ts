@@ -49,6 +49,7 @@ async function alignedWords(ctx: JobContext): Promise<WordTiming[]> {
   checkpoint(ctx)
   const words = await alignTranscript({
     signal: ctx.signal,
+    time: ctx.time,
     baseUrl: process.env.WHISPERX_URL ?? 'http://localhost:8585',
     wavPath: ctx.artifactPath('voice', 'narration.wav'),
     transcript: narrationText(script),

@@ -1,3 +1,4 @@
+import type { TimeSource } from '../../time.js'
 import type { Database } from 'better-sqlite3'
 import { testChannel } from '../../../testing/channel.js'
 import * as kit from '../../../testing/db.js'
@@ -22,8 +23,8 @@ export const DAY_MS = 24 * HOUR_MS
  * Explicit timestamps in the schema default's own format ('...T...Z' with
  * millis) keep string comparisons against created_at meaningful.
  */
-export function isoAgo(ms: number): string {
-  return new Date(Date.now() - ms).toISOString()
+export function isoAgo(ms: number, time: TimeSource): string {
+  return new Date(time.now().getTime() - ms).toISOString()
 }
 
 export function seedJob(
@@ -39,7 +40,7 @@ export function seedJob(
     channel: opts.channel ?? 'chan-a',
     topic: 'digest test topic',
     status: opts.status ?? 'done',
-    createdAt: opts.createdAt ?? isoAgo(HOUR_MS),
+    createdAt: opts.createdAt ?? isoAgo(HOUR_MS, kit.fixtureTime(db)),
   })
 }
 
@@ -97,7 +98,7 @@ export function seedTopic(
     score: 70,
     reason: 'test',
     status: opts.status ?? 'candidate',
-    createdAt: opts.createdAt ?? isoAgo(HOUR_MS),
+    createdAt: opts.createdAt ?? isoAgo(HOUR_MS, kit.fixtureTime(db)),
     jobId: opts.jobId ?? null,
   })
 }

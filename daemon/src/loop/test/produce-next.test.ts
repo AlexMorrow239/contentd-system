@@ -1,3 +1,8 @@
+import { createTestTime, type TestTime } from '../../../testing/time.js'
+let time: TestTime
+beforeEach(() => {
+  time = createTestTime(new Date('2026-08-01T12:00:00Z'))
+})
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -48,7 +53,7 @@ const channelsDir = tmpDir('brainrot-loop-channels-')
 writeFileSync(join(channelsDir, 'loop-chan.toml'), CHANNEL_TOML)
 
 function setup() {
-  const db = memDb()
+  const db = memDb(time)
   const runsRoot = join(tmpDir('brainrot-loop-run-'), 'runs')
   return { db, runsRoot }
 }
@@ -110,14 +115,18 @@ beforeEach(() => {
 })
 afterEach(() => {
   vi.unstubAllEnvs()
-  vi.useRealTimers()
 })
 
 describe('produceNextTick — produce', () => {
   it('claims the eligible topic, produces it, and flips it used on library landing', async () => {
     const { db, runsRoot } = setup()
     const topicId = seedTopic(db)
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result).toEqual({
       action: 'produced',
       jobId: expect.any(String),
@@ -147,11 +156,16 @@ describe('produceNextTick — resume', () => {
   it('resumes the blocked job through resumeJob before claiming anything', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     // an eligible topic exists too: the resume pass must win over the claim pass
     seedTopic(db)
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result).toEqual({ action: 'resumed', jobId, status: 'ready' })
     const job = db.prepare('SELECT status FROM jobs WHERE id = ?').get(jobId) as {
       status: string
@@ -168,8 +182,13 @@ describe('produceNextTick — lease', () => {
   it('no-ops with reason lease-held while another process holds the lease', async () => {
     const { db, runsRoot } = setup()
     seedTopic(db)
-    acquireLease(db, 'produce', 'pid:other-process', PRODUCE_LEASE_TTL_MS)
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
+    acquireLease(db, 'produce', 'pid:other-process', PRODUCE_LEASE_TTL_MS, time)
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: neverStages,
+    })
     expect(result).toEqual({ action: 'noop', reason: 'lease-held' })
     // the holder's lease survives untouched and nothing was claimed or created
     const lease = db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get() as {
@@ -183,10 +202,15 @@ describe('produceNextTick — lease', () => {
   it('releases the lease after a successful tick', async () => {
     const { db, runsRoot } = setup()
     seedTopic(db)
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result.status).toBe('ready')
     // freed for the next cron firing: a fresh holder acquires immediately
-    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS, time)).toBe(true)
     db.close()
   })
 })
@@ -198,6 +222,7 @@ describe('produceNextTick — config errors', () => {
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = await produceNextTick(db, {
+      time,
       channelsDir: brokenDir,
       runsRoot,
       stagesFor: neverStages,
@@ -219,6 +244,7 @@ describe('produceNextTick — config errors', () => {
     const { db, runsRoot } = setup()
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = await produceNextTick(db, {
+      time,
       channelsDir: join(tmpdir(), 'brainrot-no-such-channels-dir'),
       runsRoot,
       stagesFor: neverStages,
@@ -234,13 +260,13 @@ describe('produceNextTick — config errors', () => {
     const brokenDir = tmpDir('brainrot-loop-broken-lease-')
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
-    await produceNextTick(db, { channelsDir: brokenDir, runsRoot, stagesFor: neverStages })
+    await produceNextTick(db, { time, channelsDir: brokenDir, runsRoot, stagesFor: neverStages })
     // Not merely released — never acquired: the row does not exist at all, so
     // a config error can never cost the next firing its own lease attempt.
     expect(db.prepare("SELECT COUNT(*) AS n FROM leases WHERE name = 'produce'").get()).toEqual({
       n: 0,
     })
-    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS, time)).toBe(true)
     stderr.mockRestore()
     db.close()
   })
@@ -248,7 +274,12 @@ describe('produceNextTick — config errors', () => {
   it('a healthy channels dir is unaffected: the tick produces as before', async () => {
     const { db, runsRoot } = setup()
     seedTopic(db)
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result.action).toBe('produced')
     expect(result.reason).toBeUndefined()
     db.close()
@@ -259,7 +290,12 @@ describe('produceNextTick — failed produce', () => {
   it('keeps the topic claimed and job-bound when a stage fails', async () => {
     const { db, runsRoot } = setup()
     const topicId = seedTopic(db)
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: failingStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: failingStages,
+    })
     expect(result).toEqual({
       action: 'produced',
       jobId: expect.any(String),
@@ -277,7 +313,7 @@ describe('produceNextTick — failed produce', () => {
       status: string
     }
     expect(job.status).toBe('failed')
-    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS, time)).toBe(true)
     db.close()
   })
 })
@@ -304,7 +340,12 @@ describe('produceNextTick — repair sweep', () => {
     })
     // queue is otherwise empty (the claimed topic is not eligible) → noop, and
     // neverStages guards that no production runs on this path
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: neverStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: neverStages,
+    })
     expect(result).toEqual({ action: 'noop', reason: 'no-eligible-work' })
     const topic = db.prepare("SELECT status FROM topics WHERE dedupe_hash = 'h-repair'").get() as {
       status: string
@@ -320,40 +361,50 @@ describe('produceNextTick — lost claims', () => {
     seedTopic(db)
     // `topics reject` landing between planTick's SELECT and this claim.
     vi.mocked(claimTopic).mockReturnValueOnce(false)
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
     // the job row rolled back with the failed claim, and the lease is free
     expect((db.prepare('SELECT COUNT(*) AS n FROM jobs').get() as { n: number }).n).toBe(0)
-    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS, time)).toBe(true)
     db.close()
   })
 
   it('no-ops with claim-conflict when a manual resume won the blocked job', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(
       new ResumeError(`job ${jobId} was picked up by another process`, 'conflict'),
     )
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
-    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS, time)).toBe(true)
     db.close()
   })
 
   it('still propagates a non-refusal failure from the resume path', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(new Error('disk full'))
     await expect(
-      produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages }),
+      produceNextTick(db, { time, channelsDir, runsRoot, stagesFor: readyStages }),
     ).rejects.toThrow('disk full')
     // A throw mid-flight still releases the lease on the way out (the finally),
     // so one crash cannot wedge the loop until the TTL expires.
-    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS)).toBe(true)
+    expect(acquireLease(db, 'produce', 'pid:probe', PRODUCE_LEASE_TTL_MS, time)).toBe(true)
     db.close()
   })
 })
@@ -362,12 +413,17 @@ describe('produceNextTick — resume refusal routing', () => {
   it('reports a real claim race as claim-conflict', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(
       new ResumeError(`job ${jobId} was picked up by another process`, 'conflict'),
     )
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result).toEqual({ action: 'noop', reason: 'claim-conflict' })
     db.close()
   })
@@ -377,12 +433,17 @@ describe('produceNextTick — resume refusal routing', () => {
     // self-healing race — it is not: no tick can heal a deleted TOML.
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(
       new ResumeError('channel config not found: channels/gone.toml', 'not-found'),
     )
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result).toEqual({
       action: 'noop',
       reason: 'resume-refused',
@@ -394,12 +455,17 @@ describe('produceNextTick — resume refusal routing', () => {
   it('reports an already-done job as resume-refused', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(
       new ResumeError(`job ${jobId} is already done; nothing to resume`, 'refused'),
     )
-    const result = await produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages })
+    const result = await produceNextTick(db, {
+      time,
+      channelsDir,
+      runsRoot,
+      stagesFor: readyStages,
+    })
     expect(result.reason).toBe('resume-refused')
     db.close()
   })
@@ -407,11 +473,11 @@ describe('produceNextTick — resume refusal routing', () => {
   it('still rethrows a non-ResumeError', async () => {
     const { db, runsRoot } = setup()
     const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-    const jobId = createJob(db, channel, { topic: 'parked by budget' })
+    const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
     db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
     vi.mocked(resumeJob).mockRejectedValueOnce(new Error('disk on fire'))
     await expect(
-      produceNextTick(db, { channelsDir, runsRoot, stagesFor: readyStages }),
+      produceNextTick(db, { time, channelsDir, runsRoot, stagesFor: readyStages }),
     ).rejects.toThrow('disk on fire')
     db.close()
   })
@@ -419,7 +485,6 @@ describe('produceNextTick — resume refusal routing', () => {
 
 describe('produceNextTick — lease heartbeat', () => {
   it('a stale in-process tick cannot renew or release its successor lease', async () => {
-    vi.useFakeTimers()
     const { db, runsRoot } = setup()
     seedTopic(db)
     seedTopic(db)
@@ -440,6 +505,7 @@ describe('produceNextTick — lease heartbeat', () => {
       finishB = r
     })
     const tickA = produceNextTick(db, {
+      time,
       channelsDir,
       runsRoot,
       stagesFor: () => [
@@ -460,6 +526,7 @@ describe('produceNextTick — lease heartbeat', () => {
     }
     db.prepare("UPDATE leases SET expires_at='2020-01-01T00:00:00Z' WHERE name='produce'").run()
     const tickB = produceNextTick(db, {
+      time,
       channelsDir,
       runsRoot,
       stagesFor: () => [
@@ -480,11 +547,11 @@ describe('produceNextTick — lease heartbeat', () => {
         .get() as { holder: string; expires_at: string }
       expect(successor.holder).not.toBe(old.holder)
       // Both live timers fire in the same process; the old callback must lose ownership.
-      await vi.advanceTimersByTimeAsync(LEASE_HEARTBEAT_MS)
+      await time.advanceBy(LEASE_HEARTBEAT_MS)
       const renewed = db.prepare("SELECT holder, expires_at FROM leases WHERE name='produce'").get()
       expect(renewed).toEqual({
         holder: successor.holder,
-        expires_at: new Date(Date.now() + PRODUCE_LEASE_TTL_MS).toISOString(),
+        expires_at: new Date(time.now().getTime() + PRODUCE_LEASE_TTL_MS).toISOString(),
       })
       finishA()
       await rejection
@@ -494,7 +561,7 @@ describe('produceNextTick — lease heartbeat', () => {
       finishB()
       expect(await tickB).toMatchObject({ action: 'produced', status: 'ready' })
       expect(db.prepare('SELECT * FROM leases').all()).toEqual([])
-      expect(vi.getTimerCount()).toBe(0)
+      expect(time.pendingTimerCount()).toBe(0)
     } finally {
       finishA()
       finishB()
@@ -505,14 +572,13 @@ describe('produceNextTick — lease heartbeat', () => {
   it.each(['produce', 'resume'] as const)(
     'renews throughout a long %s stage without a stage transition',
     async (mode) => {
-      vi.useFakeTimers()
-      vi.setSystemTime(new Date('2026-08-01T12:00:00Z'))
+      time.setNow(new Date('2026-08-01T12:00:00Z'))
       const { db, runsRoot } = setup()
       if (mode === 'produce') {
         seedTopic(db)
       } else {
         const channel = loadChannelConfig(join(channelsDir, 'loop-chan.toml'))
-        const jobId = createJob(db, channel, { topic: 'parked by budget' })
+        const jobId = createJob(db, channel, { time, topic: 'parked by budget' })
         db.prepare("UPDATE jobs SET status = 'blocked' WHERE id = ?").run(jobId)
       }
       let release!: () => void
@@ -533,26 +599,26 @@ describe('produceNextTick — lease heartbeat', () => {
         },
         ...readyStages(),
       ]
-      const running = produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages })
+      const running = produceNextTick(db, { time, channelsDir, runsRoot, stagesFor: () => stages })
       await started
       const initial = db
         .prepare("SELECT holder, expires_at FROM leases WHERE name = 'produce'")
         .get() as { holder: string; expires_at: string }
       // Renewal must work during one uninterrupted stage lasting beyond the TTL.
-      await vi.advanceTimersByTimeAsync(PRODUCE_LEASE_TTL_MS + LEASE_HEARTBEAT_MS)
+      await time.advanceBy(PRODUCE_LEASE_TTL_MS + LEASE_HEARTBEAT_MS)
       const renewed = db
         .prepare("SELECT holder, expires_at FROM leases WHERE name = 'produce'")
         .get() as { holder: string; expires_at: string }
       expect(renewed.holder).toBe(initial.holder)
-      expect(Date.parse(renewed.expires_at)).toBe(Date.now() + PRODUCE_LEASE_TTL_MS)
-      expect(acquireLease(db, 'produce', 'competitor', PRODUCE_LEASE_TTL_MS)).toBe(false)
+      expect(Date.parse(renewed.expires_at)).toBe(time.now().getTime() + PRODUCE_LEASE_TTL_MS)
+      expect(acquireLease(db, 'produce', 'competitor', PRODUCE_LEASE_TTL_MS, time)).toBe(false)
       release()
       const result = await running
       expect(result).toMatchObject({
         action: mode === 'produce' ? 'produced' : 'resumed',
         status: 'ready',
       })
-      expect(vi.getTimerCount()).toBe(0)
+      expect(time.pendingTimerCount()).toBe(0)
       expect(db.prepare("SELECT holder FROM leases WHERE name = 'produce'").get()).toBeUndefined()
     },
   )
@@ -568,13 +634,13 @@ describe('produceNextTick — lease heartbeat', () => {
           db.prepare(
             "UPDATE leases SET expires_at = '2020-01-01T00:00:00Z' WHERE name = 'produce'",
           ).run()
-          expect(acquireLease(db, 'produce', 'successor', PRODUCE_LEASE_TTL_MS)).toBe(true)
+          expect(acquireLease(db, 'produce', 'successor', PRODUCE_LEASE_TTL_MS, time)).toBe(true)
         },
       },
       { name: 'qc', run: nextStage },
     ]
     await expect(
-      produceNextTick(db, { channelsDir, runsRoot, stagesFor: () => stages }),
+      produceNextTick(db, { time, channelsDir, runsRoot, stagesFor: () => stages }),
     ).rejects.toBeInstanceOf(LeaseLostError)
     expect(nextStage).not.toHaveBeenCalled()
     expect(

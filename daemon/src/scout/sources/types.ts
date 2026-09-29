@@ -25,6 +25,7 @@ export interface TrendCandidate {
 }
 
 export interface TrendSourceFetchOpts {
+  time?: import('../../time.js').TimeSource
   limit: number
   timeoutMs: number
   signal?: AbortSignal

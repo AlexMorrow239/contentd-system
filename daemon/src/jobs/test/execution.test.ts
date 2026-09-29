@@ -1,4 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach } from 'vitest'
+import { createTestTime, type TestTime } from '../../../testing/time.js'
+let time: TestTime
+beforeEach(() => {
+  time = createTestTime(new Date('2026-08-01T12:00:00Z'))
+})
+import { describe, expect, it } from 'vitest'
 import { writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileDb, memDb, seedJob, seedStage } from '../../../testing/db.js'
@@ -7,16 +13,13 @@ import { requireLease } from '../../loop/lease.js'
 import { reconcileJobs } from '../execution.js'
 import { createJob, runJob } from '../runner.js'
 
-afterEach(() => vi.useRealTimers())
-
 describe('execution recovery', () => {
   it('reconciles legacy queued/running jobs exactly once and preserves checkpoints', () => {
-    vi.useFakeTimers()
-    const db = memDb()
+    const db = memDb(time)
     seedJob(db, 'orphan', { status: 'running' })
     seedStage(db, 'orphan', 'script', { status: 'done' })
     seedStage(db, 'orphan', 'voice', { status: 'running' })
-    const lease = requireLease(db, 'produce')
+    const lease = requireLease(db, 'produce', undefined, { time })
     expect(reconcileJobs(db, lease)).toBe(1)
     expect(reconcileJobs(db, lease)).toBe(0)
     expect(
@@ -30,7 +33,7 @@ describe('execution recovery', () => {
       recovery_count: 1,
       recovery_pending: 1,
       recovery_stage: 'voice',
-      retry_after: new Date(Date.now() + 30_000).toISOString(),
+      retry_after: new Date(time.now().getTime() + 30_000).toISOString(),
     })
     expect(db.prepare("SELECT status FROM job_stages WHERE stage='script'").get()).toEqual({
       status: 'done',
@@ -38,11 +41,10 @@ describe('execution recovery', () => {
     lease.release()
   })
   it('fences late stage completion and keeps replacement artifacts separate', async () => {
-    vi.useFakeTimers()
-    const { db, root } = fileDb()
+    const { db, root } = fileDb(undefined, time)
     const channel = testChannel()
-    const jobId = createJob(db, channel, { topic: 'isolation' })
-    const lease = requireLease(db, 'produce')
+    const jobId = createJob(db, channel, { time, topic: 'isolation' })
+    const lease = requireLease(db, 'produce', undefined, { time })
     let finish!: () => void
     let oldPath = ''
     const first = runJob(
@@ -61,11 +63,11 @@ describe('execution recovery', () => {
           },
         },
       ],
-      { runsRoot: join(root, 'runs'), lease },
+      { time, runsRoot: join(root, 'runs'), lease },
     )
     const observed = first.catch((e) => e)
-    vi.setSystemTime(Date.now() + 300_000)
-    const replacement = requireLease(db, 'produce')
+    time.setNow(time.now().getTime() + 300_000)
+    const replacement = requireLease(db, 'produce', undefined, { time })
     reconcileJobs(db, replacement)
     let newPath = ''
     await runJob(
@@ -81,7 +83,7 @@ describe('execution recovery', () => {
           },
         },
       ],
-      { runsRoot: join(root, 'runs'), lease: replacement },
+      { time, runsRoot: join(root, 'runs'), lease: replacement },
     )
     finish()
     expect((await observed).name).toBe('LeaseLostError')

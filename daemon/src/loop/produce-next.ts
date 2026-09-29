@@ -10,6 +10,7 @@ import { claimTopic } from '../scout/topics.js'
 import { acquireManagedLease, type LeaseContext } from './lease.js'
 import { linkActionJob, reconcileJobs } from '../jobs/execution.js'
 import { planTick } from './plan-tick.js'
+import { resolveTime, type TimeSource } from '../time.js'
 
 export interface TickResult {
   action: 'resumed' | 'produced' | 'noop'
@@ -66,9 +67,11 @@ export async function produceNextTick(
     lease?: LeaseContext
     daemonLease?: LeaseContext
     actionId?: number
+    time?: TimeSource
   },
 ): Promise<TickResult> {
   const stagesFor = opts.stagesFor ?? pipelineStages
+  const time = resolveTime(opts.time, opts.lease, opts.daemonLease)
   // Config load comes BEFORE the lease: a broken channel TOML (or a missing
   // channels dir) blocks the whole tick either way, and burning a lease slot on
   // it would only mean the next firing waits on a lease that was never going to
@@ -86,7 +89,7 @@ export async function produceNextTick(
     return configErrorNoop(loaded.error)
   }
   const channels = loaded.channels
-  const lease = opts.lease ?? acquireManagedLease(db, 'produce', opts.daemonLease)
+  const lease = opts.lease ?? acquireManagedLease(db, 'produce', opts.daemonLease, { time })
   if (lease === null) return { action: 'noop', reason: 'lease-held' }
   try {
     lease.assertOwned()
@@ -104,7 +107,7 @@ export async function produceNextTick(
         "UPDATE topics SET status = 'used' WHERE status = 'claimed' AND job_id IN (SELECT job_id FROM library)",
       ).run()
     }).immediate()
-    const plan = planTick(db, channels)
+    const plan = planTick(db, channels, time)
 
     if (plan.kind === 'noop') {
       return { action: 'noop', reason: plan.reason }
@@ -122,6 +125,7 @@ export async function produceNextTick(
           lease,
           actionId: opts.actionId,
           daemonLease: opts.daemonLease,
+          time,
         })
       } catch (err) {
         // A ResumeError is a refusal, not a crash — one JSON line, exit 0,
@@ -159,7 +163,7 @@ export async function produceNextTick(
       jobId = db
         .transaction(() => {
           lease.assertOwned()
-          const id = createJob(db, channel, { topic: plan.topic })
+          const id = createJob(db, channel, { topic: plan.topic, time })
           if (!claimTopic(db, plan.topicId, id)) {
             throw new ClaimConflictError(
               `topic ${plan.topicId} is no longer claimable (status changed since planning)`,
@@ -184,6 +188,7 @@ export async function produceNextTick(
     const result = await runJob(db, channel, jobId, stagesFor(), {
       runsRoot: opts.runsRoot,
       lease,
+      time,
     })
     return { action: 'produced', jobId, topicId: plan.topicId, status: result.status }
   } finally {

@@ -9,6 +9,7 @@ import { linkActionJob, reconcileJobs } from './execution.js'
 import { runJob } from './runner.js'
 import type { JobResult } from './runner.js'
 import type { StageDef } from './types.js'
+import { resolveTime, type TimeSource } from '../time.js'
 
 // A refusal to resume — distinct from a crash so the CLI prints just the
 // reason and exits 1. The kind separates the three genuinely different
@@ -62,11 +63,11 @@ export async function resumeJob(
     daemonLease?: LeaseContext
     actionId?: number
     stagesFor?: () => StageDef[]
-    // Legacy test seam; managed renewal runs throughout the operation.
-    heartbeat?: () => void
+    time?: TimeSource
   },
 ): Promise<JobResult> {
-  const lease = opts.lease ?? requireLease(db, 'produce', opts.daemonLease)
+  const time = resolveTime(opts.time, opts.lease, opts.daemonLease)
+  const lease = opts.lease ?? requireLease(db, 'produce', opts.daemonLease, { time })
   try {
     lease.assertOwned()
     if (opts.force) reconcileJobs(db, lease)
@@ -109,7 +110,7 @@ export async function resumeJob(
     return await runJob(db, channel, jobId, stages, {
       runsRoot: opts.runsRoot,
       lease,
-      heartbeat: opts.heartbeat,
+      time,
     })
   } finally {
     if (!opts.lease) lease.release()

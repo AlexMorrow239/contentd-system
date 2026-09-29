@@ -128,18 +128,23 @@ construction/reconciliation while retaining daemon ownership and lifecycle.
 
 `worker-contract.ts` contains types only. `worker-loop.ts` owns polling and log
 deduplication; `worker-supervisor.ts` joins workers on cancellation/failure without
-knowing about SQLite or domain work. `timers.ts` owns abortable sleep and unref'd,
-cancellable intervals. `produce-unit.ts`, `scout-unit.ts`, `digest-unit.ts` and
+knowing about SQLite or domain work. `daemon/src/time.ts` owns `TimeSource` clock reads,
+abortable sleeps, cancellable timeouts, unref'd intervals and request deadlines.
+`produce-unit.ts`, `scout-unit.ts`, `digest-unit.ts` and
 `actions-worker.ts` expose independently callable units. Construct stateful units
 once and reuse them: digest day and action heartbeat throttle belong to the unit.
 Architecture tests forbid work importing daemon composition, polling or supervision,
 including erased type imports. Import shared types from the contract instead.
 
 Test work by invoking units directly with disposable fixtures; use fake units for
-runtime tests and injected interval callbacks for managed lease tests. Keep only
-limited composition and CLI signal smoke tests that start the daemon. Managed
-leases accept an interval adapter; `actionsUnit` forwards its optional
-`startInterval` and accepts `pid` for its liveness heartbeat.
+runtime tests and one `createTestTime` source for managed leases and domain work.
+Keep only limited composition and CLI signal smoke tests that start the daemon.
+Pass `time` through every operation. Leases retain their source, child operations
+inherit it, and conflicting sources fail before mutation. `actionsUnit` also accepts
+`pid` for its liveness heartbeat. Production entrypoints default to `systemTime`.
+Application SQL binds timestamps and day/window cutoffs from the source; schema
+defaults remain for compatibility, not as the application clock. UTC days govern
+budgets and production quotas; local days govern the digest schedule.
 
 Workers check demand, do one unit, and immediately recheck.
 Idle/error sleeps are 30s/60s; fast actions poll at 1s. Identical idle messages
@@ -509,6 +514,17 @@ the shared helpers rather than re-rolling fixtures locally:
 
 Conventions:
 
+- **One time source per test.** `daemon/testing/time.ts` provides `createTestTime(start)`
+  without replacing globals. Pass it to operations, `makeCtx({ time })`, and
+  `memDb(time)` or `fileDb(name, time)`. Seed helpers inherit the fixture's clock
+  and preserve historical timestamp overrides. `await time.advanceBy(ms)` runs
+  elapsed timers and async continuations; `time.setNow(date)` changes wall time
+  without firing timers. Abort/join workers and check `pendingTimerCount()` after
+  cleanup. Avoid global fake timers, separate sleep/interval injection, and
+  unbounded draining of recurring workers. Native time belongs in the shared
+  adapter. Request deadlines cover body consumption and dispose in `finally`.
+  Third-party internals, rendering, and CLI process smoke tests retain real time;
+  dashboard-specific timing is outside this daemon boundary.
 - **Env only via `vi.stubEnv`.** `setup.ts` registers a global
   `afterEach(vi.unstubAllEnvs)`, so no file needs its own.
 - **Pass subprocess settings explicitly through `runCli(args, { env })`.**

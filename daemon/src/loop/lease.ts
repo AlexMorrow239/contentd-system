@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
-import { startInterval } from './timers.js'
-import type { StartInterval } from './worker-contract.js'
+import { resolveTime, systemTime, type TimeSource } from '../time.js'
 
 export const LEASE_TTL_MS = 300_000
 export const LEASE_HEARTBEAT_MS = 60_000
@@ -16,6 +15,7 @@ export class LeaseLostError extends BrainrotError {
 }
 
 export interface LeaseContext {
+  readonly time: TimeSource
   name: string
   token: string
   signal: AbortSignal
@@ -27,27 +27,41 @@ export function leaseHolder(label?: string): string {
   return `pid:${process.pid}:${label ?? 'operation'}:${randomUUID()}`
 }
 
-export function acquireLease(db: Database, name: string, holder: string, ttlMs: number): boolean {
+export function acquireLease(
+  db: Database,
+  name: string,
+  holder: string,
+  ttlMs: number,
+  time: TimeSource = systemTime,
+): boolean {
   return db
     .transaction(() => {
-      const now = new Date().toISOString()
+      const at = time.now()
+      const now = at.toISOString()
       const row = db.prepare('SELECT expires_at FROM leases WHERE name = ?').get(name) as
         { expires_at: string } | undefined
       if (row !== undefined && row.expires_at > now) return false
       db.prepare(
         'INSERT INTO leases (name, holder, expires_at) VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET holder = excluded.holder, expires_at = excluded.expires_at',
-      ).run(name, holder, new Date(Date.now() + ttlMs).toISOString())
+      ).run(name, holder, new Date(at.getTime() + ttlMs).toISOString())
       return true
     })
     .immediate()
 }
 
-export function extendLease(db: Database, name: string, holder: string, ttlMs: number): boolean {
-  const now = new Date().toISOString()
+export function extendLease(
+  db: Database,
+  name: string,
+  holder: string,
+  ttlMs: number,
+  time: TimeSource = systemTime,
+): boolean {
+  const at = time.now()
+  const now = at.toISOString()
   return (
     db
       .prepare('UPDATE leases SET expires_at = ? WHERE name = ? AND holder = ? AND expires_at > ?')
-      .run(new Date(Date.now() + ttlMs).toISOString(), name, holder, now).changes === 1
+      .run(new Date(at.getTime() + ttlMs).toISOString(), name, holder, now).changes === 1
   )
 }
 
@@ -55,11 +69,16 @@ export function releaseLease(db: Database, name: string, holder: string): void {
   db.prepare('DELETE FROM leases WHERE name = ? AND holder = ?').run(name, holder)
 }
 
-export function ownsLease(db: Database, name: string, token: string): boolean {
+export function ownsLease(
+  db: Database,
+  name: string,
+  token: string,
+  time: TimeSource = systemTime,
+): boolean {
   return (
     db
       .prepare('SELECT 1 FROM leases WHERE name = ? AND holder = ? AND expires_at > ?')
-      .get(name, token, new Date().toISOString()) !== undefined
+      .get(name, token, time.now().toISOString()) !== undefined
   )
 }
 
@@ -69,11 +88,12 @@ export function acquireManagedLease(
   db: Database,
   name: string,
   parent?: LeaseContext,
-  opts: { startInterval?: StartInterval } = {},
+  opts: { time?: TimeSource } = {},
 ): LeaseContext | null {
+  const time = resolveTime(opts.time, parent)
   parent?.assertOwned()
   const token = leaseHolder(name)
-  if (!acquireLease(db, name, token, LEASE_TTL_MS)) return null
+  if (!acquireLease(db, name, token, LEASE_TTL_MS, time)) return null
   const controller = new AbortController()
   let released = false
   const lose = (cause?: unknown): void => {
@@ -85,7 +105,7 @@ export function acquireManagedLease(
     if (controller.signal.aborted) throw controller.signal.reason
     try {
       parent?.assertOwned()
-      if (released || !ownsLease(db, name, token)) throw new LeaseLostError(name)
+      if (released || !ownsLease(db, name, token, time)) throw new LeaseLostError(name)
     } catch (err) {
       lose(err)
       throw controller.signal.reason
@@ -95,20 +115,21 @@ export function acquireManagedLease(
     if (controller.signal.aborted) return
     try {
       parent?.assertOwned()
-      if (!extendLease(db, name, token, LEASE_TTL_MS)) lose()
+      if (!extendLease(db, name, token, LEASE_TTL_MS, time)) lose()
     } catch (err) {
       lose(err)
     }
   }
   let cancel: () => void
   try {
-    cancel = (opts.startInterval ?? startInterval)(heartbeat, LEASE_HEARTBEAT_MS)
+    cancel = time.startInterval(heartbeat, LEASE_HEARTBEAT_MS)
   } catch (err) {
     parent?.signal.removeEventListener('abort', parentLost)
     releaseLease(db, name, token)
     throw err
   }
   return {
+    time,
     name,
     token,
     signal: controller.signal,
@@ -130,8 +151,13 @@ export function acquireManagedLease(
   }
 }
 
-export function requireLease(db: Database, name: string, parent?: LeaseContext): LeaseContext {
-  const lease = acquireManagedLease(db, name, parent)
+export function requireLease(
+  db: Database,
+  name: string,
+  parent?: LeaseContext,
+  opts: { time?: TimeSource } = {},
+): LeaseContext {
+  const lease = acquireManagedLease(db, name, parent, opts)
   if (lease === null)
     throw new BrainrotError(`${name} lease is held by another operation`, {
       domain: 'job',

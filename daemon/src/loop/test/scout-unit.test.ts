@@ -1,3 +1,4 @@
+import { createTestTime } from '../../../testing/time.js'
 import { describe, expect, it } from 'vitest'
 import { scoutUnit } from '../scout-unit.js'
 import { acquireLease, releaseLease } from '../lease.js'
@@ -60,7 +61,7 @@ describe('scoutUnit', () => {
     const fx = scoutFixture(async () => [scoutResult('a', { queued: 1 })])
     const unit = scoutUnit(fx.db, {
       channelsDir: fx.channelsDir,
-      now: () => SCOUT_NOW,
+      time: createTestTime(SCOUT_NOW),
       scout: fx.scout,
     })
 
@@ -73,7 +74,7 @@ describe('scoutUnit', () => {
     const fx = scoutFixture(async () => [scoutResult('a', { skipped: 'recheck-not-due' })])
     const unit = scoutUnit(fx.db, {
       channelsDir: fx.channelsDir,
-      now: () => SCOUT_NOW,
+      time: createTestTime(SCOUT_NOW),
       scout: fx.scout,
     })
 
@@ -87,7 +88,7 @@ describe('scoutUnit', () => {
     ])
     const unit = scoutUnit(fx.db, {
       channelsDir: fx.channelsDir,
-      now: () => SCOUT_NOW,
+      time: createTestTime(SCOUT_NOW),
       scout: fx.scout,
     })
 
@@ -101,7 +102,7 @@ describe('scoutUnit', () => {
     // this as `queue-full` — a queue depth nothing ever measured.
     const db = memDb()
     const channelsDir = writeChannelsDir({ 'a.toml': channelToml({ name: 'a' }) })
-    const unit = scoutUnit(db, { channelsDir, now: () => SCOUT_NOW })
+    const unit = scoutUnit(db, { channelsDir, time: createTestTime(SCOUT_NOW) })
 
     expect(await unit()).toEqual({
       worked: false,
@@ -113,7 +114,7 @@ describe('scoutUnit', () => {
     const fx = scoutFixture(async () => [scoutResult('a', { queued: 1 })])
     const unit = scoutUnit(fx.db, {
       channelsDir: fx.channelsDir,
-      now: () => SCOUT_NOW,
+      time: createTestTime(SCOUT_NOW),
       scout: fx.scout,
     })
     expect(acquireLease(fx.db, 'scout', 'someone-else', 600_000)).toBe(true)
@@ -132,7 +133,7 @@ describe('scoutUnit', () => {
     })
     const unit = scoutUnit(fx.db, {
       channelsDir: fx.channelsDir,
-      now: () => SCOUT_NOW,
+      time: createTestTime(SCOUT_NOW),
       scout: fx.scout,
     })
 
@@ -147,7 +148,7 @@ describe('scoutUnit', () => {
     const channelsDir = writeChannelsDir({ 'a.toml': 'not = [valid' })
     const unit = scoutUnit(db, {
       channelsDir,
-      now: () => SCOUT_NOW,
+      time: createTestTime(SCOUT_NOW),
       scout: async () => {
         throw new Error('must not be called')
       },
@@ -161,7 +162,7 @@ describe('scoutUnit', () => {
     const fx = scoutFixture(async () => [scoutResult('a', { queued: 1 })])
     const unit = scoutUnit(fx.db, {
       channelsDir: fx.channelsDir,
-      now: () => SCOUT_NOW,
+      time: createTestTime(SCOUT_NOW),
       scout: fx.scout,
     })
     await unit()

@@ -6,6 +6,7 @@ import type { ScoutChannelResult } from '../scout/scout.js'
 import { acquireManagedLease, type LeaseContext } from './lease.js'
 import { configErrorNoop } from './produce-next.js'
 import type { WorkerUnit } from './worker-contract.js'
+import { resolveTime, type TimeSource } from '../time.js'
 
 /**
  * One unit = one scoutAll pass over every configured channel. The recheck
@@ -19,27 +20,27 @@ export function scoutUnit(
   db: Database,
   opts: {
     channelsDir: string
-    now?: () => Date
+    time?: TimeSource
     scout?: typeof scoutAll
     daemonLease?: LeaseContext
   },
 ): WorkerUnit {
   const scout = opts.scout ?? scoutAll
+  const time = resolveTime(opts.time, opts.daemonLease)
   return async () => {
-    const now = opts.now?.() ?? new Date()
     const loaded = tryLoadChannelsDir(opts.channelsDir)
     if (loaded.error !== undefined) {
       return { worked: false, line: { ...configErrorNoop(loaded.error) } }
     }
     if (loaded.channels.length === 0) return { worked: false }
-    const lease = acquireManagedLease(db, 'scout', opts.daemonLease)
+    const lease = acquireManagedLease(db, 'scout', opts.daemonLease, { time })
     if (lease === null) {
       return { worked: false, line: { action: 'noop', reason: 'lease-held' } }
     }
     try {
       let results: ScoutChannelResult[]
       try {
-        results = await scout(db, loaded.channels, { now, lease })
+        results = await scout(db, loaded.channels, { time, lease })
       } catch (err) {
         if (err instanceof ScoutRunFailedError) {
           return {

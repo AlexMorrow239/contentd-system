@@ -1,3 +1,4 @@
+import { createTestTime } from '../../../../testing/time.js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { classify } from '../../../errors.js'
 import { SOURCE_FETCH_TIMEOUT_MS, dedupeHash, type FetchLike } from '../types.js'
@@ -106,12 +107,12 @@ describe('redditSource', () => {
     ).rejects.toBe(lost)
   })
   it("GETs the subreddit's newest posts from Arctic Shift with the UA and a timeout", async () => {
-    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+    const time = createTestTime(0)
     const { impl, calls } = fakeFetch(200, SEARCH_JSON)
     const source = redditSource('space', impl)
     expect(source.id).toBe('reddit:r/space')
 
-    await source.fetch({ limit: 25, timeoutMs: 9_000 })
+    await source.fetch({ limit: 25, timeoutMs: 9_000, time })
 
     expect(calls).toHaveLength(1)
     const url = new URL(calls[0].url)
@@ -126,7 +127,7 @@ describe('redditSource', () => {
     const init = calls[0].init!
     expect((init.headers as Record<string, string>)['User-Agent']).toBe(REDDIT_USER_AGENT)
     expect(init.signal).toBeInstanceOf(AbortSignal)
-    expect(timeoutSpy).toHaveBeenCalledWith(9_000)
+    expect(time.pendingTimerCount()).toBe(0)
   })
 
   it('maps posts to TrendCandidates keyed by the t3_ fullname, url = comments permalink', async () => {

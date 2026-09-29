@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { createTestTime } from '../../../testing/time.js'
 import { runWorker, IDLE_SLEEP_MS, ERROR_SLEEP_MS } from '../worker-loop.js'
 import type { UnitResult, WorkerDeps } from '../worker-contract.js'
 
@@ -8,6 +9,12 @@ async function drive(
 ): Promise<{ lines: Record<string, unknown>[]; sleeps: number[] }> {
   const lines: Record<string, unknown>[] = []
   const sleeps: number[] = []
+  const time = createTestTime(0)
+  const sleep = time.sleep
+  vi.spyOn(time, 'sleep').mockImplementation((ms, signal) => {
+    sleeps.push(ms)
+    return sleep(ms, signal)
+  })
   const controller = new AbortController()
   let i = 0
   const unit = async (): Promise<UnitResult> => {
@@ -18,11 +25,12 @@ async function drive(
   }
   const deps: WorkerDeps = {
     emit: (line) => lines.push(line),
-    sleep: async (ms) => {
-      sleeps.push(ms)
-    },
+    time,
   }
-  await runWorker('w', unit, controller.signal, deps)
+  const running = runWorker('w', unit, controller.signal, deps)
+  await time.advanceBy(results.length * ERROR_SLEEP_MS)
+  await running
+  expect(time.pendingTimerCount()).toBe(0)
   return { lines, sleeps }
 }
 
@@ -92,7 +100,7 @@ describe('runWorker', () => {
         return { worked: false }
       },
       controller.signal,
-      { emit: () => {}, sleep: async () => {} },
+      { emit: () => {}, time: createTestTime(0) },
     )
     expect(calls).toBe(0)
   })

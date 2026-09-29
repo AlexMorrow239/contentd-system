@@ -1,3 +1,4 @@
+import { resolveTime, type TimeSource } from '../time.js'
 import { LeaseLostError, type LeaseContext } from '../loop/lease.js'
 import type { Database } from 'better-sqlite3'
 import type Anthropic from '@anthropic-ai/sdk'
@@ -91,6 +92,7 @@ async function scoreWithLedger(
   channel: ChannelConfig,
   fresh: { candidate: TrendCandidate; hash: string }[],
   result: ScoutChannelResult,
+  time: TimeSource,
   client?: Anthropic,
   lease?: LeaseContext,
 ): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
@@ -99,7 +101,7 @@ async function scoreWithLedger(
     // spend against the global daily cap directly (design spec §8). Scored in
     // chunks now, so the estimate scales with how many calls this batch will
     // actually make.
-    assertGlobalDayBudget(db, ESTIMATED_SCOUT_COST_MICROS * estimatedChunkCount(fresh.length))
+    assertGlobalDayBudget(db, ESTIMATED_SCOUT_COST_MICROS * estimatedChunkCount(fresh.length), time)
     return await scoreCandidates({
       candidates: fresh.map((f) => f.candidate),
       niche: channel.niche,
@@ -111,7 +113,7 @@ async function scoreWithLedger(
   } catch (err) {
     const spent = errorCostUsdMicros(err)
     if (spent !== undefined) {
-      recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', spent)
+      recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', spent, undefined, time)
       result.costUsdMicros += spent
     }
     // Carry the partial ScoutChannelResult across the rethrow so scoutAll can
@@ -128,13 +130,14 @@ export async function scoutChannel(
   opts: {
     client?: Anthropic
     fetchImpl?: FetchLike
-    now?: Date
+    time?: TimeSource
     force?: boolean
     lease?: LeaseContext
   } = {},
 ): Promise<ScoutChannelResult> {
+  const time = resolveTime(opts.time, opts.lease)
   opts.lease?.assertOwned()
-  const now = opts.now ?? new Date()
+  const now = time.now()
 
   // Recheck gate FIRST — cheaper than the depth query below (a single indexed
   // lookup vs a COUNT), and a channel whose last attempt is still fresh has
@@ -178,6 +181,7 @@ export async function scoutChannel(
           limit: channel.scout.perSourceLimit,
           timeoutMs: SOURCE_FETCH_TIMEOUT_MS,
           signal: opts.lease?.signal,
+          time,
         })),
       )
       opts.lease?.assertOwned()
@@ -256,7 +260,7 @@ export async function scoutChannel(
 
   result.scored = fresh.length
   opts.lease?.assertOwned()
-  const scored = await scoreWithLedger(db, channel, fresh, result, opts.client, opts.lease)
+  const scored = await scoreWithLedger(db, channel, fresh, result, time, opts.client, opts.lease)
   result.costUsdMicros = scored.costUsdMicros
 
   // Topic mode: one row per candidate, exactly as before. Story mode: a
@@ -321,14 +325,30 @@ export async function scoutChannel(
     db.transaction(() => {
       opts.lease?.assertOwned()
       // Sentinel job id: the global-day query sums scout spend too.
-      recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', scored.costUsdMicros)
-      insertTopics(db, rows)
+      recordCost(
+        db,
+        `scout:${channel.name}`,
+        'anthropic',
+        'scout-score',
+        scored.costUsdMicros,
+        undefined,
+        time,
+      )
+      insertTopics(db, rows, time)
     }).immediate()
   } catch (err) {
     // Ownership can expire between the last scoring check and this commit.
     // Its transaction rolled back; retain the paid response without topics.
     if (err instanceof LeaseLostError || opts.lease?.signal.aborted) {
-      recordCost(db, `scout:${channel.name}`, 'anthropic', 'scout-score', scored.costUsdMicros)
+      recordCost(
+        db,
+        `scout:${channel.name}`,
+        'anthropic',
+        'scout-score',
+        scored.costUsdMicros,
+        undefined,
+        time,
+      )
     }
     throw err
   }
@@ -380,11 +400,12 @@ export async function scoutAll(
   opts: {
     client?: Anthropic
     fetchImpl?: FetchLike
-    now?: Date
+    time?: TimeSource
     force?: boolean
     lease?: LeaseContext
   } = {},
 ): Promise<ScoutChannelResult[]> {
+  opts = { ...opts, time: resolveTime(opts.time, opts.lease) }
   const results: ScoutChannelResult[] = []
   // Channels that failed the budget gate rather than scoring itself. The
   // global day cap is GLOBAL, so once it is reached EVERY channel fails

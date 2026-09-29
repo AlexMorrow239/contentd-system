@@ -1,3 +1,4 @@
+import { createTestTime } from '../../../testing/time.js'
 import { describe, expect, it, vi } from 'vitest'
 import { runDaemon } from '../daemon.js'
 import { readDaemonState } from '../daemon-state.js'
@@ -101,7 +102,7 @@ describe('runDaemon', () => {
       runsRoot: '/nowhere',
       signal: controller.signal,
       emit: (line) => lines.push(line),
-      sleep: async () => {},
+      time: createTestTime(0),
     })
 
     expect(lines[0]).toEqual({ action: 'daemon-started', pid: process.pid })
@@ -114,16 +115,18 @@ describe('runDaemon', () => {
     // observable proof of life.
     const db = memDb()
     const controller = new AbortController()
-    await runDaemon(db, {
+    const time = createTestTime(0)
+    const running = runDaemon(db, {
+      time,
       channelsDir: tmpDir('brainrot-daemon-'),
       runsRoot: tmpDir('brainrot-runs-'),
       emit: () => {},
-      sleep: () => {
-        controller.abort()
-        return Promise.resolve()
-      },
       signal: controller.signal,
     })
+    await time.advanceBy(0)
+    controller.abort()
+    await running
+    expect(time.pendingTimerCount()).toBe(0)
     expect(readDaemonState(db)?.pid).toBe(process.pid)
   })
 
@@ -131,16 +134,18 @@ describe('runDaemon', () => {
     const db = memDb()
     const stale = seedAction(db, { lane: 'slow', kind: 'produce', status: 'running' })
     const controller = new AbortController()
-    await runDaemon(db, {
+    const time = createTestTime(0)
+    const running = runDaemon(db, {
+      time,
       channelsDir: tmpDir('brainrot-daemon-'),
       runsRoot: tmpDir('brainrot-runs-'),
       emit: () => {},
-      sleep: () => {
-        controller.abort()
-        return Promise.resolve()
-      },
       signal: controller.signal,
     })
+    await time.advanceBy(0)
+    controller.abort()
+    await running
+    expect(time.pendingTimerCount()).toBe(0)
     expect(getAction(db, stale)?.status).toBe('failed')
     expect(getAction(db, stale)?.error).toContain('daemon restart')
   })
@@ -154,16 +159,18 @@ describe('runDaemon', () => {
       requestedBy: 'dashboard',
     })
     const controller = new AbortController()
-    await runDaemon(db, {
+    const time = createTestTime(0)
+    const running = runDaemon(db, {
+      time,
       channelsDir: tmpDir('brainrot-daemon-'),
       runsRoot: tmpDir('brainrot-runs-'),
       emit: () => {},
-      sleep: () => {
-        controller.abort()
-        return Promise.resolve()
-      },
       signal: controller.signal,
     })
+    await time.advanceBy(0)
+    controller.abort()
+    await running
+    expect(time.pendingTimerCount()).toBe(0)
     expect(getAction(db, id)?.status).toBe('done')
   })
 })

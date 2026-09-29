@@ -13,6 +13,7 @@ import { markPosted, unmarkPosted } from '../posts/posts.js'
 import { scoutAll } from '../scout/scout.js'
 import { rejectTopics, requeueTopic } from '../scout/topics.js'
 import { parseActionArgs, type ActionArgs, type ActionKind } from './catalog.js'
+import { resolveTime, type TimeSource } from '../time.js'
 
 /**
  * Handler implementations. DAEMON ONLY — daemon/src/arch.test.ts fails the build if
@@ -38,7 +39,7 @@ export interface ActionContext {
   lease?: LeaseContext
   daemonLease?: LeaseContext
   db: Database
-  now: Date
+  time: TimeSource
   channelsDir: string
   runsRoot: string
   /**
@@ -129,7 +130,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
   'digest.run': (ctx) => {
     const loaded = tryLoadChannelsDir(ctx.channelsDir)
     return Promise.resolve({
-      text: buildDigest(ctx.db, loaded.channels, { channelsError: loaded.error }),
+      text: buildDigest(ctx.db, loaded.channels, { channelsError: loaded.error, time: ctx.time }),
     })
   },
 
@@ -150,6 +151,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       lease: ctx.lease,
       daemonLease: ctx.daemonLease,
       actionId: ctx.actionId,
+      time: ctx.time,
     }),
 
   'jobs.produce': async (ctx, args, deps) => {
@@ -166,7 +168,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     const jobId = ctx.db
       .transaction(() => {
         ctx.lease?.assertOwned()
-        const id = createJob(ctx.db, channel, { topic: args.topic })
+        const id = createJob(ctx.db, channel, { topic: args.topic, time: ctx.time })
         linkActionJob(ctx.db, ctx.actionId, id, ctx.daemonLease)
         return id
       })
@@ -179,6 +181,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
     return (deps?.runJob ?? runJob)(ctx.db, channel, jobId, pipelineStages(), {
       runsRoot: ctx.runsRoot,
       lease: ctx.lease,
+      time: ctx.time,
     })
   },
 
@@ -207,6 +210,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       channels: await (deps?.scoutAll ?? scoutAll)(ctx.db, loaded.channels, {
         force: true,
         lease: ctx.lease,
+        time: ctx.time,
       }),
     }
   },
@@ -222,6 +226,7 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       daemonLease: ctx.daemonLease,
       actionId: ctx.actionId,
       channelsDir: ctx.channelsDir,
+      time: ctx.time,
     }),
 
   'post.mark': (ctx, args) =>
@@ -230,7 +235,12 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       // resolves the channel from the job itself (throwing not-found for an
       // unknown id), which is what makes a misfiled row structurally impossible
       // rather than something each caller has to remember.
-      markPosted(ctx.db, { jobId: args.jobId, platform: args.platform, url: args.url })
+      markPosted(ctx.db, {
+        jobId: args.jobId,
+        platform: args.platform,
+        url: args.url,
+        time: ctx.time,
+      })
       return { jobId: args.jobId, platform: args.platform, posted: true }
     }),
 
@@ -264,6 +274,7 @@ export async function runAction(
   kind: ActionKind,
   rawArgs: unknown,
 ): Promise<unknown> {
+  resolveTime(ctx.time, ctx.lease, ctx.daemonLease)
   ctx.daemonLease?.assertOwned()
   ctx.lease?.assertOwned()
   const args = parseActionArgs(kind, rawArgs)

@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import type { Platform } from './types.js'
+import { systemTime, type TimeSource } from '../time.js'
 
 /**
  * The `posts` DAO. A row exists iff the operator posted that video to that
@@ -41,13 +42,19 @@ function jobChannel(db: Database, jobId: string): string {
  */
 export function markPosted(
   db: Database,
-  opts: { jobId: string; channel?: string; platform: Platform; url?: string },
+  opts: { jobId: string; channel?: string; platform: Platform; url?: string; time?: TimeSource },
 ): void {
   const channel = opts.channel ?? jobChannel(db, opts.jobId)
   db.prepare(
-    'INSERT INTO posts (job_id, channel, platform, url) VALUES (?, ?, ?, ?) ' +
+    'INSERT INTO posts (job_id, channel, platform, url, posted_at) VALUES (?, ?, ?, ?, ?) ' +
       'ON CONFLICT(job_id, platform) DO UPDATE SET url = excluded.url',
-  ).run(opts.jobId, channel, opts.platform, opts.url ?? null)
+  ).run(
+    opts.jobId,
+    channel,
+    opts.platform,
+    opts.url ?? null,
+    (opts.time ?? systemTime).now().toISOString(),
+  )
 }
 
 /**

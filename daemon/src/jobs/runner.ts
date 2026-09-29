@@ -13,6 +13,7 @@ import { assertAttempt, beginAttempt } from './execution.js'
 import { makeBudgetWait } from './budget-wait.js'
 import { STAGE_ORDER } from './types.js'
 import type { JobContext, StageDef, StageName } from './types.js'
+import { resolveTime, systemTime, type TimeSource } from '../time.js'
 
 export interface JobResult {
   jobId: string
@@ -23,12 +24,16 @@ export function exitCodeFor(result: JobResult): 0 | 1 {
   return result.status === 'failed' || result.status === 'blocked' ? 1 : 0
 }
 
-export function createJob(db: Database, channel: ChannelConfig, opts: { topic: string }): string {
+export function createJob(
+  db: Database,
+  channel: ChannelConfig,
+  opts: { topic: string; time?: TimeSource },
+): string {
   const id = nanoid()
   db.transaction(() => {
     db.prepare(
-      "INSERT INTO jobs (id,channel,tier,topic,status) VALUES (?,?,'volume',?,'queued')",
-    ).run(id, channel.name, opts.topic)
+      "INSERT INTO jobs (id,channel,tier,topic,status,created_at) VALUES (?,?,'volume',?,'queued',?)",
+    ).run(id, channel.name, opts.topic, (opts.time ?? systemTime).now().toISOString())
     const insert = db.prepare('INSERT INTO job_stages (job_id,stage,status) VALUES (?,?,?)')
     for (const stage of STAGE_ORDER) insert.run(id, stage, 'pending')
   })()
@@ -40,10 +45,11 @@ export async function runJob(
   channel: ChannelConfig,
   jobId: string,
   stages: StageDef[],
-  options: { runsRoot: string; lease?: LeaseContext; heartbeat?: () => void },
+  options: { runsRoot: string; lease?: LeaseContext; time?: TimeSource },
 ): Promise<JobResult> {
   if (!/^[A-Za-z0-9_-]+$/.test(jobId)) throw new Error(`invalid job id: ${jobId}`)
-  const lease = options.lease ?? requireLease(db, 'produce')
+  const time = resolveTime(options.time, options.lease)
+  const lease = options.lease ?? requireLease(db, 'produce', undefined, { time })
   try {
     lease.assertOwned()
     const completed = db
@@ -68,9 +74,10 @@ async function execute(
   channel: ChannelConfig,
   jobId: string,
   stages: StageDef[],
-  options: { runsRoot: string; heartbeat?: () => void },
+  options: { runsRoot: string },
   lease: LeaseContext,
 ): Promise<JobResult> {
+  const time = lease.time
   const job = db
     .prepare('SELECT topic,recovery_count,recovery_stage,previous_attempt_id FROM jobs WHERE id=?')
     .get(jobId) as
@@ -95,6 +102,7 @@ async function execute(
   )
   const assertOwned = (): void => assertAttempt(db, jobId, attemptId, lease)
   const ctx: JobContext = {
+    time,
     jobId,
     db,
     channel,
@@ -111,25 +119,29 @@ async function execute(
       return join(dir, file)
     },
   }
-  const mutate = (work: () => void): void => {
+  const mutate = (work: (now: Date) => void): void => {
     db.transaction(() => {
       assertOwned()
-      work()
+      work(time.now())
     }).immediate()
   }
-  const finish = (status: 'done' | 'failed' | 'blocked', wait: string | null = null): void => {
+  const finish = (
+    status: 'done' | 'failed' | 'blocked',
+    now: Date,
+    wait: string | null = null,
+  ): void => {
     db.prepare('UPDATE execution_attempts SET status=?,finished_at=? WHERE id=?').run(
       status,
-      new Date().toISOString(),
+      now.toISOString(),
       attemptId,
     )
     db.prepare(
       'UPDATE jobs SET status=?,finished_at=?,active_attempt_id=NULL,budget_wait_json=?,retry_after=?,recovery_pending=0 WHERE id=?',
     ).run(
       status,
-      new Date().toISOString(),
+      now.toISOString(),
       wait,
-      status === 'blocked' ? new Date(Date.now() + 60_000).toISOString() : null,
+      status === 'blocked' ? new Date(now.getTime() + 60_000).toISOString() : null,
       jobId,
     )
   }
@@ -162,18 +174,17 @@ async function execute(
         }),
       )
     }
-    options.heartbeat?.()
-    mutate(() => {
+    mutate((now) => {
       db.prepare(
         "UPDATE job_stages SET status='running',started_at=?,finished_at=NULL,error=NULL WHERE job_id=? AND stage=?",
-      ).run(new Date().toISOString(), jobId, stage.name)
+      ).run(now.toISOString(), jobId, stage.name)
     })
     try {
       await stage.run(ctx)
-      mutate(() => {
+      mutate((now) => {
         db.prepare(
           "UPDATE job_stages SET status='done',finished_at=?,error=NULL,artifact_dir=? WHERE job_id=? AND stage=?",
-        ).run(new Date().toISOString(), join(runDir, stage.name), jobId, stage.name)
+        ).run(now.toISOString(), join(runDir, stage.name), jobId, stage.name)
         db.prepare(
           'UPDATE jobs SET recovery_count=0,recovery_stage=NULL,previous_attempt_id=NULL,budget_wait_json=NULL,retry_after=NULL WHERE id=?',
         ).run(jobId)
@@ -184,13 +195,16 @@ async function execute(
       assertOwned()
       const info = classify(err)
       const status = info.kind === 'budget' ? 'blocked' : 'failed'
-      mutate(() => {
+      mutate((now) => {
         db.prepare(
           "UPDATE job_stages SET status='failed',error=?,finished_at=? WHERE job_id=? AND stage=?",
-        ).run(info.message, new Date().toISOString(), jobId, stage.name)
+        ).run(info.message, now.toISOString(), jobId, stage.name)
         finish(
           status,
-          status === 'blocked' ? JSON.stringify(makeBudgetWait(err, channel, stage.name)) : null,
+          now,
+          status === 'blocked'
+            ? JSON.stringify(makeBudgetWait(err, channel, stage.name, now))
+            : null,
         )
       })
       log.error({ ...info, stage: stage.name }, 'stage failed')
@@ -209,17 +223,17 @@ async function execute(
     const state = qc.passed ? 'ready' : 'needs-review'
     const videoPath = join(committed.get('assemble') ?? join(root, 'assemble'), 'final.mp4')
     const metadata = JSON.stringify(readScriptArtifact(stageParent('script'))?.platformMeta ?? {})
-    mutate(() => {
+    mutate((now) => {
       db.prepare(
-        'INSERT INTO library (job_id,video_path,metadata_json,state,qc_json) VALUES (?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path,metadata_json=excluded.metadata_json,state=excluded.state,qc_json=excluded.qc_json',
-      ).run(jobId, videoPath, metadata, state, JSON.stringify(qc))
+        'INSERT INTO library (job_id,video_path,metadata_json,state,qc_json,created_at) VALUES (?,?,?,?,?,?) ON CONFLICT(job_id) DO UPDATE SET video_path=excluded.video_path,metadata_json=excluded.metadata_json,state=excluded.state,qc_json=excluded.qc_json',
+      ).run(jobId, videoPath, metadata, state, JSON.stringify(qc), now.toISOString())
       markTopicUsedByJob(db, jobId)
-      finish('done')
+      finish('done', now)
     })
     return { jobId, status: state, videoPath: existsSync(videoPath) ? videoPath : undefined }
   } catch (err) {
     assertOwned()
-    mutate(() => finish('failed'))
+    mutate((now) => finish('failed', now))
     log.error(classify(err), 'final gate failed')
     return { jobId, status: 'failed' }
   }

@@ -10,7 +10,6 @@ export interface WorkerSpec {
   idleSleepMs?: number
 }
 export interface WorkerDeps {
-  sleep: (ms: number) => Promise<void>
+  time: import('../time.js').TimeSource
   emit: (line: Record<string, unknown>) => void
 }
-export type StartInterval = (callback: () => void, ms: number) => () => void

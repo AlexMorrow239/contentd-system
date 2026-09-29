@@ -1,3 +1,4 @@
+import { createDeadline, systemTime } from '../../time.js'
 import { z } from 'zod'
 import { BrainrotError } from '../../errors.js'
 import { storyBody } from '../../stories/body.js'
@@ -129,7 +130,12 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
     })
   return {
     id,
-    async fetch({ limit, timeoutMs, signal }: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
+    async fetch({
+      limit,
+      timeoutMs,
+      signal,
+      time = systemTime,
+    }: TrendSourceFetchOpts): Promise<TrendCandidate[]> {
       signal?.throwIfAborted()
       // sort=desc is newest first. The archive has no "hot" ranking, and its
       // scores stay near zero for the first ~36h, so recency is the order.
@@ -143,61 +149,69 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
       // No retry, 429 included: the next scout attempt is SCOUT_RECHECK_MS
       // away, and Arctic Shift's limit is generous enough ("a couple requests
       // per second") that one GET per subreddit per attempt never nears it.
-      const res = await fetchImpl(`${ARCTIC_SHIFT_BASE_URL}/api/posts/search?${params}`, {
-        headers: { 'User-Agent': REDDIT_USER_AGENT },
-        signal: signal
-          ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
-          : AbortSignal.timeout(timeoutMs),
-      })
-      const body = parseJson(await res.text())
-      signal?.throwIfAborted()
-      const error = apiError(body)
-      if (!res.ok) throw fail(`responded ${res.status}${error === undefined ? '' : `: ${error}`}`)
-      if (error !== undefined) throw fail(`returned an error: ${error}`)
-      if (body === undefined) throw fail('returned a non-JSON response')
+      const deadline = createDeadline(time, timeoutMs, signal)
+      try {
+        const res = await fetchImpl(`${ARCTIC_SHIFT_BASE_URL}/api/posts/search?${params}`, {
+          headers: { 'User-Agent': REDDIT_USER_AGENT },
+          signal: deadline.signal,
+        })
+        const body = parseJson(await res.text())
+        signal?.throwIfAborted()
+        const error = apiError(body)
+        if (!res.ok) throw fail(`responded ${res.status}${error === undefined ? '' : `: ${error}`}`)
+        if (error !== undefined) throw fail(`returned an error: ${error}`)
+        if (body === undefined) throw fail('returned a non-JSON response')
 
-      const envelope = envelopeSchema.safeParse(body)
-      if (!envelope.success) {
-        throw fail(`returned an unrecognized response: ${envelope.error.issues[0].message}`)
-      }
-      // A single odd post is skipped, as the Atom parser skipped an entry
-      // missing its id or title — but every post failing is API drift.
-      const posts = envelope.data.data.flatMap((raw) => {
-        const post = postSchema.safeParse(raw)
-        return post.success ? [post.data] : []
-      })
-      if (posts.length === 0 && envelope.data.data.length > 0) {
-        throw fail('returned an unrecognized response: no post matched the expected shape')
-      }
+        const envelope = envelopeSchema.safeParse(body)
+        if (!envelope.success) {
+          throw fail(`returned an unrecognized response: ${envelope.error.issues[0].message}`)
+        }
+        // A single odd post is skipped, as the Atom parser skipped an entry
+        // missing its id or title — but every post failing is API drift.
+        const posts = envelope.data.data.flatMap((raw) => {
+          const post = postSchema.safeParse(raw)
+          return post.success ? [post.data] : []
+        })
+        if (posts.length === 0 && envelope.data.data.length > 0) {
+          throw fail('returned an unrecognized response: no post matched the expected shape')
+        }
 
-      return (
-        posts
-          .filter((post) => !isRemoved(post))
-          // The API already honors `limit`; this keeps the contract local.
-          .slice(0, limit)
-          .map((post) => {
-            const postId = post.id.replace(/^t3_/, '')
-            const targetUrl = submissionTarget(post.url)
-            const author = authorName(post.author)
-            // Annotate only — dropping media, automated and bodyless
-            // candidates is scoutChannel's call, so it can count them.
-            return {
-              title: post.title,
-              // Always the comments permalink, whatever the post links to:
-              // the story outro and the dashboard link read it.
-              url: `${REDDIT_ORIGIN}/r/${subreddit}/comments/${postId}/`,
-              sourceId: id,
-              // The t3_ fullname is what the reddit.com feed keyed on, so
-              // dedupe hashes carry across the transport change.
-              externalId: `t3_${postId}`,
-              targetUrl,
-              postKind: classifyTarget(targetUrl),
-              author,
-              automated: isAutomatedAuthor(author),
-              body: storyBody(post.selftext_html ?? undefined),
-            }
-          })
-      )
+        return (
+          posts
+            .filter((post) => !isRemoved(post))
+            // The API already honors `limit`; this keeps the contract local.
+            .slice(0, limit)
+            .map((post) => {
+              const postId = post.id.replace(/^t3_/, '')
+              const targetUrl = submissionTarget(post.url)
+              const author = authorName(post.author)
+              // Annotate only — dropping media, automated and bodyless
+              // candidates is scoutChannel's call, so it can count them.
+              return {
+                title: post.title,
+                // Always the comments permalink, whatever the post links to:
+                // the story outro and the dashboard link read it.
+                url: `${REDDIT_ORIGIN}/r/${subreddit}/comments/${postId}/`,
+                sourceId: id,
+                // The t3_ fullname is what the reddit.com feed keyed on, so
+                // dedupe hashes carry across the transport change.
+                externalId: `t3_${postId}`,
+                targetUrl,
+                postKind: classifyTarget(targetUrl),
+                author,
+                automated: isAutomatedAuthor(author),
+                body: storyBody(post.selftext_html ?? undefined),
+              }
+            })
+        )
+      } catch (err) {
+        // Fetch can reject body reads with a generic AbortError. Ownership
+        // cancellation must retain the parent's original reason.
+        signal?.throwIfAborted()
+        throw err
+      } finally {
+        deadline.dispose()
+      }
     },
   }
 }

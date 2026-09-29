@@ -185,12 +185,83 @@ function sourceSpecifiers(source: string, includeTypes = false, file = 'imports.
   return imports
 }
 
+describe('application time isolation', () => {
+  it('keeps native clocks, timers and SQL current time behind the time adapter', async () => {
+    const offenders: string[] = []
+    for (const file of await moduleFiles(SRC_ROOT)) {
+      if (file === join(SRC_ROOT, 'time.ts')) continue
+      const source = (await readSource(file))!
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+      const report = (node: ts.Node): void => {
+        offenders.push(`${relative(SRC_ROOT, file)}: ${node.getText(parsed)}`)
+      }
+      function visit(node: ts.Node): void {
+        if (
+          ts.isNewExpression(node) &&
+          node.expression.getText(parsed) === 'Date' &&
+          !node.arguments?.length
+        )
+          report(node)
+        if (ts.isCallExpression(node)) {
+          const name = node.expression.getText(parsed).replace(/^globalThis\./, '')
+          if (
+            [
+              'Date',
+              'Date.now',
+              'setTimeout',
+              'clearTimeout',
+              'setInterval',
+              'clearInterval',
+              'AbortSignal.timeout',
+            ].includes(name)
+          )
+            report(node)
+        }
+        if (
+          ts.isStringLiteralLike(node) &&
+          /\b(?:strftime|datetime|date|julianday|unixepoch)\s*\([^)]*['"]now['"]|\bCURRENT_TIMESTAMP\b/i.test(
+            node.text,
+          )
+        )
+          report(node)
+        ts.forEachChild(node, visit)
+      }
+      visit(parsed)
+      for (const spec of sourceSpecifiers(source, true)) {
+        if (/^(node:)?timers(?:\/|$)/.test(spec))
+          offenders.push(`${relative(SRC_ROOT, file)} -> ${spec}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('keeps global fake-clock installation out of daemon tests', async () => {
+    const offenders: string[] = []
+    for (const file of (await srcFiles()).filter((file) => file.endsWith('.test.ts'))) {
+      const source = (await readSource(file))!
+      const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+      function visit(node: ts.Node): void {
+        if (
+          ts.isCallExpression(node) &&
+          /^(vi|vitest)\.(useFakeTimers|setSystemTime|advanceTimers.*|runAllTimers.*)$/.test(
+            node.expression.getText(parsed),
+          )
+        )
+          offenders.push(relative(SRC_ROOT, file))
+        ts.forEachChild(node, visit)
+      }
+      visit(parsed)
+    }
+    expect(offenders).toEqual([])
+  })
+})
+
 describe('daemon runtime isolation', () => {
-  const runtime = ['worker-contract.ts', 'worker-loop.ts', 'worker-supervisor.ts', 'timers.ts'].map(
-    (file) => join(SRC_ROOT, 'loop', file),
+  const runtime = ['worker-contract.ts', 'worker-loop.ts', 'worker-supervisor.ts'].map((file) =>
+    join(SRC_ROOT, 'loop', file),
   )
 
-  it('keeps the shared contract free of executable statements and dependencies', async () => {
+  it('keeps the shared contract type-only with only the shared time type dependency', async () => {
     const source = await readSource(runtime[0])
     expect(source).not.toBeNull()
     const parsed = ts.createSourceFile(runtime[0], source!, ts.ScriptTarget.Latest, true)
@@ -200,11 +271,12 @@ describe('daemon runtime isolation', () => {
         (node) => ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node),
       ),
     ).toBe(true)
-    expect(sourceSpecifiers(source!, true)).toEqual([])
+    expect(sourceSpecifiers(source!, true)).toEqual(['../time.js'])
+    expect(sourceSpecifiers(source!, false)).toEqual([])
   })
 
   it('limits generic runtime dependencies to its own modules and shared errors', async () => {
-    const allowed = new Set([...runtime, join(SRC_ROOT, 'errors.ts')])
+    const allowed = new Set([...runtime, join(SRC_ROOT, 'errors.ts'), join(SRC_ROOT, 'time.ts')])
     const offenders: string[] = []
     for (const file of allowed) {
       const source = await readSource(file)

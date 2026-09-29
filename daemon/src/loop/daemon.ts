@@ -3,6 +3,7 @@ import { createDaemonWorkers, initializeDaemonWork } from './daemon-workers.js'
 import { requireLease } from './lease.js'
 import { runWorkers } from './worker-supervisor.js'
 import type { WorkerDeps, WorkerSpec } from './worker-contract.js'
+import { systemTime, type TimeSource } from '../time.js'
 
 /** Process lifecycle and production wiring. Work and polling live elsewhere. */
 export async function runDaemon(
@@ -10,14 +11,14 @@ export async function runDaemon(
   opts: {
     channelsDir: string
     runsRoot: string
-    now?: () => Date
+    time?: TimeSource
     emit?: WorkerDeps['emit']
-    sleep?: WorkerDeps['sleep']
     signal?: AbortSignal
     workers?: readonly WorkerSpec[]
   },
 ): Promise<void> {
-  const daemonLease = requireLease(db, 'daemon')
+  const time = opts.time ?? systemTime
+  const daemonLease = requireLease(db, 'daemon', undefined, { time })
   const controller = new AbortController()
   const abort = (): void => controller.abort()
   try {
@@ -31,8 +32,8 @@ export async function runDaemon(
       opts.signal.addEventListener('abort', abort, { once: true })
     }
     // Injected workers bypass production startup work as well as construction.
-    if (opts.workers === undefined) initializeDaemonWork(db, daemonLease, opts.now?.())
-    const workers = opts.workers ?? createDaemonWorkers(db, { ...opts, daemonLease })
+    if (opts.workers === undefined) initializeDaemonWork(db, daemonLease)
+    const workers = opts.workers ?? createDaemonWorkers(db, { ...opts, time, daemonLease })
     const emit =
       opts.emit ??
       ((line: Record<string, unknown>) => process.stdout.write(JSON.stringify(line) + '\n'))
@@ -45,7 +46,7 @@ export async function runDaemon(
           return worker.unit()
         },
       })),
-      { signal: controller.signal, emit, sleep: opts.sleep },
+      { signal: controller.signal, emit, time },
     )
     if (daemonLease.signal.aborted) throw daemonLease.signal.reason
   } finally {
