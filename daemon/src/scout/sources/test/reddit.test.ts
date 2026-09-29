@@ -77,6 +77,37 @@ describe('SOURCE_FETCH_TIMEOUT_MS', () => {
 })
 
 describe('redditSource', () => {
+  it('preserves short source bodies and metadata without making them narratable stories', async () => {
+    const { impl } = fakeFetch(
+      200,
+      JSON.stringify({
+        data: [
+          {
+            id: 'abc',
+            title: 'Original headline',
+            author: 'reporter',
+            created_utc: 1700000000,
+            selftext: 'Revenue rose 12%.',
+            selftext_html: '<p>Revenue rose 12%.</p>',
+            url: 'https://news.example/report',
+          },
+        ],
+      }),
+    )
+    const [candidate] = await fetchAll(impl)
+    expect(candidate.body).toBeUndefined()
+    expect(candidate.sourceContext).toMatchObject({
+      version: 1,
+      title: 'Original headline',
+      body: 'Revenue rose 12%.',
+      author: 'reporter',
+      publishedAt: '2023-11-14T22:13:20.000Z',
+      sourceId: 'reddit:r/space',
+      externalId: 't3_abc',
+      url: 'https://www.reddit.com/r/space/comments/abc/',
+      targetUrl: 'https://news.example/report',
+    })
+  })
   it('rejects a cancelled fetch before starting the request', async () => {
     const lost = new Error('lease lost')
     const fetchImpl = vi.fn()
@@ -122,7 +153,7 @@ describe('redditSource', () => {
       sort: 'desc',
       limit: '25',
       md2html: 'true',
-      fields: 'id,title,author,selftext,url',
+      fields: 'id,title,author,selftext,url,created_utc',
     })
     const init = calls[0].init!
     expect((init.headers as Record<string, string>)['User-Agent']).toBe(REDDIT_USER_AGENT)
@@ -132,7 +163,7 @@ describe('redditSource', () => {
 
   it('maps posts to TrendCandidates keyed by the t3_ fullname, url = comments permalink', async () => {
     const { impl } = fakeFetch(200, SEARCH_JSON)
-    expect(await fetchAll(impl)).toEqual([
+    expect(await fetchAll(impl)).toMatchObject([
       {
         title: 'JWST finds water ice in a protoplanetary disk',
         url: 'https://www.reddit.com/r/space/comments/abc/',

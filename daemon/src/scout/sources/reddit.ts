@@ -4,6 +4,7 @@ import { BrainrotError } from '../../errors.js'
 import { storyBody } from '../../stories/body.js'
 import { classifyTarget } from './post-kind.js'
 import type { FetchLike, TrendCandidate, TrendSource, TrendSourceFetchOpts } from './types.js'
+import type { SourcePost } from '../../context/types.js'
 
 // What reddit substitutes for the name of an account that no longer exists.
 const DELETED_AUTHOR = '[deleted]'
@@ -51,7 +52,7 @@ export const ARCTIC_SHIFT_BASE_URL = 'https://arctic-shift.photon-reddit.com'
 // Asking for `selftext` is what makes md2html=true add `selftext_html`, the
 // rendered body storyBody reads. `permalink` is not a selectable field; the
 // candidate's url is rebuilt from `id` instead.
-const ARCTIC_SHIFT_FIELDS = 'id,title,author,selftext,url'
+export const ARCTIC_SHIFT_FIELDS = 'id,title,author,selftext,url,created_utc'
 
 const REDDIT_ORIGIN = 'https://www.reddit.com'
 
@@ -73,6 +74,7 @@ const postSchema = z.object({
   selftext: z.string().nullish(),
   selftext_html: z.string().nullish(),
   url: z.string().nullish(),
+  created_utc: z.number().finite().nullish(),
 })
 type ArcticShiftPost = z.infer<typeof postSchema>
 
@@ -91,6 +93,31 @@ function isRemoved(post: ArcticShiftPost): boolean {
     selftext.startsWith(REMOVED_BY_REDDIT) ||
     post.title.startsWith(REMOVED_BY_REDDIT)
   )
+}
+
+/** Shared by scouting and one-post recovery for topics created before snapshots existed. */
+export function sourcePostFromArchive(
+  raw: unknown,
+  sourceId: string,
+  url: string,
+  fetchedAt: string,
+): SourcePost | null {
+  const parsed = postSchema.safeParse(raw)
+  if (!parsed.success || isRemoved(parsed.data)) return null
+  const post = parsed.data
+  const published = post.created_utc == null ? null : new Date(post.created_utc * 1000)
+  return {
+    version: 1,
+    title: post.title,
+    body: storyBody(post.selftext_html ?? undefined, 0) || post.selftext?.trim() || null,
+    author: authorName(post.author) ?? null,
+    publishedAt: published && Number.isFinite(published.getTime()) ? published.toISOString() : null,
+    sourceId,
+    externalId: `t3_${post.id.replace(/^t3_/, '')}`,
+    url,
+    targetUrl: submissionTarget(post.url) ?? null,
+    fetchedAt,
+  }
 }
 
 // `url` is the submission target: a self post's own permalink, a link post's
@@ -185,13 +212,14 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
               const postId = post.id.replace(/^t3_/, '')
               const targetUrl = submissionTarget(post.url)
               const author = authorName(post.author)
+              const url = `${REDDIT_ORIGIN}/r/${subreddit}/comments/${postId}/`
               // Annotate only — dropping media, automated and bodyless
               // candidates is scoutChannel's call, so it can count them.
               return {
                 title: post.title,
                 // Always the comments permalink, whatever the post links to:
                 // the story outro and the dashboard link read it.
-                url: `${REDDIT_ORIGIN}/r/${subreddit}/comments/${postId}/`,
+                url,
                 sourceId: id,
                 // The t3_ fullname is what the reddit.com feed keyed on, so
                 // dedupe hashes carry across the transport change.
@@ -201,6 +229,8 @@ export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): T
                 author,
                 automated: isAutomatedAuthor(author),
                 body: storyBody(post.selftext_html ?? undefined),
+                sourceContext:
+                  sourcePostFromArchive(post, id, url, time.now().toISOString()) ?? undefined,
               }
             })
         )

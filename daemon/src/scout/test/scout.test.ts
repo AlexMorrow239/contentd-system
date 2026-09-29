@@ -63,6 +63,33 @@ afterEach(() => {
 })
 
 describe('scoutChannel', () => {
+  it('persists the original short post alongside a reframed topic without enabling story mode', async () => {
+    const db = memDb()
+    const { client } = fakeClient(
+      emitScores([{ candidateIndex: 0, score: 95, topic: 'Hooky topic', reason: 'good' }]),
+    )
+    await scoutChannel(db, scoutedChannel(), {
+      client,
+      fetchImpl: fetchStub({
+        'subreddit=space': arcticShiftJson([
+          {
+            id: 'abc',
+            title: 'Original report',
+            body: 'The measurement was 12 percent.',
+            target: 'https://news.example/report',
+          },
+        ]),
+      }),
+    })
+    const [topic] = listTopics(db)
+    expect(topic.title).toBe('Hooky topic')
+    expect(topic.bodyText).toBeNull()
+    expect(topic.sourceContext).toMatchObject({
+      title: 'Original report',
+      body: 'The measurement was 12 percent.',
+      targetUrl: 'https://news.example/report',
+    })
+  })
   it('ledgers a stale paid score and stops before the next chunk or channel', async () => {
     const db = memDb()
     const lease = acquireManagedLease(db, 'scout')!

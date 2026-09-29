@@ -1,6 +1,7 @@
 import { systemTime, type TimeSource } from '../time.js'
 import type { Database } from 'better-sqlite3'
 import type { StoryPart } from '../stories/types.js'
+import { parseSourcePost, type SourcePost } from '../context/types.js'
 
 // The tuple is the declaration and the union derives from it (the pattern
 // posts/types.ts's PLATFORMS follows), so a surface that must enumerate the
@@ -11,6 +12,7 @@ export const TOPIC_STATUSES = ['candidate', 'claimed', 'used', 'rejected'] as co
 export type TopicStatus = (typeof TOPIC_STATUSES)[number]
 
 export interface TopicRow {
+  sourceContext: SourcePost | null
   id: number
   channel: string
   title: string
@@ -43,6 +45,7 @@ export interface TopicRow {
 // Scorer output lands as 'candidate' (score >= SCOUT_MIN_SCORE) or 'rejected';
 // the operator lifecycle states are reached only via the transition fns below.
 export interface NewTopic {
+  sourceContext?: SourcePost
   channel: string
   title: string
   rawTitle: string
@@ -62,9 +65,10 @@ export interface NewTopic {
 
 const TOPIC_COLUMNS =
   'id, channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status, ' +
-  'job_id, body_text, series_key, part_index, part_count, truncated, created_at'
+  'job_id, body_text, series_key, part_index, part_count, truncated, created_at, source_context_json'
 
 interface DbTopicRow {
+  source_context_json: string | null
   id: number
   channel: string
   title: string
@@ -87,6 +91,7 @@ interface DbTopicRow {
 
 function toTopicRow(row: DbTopicRow): TopicRow {
   return {
+    sourceContext: parseSourcePost(row.source_context_json),
     id: row.id,
     channel: row.channel,
     title: row.title,
@@ -118,8 +123,8 @@ export function insertTopics(
 ): number {
   const stmt = db.prepare(
     'INSERT OR IGNORE INTO topics (channel, title, raw_title, source, url, target_url, dedupe_hash, score, reason, status, ' +
-      'body_text, series_key, part_index, part_count, truncated, created_at) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'body_text, series_key, part_index, part_count, truncated, created_at, source_context_json) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   )
   const insertAll = db.transaction((batch: NewTopic[]) => {
     const createdAt = time.now().toISOString()
@@ -142,6 +147,7 @@ export function insertTopics(
         t.partCount ?? null,
         t.truncated === true ? 1 : 0,
         createdAt,
+        t.sourceContext === undefined ? null : JSON.stringify(t.sourceContext),
       ).changes
     }
     return inserted
@@ -385,4 +391,11 @@ export function storyPartForJob(db: Database, jobId: string): StoryPart | null {
     sourceUrl: row.url,
     truncated: row.truncated === 1,
   }
+}
+
+export function topicForJob(db: Database, jobId: string): TopicRow | null {
+  const row = db
+    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics WHERE job_id = ? ORDER BY id LIMIT 1`)
+    .get(jobId) as DbTopicRow | undefined
+  return row === undefined ? null : toTopicRow(row)
 }

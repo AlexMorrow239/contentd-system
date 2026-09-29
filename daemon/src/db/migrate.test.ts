@@ -72,6 +72,17 @@ describe('migrate — topics.target_url', () => {
     expect(colNames(db, 'topics')).toContain('target_url')
   })
 
+  it('adds nullable context snapshots to legacy jobs and topics idempotently', () => {
+    const db = topicsDb(OLD_TOPICS + OLD_JOBS)
+    seedJob(db, 'legacy')
+    migrate(db)
+    migrate(db)
+    expect(colNames(db, 'topics').filter((name) => name === 'source_context_json')).toHaveLength(1)
+    expect(db.prepare('SELECT source_context_json FROM jobs WHERE id = ?').get('legacy')).toEqual({
+      source_context_json: null,
+    })
+  })
+
   it('preserves existing rows, leaving the new column null', () => {
     const db = topicsDb(OLD_TOPICS)
     db.exec(

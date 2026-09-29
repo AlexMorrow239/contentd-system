@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto'
 import type { PostKind } from './post-kind.js'
+import type { SourcePost } from '../../context/types.js'
 
 export interface TrendCandidate {
   title: string
   url: string
   sourceId: string
   externalId: string
+  sourceContext?: SourcePost
   // The submission target (the post's `url` — a self post's own permalink, a
   // link post's destination) and what it points at. Undefined for a deleted
   // post, whose `url` is empty; the classifier then fails open to 'link'.

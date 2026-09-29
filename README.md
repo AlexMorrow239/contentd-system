@@ -101,6 +101,22 @@ after each file.
 
 ## Inspect
 
+Script generation uses the original post text and metadata saved during scouting.
+When a selected topic links to an external article, the script stage retrieves
+its readable text before calling the model. Older Reddit topics recover their
+post through Arctic Shift; the pipeline does not request Reddit pages directly.
+Article retrieval is best-effort, so blocked, missing, or unreadable sources
+leave an explicit gap in the prompt rather than stopping production.
+
+Each job saves its source snapshot before the paid script call. Retries reuse
+that snapshot, including retrieval failures; completed script checkpoints remain
+unchanged. The attempt's `script/context.json` records the source URLs, retrieval
+warnings, truncation flags, and exact context supplied to the model. Post and
+article bodies share a 60,000-character prompt limit, and the script's budget
+estimate includes this additional input. Story videos still narrate their saved
+part verbatim after sanitization; their metadata model now sees the full current
+part within that limit. Manual topics without sources continue without retrieval.
+
 ```bash
 docker compose exec brainrot pnpm brainrot jobs    # last 20 jobs
 docker compose exec brainrot pnpm brainrot costs   # per-day USD totals, last 7 days

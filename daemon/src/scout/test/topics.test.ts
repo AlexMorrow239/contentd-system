@@ -431,6 +431,7 @@ describe('listTopics', () => {
     const rows = listTopics(db)
     expect(rows.map((r) => r.title)).toEqual(['new', 'old'])
     expect(rows[0]).toEqual({
+      sourceContext: null,
       id: newestId,
       channel: 'chan-a',
       title: 'new',

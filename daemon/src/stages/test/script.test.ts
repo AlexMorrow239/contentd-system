@@ -5,7 +5,6 @@ import {
   createScriptStage,
   ESTIMATED_SCRIPT_COST_MICROS,
   ESTIMATED_STORY_META_COST_MICROS,
-  STORY_META_PREVIEW_WORDS,
 } from '../script.js'
 import type { ScriptOutput } from '../script.js'
 import { testChannel, PLATFORM_META } from '../../../testing/channel.js'
@@ -13,6 +12,7 @@ import { makeCtx } from '../../../testing/job.js'
 import { emitToolUse, fakeClient } from '../../../testing/anthropic.js'
 import { splitStory, STORY_MIN_TAIL_WORDS, STORY_WORDS_PER_PART } from '../../stories/split.js'
 import { REALISTIC_STORY_BODY } from '../../stories/_stories.fixtures.js'
+import { bindSourceTopic, sourcePost } from '../../../testing/context.js'
 
 const VALID_SCRIPT = {
   hook: 'The Moon is slowly leaving us',
@@ -54,6 +54,61 @@ const VALID_SCRIPT = {
 }
 
 describe('scriptStage', () => {
+  it('grounds the model prompt in saved post facts and writes the exact context artifact', async () => {
+    const ctx = makeCtx()
+    bindSourceTopic(ctx, { sourceContext: sourcePost({ targetUrl: null }) })
+    const { client, create } = fakeClient(emitToolUse(VALID_SCRIPT))
+    await createScriptStage(client).run(ctx)
+    const prompt = create.mock.calls[0][0].messages[0].content
+    expect(prompt).toContain('Revenue increased twelve percent.')
+    expect(prompt).toContain('Original revenue report')
+    const artifact = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'context.json'), 'utf8'),
+    )
+    expect(prompt).toContain(artifact.promptContext)
+    expect(create.mock.calls[0][0].system).toMatch(/source.*data/i)
+  })
+
+  it('accounts for long source context before spending on the script model', async () => {
+    const ctx = makeCtx({
+      channel: testChannel({ budget: { perVideoUsdMicros: 25_000, perDayUsdMicros: 1_000_000 } }),
+    })
+    bindSourceTopic(ctx, {
+      sourceContext: sourcePost({ targetUrl: null, body: 'Detailed report. '.repeat(3000) }),
+    })
+    const { client, create } = fakeClient(emitToolUse(VALID_SCRIPT))
+    await expect(createScriptStage(client).run(ctx)).rejects.toBeInstanceOf(BudgetExceededError)
+    expect(create).not.toHaveBeenCalled()
+    expect(
+      ctx.db.prepare('SELECT source_context_json FROM jobs WHERE id = ?').get(ctx.jobId),
+    ).toMatchObject({ source_context_json: expect.any(String) })
+  })
+
+  it('reuses article context after a failed paid call and writes it to the new attempt', async () => {
+    const ctx = makeCtx()
+    bindSourceTopic(ctx)
+    const request = async () => ({
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+      body: `<article>${'<p>Revenue rose by twelve percent due to expansion in overseas markets and stronger local sales throughout the quarter.</p>'.repeat(12)}</article>`,
+    })
+    const { client } = fakeClient(emitToolUse({ broken: true }))
+    await expect(createScriptStage(client, { request }).run(ctx)).rejects.toThrow()
+    const previous = JSON.parse(
+      await fs.readFile(ctx.artifactPath('script', 'context.json'), 'utf8'),
+    )
+    const next = makeCtx({ db: ctx.db, jobId: ctx.jobId, topic: ctx.topic, time: ctx.time })
+    const good = fakeClient(emitToolUse(VALID_SCRIPT))
+    await createScriptStage(good.client, {
+      request: () => {
+        throw new Error('must not refetch')
+      },
+    }).run(next)
+    expect(
+      JSON.parse(await fs.readFile(next.artifactPath('script', 'context.json'), 'utf8')),
+    ).toEqual(previous)
+    expect(good.create.mock.calls[0][0].messages[0].content).toContain('overseas markets')
+  })
   it('ledgers a paid response after ownership loss without writing an artifact', async () => {
     const ctx = makeCtx()
     const controller = new AbortController()
@@ -261,16 +316,9 @@ describe('createScriptStage story mode', () => {
     expect(sawMultiSegmentPart).toBe(true)
   })
 
-  it('includes a sanitized, bounded opening preview in the metadata prompt', async () => {
+  it('includes the full sanitized current part in the metadata prompt', async () => {
     const prefix = 'He said he would kill me. '
-    // Counted, not assumed: the preview is a word count over the WHOLE
-    // sanitized body, so the cut point for the `wordN` tail below has to
-    // account for the prefix's own word count rather than starting at 0.
-    const prefixWordCount = prefix.trim().split(/\s+/).length
-    const longBody = Array.from(
-      { length: STORY_META_PREVIEW_WORDS + 20 },
-      (_, i) => `word${i}`,
-    ).join(' ')
+    const longBody = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ')
     const { client, create } = fakeClient(META)
     const ctx = makeCtx({
       topic: 'AITA for X? (1/3)',
@@ -282,23 +330,14 @@ describe('createScriptStage story mode', () => {
     // Sanitized: the raw flagged word is gone, the euphemism is present.
     expect(sentPrompt).not.toContain('kill me')
     expect(sentPrompt).toContain('unalive me')
-    // Bounded: only the first STORY_META_PREVIEW_WORDS words of the whole
-    // sanitized body are present, truncated with an ellipsis rather than the
-    // full body. Pinned at the real cut point (not just "some bound <= 60"):
-    // the LAST included word and the FIRST excluded one are both asserted, so
-    // an off-by-one slice would fail this even though a "word0 present" check
-    // alone would not.
-    const lastIncludedIndex = STORY_META_PREVIEW_WORDS - prefixWordCount - 1
-    const firstExcludedIndex = STORY_META_PREVIEW_WORDS - prefixWordCount
+    // Details beyond the old 60-word preview now reach the metadata model.
     expect(sentPrompt).toContain('word0')
-    expect(sentPrompt).toContain(`word${lastIncludedIndex}`)
-    expect(sentPrompt).not.toContain(`word${firstExcludedIndex}`)
-    expect(sentPrompt).toContain('…')
+    expect(sentPrompt).toContain('word199')
+    expect(sentPrompt).not.toContain('…')
   })
 
-  it('does not ellipsize a preview shorter than the word cap', async () => {
+  it('does not ellipsize a part shorter than the context cap', async () => {
     const { client, create } = fakeClient(META)
-    // story.bodyText is well under STORY_META_PREVIEW_WORDS words.
     const ctx = makeCtx({ topic: 'AITA for X? (1/3)', story })
     await createScriptStage(client).run(ctx)
     const sentPrompt = JSON.stringify(create.mock.calls[0][0])

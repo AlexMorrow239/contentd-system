@@ -98,6 +98,11 @@ function addTopicStoryColumns(db: Database): void {
  * write-free.
  */
 export function migrate(db: Database): void {
+  for (const table of ['topics', 'jobs']) {
+    if (tableExists(db, table) && !hasColumn(db, table, 'source_context_json')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN source_context_json TEXT`)
+    }
+  }
   // The submission target behind a scouted topic — topics.url is the comments
   // permalink, not the target. Rows scouted before the column existed stay
   // NULL.

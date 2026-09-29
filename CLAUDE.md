@@ -318,6 +318,26 @@ the model response schema accepts only platform metadata, not narration.
 The hook is still the scout's model-authored topic title. “Verbatim” refers to
 the body source, with sanitization applied before narration.
 
+### Source context for script generation
+
+`topics.source_context_json` stores versioned post snapshots independently of
+story eligibility, including bodies shorter than the narration minimum.
+`daemon/src/context/` collects a selected topic's post and directly linked
+external article inside the script stage. Legacy Reddit rows recover through
+Arctic Shift's ID lookup, never Reddit page scraping. Article retrieval uses
+Readability with scripts/resources disabled, public-address checks at connection
+time and on redirects, a 15-second deadline, and a 2 MiB decoded response cap.
+
+`jobs.source_context_json` freezes collected context before the paid call under
+the job's ownership check. Retries reuse it, including retrieval failures;
+`script/context.json` records the snapshot and exact prompt context per attempt.
+Missing sources are explicit prompt gaps, not job failures. Lease loss and
+cancellation must propagate. The combined body limit is 60,000 characters,
+shared equally when both sources are long. Budget estimates add the included
+context's estimated input cost; actual provider usage remains authoritative.
+Story metadata sees the sanitized current part rather than a 60-word preview;
+the deterministic narration path and `body_text` meaning remain unchanged.
+
 `daemon/src/stories/` is pure: the architecture lint permits only `errors.ts` imports
 from `daemon/src/` and bans direct database, filesystem, and network access.
 

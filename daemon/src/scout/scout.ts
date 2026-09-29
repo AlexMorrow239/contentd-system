@@ -280,6 +280,7 @@ export async function scoutChannel(
       targetUrl: candidate.targetUrl,
       score: s.score,
       reason: s.reason,
+      sourceContext: candidate.sourceContext,
     }
     if (story === null || status === 'rejected' || candidate.body === undefined) {
       rows.push({ ...base, title: s.topic, dedupeHash: hash, status })
