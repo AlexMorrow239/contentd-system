@@ -1,16 +1,3 @@
-# The MVP channel: high-energy finance-bro market commentary in topic mode,
-# cross-posted to YouTube and Instagram. It scouts a broad spread of investing,
-# trading, economics, personal-finance, and crypto communities through the
-# Arctic Shift archive, since reddit.com itself is unreachable keyless
-# (anti-scraping + blocked OAuth approval). Reddit is the only scout source.
-# There is NO `[story]` table: story mode stays in the code, dormant purely
-# because nothing here mentions it. Scaling up is adding TOMLs, not restoring
-# code.
-#
-# docker/state/channels/ is the sole maintained source of channel configuration.
-# Compose mounts it read-only at /app/state/channels; workers re-read it every
-# tick. Validate changes with pnpm test:config before deployment.
-#
 # The filename basename MUST equal `name` below: resumeJob resolves a job's
 # channel config as <channelsDir>/<job.channel>.toml, so a mismatch wedges
 # resume. loadChannelsDir rejects it at load time rather than at 3am.
@@ -23,60 +10,18 @@ script_model = "claude-sonnet-5"
 # relative to the process cwd (/app in the container).
 bg_dir = "assets/bg"
 
-# Pure demand. Nothing here is clipped against a platform cap at config load
-# (the old assertQuotaHeadroom is gone), and there is no runtime quota
-# detection or backoff anymore either — posting is manual, through the
-# dashboard's /post checklist, so there is no automated upload to be rejected
-# or backed off in the first place. This number just sets how many videos
-# production tries to finish per day; how many actually get posted by hand
-# each day is up to the operator. 15/day was sized for the old automated
-# throughput target and is the operator's to revisit now that posting is
-# manual — left as-is here, not re-justified.
 videos_per_day = 15
-# Inventory depth cap ONLY now — nothing ages out anymore. At 15/day this
-# lets 30 unconsumed videos (finished but not yet posted to every declared
-# platform) accumulate before production stops; there is no time horizon
-# attached to that number, and no video is ever discarded automatically for
-# taking too long to post. `pendingInventory` counts every video that hasn't
-# been posted to ALL of `platforms` below (or manually discarded via the
-# "discard" control on /post or /library, which sets `library.state =
-# 'blocked'` and removes it from the count). If posting falls behind — nobody
-# works the /post queue for a while — inventory climbs to the 30 cap,
-# planTick reports `backlog-full`, and production pauses until a human posts
-# (or discards) enough videos to make room again. That's expected backpressure,
-# not a fault: it is what stops production from running unbounded ahead of a
-# queue nobody is clearing.
 backlog_days = 2
-
-# The /post checklist for this channel — a flat list, not a schedule and not
-# a credential. Posting itself is manual now (the dashboard renders this as a
-# per-video checklist); cadence still comes from videos_per_day above.
-# Declaring both platforms means every finished video is posted to each by
-# hand.
 platforms = ["youtube", "instagram"]
 
 [voice]
 volume = "af_heart"
 
-# ElevenLabs premium voice: tried first, falls back to the free kokoro ->
-# edge-tts chain on failure or absence. model defaults to
-# eleven_multilingual_v2 when omitted. Requires ELEVENLABS_API_KEY in .env.
 [voice.premium]
 provider = "elevenlabs"
 voice_id = "Gubgw9l4dtIoQA9YZHgx"
 
 [scout]
-# Subreddits are bare names; an `r/` prefix is rejected as a source error. Each
-# is read through Arctic Shift (daemon/src/scout/sources/reddit.ts), newest
-# posts first. The mix deliberately spans speculative trading, long-term
-# investing, market analysis, personal finance, economics, and crypto so the
-# channel has both breaking-market hooks and evergreen money topics. Removed
-# and deleted posts are dropped before `fetched` is counted; image posts and
-# AutoModerator threads are dropped before scoring. The archive has no "hot"
-# ranking, so active subreddits bring fresh posts on most scout attempts, and
-# the queue-full gate (queue_days below) is what bounds scoring spend. Arctic
-# Shift makes no uptime promises: when this source starts erroring, check
-# https://status.arctic-shift.photon-reddit.com.
 subreddits = [
   "wallstreetbets",
   "stocks",
@@ -97,33 +42,8 @@ subreddits = [
   "CryptoCurrency",
   "Bitcoin",
 ]
-
-# Newest posts fetched per subreddit per scout attempt (Arctic Shift's max is
-# 100). A failed community fetch can be absorbed by the rest of this source
-# mix; the tick reports AllSourcesFailedError only when every fetch fails.
-per_source_limit = 25
-# Scout-side depth analogue of backlog_days: the scout skips this channel once
-# it holds ceil(videos_per_day x queue_days) = ceil(15 x 3) = 45 candidate
-# topics. Deeper than backlog_days on purpose — the scorer rejects a share of
-# what it sees (only >= SCOUT_MIN_SCORE = 80 is stored) and topics go stale.
 queue_days = 3
 
-# 15 renders/day is the dominant cost driver, and it is production — not
-# publishing — that spends: one Sonnet script call per video, plus the scout's
-# Haiku scoring calls across the subreddit mix. per_video_usd is a generous per-job
-# ceiling (a breach marks the job `blocked`, not `failed`, and it resumes
-# after a cap change); per_day_usd is 15 x that ceiling with headroom for
-# scout spend.
-#
-# CAVEAT — the channel-day cap is NOT the effective ceiling. Two other limits
-# bind first, and both are outside this file:
-#   1. BRAINROT_GLOBAL_DAILY_USD spans ALL channels and ALL scout spend, and
-#      is set in .env (Compose defaults to 12). Raise it
-#      in step with per_day_usd or the global cap is what actually stops
-#      the day.
-#   2. channelDaySpentMicros JOINs costs -> jobs, so the sentinel
-#      'scout:mvp' rows are invisible to THIS cap and count only against the
-#      global one.
 [budget]
 per_video_usd = 0.5
 per_day_usd = 25.0
