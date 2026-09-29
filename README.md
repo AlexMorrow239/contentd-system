@@ -255,6 +255,38 @@ it. Each tick reports how many it dropped as `droppedMedia`.
 docker compose up -d --build
 ```
 
+On a Mac, install the host sleep helper once so production continues while the
+display is asleep:
+
+```bash
+pnpm daemon:caffeinate install
+```
+
+The helper starts immediately and at login, independently of your terminal. It
+runs macOS `caffeinate` while this checkout's `brainrot` container is running,
+including while workers wait for new work. It releases the sleep assertion when
+the container stops or Docker becomes unavailable, and reacquires it after a
+restart. It checks every 30 seconds. Docker Desktop must still run on the host.
+
+Sleep prevention defaults on. Set `BRAINROT_CAFFEINATE=false` in this checkout's
+`.env` to switch it off; the helper reloads that setting every 30 seconds without
+a Docker restart. Set it back to `true` to enable it. This host-only setting is
+not forwarded into containers. For a foreground run, use `pnpm daemon:caffeinate
+run`; an exported environment setting takes precedence over `.env` in that process.
+The login service reads `.env` and does not save your shell's override.
+
+Use `pnpm daemon:caffeinate uninstall` to remove the login service. Its log is
+`logs/caffeinate.log`; `pmset -g assertions` shows the active sleep assertions.
+Re-run the install command after moving this checkout or changing the Node
+installation. One login service is installed per user; reinstalling points it at
+the current checkout. The helper needs the host's Node and installed dependencies.
+
+The display can sleep, but the computer stays awake. Actual sleep still pauses
+Docker: this does not guarantee operation with the laptop lid closed, after
+explicit sleep, logout, or shutdown. Keep the laptop open and preferably plugged
+in for unattended production; the idle-sleep assertion also applies on battery.
+The helper keeps existing production running; platform posting remains manual.
+
 Use `--build`, not a bare `up -d`: Compose will happily start a stale local
 `project-brainrot-brainrot:latest` image instead of rebuilding it, which
 means "start" can silently run old code. `--build` makes it always build (or
@@ -586,7 +618,9 @@ artifacts needed by completed checkpoints. This change adds no file-retention po
 
 ### Operational caveats
 
-- **A sleeping Mac pauses all work.** Demand remains queued, but a sleep longer
+- **Actual Mac sleep pauses all work.** Install the optional host helper described
+  under Start to prevent sleep while the daemon runs (configurable with
+  `BRAINROT_CAFFEINATE`). Demand remains queued, but a sleep longer
   than the lease TTL loses ownership. The old daemon cancels when it wakes;
   the service restart acquires new ownership and reconciles interrupted jobs.
   Recovery then obeys persisted retry delays and backlog capacity. Daily quota

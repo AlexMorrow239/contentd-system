@@ -61,6 +61,14 @@ docker compose exec brainrot pnpm brainrot topics list
 docker compose exec brainrot pnpm brainrot library list
 ```
 
+On macOS, `pnpm daemon:caffeinate install` installs a host LaunchAgent that keeps
+the Mac awake while this checkout's daemon container runs. `scripts/caffeinate.ts`
+owns the sleep assertion lifecycle; `scripts/caffeinate-service.ts` owns host
+installation and signals. `BRAINROT_CAFFEINATE` defaults to true and is reloaded
+from `.env` every 30 seconds; false releases the assertion without restarting
+Docker. It is host-only, not a container setting. Display sleep is allowed;
+actual system sleep still pauses work. See README Start for removal and limits.
+
 Prefer dashboard actions for routine mutations: its queue coordinates leases.
 For break-glass CLI work, stop the daemon first, then use a one-shot container;
 `docker compose exec` cannot run against a stopped service:

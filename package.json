@@ -16,6 +16,7 @@
     "test:coverage": "vitest run --coverage",
     "test:contract": "CONTRACT=1 vitest run",
     "brainrot": "tsx daemon/src/cli.ts",
+    "daemon:caffeinate": "tsx scripts/caffeinate-service.ts",
     "check": "pnpm format:check && pnpm lint && pnpm build && pnpm dashboard:build && pnpm test",
     "test:config": "vitest run daemon/src/config",
     "test:pipeline": "vitest run daemon/src/jobs daemon/src/stages integrations/remotion",

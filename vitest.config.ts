@@ -10,6 +10,7 @@ function include(): string[] {
     'daemon/testing/**/*.test.ts',
     'integrations/remotion/**/*.test.ts',
     'dashboard/**/*.test.{ts,tsx}',
+    'scripts/**/*.test.ts',
   ]
 }
 
