@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation'
+import { ActionForm } from '../../../components/action-form'
 import { getJobDetail } from '../../../lib/server/queries/jobs'
 import { formatUsdMicros } from '../../../../daemon/src/money'
 import { DashboardPage, type PageProps } from '../../../components/page'
@@ -41,6 +42,16 @@ export default async function JobPage(props: PageProps & { params: Promise<{ id:
                 </dd>
               </dl>
             </section>
+            {['failed', 'blocked'].includes(job.status) && (
+              <div className="page-actions">
+                <ActionForm
+                  kind="jobs.resume"
+                  token={ctx.token}
+                  fields={{ jobId: job.id }}
+                  disabled={ctx.stale}
+                />
+              </div>
+            )}
             {detail.budgetWait && (
               <section className="panel">
                 <h2>Budget wait</h2>

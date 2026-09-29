@@ -21,8 +21,9 @@ import { systemTime, type TimeSource } from '../time.js'
  * read (pendingInventory, the posting queue, and the digest) with nothing to flag it.
  */
 function jobChannel(db: Database, jobId: string): string {
-  const row = db.prepare('SELECT channel FROM jobs WHERE id = ?').get(jobId) as
-    { channel: string } | undefined
+  const row = db
+    .prepare('SELECT channel FROM jobs WHERE id = ? AND deleted_at IS NULL')
+    .get(jobId) as { channel: string } | undefined
   if (row === undefined) {
     throw new BrainrotError(`no such job: ${jobId}`, { domain: 'job', kind: 'not-found' })
   }

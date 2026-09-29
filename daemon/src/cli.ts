@@ -239,7 +239,7 @@ program
     await withDb(opts, (db) => {
       const rows = db
         .prepare(
-          'SELECT id, channel, status, created_at FROM jobs ORDER BY created_at DESC LIMIT 20',
+          'SELECT id, channel, status, created_at FROM jobs WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 20',
         )
         .all()
       console.table(rows)

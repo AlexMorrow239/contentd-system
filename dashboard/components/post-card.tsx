@@ -53,12 +53,7 @@ export function PostCard({
                     token={token}
                     fields={{ jobId: card.jobId, platform: platform.platform }}
                     disabled={disabled}
-                  >
-                    <label className="field">
-                      Live link (optional)
-                      <input type="url" name="url" placeholder="https://…" autoComplete="off" />
-                    </label>
-                  </ActionForm>
+                  />
                 </>
               )}
             </section>

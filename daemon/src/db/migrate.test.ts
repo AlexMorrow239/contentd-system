@@ -83,6 +83,22 @@ describe('migrate — topics.target_url', () => {
     })
   })
 
+  it('migrates legacy jobs for deletion without hiding existing jobs or resetting deletions', () => {
+    const db = topicsDb(OLD_JOBS)
+    seedJob(db, 'legacy')
+    migrate(db)
+    expect(db.prepare('SELECT id FROM jobs WHERE deleted_at IS NULL').all()).toEqual([
+      { id: 'legacy' },
+    ])
+    db.prepare('UPDATE jobs SET deleted_at = ? WHERE id = ?').run(
+      '2026-08-01T10:00:00.000Z',
+      'legacy',
+    )
+    migrate(db)
+    expect(db.prepare('SELECT id FROM jobs WHERE deleted_at IS NULL').all()).toEqual([])
+    expect(db.prepare('SELECT COUNT(*) AS count FROM jobs').get()).toEqual({ count: 1 })
+  })
+
   it('preserves existing rows, leaving the new column null', () => {
     const db = topicsDb(OLD_TOPICS)
     db.exec(

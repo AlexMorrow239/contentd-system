@@ -118,6 +118,7 @@ export function migrate(db: Database): void {
   }
   const executionColumns: Record<string, [string, string][]> = {
     jobs: [
+      ['deleted_at', 'TEXT'],
       ['active_attempt_id', 'TEXT'],
       ['recovery_pending', 'INTEGER NOT NULL DEFAULT 0'],
       ['recovery_count', 'INTEGER NOT NULL DEFAULT 0'],

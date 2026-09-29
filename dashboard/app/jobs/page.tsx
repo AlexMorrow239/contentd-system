@@ -1,4 +1,3 @@
-import { tryLoadChannelsDir } from '../../../daemon/src/config/channel'
 import { JOB_STATUSES, countJobs, jobChannels, listJobs } from '../../lib/server/queries/jobs'
 import { formatUsdMicros } from '../../../daemon/src/money'
 import { ActionForm } from '../../components/action-form'
@@ -21,32 +20,12 @@ export default function JobsPage(props: PageProps) {
           status: pick(JOB_STATUSES, value(ctx.search, 'status')),
         }
         const jobs = listJobs(db, filter)
-        const channels = tryLoadChannelsDir(ctx.config.paths.channelsDir)
         return (
           <>
             <h1>Jobs</h1>
             <p className="subtitle">Production progress, costs, and recovery.</p>
-            {channels.error && <p className="warning">Channel config error: {channels.error}</p>}
             <div className="page-actions">
               <ActionForm kind="produce.next" token={ctx.token} disabled={ctx.stale} />
-              <ActionForm
-                kind="jobs.produce"
-                token={ctx.token}
-                disabled={ctx.stale || channels.channels.length === 0}
-              >
-                <label>
-                  Channel
-                  <select name="channel">
-                    {channels.channels.map((c) => (
-                      <option key={c.name}>{c.name}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Topic
-                  <input name="topic" required placeholder="What should we make?" />
-                </label>
-              </ActionForm>
             </div>
             <Filters
               path="/jobs"
@@ -87,9 +66,9 @@ export default function JobsPage(props: PageProps) {
                     <td>{formatDuration(job.createdAt, job.finishedAt)}</td>
                     <td>{formatUsdMicros(job.costUsdMicros)}</td>
                     <td>
-                      {['failed', 'blocked'].includes(job.status) && (
+                      {job.status !== 'running' && (
                         <ActionForm
-                          kind="jobs.resume"
+                          kind="jobs.delete"
                           token={ctx.token}
                           fields={{ jobId: job.id }}
                           disabled={ctx.stale}

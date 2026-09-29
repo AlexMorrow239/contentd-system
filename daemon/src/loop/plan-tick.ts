@@ -48,7 +48,7 @@ export function planTick(
   const resumable = db
     .prepare(
       `SELECT id, channel, status, budget_wait_json FROM jobs
-       WHERE ((status = 'queued' AND recovery_pending = 1) OR status = 'blocked')
+       WHERE deleted_at IS NULL AND ((status = 'queued' AND recovery_pending = 1) OR status = 'blocked')
          AND (retry_after IS NULL OR retry_after <= ?)
        ORDER BY CASE WHEN status = 'queued' THEN 0 ELSE 1 END, created_at ASC, id ASC`,
     )

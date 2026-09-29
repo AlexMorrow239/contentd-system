@@ -47,7 +47,9 @@ export function claimJobForResume(db: Database, jobId: string, force: boolean): 
     : ['failed', 'blocked', 'queued']
   const placeholders = sqlPlaceholders(statuses.length)
   const info = db
-    .prepare(`UPDATE jobs SET status = 'running' WHERE id = ? AND status IN (${placeholders})`)
+    .prepare(
+      `UPDATE jobs SET status = 'running' WHERE id = ? AND deleted_at IS NULL AND status IN (${placeholders})`,
+    )
     .run(jobId, ...statuses)
   return info.changes === 1
 }
@@ -71,8 +73,9 @@ export async function resumeJob(
   try {
     lease.assertOwned()
     if (opts.force) reconcileJobs(db, lease)
-    const job = db.prepare('SELECT channel, status FROM jobs WHERE id = ?').get(jobId) as
-      { channel: string; status: string } | undefined
+    const job = db
+      .prepare('SELECT channel, status FROM jobs WHERE id = ? AND deleted_at IS NULL')
+      .get(jobId) as { channel: string; status: string } | undefined
     if (!job) {
       throw new ResumeError(`job not found: ${jobId}`, 'not-found')
     }

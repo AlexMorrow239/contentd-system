@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   topic TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'queued'
     CHECK (status IN ('queued','running','failed','done','blocked')),
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-  finished_at TEXT,
+  finished_at TEXT, deleted_at TEXT,
   active_attempt_id TEXT, recovery_pending INTEGER NOT NULL DEFAULT 0,
   recovery_count INTEGER NOT NULL DEFAULT 0, recovery_stage TEXT, previous_attempt_id TEXT,
   retry_after TEXT, budget_wait_json TEXT, source_context_json TEXT

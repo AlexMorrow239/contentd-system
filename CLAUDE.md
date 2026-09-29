@@ -202,10 +202,15 @@ Keep `daemon/src/actions/` separated by import boundary:
 `daemon/src/arch.test.ts` checks the dashboard's transitive runtime imports, including TSX and dynamic imports. Pipeline,
 Remotion, and paid-provider clients must stay outside the HTTP process.
 
-Fast actions are `topics.reject`, `topics.requeue`, `library.approve`,
+Fast actions are `jobs.delete`, `topics.reject`, `topics.requeue`, `library.approve`,
 `library.reject`, `digest.run`, `post.mark`, and `post.unmark`. They perform no
 network calls, rendering, or lease acquisition. Slow actions are `produce.next`,
 `jobs.produce`, `scout.run`, and `jobs.resume`.
+
+`jobs.delete` retires inactive jobs with `deleted_at`, removes their library/post
+records, and rejects claimed topics. Running jobs cannot be deleted. Job rows,
+costs, stages, and local artifacts remain for accounting; deleted jobs still
+count toward spend and daily quotas but are excluded from listings and recovery.
 
 Lease declarations matter:
 

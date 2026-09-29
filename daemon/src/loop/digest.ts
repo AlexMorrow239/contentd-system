@@ -129,7 +129,7 @@ export function buildDigest(
               SUM(CASE WHEN j.status = 'failed' THEN 1 ELSE 0 END) AS failed,
               SUM(CASE WHEN j.status = 'blocked' THEN 1 ELSE 0 END) AS blocked
        FROM jobs j LEFT JOIN library l ON l.job_id = j.id
-       WHERE datetime(j.created_at) >= datetime(?)
+       WHERE j.deleted_at IS NULL AND datetime(j.created_at) >= datetime(?)
        GROUP BY j.channel ORDER BY j.channel`,
     )
     .all(cutoff) as {
@@ -204,12 +204,14 @@ export function buildDigest(
   // listed (selected newest-first, then reversed back to the oldest-first
   // print order the uncapped list used), with the remainder counted below.
   const failedJobCount = (
-    db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE status = 'failed'").get() as { n: number }
+    db
+      .prepare("SELECT COUNT(*) AS n FROM jobs WHERE deleted_at IS NULL AND status = 'failed'")
+      .get() as { n: number }
   ).n
   const failedJobs = (
     db
       .prepare(
-        "SELECT id, channel FROM jobs WHERE status = 'failed' ORDER BY created_at DESC, id DESC LIMIT ?",
+        "SELECT id, channel FROM jobs WHERE deleted_at IS NULL AND status = 'failed' ORDER BY created_at DESC, id DESC LIMIT ?",
       )
       .all(FAILED_JOBS_LIMIT) as { id: string; channel: string }[]
   ).reverse()
@@ -230,7 +232,7 @@ export function buildDigest(
       `SELECT j.id AS id, j.channel AS channel,
               COALESCE(MAX(s.started_at), j.created_at) AS lastStart
        FROM jobs j LEFT JOIN job_stages s ON s.job_id = j.id
-       WHERE j.status = 'running'
+       WHERE j.deleted_at IS NULL AND j.status = 'running'
        GROUP BY j.id, j.channel, j.created_at
        HAVING lastStart <= ?
        ORDER BY lastStart ASC, j.id ASC`,
@@ -248,7 +250,7 @@ export function buildDigest(
   const strandedCutoff = new Date(now.getTime() - STRANDED_QUEUED_MS).toISOString()
   const strandedQueued = db
     .prepare(
-      "SELECT id, channel FROM jobs WHERE status = 'queued' AND created_at <= ? ORDER BY created_at ASC",
+      "SELECT id, channel FROM jobs WHERE deleted_at IS NULL AND status = 'queued' AND created_at <= ? ORDER BY created_at ASC",
     )
     .all(strandedCutoff) as { id: string; channel: string }[]
   for (const j of strandedQueued) {
@@ -263,7 +265,7 @@ export function buildDigest(
   // sunk and its topic still 'claimed'.
   const blockedJobs = db
     .prepare(
-      "SELECT id, channel, budget_wait_json, retry_after FROM jobs WHERE status = 'blocked' ORDER BY created_at ASC, id ASC",
+      "SELECT id, channel, budget_wait_json, retry_after FROM jobs WHERE deleted_at IS NULL AND status = 'blocked' ORDER BY created_at ASC, id ASC",
     )
     .all() as {
     id: string
@@ -331,7 +333,7 @@ export function buildDigest(
   // stay quiet about it. Channels with no subreddits are excluded: they are
   // fed by manual `brainrot produce`, where an empty queue is normal.
   const inFlightJobCount = db.prepare(
-    "SELECT COUNT(*) AS n FROM jobs WHERE channel = ? AND status IN ('running', 'queued')",
+    "SELECT COUNT(*) AS n FROM jobs WHERE deleted_at IS NULL AND channel = ? AND status IN ('running', 'queued')",
   )
   for (const c of channels) {
     if (c.scout.subreddits.length === 0 || c.platforms.length === 0) continue

@@ -13,6 +13,7 @@ describe('ACTIONS catalog', () => {
   it('declares exactly the phase-1 fast actions plus the phase-2 slow ones and the posts trio', () => {
     expect(Object.keys(ACTIONS).sort()).toEqual([
       'digest.run',
+      'jobs.delete',
       'jobs.produce',
       'jobs.resume',
       'library.approve',

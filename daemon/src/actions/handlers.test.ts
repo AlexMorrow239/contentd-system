@@ -1,3 +1,9 @@
+import { listJobs, countJobs, getJobDetail } from '../../../dashboard/lib/server/queries/jobs.js'
+import { channelDaySpentMicros } from '../jobs/costs.js'
+import { beginAttempt } from '../jobs/execution.js'
+import { claimJobForResume } from '../jobs/resume.js'
+import { planTick } from '../loop/plan-tick.js'
+import { testChannel } from '../../testing/channel.js'
 import { createTestTime } from '../../testing/time.js'
 import { acquireManagedLease, LeaseLostError } from '../loop/lease.js'
 import { writeFileSync } from 'node:fs'
@@ -6,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
 import { channelToml, writeChannelsDir } from '../../testing/channel.js'
-import { memDb, seedJob, seedLibrary, seedTopic } from '../../testing/db.js'
+import { memDb, seedJob, seedLibrary, seedTopic, seedCost, seedPost } from '../../testing/db.js'
 import { postedPlatforms, markPosted } from '../posts/posts.js'
 import { tmpDir } from '../../testing/tmp.js'
 import { ACTION_KINDS } from './catalog.js'
@@ -24,6 +30,7 @@ function ctx(db: Database): ActionContext {
 
 describe('action handlers', () => {
   it.each([
+    ['jobs.delete', { jobId: 'j1' }],
     ['topics.reject', { ids: ['1'] }],
     ['topics.requeue', { id: '1' }],
     ['library.approve', { jobIds: ['j1'] }],
@@ -37,7 +44,9 @@ describe('action handlers', () => {
     seedTopic(db, { status: kind === 'topics.requeue' ? 'claimed' : 'candidate', jobId: null })
     if (kind === 'post.unmark') markPosted(db, { jobId: 'j1', platform: 'youtube' })
     const snapshot = () =>
-      ['topics', 'library', 'posts'].map((table) => db.prepare(`SELECT * FROM ${table}`).all())
+      ['jobs', 'topics', 'library', 'posts'].map((table) =>
+        db.prepare(`SELECT * FROM ${table}`).all(),
+      )
     const before = snapshot()
     const lease = acquireManagedLease(db, 'daemon')!
     const lost = new LeaseLostError('daemon')
@@ -60,6 +69,54 @@ describe('action handlers', () => {
     } finally {
       lease.release()
     }
+  })
+
+  it('deletes a job from the dashboard without erasing spend or retrying its topic', async () => {
+    const time = createTestTime(new Date('2026-08-01T10:00:00Z'))
+    const db = memDb(time)
+    seedJob(db, 'j1', { status: 'blocked' })
+    seedLibrary(db, 'j1')
+    seedPost(db, { jobId: 'j1' })
+    seedCost(db, 'j1', { usdMicros: 1234 })
+    seedTopic(db, { status: 'claimed', jobId: 'j1' })
+    const context = { ...ctx(db), time }
+    expect(await runAction(context, 'jobs.delete', { jobId: 'j1' })).toEqual({
+      jobId: 'j1',
+      deleted: true,
+    })
+    expect(listJobs(db)).toEqual([])
+    expect(countJobs(db)).toBe(0)
+    expect(getJobDetail(db, 'j1')).toBeNull()
+    expect(db.prepare('SELECT * FROM library').all()).toEqual([])
+    expect(db.prepare('SELECT * FROM posts').all()).toEqual([])
+    expect(db.prepare('SELECT status, job_id FROM topics').get()).toEqual({
+      status: 'rejected',
+      job_id: null,
+    })
+    expect(channelDaySpentMicros(db, 'chan-a', '2026-08-01')).toBe(1234)
+    expect(planTick(db, [testChannel({ name: 'chan-a' })], time).kind).toBe('noop')
+    expect(claimJobForResume(db, 'j1', true)).toBe(false)
+    const lease = acquireManagedLease(db, 'produce', undefined, { time })!
+    try {
+      expect(() => beginAttempt(db, 'j1', lease)).toThrow(/deleted|not found/)
+    } finally {
+      lease.release()
+    }
+    expect(await runAction(context, 'jobs.delete', { jobId: 'j1' })).toEqual({
+      jobId: 'j1',
+      deleted: false,
+    })
+  })
+
+  it('refuses to delete a running job without changing its records', async () => {
+    const db = memDb()
+    seedJob(db, 'running', { status: 'running' })
+    seedLibrary(db, 'running')
+    await expect(runAction(ctx(db), 'jobs.delete', { jobId: 'running' })).rejects.toMatchObject({
+      kind: 'conflict',
+    })
+    expect(getJobDetail(db, 'running')).not.toBeNull()
+    expect(db.prepare('SELECT * FROM library').all()).toHaveLength(1)
   })
 
   it('has exactly one handler per catalog entry', () => {

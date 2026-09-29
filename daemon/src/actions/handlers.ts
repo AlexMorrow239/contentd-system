@@ -5,6 +5,7 @@ import { loadChannelsDir, tryLoadChannelsDir } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
 import { approveLibrary, rejectLibrary } from '../jobs/library.js'
 import { pipelineStages } from '../jobs/pipeline.js'
+import { deleteJob } from '../jobs/delete.js'
 import { resumeJob } from '../jobs/resume.js'
 import { createJob, runJob } from '../jobs/runner.js'
 import { buildDigest } from '../loop/digest.js'
@@ -85,6 +86,12 @@ async function mutateOwned<T extends Record<string, unknown>>(
 }
 
 export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
+  'jobs.delete': (ctx, args) =>
+    mutateOwned(ctx, () => ({
+      jobId: args.jobId,
+      deleted: deleteJob(ctx.db, args.jobId, ctx.time),
+    })),
+
   'topics.reject': (ctx, args) =>
     mutateOwned(ctx, () => ({
       rejected: rejectTopics(ctx.db, args.ids),

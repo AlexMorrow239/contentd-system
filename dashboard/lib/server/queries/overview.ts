@@ -60,12 +60,14 @@ export interface OverviewData {
 
 export function buildOverview(db: Database, channels: ChannelConfig[], now: Date): OverviewData {
   const jobsByStatus = db
-    .prepare('SELECT status, COUNT(*) AS count FROM jobs GROUP BY status ORDER BY count DESC')
+    .prepare(
+      'SELECT status, COUNT(*) AS count FROM jobs WHERE deleted_at IS NULL GROUP BY status ORDER BY count DESC',
+    )
     .all() as StatusCount[]
 
   const last24h = db
     .prepare(
-      "SELECT COUNT(*) AS count FROM jobs WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day')",
+      "SELECT COUNT(*) AS count FROM jobs WHERE deleted_at IS NULL AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 day')",
     )
     .get() as { count: number }
 
@@ -77,7 +79,7 @@ export function buildOverview(db: Database, channels: ChannelConfig[], now: Date
       'SELECT jobs.id AS id, jobs.channel AS channel, jobs.topic AS topic, jobs.status AS status, ' +
         'stage.stage AS stage, stage.error AS error FROM jobs ' +
         "LEFT JOIN job_stages stage ON stage.job_id = jobs.id AND stage.status = 'failed' " +
-        "WHERE jobs.status IN ('failed','blocked') " +
+        "WHERE jobs.deleted_at IS NULL AND jobs.status IN ('failed','blocked') " +
         'ORDER BY jobs.created_at DESC LIMIT 50',
     )
     .all() as {

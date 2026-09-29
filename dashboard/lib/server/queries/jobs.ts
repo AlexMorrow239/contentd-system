@@ -73,6 +73,7 @@ function jobsWhereClause(filter?: { channel?: string; status?: JobStatus }): {
   params: unknown[]
 } {
   return whereClause([
+    ['jobs.deleted_at IS ?', null],
     ['jobs.channel = ?', filter?.channel],
     ['jobs.status = ?', filter?.status],
   ])
@@ -103,7 +104,9 @@ export function countJobs(db: Database, filter?: { channel?: string; status?: Jo
 }
 
 export function jobChannels(db: Database): string[] {
-  const rows = db.prepare('SELECT DISTINCT channel FROM jobs ORDER BY channel ASC').all() as {
+  const rows = db
+    .prepare('SELECT DISTINCT channel FROM jobs WHERE deleted_at IS NULL ORDER BY channel ASC')
+    .all() as {
     channel: string
   }[]
   return rows.map((r) => r.channel)
@@ -141,7 +144,7 @@ export interface JobDetail {
 export function getJobDetail(db: Database, jobId: string): JobDetail | null {
   const row = db
     .prepare(
-      `SELECT ${JOB_COLUMNS}, jobs.budget_wait_json, jobs.retry_after FROM jobs WHERE jobs.id = ?`,
+      `SELECT ${JOB_COLUMNS}, jobs.budget_wait_json, jobs.retry_after FROM jobs WHERE jobs.id = ? AND jobs.deleted_at IS NULL`,
     )
     .get(jobId) as
     (DbJobRow & { budget_wait_json: string | null; retry_after: string | null }) | undefined

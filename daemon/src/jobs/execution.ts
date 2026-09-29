@@ -8,8 +8,9 @@ export function beginAttempt(db: Database, jobId: string, lease: LeaseContext): 
     .transaction(() => {
       lease.assertOwned()
       if (lease.name !== 'produce') throw new LeaseLostError('produce')
-      const job = db.prepare('SELECT status, active_attempt_id FROM jobs WHERE id=?').get(jobId) as
-        { status: string; active_attempt_id: string | null } | undefined
+      const job = db
+        .prepare('SELECT status, active_attempt_id FROM jobs WHERE id=? AND deleted_at IS NULL')
+        .get(jobId) as { status: string; active_attempt_id: string | null } | undefined
       if (!job) throw new Error(`job not found: ${jobId}`)
       if (job.status === 'done')
         throw new BrainrotError(`job ${jobId} is already done`, { domain: 'job', kind: 'refused' })
@@ -61,7 +62,7 @@ export function reconcileJobs(db: Database, lease: LeaseContext): number {
         .prepare(
           `SELECT j.id,j.active_attempt_id,j.recovery_count,a.owner_token
       FROM jobs j LEFT JOIN execution_attempts a ON a.id=j.active_attempt_id
-      WHERE j.status IN ('queued','running') AND j.recovery_pending=0`,
+      WHERE j.deleted_at IS NULL AND j.status IN ('queued','running') AND j.recovery_pending=0`,
         )
         .all() as {
         id: string

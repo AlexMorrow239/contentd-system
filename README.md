@@ -146,11 +146,9 @@ open http://127.0.0.1:8787/post
 #tags`).
 4. **Upload by hand** through each platform's own app or web uploader, using
    the pasted title/caption/tags.
-5. **Tick the platform off.** Back on `/post`, paste the live post's URL into
-   the `url` field (optional — you can also mark it posted with no link) and
-   click "mark posted". The card's block for that platform swaps to a
-   "posted" state showing the saved link and an "unmark" control, in case of
-   a mis-click.
+5. **Tick the platform off.** Back on `/post`, click "mark posted". The card's
+   block for that platform swaps to a "posted" state with an "unmark" control
+   in case of a mis-click. No live post URL is needed.
 
 A video is not fully done until every platform the channel declares has been
 marked.
@@ -374,22 +372,20 @@ Every page it _reads_ still opens the database through a read-only connection
 connection flag, not the mount. What changed is that the dashboard now also
 _writes_, in one narrow way: buttons on the overview, jobs, library, topics
 and post pages queue an operator action (`POST /api/actions`) that the daemon
-executes, rather than mutating anything itself. Eleven actions are wired
-today. Seven are fast — `topics reject/requeue`, `library approve/reject`,
-`run digest` and `post mark/unmark` — and four are slow, meaning they can
-run for seconds or minutes: `produce next` and per-job `resume` (`/jobs`),
-`produce` with a channel you pick and a topic you type (`/jobs`), and
-`scout now` (`/topics`). Nothing
-wired to the dashboard uploads to a platform — posting is the
-paste-and-click `/post` workflow above, not a queued action. What is
-still CLI-only after this phase is `costs`' own seven-day breakdown —
-the overview page already shows spend against the global-day and
-per-channel-day budget caps, just not that day-by-day table — plus `jobs`,
-`topics list` and `library list`'s own listing format (the `/jobs`,
-`/topics` and `/library` pages cover the same data), `resume --force`,
-`produce --channel` taking a path
-where `jobs.produce`'s own field deliberately takes a name, and `run`
-itself — a scope boundary, not a structural limit.
+executes, rather than mutating anything itself. Fast actions include topic
+reject/requeue, library approve/discard, run digest, post mark/unmark, and
+per-row **delete** in `/jobs`. Delete removes an inactive job from the dashboard
+and posting queue and stops retries; running jobs cannot be deleted. Recorded
+spend, daily production counts, and local artifacts are retained.
+
+`produce next` starts the next eligible topic from `/jobs`; `resume` appears on
+each failed or blocked job's detail page, alongside its stages and errors.
+`scout now` is on `/topics`. Custom-topic production is available through the
+CLI, without a topic input on the dashboard. Posting uses the paste-and-click
+`/post` workflow; marking a platform posted requires no live-link input.
+
+The CLI also provides the seven-day costs breakdown, `resume --force`, and
+`run`. No dashboard action uploads to a platform.
 
 ### The dashboard queues renders and spends money
 

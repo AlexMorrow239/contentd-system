@@ -158,6 +158,14 @@ export const ACTIONS = {
     lease: 'scout',
     args: z.object({}),
   },
+  'jobs.delete': {
+    lane: 'fast',
+    label: 'delete',
+    confirm: false,
+    danger: undefined,
+    lease: undefined,
+    args: z.object({ jobId }),
+  },
   'jobs.resume': {
     lane: 'slow',
     label: 'resume',
