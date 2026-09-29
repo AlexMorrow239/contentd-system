@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { Database } from 'better-sqlite3'
 import { BrainrotError } from '../errors.js'
+import { startInterval } from './timers.js'
+import type { StartInterval } from './worker-contract.js'
 
 export const LEASE_TTL_MS = 300_000
 export const LEASE_HEARTBEAT_MS = 60_000
@@ -67,6 +69,7 @@ export function acquireManagedLease(
   db: Database,
   name: string,
   parent?: LeaseContext,
+  opts: { startInterval?: StartInterval } = {},
 ): LeaseContext | null {
   parent?.assertOwned()
   const token = leaseHolder(name)
@@ -88,7 +91,7 @@ export function acquireManagedLease(
       throw controller.signal.reason
     }
   }
-  const timer = setInterval(() => {
+  const heartbeat = (): void => {
     if (controller.signal.aborted) return
     try {
       parent?.assertOwned()
@@ -96,8 +99,15 @@ export function acquireManagedLease(
     } catch (err) {
       lose(err)
     }
-  }, LEASE_HEARTBEAT_MS)
-  timer.unref()
+  }
+  let cancel: () => void
+  try {
+    cancel = (opts.startInterval ?? startInterval)(heartbeat, LEASE_HEARTBEAT_MS)
+  } catch (err) {
+    parent?.signal.removeEventListener('abort', parentLost)
+    releaseLease(db, name, token)
+    throw err
+  }
   return {
     name,
     token,
@@ -106,12 +116,15 @@ export function acquireManagedLease(
     release() {
       if (released) return
       released = true
-      clearInterval(timer)
-      parent?.signal.removeEventListener('abort', parentLost)
       try {
-        releaseLease(db, name, token)
-      } catch (err) {
-        lose(err)
+        cancel()
+      } finally {
+        parent?.signal.removeEventListener('abort', parentLost)
+        try {
+          releaseLease(db, name, token)
+        } catch (err) {
+          lose(err)
+        }
       }
     },
   }

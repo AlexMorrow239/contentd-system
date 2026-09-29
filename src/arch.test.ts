@@ -98,7 +98,11 @@ function resolveRelativeSpecifier(fromFile: string, spec: string): string | unde
  * do. A visited set stops a cycle, or a diamond-shaped import graph, from
  * re-walking the same file twice.
  */
-async function findImportChain(startFiles: string[], target: string): Promise<string[] | null> {
+async function findImportChain(
+  startFiles: string[],
+  target: string,
+  includeTypes = false,
+): Promise<string[] | null> {
   const visited = new Set<string>()
   async function walk(file: string, chain: string[]): Promise<string[] | null> {
     if (file === target) return chain
@@ -106,32 +110,7 @@ async function findImportChain(startFiles: string[], target: string): Promise<st
     visited.add(file)
     const source = await readSource(file)
     if (source === null) return null
-    const imports: string[] = []
-    const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
-    function visit(node: ts.Node): void {
-      if (
-        ts.isImportDeclaration(node) &&
-        !node.importClause?.isTypeOnly &&
-        ts.isStringLiteral(node.moduleSpecifier)
-      )
-        imports.push(node.moduleSpecifier.text)
-      if (
-        ts.isExportDeclaration(node) &&
-        !node.isTypeOnly &&
-        node.moduleSpecifier &&
-        ts.isStringLiteral(node.moduleSpecifier)
-      )
-        imports.push(node.moduleSpecifier.text)
-      if (
-        ts.isCallExpression(node) &&
-        node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-        node.arguments[0] &&
-        ts.isStringLiteral(node.arguments[0])
-      )
-        imports.push(node.arguments[0].text)
-      ts.forEachChild(node, visit)
-    }
-    visit(parsed)
+    const imports = sourceSpecifiers(source, includeTypes, file)
     for (const spec of imports) {
       const resolved = resolveRelativeSpecifier(file, spec)
       if (resolved === undefined) continue
@@ -146,6 +125,171 @@ async function findImportChain(startFiles: string[], target: string): Promise<st
   }
   return null
 }
+
+/** Include erased edges when checking architectural, rather than runtime, dependencies. */
+function sourceSpecifiers(source: string, includeTypes = false, file = 'imports.ts'): string[] {
+  const imports: string[] = []
+  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+  function visit(node: ts.Node): void {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
+      const clause = node.importClause
+      const onlyTypes =
+        clause?.isTypeOnly ||
+        (!clause?.name &&
+          clause?.namedBindings &&
+          ts.isNamedImports(clause.namedBindings) &&
+          clause.namedBindings.elements.length > 0 &&
+          clause.namedBindings.elements.every((element) => element.isTypeOnly))
+      if (includeTypes || !onlyTypes) imports.push(node.moduleSpecifier.text)
+    }
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      const onlyTypes =
+        node.isTypeOnly ||
+        (node.exportClause &&
+          ts.isNamedExports(node.exportClause) &&
+          node.exportClause.elements.length > 0 &&
+          node.exportClause.elements.every((element) => element.isTypeOnly))
+      if (includeTypes || !onlyTypes) imports.push(node.moduleSpecifier.text)
+    }
+    if (
+      ts.isCallExpression(node) &&
+      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
+      node.arguments[0] &&
+      ts.isStringLiteral(node.arguments[0])
+    )
+      imports.push(node.arguments[0].text)
+    if (
+      includeTypes &&
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteral(node.argument.literal)
+    ) {
+      imports.push(node.argument.literal.text)
+    }
+    if (
+      ts.isImportEqualsDeclaration(node) &&
+      (includeTypes || !node.isTypeOnly) &&
+      ts.isExternalModuleReference(node.moduleReference) &&
+      node.moduleReference.expression &&
+      ts.isStringLiteral(node.moduleReference.expression)
+    )
+      imports.push(node.moduleReference.expression.text)
+    ts.forEachChild(node, visit)
+  }
+  visit(parsed)
+  return imports
+}
+
+describe('daemon runtime isolation', () => {
+  const runtime = ['worker-contract.ts', 'worker-loop.ts', 'worker-supervisor.ts', 'timers.ts'].map(
+    (file) => join(SRC_ROOT, 'loop', file),
+  )
+
+  it('keeps the shared contract free of executable statements and dependencies', async () => {
+    const source = await readSource(runtime[0])
+    expect(source).not.toBeNull()
+    const parsed = ts.createSourceFile(runtime[0], source!, ts.ScriptTarget.Latest, true)
+    expect(parsed.statements.length).toBeGreaterThan(0)
+    expect(
+      parsed.statements.every(
+        (node) => ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node),
+      ),
+    ).toBe(true)
+    expect(sourceSpecifiers(source!, true)).toEqual([])
+  })
+
+  it('limits generic runtime dependencies to its own modules and shared errors', async () => {
+    const allowed = new Set([...runtime, join(SRC_ROOT, 'errors.ts')])
+    const offenders: string[] = []
+    for (const file of allowed) {
+      const source = await readSource(file)
+      expect(source, file).not.toBeNull()
+      for (const spec of sourceSpecifiers(source!, true)) {
+        const resolved = resolveRelativeSpecifier(file, spec)
+        if (!resolved || !allowed.has(resolved))
+          offenders.push(`${relative(SRC_ROOT, file)} -> ${spec}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('prevents work from depending on polling, supervision or daemon composition', async () => {
+    const forbidden = [
+      'daemon.ts',
+      'daemon-workers.ts',
+      'worker-loop.ts',
+      'worker-supervisor.ts',
+    ].map((file) => join(SRC_ROOT, 'loop', file))
+    const roots = (
+      await Promise.all(
+        ['loop', 'actions', 'jobs', 'scout', 'stages', 'providers'].map((dir) =>
+          moduleFiles(join(SRC_ROOT, dir)),
+        ),
+      )
+    )
+      .flat()
+      .filter((file) => !forbidden.includes(file) && !runtime.includes(file))
+    for (const target of forbidden) {
+      const chain = await findImportChain(roots, target, true)
+      expect(chain?.map((file) => relative(SRC_ROOT, file))).toBeUndefined()
+    }
+  })
+
+  it('keeps direct recurring timer creation inside the timer adapter', async () => {
+    for (const name of ['actions-worker.ts', 'lease.ts']) {
+      const source = (await readSource(join(SRC_ROOT, 'loop', name)))!
+      const parsed = ts.createSourceFile(name, source, ts.ScriptTarget.Latest, true)
+      const offenders: string[] = []
+      function visit(node: ts.Node): void {
+        if (ts.isIdentifier(node) && ['setInterval', 'clearInterval'].includes(node.text))
+          offenders.push(node.text)
+        ts.forEachChild(node, visit)
+      }
+      visit(parsed)
+      expect(offenders, name).toEqual([])
+      expect(
+        sourceSpecifiers(source, true).filter((spec) => /^(node:)?timers(?:\/|$)/.test(spec)),
+      ).toEqual([])
+    }
+  })
+
+  it('positive control: follows erased contract imports and transitive runtime edges', async () => {
+    expect(
+      await findImportChain([join(SRC_ROOT, 'loop/actions-worker.ts')], runtime[0], true),
+    ).not.toBeNull()
+    expect(
+      await findImportChain(
+        [join(SRC_ROOT, 'loop/daemon.ts')],
+        join(SRC_ROOT, 'loop/worker-loop.ts'),
+      ),
+    ).not.toBeNull()
+  })
+
+  it('recognizes imports, re-exports, dynamic imports and erased type edges', () => {
+    const source = `import type { A } from './a.js';
+      import { type B } from './b.js'; export type { C } from './c.js';
+      export { type D } from './d.js'; export * from './e.js';
+      const f = import('./f.js'); type G = import('./g.js').G;
+      const h = require('./h.js'); import I = require('./i.js');`
+    expect(sourceSpecifiers(source, true)).toEqual([
+      './a.js',
+      './b.js',
+      './c.js',
+      './d.js',
+      './e.js',
+      './f.js',
+      './g.js',
+      './h.js',
+      './i.js',
+    ])
+    expect(sourceSpecifiers(source)).toEqual(['./e.js', './f.js', './h.js', './i.js'])
+  })
+})
 
 /**
  * Repo-wide architecture lints: assertions about how modules may depend on

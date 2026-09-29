@@ -5,7 +5,7 @@ import { memDb, seedAction, seedJob, seedTopic } from '../../testing/db.js'
 import { acquireLease, LeaseLostError, requireLease } from '../lease.js'
 import { linkActionJob } from '../../jobs/execution.js'
 import { readDaemonState } from '../daemon-state.js'
-import type { UnitResult } from '../daemon.js'
+import type { UnitResult } from '../worker-contract.js'
 import {
   actionsUnit,
   MAX_FAST_DRAIN,
@@ -28,6 +28,65 @@ function leaseExpiry(db: Database, name: string): string {
 }
 
 describe('actionsUnit', () => {
+  it('uses the supplied process identity for the heartbeat', async () => {
+    const db = memDb()
+    await actionsUnit(db, 'fast', { channelsDir: '/unused', runsRoot: '/unused', pid: 1234 })()
+    expect(readDaemonState(db)?.pid).toBe(1234)
+  })
+
+  it.each(['success', 'failure', 'malformed', 'lost-claim'] as const)(
+    'cancels the injected interval and releases the lease after %s',
+    async (outcome) => {
+      const db = memDb()
+      const id = seedAction(db, {
+        kind: 'scout.run',
+        lane: 'slow',
+        args: outcome === 'malformed' ? '{' : '{}',
+      })
+      let cancelled = 0
+      let handlerCalls = 0
+      await actionsUnit(db, 'slow', {
+        channelsDir: '/unused',
+        runsRoot: '/unused',
+        startInterval: () => {
+          if (outcome === 'lost-claim')
+            db.prepare("UPDATE operator_actions SET status='running' WHERE id=?").run(id)
+          return () => {
+            expect(db.prepare("SELECT holder FROM leases WHERE name='scout'").get()).toBeDefined()
+            cancelled++
+          }
+        },
+        run: async () => {
+          handlerCalls++
+          if (outcome === 'failure') throw new Error('handler failed')
+          return { ok: true }
+        },
+      })()
+      expect(cancelled).toBe(1)
+      expect(handlerCalls).toBe(outcome === 'malformed' || outcome === 'lost-claim' ? 0 : 1)
+      expect(getAction(db, id)?.status).toBe(
+        outcome === 'success' ? 'done' : outcome === 'lost-claim' ? 'running' : 'failed',
+      )
+      expect(db.prepare('SELECT * FROM leases').all()).toEqual([])
+    },
+  )
+
+  it('keeps an action pending when interval setup fails and releases its lease', async () => {
+    const db = memDb()
+    const id = seedAction(db, { kind: 'scout.run', lane: 'slow', args: '{}' })
+    await expect(
+      actionsUnit(db, 'slow', {
+        channelsDir: '/unused',
+        runsRoot: '/unused',
+        startInterval: () => {
+          throw new Error('interval unavailable')
+        },
+      })(),
+    ).rejects.toThrow('interval unavailable')
+    expect(getAction(db, id)?.status).toBe('pending')
+    expect(db.prepare('SELECT * FROM leases').all()).toEqual([])
+  })
+
   it('is silently idle on an empty queue', async () => {
     // A 1s poll must emit a STABLE idle line (or none) or runWorker's dedupe
     // cannot suppress it, and a quiet night becomes 86,400 log lines.

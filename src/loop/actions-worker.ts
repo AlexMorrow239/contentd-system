@@ -11,7 +11,7 @@ import {
   type ActionRow,
 } from '../actions/queue.js'
 import { BrainrotError } from '../errors.js'
-import type { UnitResult } from './daemon.js'
+import type { StartInterval, UnitResult } from './worker-contract.js'
 import { DAEMON_HEARTBEAT_MS, stampDaemonSeen } from './daemon-state.js'
 import {
   acquireManagedLease,
@@ -19,9 +19,6 @@ import {
   LEASE_HEARTBEAT_MS,
   type LeaseContext,
 } from './lease.js'
-
-/** The fast lane's poll. A row mutation must feel immediate, not 30s away. */
-export const FAST_IDLE_SLEEP_MS = 1_000
 
 /**
  * Upper bound on one fast drain. High enough that a burst of checkbox
@@ -72,6 +69,8 @@ export function actionsUnit(
     now?: () => Date
     run?: typeof runAction
     daemonLease?: LeaseContext
+    startInterval?: StartInterval
+    pid?: number
   },
 ): () => Promise<UnitResult> {
   const run = opts.run ?? runAction
@@ -84,8 +83,7 @@ export function actionsUnit(
   const budget = lane === 'fast' ? MAX_FAST_DRAIN : 1
 
   return async (): Promise<UnitResult> => {
-    // Poll-level `now`: only the heartbeat throttle and the startup sweep are
-    // genuinely per-poll decisions. Per-row work reads `clock()` again below.
+    // The heartbeat throttle uses poll time; row transitions read the clock again.
     const now = clock()
     opts.daemonLease?.assertOwned()
     // The heartbeat rides the fast lane only: the slow lane can legitimately
@@ -94,7 +92,7 @@ export function actionsUnit(
       lastHeartbeat = now.getTime()
       db.transaction(() => {
         opts.daemonLease?.assertOwned()
-        stampDaemonSeen(db, process.pid, now)
+        stampDaemonSeen(db, opts.pid ?? process.pid, now)
       }).immediate()
     }
 
@@ -117,6 +115,7 @@ export function actionsUnit(
         clock,
         run,
         daemonLease: opts.daemonLease,
+        startInterval: opts.startInterval,
       })
       if (outcome.blockedBy !== undefined) {
         blockedLease ??= outcome.blockedBy
@@ -150,6 +149,7 @@ async function executeOne(
     clock: () => Date
     run: typeof runAction
     daemonLease?: LeaseContext
+    startInterval?: StartInterval
   },
 ): Promise<{ blockedBy?: ActionLease; lostClaim?: boolean }> {
   const mutate = <T>(fn: () => T): T =>
@@ -176,7 +176,9 @@ async function executeOne(
     return {}
   }
   const name = ACTIONS[row.kind].lease
-  const lease = name ? acquireManagedLease(db, name, deps.daemonLease) : undefined
+  const lease = name
+    ? acquireManagedLease(db, name, deps.daemonLease, { startInterval: deps.startInterval })
+    : undefined
   if (lease === null) {
     const notice = `waiting for the ${name!} lease`
     if (row.notice !== notice) mutate(() => setActionNotice(db, row.id, notice))

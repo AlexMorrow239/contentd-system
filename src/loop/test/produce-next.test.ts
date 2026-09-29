@@ -418,6 +418,90 @@ describe('produceNextTick — resume refusal routing', () => {
 })
 
 describe('produceNextTick — lease heartbeat', () => {
+  it('a stale in-process tick cannot renew or release its successor lease', async () => {
+    vi.useFakeTimers()
+    const { db, runsRoot } = setup()
+    seedTopic(db)
+    seedTopic(db)
+    let enterA!: () => void
+    let enterB!: () => void
+    let finishA!: () => void
+    let finishB!: () => void
+    const startedA = new Promise<void>((r) => {
+      enterA = r
+    })
+    const startedB = new Promise<void>((r) => {
+      enterB = r
+    })
+    const gateA = new Promise<void>((r) => {
+      finishA = r
+    })
+    const gateB = new Promise<void>((r) => {
+      finishB = r
+    })
+    const tickA = produceNextTick(db, {
+      channelsDir,
+      runsRoot,
+      stagesFor: () => [
+        {
+          name: 'script',
+          run: async () => {
+            enterA()
+            await gateA
+          },
+        },
+        ...readyStages(),
+      ],
+    })
+    const rejection = expect(tickA).rejects.toBeInstanceOf(LeaseLostError)
+    await startedA
+    const old = db.prepare("SELECT holder FROM leases WHERE name='produce'").get() as {
+      holder: string
+    }
+    db.prepare("UPDATE leases SET expires_at='2020-01-01T00:00:00Z' WHERE name='produce'").run()
+    const tickB = produceNextTick(db, {
+      channelsDir,
+      runsRoot,
+      stagesFor: () => [
+        {
+          name: 'script',
+          run: async () => {
+            enterB()
+            await gateB
+          },
+        },
+        ...readyStages(),
+      ],
+    })
+    try {
+      await startedB
+      const successor = db
+        .prepare("SELECT holder, expires_at FROM leases WHERE name='produce'")
+        .get() as { holder: string; expires_at: string }
+      expect(successor.holder).not.toBe(old.holder)
+      // Both live timers fire in the same process; the old callback must lose ownership.
+      await vi.advanceTimersByTimeAsync(LEASE_HEARTBEAT_MS)
+      const renewed = db.prepare("SELECT holder, expires_at FROM leases WHERE name='produce'").get()
+      expect(renewed).toEqual({
+        holder: successor.holder,
+        expires_at: new Date(Date.now() + PRODUCE_LEASE_TTL_MS).toISOString(),
+      })
+      finishA()
+      await rejection
+      expect(
+        db.prepare("SELECT holder, expires_at FROM leases WHERE name='produce'").get(),
+      ).toEqual(renewed)
+      finishB()
+      expect(await tickB).toMatchObject({ action: 'produced', status: 'ready' })
+      expect(db.prepare('SELECT * FROM leases').all()).toEqual([])
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      finishA()
+      finishB()
+      await Promise.allSettled([tickA, tickB])
+    }
+  })
+
   it.each(['produce', 'resume'] as const)(
     'renews throughout a long %s stage without a stage transition',
     async (mode) => {

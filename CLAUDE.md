@@ -120,7 +120,28 @@ failure or absence. Budget enforcement must not trigger a paid-provider fallback
 ### One daemon, five workers share one SQLite file
 
 `src/loop/daemon.ts` starts `produce`, `scout`, `digest`, `actions-fast`, and
-`actions-slow`. Workers check demand, do one unit, and immediately recheck.
+`actions-slow`. It owns process signals, singleton ownership and startup logging;
+`daemon-workers.ts` owns production composition and exposes startup reconciliation
+as `initializeDaemonWork`. Both production units and startup work can be called
+directly without polling. An explicit `workers` override bypasses production
+construction/reconciliation while retaining daemon ownership and lifecycle.
+
+`worker-contract.ts` contains types only. `worker-loop.ts` owns polling and log
+deduplication; `worker-supervisor.ts` joins workers on cancellation/failure without
+knowing about SQLite or domain work. `timers.ts` owns abortable sleep and unref'd,
+cancellable intervals. `produce-unit.ts`, `scout-unit.ts`, `digest-unit.ts` and
+`actions-worker.ts` expose independently callable units. Construct stateful units
+once and reuse them: digest day and action heartbeat throttle belong to the unit.
+Architecture tests forbid work importing daemon composition, polling or supervision,
+including erased type imports. Import shared types from the contract instead.
+
+Test work by invoking units directly with disposable fixtures; use fake units for
+runtime tests and injected interval callbacks for managed lease tests. Keep only
+limited composition and CLI signal smoke tests that start the daemon. Managed
+leases accept an interval adapter; `actionsUnit` forwards its optional
+`startInterval` and accepts `pid` for its liveness heartbeat.
+
+Workers check demand, do one unit, and immediately recheck.
 Idle/error sleeps are 30s/60s; fast actions poll at 1s. Identical idle messages
 are deduplicated. Digest runs at/after 08:00 local time once per process-day;
 a same-day restart can produce another report. There is no publishing worker.
@@ -130,8 +151,9 @@ reports malformed config as a structured noop, and acquires the `produce`
 lease before mutation. It repairs historical claimed-topic/library mismatches,
 then reconciles abandoned jobs and executes `planTick`. Managed leases renew
 every 60 seconds with a five-minute TTL; expired tokens cannot renew or release
-a successor’s lease. Job, stage, finalization, and action writes verify ownership
-inside their transaction. Losing ownership cancels supported work and fences
+a successor’s lease. Each acquisition uses a fresh UUID token, including callers
+in the same process; labels and PIDs are diagnostic only. Job, stage, finalization,
+and action writes verify ownership inside their transaction. Losing ownership cancels supported work and fences
 late results; known provider charges remain associated with the attempt.
 
 `planTick` (`src/loop/plan-tick.ts`) prefers due recovered jobs, then eligible
