@@ -1,6 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { createDaemonWorkers, initializeDaemonWork } from './daemon-workers.js'
 import { requireLease } from './lease.js'
+import { requireDaemonLease } from './daemon-lease.js'
 import { runWorkers } from './worker-supervisor.js'
 import type { WorkerDeps, WorkerSpec } from './worker-contract.js'
 import { systemTime, type TimeSource } from '../time.js'
@@ -18,7 +19,9 @@ export async function runDaemon(
   },
 ): Promise<void> {
   const time = opts.time ?? systemTime
-  const daemonLease = requireLease(db, 'daemon', undefined, { time })
+  const daemonLease = db.memory
+    ? requireLease(db, 'daemon', undefined, { time })
+    : await requireDaemonLease(db, time)
   const controller = new AbortController()
   const abort = (): void => controller.abort()
   try {

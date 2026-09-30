@@ -187,7 +187,10 @@ and digest readers. Empty `platforms` means nothing is fully posted.
 
 The three lease names are `daemon`, `produce`, and `scout`, all managed with
 the same TTL and renewal interval. Acquire singleton daemon ownership before
-reconciliation or worker startup. CLI produce/resume/scout share operation
+reconciliation or worker startup. `daemon-lease.ts` probes a per-owner Unix socket
+beside SQLite to reclaim dead daemon owners at startup, including across container
+restarts/PID reuse. Unknown probe outcomes and legacy tokens retain TTL behavior.
+Operation leases keep their existing TTL behavior. CLI produce/resume/scout share operation
 leases with dashboard actions and daemon workers; `--force` never overrides a
 live owner. Stop the daemon before direct CLI library/topic mutations.
 

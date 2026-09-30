@@ -88,11 +88,11 @@ export function acquireManagedLease(
   db: Database,
   name: string,
   parent?: LeaseContext,
-  opts: { time?: TimeSource } = {},
+  opts: { time?: TimeSource; token?: string } = {},
 ): LeaseContext | null {
   const time = resolveTime(opts.time, parent)
   parent?.assertOwned()
-  const token = leaseHolder(name)
+  const token = opts.token ?? leaseHolder(name)
   if (!acquireLease(db, name, token, LEASE_TTL_MS, time)) return null
   const controller = new AbortController()
   let released = false
@@ -155,7 +155,7 @@ export function requireLease(
   db: Database,
   name: string,
   parent?: LeaseContext,
-  opts: { time?: TimeSource } = {},
+  opts: { time?: TimeSource; token?: string } = {},
 ): LeaseContext {
   const lease = acquireManagedLease(db, name, parent, opts)
   if (lease === null)

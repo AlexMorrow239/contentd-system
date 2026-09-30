@@ -578,7 +578,11 @@ lease refuses the CLI command; `--force` never overrides live ownership.
 
 The daemon holds a separate singleton lease. Every managed lease lasts five
 minutes and renews every minute, including during long stages. A second daemon
-is refused before startup recovery changes any rows. An expired owner cannot
+is refused before startup recovery changes any rows. Startup probes the previous
+daemon's private Unix socket beside the database and immediately reclaims its
+lease when the owner is gone, including after a container restart with reused
+PIDs. Inconclusive probes and legacy leases without a socket identity still
+wait for expiry. An expired owner cannot
 renew, commit results, or release a successor's lease.
 
 **Automatic crash recovery preserves progress.** After acquiring production
@@ -623,8 +627,9 @@ docker compose start brainrot
 ```
 
 SIGTERM/SIGINT stops polling and drains active work while renewing ownership.
-A forced container kill leaves leases until expiry; do not delete them while an
-owner might still run. When leases expire, the next production tick reconciles
+After a forced container kill, startup reclaims the dead daemon's lease.
+Production and scout leases still wait for expiry; do not delete them while an
+owner might still run. When those leases expire, the next production tick reconciles
 abandoned work. A sleeping host can likewise lose ownership: old work stops at
 its next checkpoint and recovers through a new attempt.
 
