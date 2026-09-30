@@ -534,6 +534,23 @@ includes estimates, especially ElevenLabs character costs, and is not an
 invoice. Actual costs and concurrent calls already running can overshoot a
 limit; subsequent calls stop once they no longer fit. There is no reservation
 system or separate daemon-wide per-channel default.
+Delete changes workflow state without spending: it retires the job and removes
+its library and posting records while keeping costs and local files. Existing
+previously discarded videos remain visible under the Discarded review filter;
+use Delete to remove those jobs too.
+
+`produce next`, custom-topic `produce`, and `post unmark` retain their
+confirmation screen. Delete uses the same confirmation modal on Jobs, job
+details, and Post. Resume queues immediately, as do Approve,
+Mark posted, and Scout now. A resume or scout click can spend without a prompt;
+existing budget enforcement still applies.
+`produce next`, `produce` and `resume` each have a job to meter against, so
+they clear the full chain — per-video, channel-day, and global-day. `scout
+now` has no job row: its cost is ledgered under a sentinel `scout:<channel>`
+id that the channel-day query can't see and there's no video to hang a
+per-video cap on, so only the global-day cap backs it. Either way the cap is
+enforced in the pipeline rather than at this endpoint: it's the backstop, not
+the gate.
 
 **Do not put the dashboard behind a tunnel, reverse proxy, or `0.0.0.0`
 binding.** Doing so turns it into remote code execution against your channels
