@@ -126,10 +126,10 @@ is independent: ElevenLabs is the only voice provider. `[voice]` requires
 `voice_id` and accepts an optional `model`. Missing credentials or provider
 failures fail the job; there is no alternate voice provider.
 
-### One daemon, five workers share one SQLite file
+### One daemon, six workers share one SQLite file
 
-`daemon/src/loop/daemon.ts` starts `produce`, `scout`, `digest`, `actions-fast`, and
-`actions-slow`. It owns process signals, singleton ownership and startup logging;
+`daemon/src/loop/daemon.ts` starts `produce`, `scout`, `digest`, `actions-fast`,
+`actions-slow`, and `cleanup`. It owns process signals, singleton ownership and startup logging;
 `daemon-workers.ts` owns production composition and exposes startup reconciliation
 as `initializeDaemonWork`. Both production units and startup work can be called
 directly without polling. An explicit `workers` override bypasses production
@@ -139,9 +139,9 @@ construction/reconciliation while retaining daemon ownership and lifecycle.
 deduplication; `worker-supervisor.ts` joins workers on cancellation/failure without
 knowing about SQLite or domain work. `daemon/src/time.ts` owns `TimeSource` clock reads,
 abortable sleeps, cancellable timeouts, unref'd intervals and request deadlines.
-`produce-unit.ts`, `scout-unit.ts`, `digest-unit.ts` and
+`produce-unit.ts`, `scout-unit.ts`, `digest-unit.ts`, `cleanup-unit.ts` and
 `actions-worker.ts` expose independently callable units. Construct stateful units
-once and reuse them: digest day and action heartbeat throttle belong to the unit.
+once and reuse them: digest day, cleanup cadence and action heartbeat throttle belong to the unit.
 Architecture tests forbid work importing daemon composition, polling or supervision,
 including erased type imports. Import shared types from the contract instead.
 
@@ -174,7 +174,7 @@ late results; known provider charges remain associated with the attempt.
 budget-blocked jobs, then claims
 new topics subject to daily production limits, budgets, and backlog capacity.
 A channel holding `ceil(videos_per_day * backlog_days)` unconsumed videos
-pauses production. Videos do not expire; posting to all declared platforms or
+pauses production. Unposted videos do not expire; posting to all declared platforms or
 discarding them frees capacity. Discard changes library state but keeps the
 local video file. Abandoned jobs automatically resume with their original topic
 claim and completed checkpoints. Persisted crash backoff starts at 30 seconds,
@@ -443,6 +443,17 @@ A `posts` row means the video was actually posted to that platform.
 refresh `posted_at`. `unmarkPosted` deletes the row. The dashboard presents
 paste fields for unposted platforms and saved links/unmark controls for posted
 ones.
+
+`cleanup-unit.ts` deletes only the finished `library.video_path` MP4 once all
+currently declared platforms are posted and the latest required `posted_at` is
+at least 24 hours old. It runs at startup and every five minutes using `TimeSource`,
+including historical posts. Empty platforms, missing channel configurations,
+unfinished/retired jobs are skipped; invalid channel configuration skips the pass.
+Each deletion rechecks daemon ownership and posting eligibility in an immediate
+transaction, and validates lexical and real containment within that job's runs
+directory. Missing files are harmless; other file failures are logged and retried
+on the next pass. Library/post records and intermediate files remain. There is no
+new byte state: the dashboard reports the removed video as `missing`.
 
 ### The dashboard's read-only guarantee narrows, not disappears
 

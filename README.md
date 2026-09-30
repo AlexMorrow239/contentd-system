@@ -153,6 +153,16 @@ open http://127.0.0.1:8787/post
 A video is not fully done until every platform the channel declares has been
 marked.
 
+The daemon automatically deletes the finished local MP4 **24 hours after the
+last required platform is marked posted**. It checks on startup and every five
+minutes while running, including videos posted before this feature was enabled.
+The library entry, posting links, metadata, and intermediate render files remain;
+the dashboard shows the local video as missing after cleanup. Unmarking a required
+platform before cleanup prevents deletion, and marking it again starts a new
+24-hour wait. Correcting a posting URL does not reset the timer. Cleanup uses the
+channel's current platform list; channels with no platforms or missing configuration
+are skipped, and invalid channel configuration prevents the entire cleanup pass.
+
 **Production is held once a channel hits its backlog cap.** `backlog_days`
 (default 2) caps how many finished, unposted videos a channel may hold;
 `produce-next` stops producing more for a channel sitting at
@@ -162,7 +172,8 @@ scheduler left to time a post against, so a video the operator hasn't gotten
 to yet simply waits. If a video will never be posted (wrong take, dead
 topic), **discarding** it from `/library` (`library reject`, or the
 dashboard's "discard" action) is how it stops counting toward that cap: it
-frees the video's stored bytes and drops out of the posting queue for good.
+frees backlog capacity and drops it out of the posting queue while keeping its
+local files. Discarding alone does not qualify a video for MP4 cleanup.
 
 ### Channel config
 
@@ -192,7 +203,7 @@ it.
 ## Automation
 
 Production is one long-running process: `brainrot run` is the container's
-`CMD` and starts a daemon with five workers running concurrently — there is
+`CMD` and starts a daemon with six workers running concurrently — there is
 no host cron, no launchd agent, and no per-worker container anymore. Each
 worker polls in a tight loop: check demand, do one unit of work if there is
 any, and re-check immediately; an idle worker sleeps 30 seconds before
@@ -200,6 +211,9 @@ checking again, and a worker whose unit throws logs the error and sleeps 60
 seconds rather than taking the daemon down. `scout` fills the topic queue,
 `produce` performs one unit of work per pass (resume one interrupted/budget-blocked job or
 produce one video), and `digest` prints a daily report once per local day.
+`cleanup` checks every five minutes for fully posted MP4s past the 24-hour retention
+period. Its JSON log lists deleted files and individual errors; failed deletions
+are retried on the next cleanup pass. Missing files need no further action.
 There is no `publish` worker — nothing in this codebase uploads to a
 platform, so there is nothing left to schedule; posting is the manual `/post`
 workflow above. The remaining two, `actions-fast` and
@@ -293,7 +307,7 @@ means "start" can silently run old code. `--build` makes it always build (or
 confirm current) first.
 
 This brings up the production services: `whisperx` (the caption-alignment sidecar) and
-`brainrot` (the daemon: `brainrot run`, five workers polling for demand),
+`brainrot` (the daemon: `brainrot run`, six workers polling for demand),
 which waits on `whisperx`'s healthcheck before its workers start, plus the
 `dashboard`. There is
 one log stream for everything the daemon does:
@@ -345,7 +359,10 @@ restart does not reset it and does not force an immediate re-scout.
 `digest` is the one pipeline
 worker still on a real clock: it fires once per local day at or after 08:00
 (`DIGEST_HOUR`), printed to the log stream only — nothing else delivers it —
-and a restart later the same day can re-fire it once. The other two workers,
+and a restart later the same day can re-fire it once. The `cleanup` worker uses
+the same idle poll with an in-memory five-minute throttle; it checks immediately
+after a restart and measures retention as 24 elapsed hours from persisted posting
+timestamps. The two action workers,
 `actions-fast` and `actions-slow`, follow the same check-then-sleep shape but
 poll at ~1s and 30s respectively for a different queue — see "The dashboard
 queues renders and spends money" below.

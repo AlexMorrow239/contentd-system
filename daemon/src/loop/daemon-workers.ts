@@ -4,6 +4,7 @@ import { actionsUnit } from './actions-worker.js'
 import { produceUnit } from './produce-unit.js'
 import { scoutUnit } from './scout-unit.js'
 import { digestUnit } from './digest-unit.js'
+import { cleanupUnit } from './cleanup-unit.js'
 import type { LeaseContext } from './lease.js'
 import type { WorkerSpec } from './worker-contract.js'
 import { resolveTime, type TimeSource } from '../time.js'
@@ -27,5 +28,6 @@ export function createDaemonWorkers(
     { name: 'digest', unit: digestUnit(db, opts) },
     { name: 'actions-fast', unit: actionsUnit(db, 'fast', opts), idleSleepMs: FAST_IDLE_SLEEP_MS },
     { name: 'actions-slow', unit: actionsUnit(db, 'slow', opts) },
+    { name: 'cleanup', unit: cleanupUnit(db, opts) },
   ]
 }

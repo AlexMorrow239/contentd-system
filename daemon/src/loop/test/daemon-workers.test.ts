@@ -6,7 +6,7 @@ import { getAction } from '../../actions/queue.js'
 import { memDb, seedAction, seedTopic } from '../../../testing/db.js'
 
 describe('createDaemonWorkers', () => {
-  it('constructs five inert units with only fast actions overriding the idle interval', async () => {
+  it('constructs six inert units with only fast actions overriding the idle interval', async () => {
     const db = memDb()
     const topic = seedTopic(db)
     const id = seedAction(db, { kind: 'topics.reject', args: JSON.stringify({ ids: [topic] }) })
@@ -17,6 +17,7 @@ describe('createDaemonWorkers', () => {
       ['digest', undefined],
       ['actions-fast', 1000],
       ['actions-slow', undefined],
+      ['cleanup', undefined],
     ])
     expect(getAction(db, id)?.status).toBe('pending')
     expect(readDaemonState(db)).toBeNull()
