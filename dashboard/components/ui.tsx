@@ -55,42 +55,38 @@ export function Table({ headings, children }: { headings: string[]; children: Re
     </div>
   )
 }
-export function Truncation({ shown, total }: { shown: number; total: number }) {
-  return shown < total ? (
-    <p className="muted">
-      Showing {shown.toLocaleString()} of {total.toLocaleString()}
-    </p>
-  ) : null
-}
-export function Filters({
-  path,
-  filters,
+export function Pagination({
+  label,
+  page,
+  pageCount,
+  href,
 }: {
-  path: string
-  filters: { name: string; values: readonly string[]; selected?: string }[]
+  label: string
+  page: number
+  pageCount: number
+  href: (page: number) => string
 }) {
+  if (pageCount <= 1) return null
   return (
-    <form action={path} className="filters" method="get">
-      {filters.map((f) => (
-        <label key={f.name}>
-          {f.name}
-          <select
-            key={`${f.name}:${f.selected ?? ''}`}
-            name={f.name}
-            defaultValue={f.selected ?? ''}
-          >
-            <option value="">All {f.name === 'status' ? 'statuses' : `${f.name}s`}</option>
-            {f.values.map((v) => (
-              <option key={v} value={v}>
-                {v}
-              </option>
-            ))}
-          </select>
-        </label>
-      ))}
-      <button type="submit">Filter</button>
-      <Link href={path}>Clear</Link>
-    </form>
+    <nav className="pagination" aria-label={label}>
+      {page > 1 ? (
+        <Link href={href(page - 1)} scroll={false}>
+          Previous page
+        </Link>
+      ) : (
+        <span />
+      )}
+      <span>
+        Page {page} of {pageCount}
+      </span>
+      {page < pageCount ? (
+        <Link href={href(page + 1)} scroll={false}>
+          Next page
+        </Link>
+      ) : (
+        <span />
+      )}
+    </nav>
   )
 }
 export function ActionDetail({ action }: { action: ActionRow }) {

@@ -10,7 +10,7 @@ script_model = "claude-sonnet-5"
 # relative to the process cwd (/app in the container).
 bg_dir = "assets/bg"
 
-videos_per_day = 15
+videos_per_day = 7
 backlog_days = 2
 platforms = ["youtube", "instagram"]
 

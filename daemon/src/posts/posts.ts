@@ -101,7 +101,7 @@ export function unmarkPosted(db: Database, jobId: string, platform: Platform): b
 
 /**
  * Posted platforms per job, each mapped to its url, in ONE grouped read
- * rather than a query per row — the same discipline libraryLinks follows.
+ * rather than a query per row.
  *
  * The url rides along rather than needing a second read: every caller that
  * wants to know WHICH platforms are posted also wants to link to them, and

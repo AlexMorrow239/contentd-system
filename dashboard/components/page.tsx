@@ -1,5 +1,6 @@
 import 'server-only'
 import type { ReactNode } from 'react'
+import Link from 'next/link'
 import { unstable_rethrow } from 'next/navigation'
 import type { Database } from 'better-sqlite3'
 import { resolveDashboardConfig, type DashboardConfig } from '../lib/config'
@@ -25,18 +26,13 @@ export function value(search: Search, key: string): string | undefined {
   const raw = search[key]
   return typeof raw === 'string' && raw !== '' ? raw : undefined
 }
-export function pick<T extends string>(
-  values: readonly T[],
-  raw: string | undefined,
-): T | undefined {
-  return values.find((v) => v === raw)
-}
-
 export async function DashboardPage({
   searchParams,
   refreshSeconds,
+  compactActions = false,
   children,
 }: PageProps & {
+  compactActions?: boolean
   /** A fixed interval, or one read from the page's own data. */
   refreshSeconds?: number | ((db: Database) => number | undefined)
   children: (db: Database, context: PageContext) => ReactNode
@@ -75,7 +71,15 @@ export async function DashboardPage({
           )}
           {action && (
             <div aria-live="polite">
-              <ActionDetail action={action} />
+              {compactActions ? (
+                <p className={action.status === 'failed' ? 'error' : 'muted'}>
+                  {action.kind}: {action.status}
+                  {action.error && ` — ${action.error}`} ·{' '}
+                  <Link href={`/actions?action=${action.id}`}>View action</Link>
+                </p>
+              ) : (
+                <ActionDetail action={action} />
+              )}
             </div>
           )}
           {body}

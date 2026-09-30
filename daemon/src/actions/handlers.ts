@@ -3,7 +3,7 @@ import { linkActionJob } from '../jobs/execution.js'
 import type { Database } from 'better-sqlite3'
 import { loadChannelsDir, tryLoadChannelsDir } from '../config/channel.js'
 import { BrainrotError } from '../errors.js'
-import { approveLibrary, rejectLibrary } from '../jobs/library.js'
+import { approveLibrary } from '../jobs/library.js'
 import { pipelineStages } from '../jobs/pipeline.js'
 import { deleteJob } from '../jobs/delete.js'
 import { resumeJob } from '../jobs/resume.js'
@@ -258,12 +258,6 @@ export const ACTION_HANDLERS: { [K in ActionKind]: Handler<K> } = {
       // Reported, not thrown: unmarking something already gone is the operator
       // getting the state they asked for, not a failure.
       removed: unmarkPosted(ctx.db, args.jobId, args.platform),
-    })),
-
-  'library.reject': (ctx, args) =>
-    mutateOwned(ctx, () => ({
-      rejected: rejectLibrary(ctx.db, args.jobIds),
-      requested: args.jobIds.length,
     })),
 }
 

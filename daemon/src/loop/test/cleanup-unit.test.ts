@@ -16,7 +16,7 @@ import { testRoot } from '../../../testing/tmp.js'
 import { cleanupUnit } from '../cleanup-unit.js'
 import { requireLease } from '../lease.js'
 import { markPosted, unmarkPosted } from '../../posts/posts.js'
-import { listLibraryEntries } from '../../../../dashboard/lib/server/queries/library.js'
+import { getJobDetail } from '../../../../dashboard/lib/server/queries/jobs.js'
 import { streamVideo } from '../../../../dashboard/lib/server/stream-video.js'
 
 function fixture(platforms = ['youtube', 'tiktok']) {
@@ -92,10 +92,7 @@ describe('cleanupUnit', () => {
       deleted: [{ jobId: 'job-1', videoPath: expired }],
       errors: [],
     })
-    expect(listLibraryEntries(f.db).find((entry) => entry.jobId === 'job-1')).toMatchObject({
-      bytes: 'missing',
-      links: expect.any(Array),
-    })
+    expect(getJobDetail(f.db, 'job-1')?.job.video?.bytes).toBe('missing')
     expect(
       streamVideo(new Request('http://localhost/video'), f.db, f.runsRoot, 'job-1').status,
     ).toBe(404)

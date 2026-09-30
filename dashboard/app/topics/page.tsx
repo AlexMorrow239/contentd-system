@@ -1,27 +1,28 @@
 import { countTopics, topicChannels } from '../../lib/server/queries/topics'
-import { TOPIC_STATUSES, listTopics } from '../../../daemon/src/scout/topics'
+import { listTopics } from '../../../daemon/src/scout/topics'
+import { redirect } from 'next/navigation'
+import { TopicFiltersControl } from '../../components/topic-filters'
+import { parseTopicFilters, topicsUrl, TOPICS_PAGE_SIZE } from '../../lib/shared/topic-filters'
+import { pageNumber } from '../../lib/shared/filters'
 import { ActionForm } from '../../components/action-form'
-import { DashboardPage, pick, value, type PageProps } from '../../components/page'
-import {
-  Filters,
-  JobLink,
-  SafeLink,
-  Status,
-  Table,
-  Truncation,
-  formatTime,
-} from '../../components/ui'
+import { DashboardPage, type PageProps } from '../../components/page'
+import { Pagination, JobLink, SafeLink, Status, Table, formatTime } from '../../components/ui'
 export default function TopicsPage(props: PageProps) {
   return (
     <DashboardPage {...props}>
       {(db, ctx) => {
-        const filter = {
-          channel: value(ctx.search, 'channel'),
-          status: pick(TOPIC_STATUSES, value(ctx.search, 'status')),
-        }
-        const topics = listTopics(db, { ...filter, limit: 200 }).sort(
-          (a, b) => b.score - a.score || a.id - b.id,
-        )
+        const filter = parseTopicFilters(ctx.search)
+        const total = countTopics(db, filter)
+        const requestedPage = pageNumber(ctx.search.page)
+        const pageCount = Math.max(1, Math.ceil(total / TOPICS_PAGE_SIZE))
+        const page = Math.min(requestedPage, pageCount)
+        if (page !== requestedPage) redirect(topicsUrl(filter, page))
+        const topics = listTopics(db, {
+          ...filter,
+          order: 'score',
+          limit: TOPICS_PAGE_SIZE,
+          offset: (page - 1) * TOPICS_PAGE_SIZE,
+        })
         return (
           <>
             <h1>Topics</h1>
@@ -29,14 +30,13 @@ export default function TopicsPage(props: PageProps) {
             <div className="page-actions">
               <ActionForm kind="scout.run" token={ctx.token} disabled={ctx.stale} />
             </div>
-            <Filters
-              path="/topics"
-              filters={[
-                { name: 'channel', values: topicChannels(db), selected: filter.channel },
-                { name: 'status', values: TOPIC_STATUSES, selected: filter.status },
-              ]}
-            />
-            <Truncation shown={topics.length} total={countTopics(db, filter)} />
+            <TopicFiltersControl channels={topicChannels(db)} />
+            <div className="list-meta">
+              <span>
+                {total.toLocaleString()} {total === 1 ? 'topic' : 'topics'}
+              </span>
+              <span>Highest score first</span>
+            </div>
             {topics.length === 0 ? (
               <p className="empty">No topics match these filters.</p>
             ) : (
@@ -56,7 +56,10 @@ export default function TopicsPage(props: PageProps) {
                 {topics.map((topic) => (
                   <tr key={topic.id}>
                     <td>{topic.score}</td>
-                    <td>{topic.title}</td>
+                    <td>
+                      <span>{topic.title}</span>
+                      <p className="job-secondary">Topic #{topic.id}</p>
+                    </td>
                     <td>{topic.channel}</td>
                     <td>
                       <Status value={topic.status} />
@@ -89,6 +92,12 @@ export default function TopicsPage(props: PageProps) {
                 ))}
               </Table>
             )}
+            <Pagination
+              label="Topics pages"
+              page={page}
+              pageCount={pageCount}
+              href={(target) => topicsUrl(filter, target)}
+            />
           </>
         )
       }}

@@ -34,7 +34,7 @@ export interface ActionDescriptor {
   lane: ActionLane
   /** Button text and the name shown on the /actions page. */
   label: string
-  /** Route through the confirmation interstitial before enqueueing. */
+  /** Require a confirmation UI before enqueueing. */
   confirm: boolean
   /** Shown on the interstitial. Required in practice whenever confirm is true. */
   danger?: string
@@ -161,15 +161,16 @@ export const ACTIONS = {
   'jobs.delete': {
     lane: 'fast',
     label: 'delete',
-    confirm: false,
-    danger: undefined,
+    confirm: true,
+    danger:
+      'Removes this job from the dashboard and posting queue, including its saved posting history, and stops retries. Recorded costs and local artifacts are kept. Posts on external platforms are unchanged.',
     lease: undefined,
     args: z.object({ jobId }),
   },
   'jobs.resume': {
     lane: 'slow',
     label: 'resume',
-    confirm: true,
+    confirm: false,
     danger:
       'Re-runs this job from its first unfinished stage. Completed stages are ' +
       'skipped, but every stage that does run again spends real money.',
@@ -199,16 +200,6 @@ export const ACTIONS = {
       'the saved link. It does not delete anything on the platform itself.',
     lease: undefined,
     args: z.object({ jobId, platform }),
-  },
-  'library.reject': {
-    lane: 'fast',
-    label: 'discard',
-    confirm: true,
-    danger:
-      'Discards this video: it leaves the posting queue and stops counting toward ' +
-      'the channel backlog, so production can resume. The local video file is kept.',
-    lease: undefined,
-    args: z.object({ jobIds: list(jobId) }),
   },
 } as const satisfies Record<string, ActionDescriptor>
 

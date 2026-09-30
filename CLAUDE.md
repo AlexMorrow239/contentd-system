@@ -175,9 +175,9 @@ budget-blocked jobs, then claims
 new topics subject to daily production limits, budgets, and backlog capacity.
 A channel holding `ceil(videos_per_day * backlog_days)` unconsumed videos
 pauses production. Unposted videos do not expire; posting to all declared platforms or
-discarding them frees capacity. Discard changes library state but keeps the
-local video file. Abandoned jobs automatically resume with their original topic
-claim and completed checkpoints. Persisted crash backoff starts at 30 seconds,
+deleting their jobs frees capacity. Delete retires the job and removes library/post
+records while keeping costs and local files. Abandoned jobs automatically resume
+with their original topic claim and completed checkpoints. Persisted crash backoff starts at 30 seconds,
 doubles to 30 minutes, and resets on completed stage progress. Ordinary provider
 failures still require explicit resume. Paid-stage replay warns about duplicate
 charges and incomplete accounting.
@@ -214,7 +214,7 @@ Keep `daemon/src/actions/` separated by import boundary:
 Remotion, and paid-provider clients must stay outside the HTTP process.
 
 Fast actions are `jobs.delete`, `topics.reject`, `topics.requeue`, `library.approve`,
-`library.reject`, `digest.run`, `post.mark`, and `post.unmark`. They perform no
+`digest.run`, `post.mark`, and `post.unmark`. They perform no
 network calls, rendering, or lease acquisition. Slow actions are `produce.next`,
 `jobs.produce`, `scout.run`, and `jobs.resume`.
 
@@ -485,7 +485,22 @@ React escapes scraped text; `dashboard/lib/shared/links.ts` validates external l
 schemes. Never use raw HTML for scraped content. Client components handle forms,
 clipboard controls, and router refreshes. Stable row keys preserve drafts and
 video elements across refreshes. `POST /api/actions` returns JSON acceptance
-with an action ID; confirmation pages remain GET-only until submission.
+with an action ID; confirmation pages remain GET-only until submission. Jobs resume submits directly;
+Delete uses the same client confirmation dialog on Jobs, job details, and Post. GETs never enqueue actions.
+
+`/jobs` consolidates the former library and posts-history screens; `/post` remains
+the manual posting queue. Jobs filters live in the URL and browser local storage,
+with explicit URL filters taking precedence. List/count queries share predicates
+and apply filters before pagination. Posting progress uses current declared
+platforms; records without URLs still count, and missing/empty configuration never
+means fully posted. Job details retain historical platform records and QC results.
+Topics shares the persistent `FilterBar` and pagination with Jobs, using its own
+storage key and title/ID search. Topic list/count predicates are shared; dashboard
+score ordering precedes pagination while CLI list ordering stays newest first.
+The old discard action and `library reject` command are removed. Historical
+blocked library rows remain readable; deleting them uses ordinary `jobs.delete`.
+Row actions share a submission lock and refresh in place; the existing operator
+queue, CSRF checks, and resume deduplication remain authoritative.
 
 Database openers live in `daemon/src/db/dashboard.ts` without schema or migration
 imports; the dashboard must not import `daemon/src/db/index.ts`. Next reads

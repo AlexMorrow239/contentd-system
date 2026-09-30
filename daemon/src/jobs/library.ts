@@ -69,17 +69,6 @@ export function approveLibrary(db: Database, jobIds: string[]): number {
     .run(...jobIds).changes
 }
 
-/** Retire ready or needs-review rows without deleting their local files. */
-export function rejectLibrary(db: Database, jobIds: string[]): number {
-  if (jobIds.length === 0) return 0
-  const placeholders = sqlPlaceholders(jobIds.length)
-  return db
-    .prepare(
-      `UPDATE library SET state = 'blocked' WHERE job_id IN (${placeholders}) AND state IN ('needs-review', 'ready')`,
-    )
-    .run(...jobIds).changes
-}
-
 /**
  * How many finished videos this channel is still holding — the number
  * plan-tick compares against backlogCap.

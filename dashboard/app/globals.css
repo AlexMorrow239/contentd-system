@@ -369,3 +369,224 @@ pre {
     padding: 1rem;
   }
 }
+
+/* Jobs keeps summary rows dense while leaving the controls easy to target. */
+.jobs-heading,
+.list-meta,
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+.jobs-heading .subtitle {
+  margin-bottom: 0;
+}
+.filter-bar {
+  gap: 0.75rem;
+}
+.filter-search {
+  flex: 1;
+  min-width: 190px;
+}
+.list-meta {
+  margin: 1.5rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 12px;
+}
+.jobs-table th,
+.jobs-table td {
+  padding: 0.65rem;
+  vertical-align: middle;
+}
+.job-topic {
+  min-width: 180px;
+  max-width: 340px;
+  overflow-wrap: anywhere;
+}
+.job-topic-link {
+  color: var(--fg);
+  font-weight: 550;
+}
+.job-secondary {
+  font-size: 11px;
+  color: var(--muted);
+}
+.job-secondary a {
+  color: var(--muted);
+}
+.job-created {
+  max-width: 125px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.job-cost {
+  white-space: nowrap;
+}
+.job-actions-cell,
+.jobs-table th:last-child {
+  position: sticky;
+  right: 0;
+  background: var(--bg);
+  border-left: 1px solid var(--border);
+  min-width: 104px;
+}
+.job-action-buttons {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+.job-action-group > .muted,
+.job-action-group > .error {
+  display: block;
+  font-size: 11px;
+  max-width: 220px;
+  margin: 0.25rem 0;
+}
+.icon-action {
+  margin: 0;
+}
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  background: transparent;
+  border-color: var(--border);
+}
+.icon-button.action-jobs-resume {
+  color: var(--link);
+}
+.icon-button.action-library-approve {
+  color: var(--ok);
+}
+.icon-button.action-jobs-delete {
+  color: var(--bad);
+}
+.action-tooltip {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  right: 0;
+  z-index: 3;
+  visibility: hidden;
+  pointer-events: none;
+  background: #08090c;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.icon-button:hover .action-tooltip,
+.icon-button:focus-visible .action-tooltip {
+  visibility: visible;
+}
+.jobs-table .table-scroll {
+  padding-top: 2rem;
+  margin-top: -2rem;
+}
+.icon-button[aria-busy='true'] svg {
+  opacity: 0.4;
+}
+.secondary-button {
+  background: transparent;
+}
+.pagination {
+  margin: 1.25rem 0;
+  font-size: 13px;
+}
+.pagination a {
+  padding: 0.5rem 0;
+}
+.back-link {
+  display: inline-block;
+  margin-bottom: 1rem;
+}
+.status-discarded {
+  color: var(--muted);
+}
+.confirmation-modal {
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.5rem;
+  width: min(480px, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+}
+.confirmation-modal::backdrop {
+  background: #000a;
+}
+.modal-subject {
+  font-weight: 550;
+  overflow-wrap: anywhere;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+}
+.danger-button {
+  background: #51262d;
+  border-color: #99525f;
+}
+.danger-button:hover:not(:disabled) {
+  background: #6b303a;
+}
+.job-feedback {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 5;
+  display: grid;
+  gap: 0.5rem;
+  max-width: min(480px, calc(100vw - 2rem));
+}
+.job-notice {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 4px 24px #0005;
+  font-size: 13px;
+}
+.job-notice span {
+  overflow-wrap: anywhere;
+}
+.job-notice button {
+  padding: 0.2rem 0.5rem;
+  background: transparent;
+}
+@media (max-width: 700px) {
+  .jobs-heading {
+    align-items: start;
+  }
+  .jobs-heading .subtitle {
+    max-width: 230px;
+  }
+  .filter-bar label {
+    flex: 1 1 140px;
+  }
+  .filter-bar .filter-search {
+    flex-basis: 100%;
+  }
+  .icon-button {
+    width: 44px;
+    height: 44px;
+  }
+  .job-actions-cell {
+    min-width: 118px;
+  }
+  .job-feedback {
+    bottom: 0.75rem;
+    right: 0.75rem;
+  }
+}

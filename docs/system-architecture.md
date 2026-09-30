@@ -56,14 +56,14 @@ Sources: [Compose](../docker-compose.yml), [daemon](../daemon/src/loop/daemon.ts
 
 There is no Redis/RabbitMQ-style message broker. Work is discovered by polling SQLite. Some queues are persistent rows with statuses; others are computed views of existing state.
 
-| Queue / work set     | Representation                                                            | Producer                          | Consumer                       | Selection and capacity                                                                                                            |
-| -------------------- | ------------------------------------------------------------------------- | --------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| Candidate topics     | `topics.status = candidate`                                               | Scout; operator requeue           | Production planner             | Per channel: score descending, creation time ascending, ID ascending. Scout stops fetching at `ceil(videos_per_day × queue_days)` |
-| Blocked-job recovery | `jobs.status = blocked`                                                   | Budget enforcement in runner      | Production planner             | Oldest eligible job first, before any new topic; requires remaining budget                                                        |
-| Fast actions         | `operator_actions`, lane `fast`, status `pending`                         | Dashboard                         | `actions-fast`                 | ID ascending, up to 50 completions per unit                                                                                       |
-| Slow actions         | Same table, lane `slow`                                                   | Dashboard                         | `actions-slow`                 | ID ascending with lease-blocked rows skipped within the first 50 pending rows; one completion per unit                            |
-| Review inventory     | `library.state = needs-review`                                            | Completed pipeline with QC issues | Human approval/discard actions | Counts toward backlog but does not appear in `/post`                                                                              |
-| Manual posting queue | Query of ready library rows missing at least one configured platform post | Pipeline or approval              | Human                          | Oldest library creation time, then job ID; default page limit 200                                                                 |
+| Queue / work set     | Representation                                                            | Producer                          | Consumer                      | Selection and capacity                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------- | --------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Candidate topics     | `topics.status = candidate`                                               | Scout; operator requeue           | Production planner            | Per channel: score descending, creation time ascending, ID ascending. Scout stops fetching at `ceil(videos_per_day × queue_days)` |
+| Blocked-job recovery | `jobs.status = blocked`                                                   | Budget enforcement in runner      | Production planner            | Oldest eligible job first, before any new topic; requires remaining budget                                                        |
+| Fast actions         | `operator_actions`, lane `fast`, status `pending`                         | Dashboard                         | `actions-fast`                | ID ascending, up to 50 completions per unit                                                                                       |
+| Slow actions         | Same table, lane `slow`                                                   | Dashboard                         | `actions-slow`                | ID ascending with lease-blocked rows skipped within the first 50 pending rows; one completion per unit                            |
+| Review inventory     | `library.state = needs-review`                                            | Completed pipeline with QC issues | Human approval/delete actions | Counts toward backlog but does not appear in `/post`                                                                              |
+| Manual posting queue | Query of ready library rows missing at least one configured platform post | Pipeline or approval              | Human                         | Oldest library creation time, then job ID; default page limit 200                                                                 |
 
 `jobs.status = queued` is a persisted pre-execution state, not a generic job queue drained by a worker. New production creates a job and immediately calls its runner. After operation-lease acquisition, reconciliation marks abandoned queued/running jobs for automatic recovery. The planner selects due interrupted jobs first, then affordable blocked jobs, then new topics.
 
@@ -83,10 +83,10 @@ flowchart LR
   Review -->|operator approval| Ready
   Ready --> Post[Manual posting checklist]
   Post -->|mark every declared platform| Consumed[Fully posted]
-  Review -->|discard| Discard[Blocked library row]
-  Ready -->|discard| Discard
+  Review -->|delete| Deleted[Retired job; costs and files retained]
+  Ready -->|delete| Deleted
   Consumed -.->|frees inventory capacity| Job
-  Discard -.->|frees inventory capacity| Job
+  Deleted -.->|frees inventory capacity| Job
   Job -.->|claims reduce candidate depth| Topics
   Topics -.->|depth below threshold permits future fetch| Filter
 ```
@@ -94,7 +94,7 @@ flowchart LR
 These are two separate capacity controls:
 
 - **Candidate depth** counts only candidate topics. Claimed, used, and rejected topics do not count. The gate runs before fetching a batch, so one batch—especially a story split into multiple parts—can exceed the threshold. It is not an insertion hard limit.
-- **Finished backlog** counts ready and needs-review videos that are not posted to every currently declared platform. Discarded library rows do not count. The automatic new-job planner pauses at `ceil(videos_per_day × backlog_days)`.
+- **Finished backlog** counts ready and needs-review videos that are not posted to every currently declared platform. Deleted jobs and historically discarded library rows do not count. The automatic new-job planner pauses at `ceil(videos_per_day × backlog_days)`.
 
 Neither `queue_days` nor `backlog_days` is an expiration timer. Videos do not age out. Scouting does not directly check finished inventory: when production stops, scouting may continue until its own candidate threshold is reached.
 
@@ -167,12 +167,12 @@ sequenceDiagram
   UI->>HTTP: Refresh action and domain state
 ```
 
-| Lane | Actions                                                                                                          | Worker-acquired lease                                        |
-| ---- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Fast | `topics.reject`, `topics.requeue`, `library.approve`, `library.reject`, `digest.run`, `post.mark`, `post.unmark` | None                                                         |
-| Slow | `jobs.produce`, `jobs.resume`                                                                                    | `produce`                                                    |
-| Slow | `scout.run`                                                                                                      | `scout`                                                      |
-| Slow | `produce.next`                                                                                                   | None at worker level; the tick acquires `produce` internally |
+| Lane | Actions                                                                                                       | Worker-acquired lease                                        |
+| ---- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| Fast | `topics.reject`, `topics.requeue`, `library.approve`, `jobs.delete`, `digest.run`, `post.mark`, `post.unmark` | None                                                         |
+| Slow | `jobs.produce`, `jobs.resume`                                                                                 | `produce`                                                    |
+| Slow | `scout.run`                                                                                                   | `scout`                                                      |
+| Slow | `produce.next`                                                                                                | None at worker level; the tick acquires `produce` internally |
 
 Fast actions do local operations without provider calls, rendering, or lease acquisition. The slow lane is serial: once a handler starts, other slow actions wait even if they need a different lease. The independent automatic scout/produce loops can still run when their leases allow it.
 
@@ -237,7 +237,7 @@ stateDiagram-v2
   }
 ```
 
-Job `done` can mean either library `ready` or `needs-review`. A QC verdict that fails checks leads to needs-review; an exception executing QC fails the job. Library `blocked` means discarded, whereas job `blocked` means budget-stopped. They are different state machines.
+Job `done` can mean either library `ready` or `needs-review`. A QC verdict that fails checks leads to needs-review; an exception executing QC fails the job. Legacy library `blocked` means previously discarded, whereas job `blocked` means budget-stopped. The removal action now retires the entire job through `jobs.delete`. They are different state machines.
 
 Posting does not change ready into a published state. The existence of a `posts` row for each `(job_id, platform)` records actual manual posting. Marking is idempotent; correcting its URL preserves the original posting time. Unmark removes that record and can put the video back into the pending checklist.
 
@@ -276,9 +276,9 @@ This diagram shows application relationships, not enforced foreign keys. Databas
 
 Finished videos remain in the committed assemble attempt directory; legacy
 `runs/<jobId>/assemble/final.mp4` paths stay valid. The dashboard reports
-each one as `local` or `missing` from that path alone. Discard marks the library
-row blocked but keeps the local file; if a local video is deleted, the application
-cannot recover it.
+each one as `local` or `missing` from that path alone. Delete retires the job,
+removes library/post records, and retains costs and local files. If a local video
+file is deleted, the application cannot recover it.
 
 The schema is applied and migrations run by the daemon/normal CLI opener. Dashboard read/action handles never initialize or migrate. The production SQLite file lives on the Linux named volume so all WAL users share coherent filesystem memory.
 

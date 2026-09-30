@@ -1,6 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { whereClause } from '../../../../daemon/src/db/sql.js'
-import type { TopicStatus } from '../../../../daemon/src/scout/topics.js'
+export { countTopics } from '../../../../daemon/src/scout/topics.js'
 
 /**
  * Distinct channels straight off the topics table, for the filter dropdown.
@@ -14,20 +13,4 @@ export function topicChannels(db: Database): string[] {
     channel: string
   }[]
   return rows.map((r) => r.channel)
-}
-
-// Unbounded by whatever limit listTopics applies, so the view can tell the
-// operator "showing 200 of 1,432" rather than truncating silently.
-export function countTopics(
-  db: Database,
-  filter?: { channel?: string; status?: TopicStatus },
-): number {
-  const { clause, params } = whereClause([
-    ['channel = ?', filter?.channel],
-    ['status = ?', filter?.status],
-  ])
-  const row = db.prepare(`SELECT COUNT(*) AS count FROM topics${clause}`).get(...params) as {
-    count: number
-  }
-  return row.count
 }

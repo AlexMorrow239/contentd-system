@@ -1,11 +1,10 @@
 import type { Database } from 'better-sqlite3'
 import { parseBudgetWait, type BudgetWait } from '../../../../daemon/src/jobs/budget-wait.js'
-import { whereClause } from '../../../../daemon/src/db/sql.js'
-import { libraryBytes, libraryLinks, type LibraryBytes } from './library.js'
-
-// A tuple, not a bare union: the filter dropdowns need the values at runtime,
-// and a hand-maintained second copy beside the type is what they used to be.
-export const JOB_STATUSES = ['queued', 'running', 'failed', 'done', 'blocked'] as const
+import { sqlPlaceholders, whereClause } from '../../../../daemon/src/db/sql.js'
+import { fullyPostedClause } from '../../../../daemon/src/posts/posts.js'
+import { hasActiveAction } from './actions.js'
+import { jobContents, type JobContent, type JobChannels, type JobPost } from './job-content.js'
+import type { JOB_STATUSES, JobFilters } from '../../shared/job-filters.js'
 
 export type JobStatus = (typeof JOB_STATUSES)[number]
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed'
@@ -26,7 +25,7 @@ export const DASHBOARD_STAGE_ORDER = [
   'qc',
 ] as const
 
-export interface JobListRow {
+export interface JobListRow extends Omit<JobContent, 'posts'> {
   id: string
   channel: string
   tier: 'volume' | 'premium'
@@ -63,7 +62,7 @@ const JOB_COLUMNS =
   `${JOB_STATUS} AS status, jobs.created_at AS created_at, jobs.finished_at AS finished_at, ` +
   'COALESCE((SELECT SUM(usd_micros) FROM costs WHERE costs.job_id = jobs.id), 0) AS cost_usd_micros'
 
-function toJobRow(row: DbJobRow): JobListRow {
+function toJobRow(row: DbJobRow, content: JobContent): JobListRow {
   return {
     id: row.id,
     channel: row.channel,
@@ -73,42 +72,90 @@ function toJobRow(row: DbJobRow): JobListRow {
     createdAt: row.created_at,
     finishedAt: row.finished_at,
     costUsdMicros: row.cost_usd_micros,
+    video: content.video,
+    posting: content.posting,
+    action: content.action,
   }
 }
 
-function jobsWhereClause(filter?: { channel?: string; status?: JobStatus }): {
+const JOB_FROM = ' FROM jobs LEFT JOIN library l ON l.job_id = jobs.id'
+
+function jobsWhereClause(
+  filter: JobFilters = {},
+  channels: JobChannels = [],
+): {
   clause: string
   params: unknown[]
 } {
-  return whereClause([
+  const base = whereClause([
     ['jobs.deleted_at IS ?', null],
-    ['jobs.channel = ?', filter?.channel],
-    [`${JOB_STATUS} = ?`, filter?.status],
+    ['jobs.channel = ?', filter.channel],
+    [`${JOB_STATUS} = ?`, filter.status],
+    ["instr(lower(jobs.topic || ' ' || jobs.id), lower(?)) > 0", filter.q],
   ])
+  if (filter.review === 'none') base.clause += ' AND l.job_id IS NULL'
+  else if (filter.review) {
+    base.clause += ' AND l.state = ?'
+    base.params.push(filter.review)
+  }
+  if (filter.posting === 'has-posts') {
+    base.clause += ' AND EXISTS (SELECT 1 FROM posts WHERE posts.job_id = jobs.id)'
+  } else if (filter.posting) {
+    const choices = channels
+      .filter((c) => c.platforms.length)
+      .map((channel) => {
+        const fully = fullyPostedClause(channel.platforms, { alias: 'l', match: 'fully' })
+        const any = `EXISTS (SELECT 1 FROM posts p WHERE p.job_id = jobs.id AND p.platform IN (${sqlPlaceholders(channel.platforms.length)}))`
+        base.params.push(channel.name)
+        let predicate: string
+        if (filter.posting === 'full') {
+          predicate = fully.sql
+          base.params.push(...fully.params)
+        } else if (filter.posting === 'partial') {
+          predicate = `${any} AND NOT (${fully.sql})`
+          base.params.push(...channel.platforms, ...fully.params)
+        } else {
+          predicate = `NOT (${any})`
+          base.params.push(...channel.platforms)
+        }
+        return `(jobs.channel = ? AND ${predicate})`
+      })
+    base.clause += ` AND l.job_id IS NOT NULL AND (${choices.join(' OR ') || '0'})`
+  }
+  return base
 }
 
 export function listJobs(
   db: Database,
-  filter?: { channel?: string; status?: JobStatus; limit?: number },
+  filter?: JobFilters & { limit?: number; offset?: number },
+  channels: JobChannels = [],
 ): JobListRow[] {
-  const { clause, params } = jobsWhereClause(filter)
-  const limit = filter?.limit ?? 200
+  const { clause, params } = jobsWhereClause(filter, channels)
   const rows = db
     .prepare(
-      `SELECT ${JOB_COLUMNS} FROM jobs${clause} ORDER BY jobs.created_at DESC, jobs.id DESC LIMIT ?`,
+      `SELECT ${JOB_COLUMNS}${JOB_FROM}${clause} ORDER BY jobs.created_at DESC, jobs.id DESC LIMIT ? OFFSET ?`,
     )
-    .all(...params, limit) as DbJobRow[]
-  return rows.map(toJobRow)
+    .all(...params, filter?.limit ?? 200, filter?.offset ?? 0) as DbJobRow[]
+  const content = jobContents(db, rows, channels)
+  return rows.map((row) => toJobRow(row, content.get(row.id)!))
 }
 
-// Unbounded by listJobs's limit, so the view can tell the operator
-// "showing 200 of 1,432" rather than truncating silently.
-export function countJobs(db: Database, filter?: { channel?: string; status?: JobStatus }): number {
-  const { clause, params } = jobsWhereClause(filter)
-  const row = db.prepare(`SELECT COUNT(*) AS count FROM jobs${clause}`).get(...params) as {
+export function countJobs(db: Database, filter?: JobFilters, channels: JobChannels = []): number {
+  const { clause, params } = jobsWhereClause(filter, channels)
+  const row = db.prepare(`SELECT COUNT(*) AS count${JOB_FROM}${clause}`).get(...params) as {
     count: number
   }
   return row.count
+}
+
+/** Includes work hidden by the current filter, so a failed-only view can update after resume. */
+export function jobsRefreshSeconds(db: Database): number | undefined {
+  const activeJob = db
+    .prepare(
+      "SELECT 1 FROM jobs WHERE deleted_at IS NULL AND status IN ('running', 'queued') LIMIT 1",
+    )
+    .get()
+  return activeJob || hasActiveAction(db) ? 3 : undefined
 }
 
 export function jobChannels(db: Database): string[] {
@@ -141,15 +188,14 @@ export interface JobDetail {
   retryAfter: string | null
   stages: StageRow[]
   costs: JobCostRow[]
-  libraryState: string | null
-  videoPath: string | null
-  /** Whether the finished video's local file is available. */
-  bytes: LibraryBytes | null
-  /** Live post urls, one per platform that published. */
-  links: { platform: string; url: string }[]
+  posts: JobPost[]
 }
 
-export function getJobDetail(db: Database, jobId: string): JobDetail | null {
+export function getJobDetail(
+  db: Database,
+  jobId: string,
+  channels: JobChannels = [],
+): JobDetail | null {
   const row = db
     .prepare(
       `SELECT ${JOB_COLUMNS}, jobs.budget_wait_json, jobs.retry_after FROM jobs WHERE jobs.id = ? AND jobs.deleted_at IS NULL`,
@@ -204,23 +250,13 @@ export function getJobDetail(db: Database, jobId: string): JobDetail | null {
     createdAt: c.created_at,
   }))
 
-  const libraryRow = db
-    .prepare('SELECT state, video_path FROM library WHERE job_id = ?')
-    .get(jobId) as { state: string; video_path: string } | undefined
-
-  const bytes: JobDetail['bytes'] = libraryRow === undefined ? null : libraryBytes(libraryRow)
-
-  const links = libraryLinks(db, [jobId]).get(jobId) ?? []
-
+  const content = jobContents(db, [row], channels).get(jobId)!
   return {
-    job: toJobRow(row),
+    job: toJobRow(row, content),
+    posts: content.posts,
     budgetWait: parseBudgetWait(row.budget_wait_json),
     retryAfter: row.retry_after,
     stages,
     costs,
-    libraryState: libraryRow?.state ?? null,
-    videoPath: libraryRow?.video_path ?? null,
-    bytes,
-    links,
   }
 }

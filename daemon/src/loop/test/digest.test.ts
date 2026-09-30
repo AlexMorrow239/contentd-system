@@ -274,10 +274,8 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     expect(digest).not.toContain('per-video budget left — awaiting the resume pass')
   })
 
-  // Remedies must name commands that exist: there is no way to "reject" a
-  // blocked job (library reject only touches library rows, which a blocked
-  // job never has), so these lines name `resume` and, when the job still
-  // holds a topic, `topics requeue`.
+  // CLI recovery names `resume` and, when the job still holds a topic,
+  // `topics requeue`. Job deletion is available from the dashboard.
   it('names a blocked job whose channel config left the channels dir', () => {
     const db = memDb(time)
     seedJob(db, { id: 'j-orphan', channel: 'gone', status: 'blocked' })

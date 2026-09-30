@@ -34,7 +34,6 @@ describe('action handlers', () => {
     ['topics.reject', { ids: ['1'] }],
     ['topics.requeue', { id: '1' }],
     ['library.approve', { jobIds: ['j1'] }],
-    ['library.reject', { jobIds: ['j1'] }],
     ['post.mark', { jobId: 'j1', platform: 'youtube' }],
     ['post.unmark', { jobId: 'j1', platform: 'youtube' }],
   ] as const)('%s fences its domain mutation inside a transaction', async (kind, args) => {
@@ -433,13 +432,5 @@ describe('action handlers', () => {
     seedJob(db, 'j1', { channel: 'alpha' })
     const result = await runAction(ctx(db), 'post.unmark', { jobId: 'j1', platform: 'youtube' })
     expect(result).toEqual({ jobId: 'j1', platform: 'youtube', removed: false })
-  })
-
-  it('library.reject discards and reports the count', async () => {
-    const db = memDb()
-    seedJob(db, 'j1', { channel: 'alpha' })
-    seedLibrary(db, 'j1', { state: 'ready' })
-    const result = await runAction(ctx(db), 'library.reject', { jobIds: ['j1'] })
-    expect(result).toEqual({ rejected: 1, requested: 1 })
   })
 })

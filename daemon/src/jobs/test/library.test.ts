@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { existsSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
 import type { Database } from 'better-sqlite3'
 import { parseLibraryJobIds } from '../../cli.js'
-import { approveLibrary, listLibrary, pendingInventory, rejectLibrary } from '../library.js'
+import { approveLibrary, listLibrary, pendingInventory } from '../library.js'
 import type { LibraryState } from '../library.js'
 import { runCli } from '../../../testing/run-cli.js'
-import { tmpDir } from '../../../testing/tmp.js'
 import {
   memDb,
   seedJob as seedJobRow,
@@ -126,41 +123,6 @@ describe('approveLibrary', () => {
   })
 })
 
-describe('rejectLibrary', () => {
-  it('flips needs-review and ready rows to blocked; unknown ids are skipped', () => {
-    const db = memDb()
-    const a = seedJob(db, { id: 'a' })
-    seedLibrary(db, a, { state: 'needs-review' })
-    const b = seedJob(db, { id: 'b' })
-    seedLibrary(db, b, { state: 'ready' })
-
-    // 'no-such-job' does not exist: skipped
-    expect(rejectLibrary(db, [a, b, 'no-such-job'])).toBe(2)
-    const states = db.prepare('SELECT job_id, state FROM library ORDER BY job_id').all() as {
-      job_id: string
-      state: string
-    }[]
-    expect(states).toEqual([
-      { job_id: 'a', state: 'blocked' },
-      { job_id: 'b', state: 'blocked' },
-    ])
-    expect(rejectLibrary(db, [])).toBe(0)
-    db.close()
-  })
-
-  it('blocks a ready row without deleting its local video', () => {
-    const db = memDb()
-    const dir = tmpDir('brainrot-library-reject-')
-    const videoPath = join(dir, 'final.mp4')
-    writeFileSync(videoPath, 'video')
-    seedJob(db, { id: 'job-1' })
-    seedLibrary(db, 'job-1', { state: 'ready', videoPath })
-
-    expect(rejectLibrary(db, ['job-1'])).toBe(1)
-    expect(existsSync(videoPath)).toBe(true)
-  })
-})
-
 describe('pendingInventory', () => {
   it('counts a ready video with no posts at all', () => {
     const db = memDb()
@@ -256,13 +218,13 @@ describe('parseLibraryJobIds (in-process)', () => {
 
 describe('library CLI', () => {
   it.concurrent(
-    '`library --help` lists the list/approve/reject subcommands',
+    '`library --help` offers list and approve without the retired reject command',
     async () => {
       const result = await runCli(['library', '--help'])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('list')
       expect(result.stdout).toContain('approve')
-      expect(result.stdout).toContain('reject')
+      expect(result.stdout).not.toContain('reject')
     },
     60000,
   )

@@ -10,8 +10,6 @@ test('all pages, navigation, filters and job details work', async ({ page, dashb
   for (const [path, heading] of [
     ['/', 'Overview'],
     ['/post', 'Post'],
-    ['/posts', 'Posts'],
-    ['/library', 'Library'],
     ['/topics', 'Topics'],
     ['/actions', 'Actions'],
     ['/jobs', 'Jobs'],
@@ -19,53 +17,12 @@ test('all pages, navigation, filters and job details work', async ({ page, dashb
     await page.goto(dashboard.url + path)
     await expect(page.getByRole('heading', { name: heading, exact: true })).toBeVisible()
   }
-  await page.getByRole('combobox', { name: 'status', exact: true }).selectOption('failed')
-  await page.getByRole('button', { name: 'Filter', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Job status', exact: true }).selectOption('failed')
   await expect(page.getByText('Recover this job')).toBeVisible()
   await expect(page.getByText('A video to post')).toHaveCount(0)
   await page.getByRole('link', { name: 'job-failed', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Stages', exact: true })).toBeVisible()
   expect(errors).toEqual([])
-})
-
-test('resume is on job details and queues only after confirmation', async ({ page, dashboard }) => {
-  await page.goto(dashboard.url + '/jobs?status=failed')
-  await expect(page.getByRole('button', { name: 'resume…', exact: true })).toHaveCount(0)
-  await expect(page.getByLabel('Topic', { exact: true })).toHaveCount(0)
-  await page.getByRole('link', { name: 'job-failed', exact: true }).click()
-  await page.getByRole('button', { name: 'resume…', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Confirm: resume' })).toBeVisible()
-  expect(dashboard.db.prepare('SELECT * FROM operator_actions').all()).toHaveLength(0)
-  await page.getByRole('button', { name: 'resume', exact: true }).click()
-  await expect(page).toHaveURL(/\/jobs\/job-failed\?action=\d+/)
-  expect(dashboard.db.prepare('SELECT kind, status FROM operator_actions').all()).toEqual([
-    { kind: 'jobs.resume', status: 'pending' },
-  ])
-  await expect(page.getByRole('button', { name: 'resume…', exact: true })).toHaveCount(0)
-  await expect(page.locator('dd .status-queued')).toBeVisible()
-  await page.reload()
-  await expect(page.getByRole('button', { name: 'resume…', exact: true })).toHaveCount(0)
-  await expect(page.locator('dd .status-queued')).toBeVisible()
-})
-
-test('delete is a fast row action that preserves filters and removes the job', async ({
-  page,
-  dashboard,
-}) => {
-  const tick = actionsUnit(dashboard.db, 'fast', {
-    channelsDir: dashboard.paths.channelsDir,
-    runsRoot: dashboard.paths.runsRoot,
-  })
-  await page.goto(dashboard.url + '/jobs?status=failed')
-  await page.getByRole('button', { name: 'delete', exact: true }).click()
-  await expect(page).toHaveURL(/\/jobs\?status=failed&action=\d+/)
-  expect(dashboard.db.prepare('SELECT kind, lane FROM operator_actions').get()).toEqual({
-    kind: 'jobs.delete',
-    lane: 'fast',
-  })
-  await tick()
-  await expect(page.getByRole('link', { name: 'job-failed', exact: true })).toHaveCount(0)
-  await expect(page.getByText('No jobs match these filters.')).toBeVisible()
 })
 
 test('inline submission failures do not enqueue', async ({ page, dashboard }) => {
@@ -169,17 +126,4 @@ test('responsive layout stays within the viewport', async ({ page, dashboard }) 
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto(dashboard.url)
   await page.screenshot({ path: 'test-results/dashboard-desktop.png', fullPage: true })
-})
-
-test('clearing filters updates both the rows and the selected controls', async ({
-  page,
-  dashboard,
-}) => {
-  await page.goto(dashboard.url + '/jobs?status=failed')
-  const status = page.getByRole('combobox', { name: 'status', exact: true })
-  await expect(status).toHaveValue('failed')
-  await page.getByRole('link', { name: 'Clear', exact: true }).click()
-  await expect(page).toHaveURL(dashboard.url + '/jobs')
-  await expect(page.getByText('A video to post', { exact: true })).toBeVisible()
-  await expect(status).toHaveValue('')
 })

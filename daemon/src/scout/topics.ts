@@ -2,14 +2,14 @@ import { systemTime, type TimeSource } from '../time.js'
 import type { Database } from 'better-sqlite3'
 import type { StoryPart } from '../stories/types.js'
 import { parseSourcePost, type SourcePost } from '../context/types.js'
+import { whereClause } from '../db/sql.js'
+import type { TopicStatus } from './topic-status.js'
 
 // The tuple is the declaration and the union derives from it (the pattern
 // posts/types.ts's PLATFORMS follows), so a surface that must enumerate the
 // vocabulary — the dashboard's route guard, its status dropdown — reads this
 // one list instead of keeping a copy the compiler cannot check against it.
-export const TOPIC_STATUSES = ['candidate', 'claimed', 'used', 'rejected'] as const
-
-export type TopicStatus = (typeof TOPIC_STATUSES)[number]
+export { TOPIC_STATUSES, type TopicStatus } from './topic-status.js'
 
 export interface TopicRow {
   sourceContext: SourcePost | null
@@ -318,30 +318,39 @@ export function markTopicUsedByJob(db: Database, jobId: string): void {
   db.prepare("UPDATE topics SET status = 'used' WHERE job_id = ? AND status = 'claimed'").run(jobId)
 }
 
-// limit is optional and unlimited by default — the CLI (`topics list`) relies
-// on that to keep showing every row; only the dashboard passes one, to bound
-// what an unbounded scout queue can otherwise render.
+export interface TopicFilter {
+  channel?: string
+  status?: TopicStatus
+  q?: string
+}
+
+function topicWhere(filter?: TopicFilter) {
+  return whereClause([
+    ['channel = ?', filter?.channel],
+    ['status = ?', filter?.status],
+    ["instr(lower(title || ' ' || id), lower(?)) > 0", filter?.q],
+  ])
+}
+
+export function countTopics(db: Database, filter?: TopicFilter): number {
+  const { clause, params } = topicWhere(filter)
+  return (
+    db.prepare(`SELECT COUNT(*) AS count FROM topics${clause}`).get(...params) as { count: number }
+  ).count
+}
+
+// CLI callers retain their unlimited, newest-first list. Dashboard pages sort
+// by score before pagination, so an older high-scoring topic is still reachable.
 export function listTopics(
   db: Database,
-  filter?: { channel?: string; status?: TopicStatus; limit?: number },
+  filter?: TopicFilter & { limit?: number; offset?: number; order?: 'score' },
 ): TopicRow[] {
-  const where: string[] = []
-  const params: (string | number)[] = []
-  if (filter?.channel !== undefined) {
-    where.push('channel = ?')
-    params.push(filter.channel)
-  }
-  if (filter?.status !== undefined) {
-    where.push('status = ?')
-    params.push(filter.status)
-  }
-  const clause = where.length > 0 ? ` WHERE ${where.join(' AND ')}` : ''
-  const limitClause = filter?.limit !== undefined ? ' LIMIT ?' : ''
-  if (filter?.limit !== undefined) params.push(filter.limit)
+  const { clause, params } = topicWhere(filter)
+  const limitClause = filter?.limit !== undefined ? ' LIMIT ? OFFSET ?' : ''
+  if (filter?.limit !== undefined) params.push(filter.limit, filter.offset ?? 0)
+  const order = filter?.order === 'score' ? 'score DESC, id ASC' : 'created_at DESC, id DESC'
   const rows = db
-    .prepare(
-      `SELECT ${TOPIC_COLUMNS} FROM topics${clause} ORDER BY created_at DESC, id DESC${limitClause}`,
-    )
+    .prepare(`SELECT ${TOPIC_COLUMNS} FROM topics${clause} ORDER BY ${order}${limitClause}`)
     .all(...params) as DbTopicRow[]
   return rows.map(toTopicRow)
 }

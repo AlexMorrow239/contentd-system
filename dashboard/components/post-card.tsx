@@ -62,9 +62,11 @@ export function PostCard({
       </div>
       <div className="page-actions">
         <ActionForm
-          kind="library.reject"
+          kind="jobs.delete"
           token={token}
-          fields={{ jobIds: card.jobId }}
+          fields={{ jobId: card.jobId }}
+          confirmation="modal"
+          subject={card.topic}
           disabled={disabled}
         />
       </div>

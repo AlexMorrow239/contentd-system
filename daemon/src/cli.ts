@@ -11,7 +11,7 @@ import { listTopics, rejectTopics, requeueTopic } from './scout/topics.js'
 import type { TopicStatus } from './scout/topics.js'
 import { daySpendBreakdown } from './jobs/costs.js'
 import { formatUsdMicros } from './money.js'
-import { approveLibrary, listLibrary, rejectLibrary } from './jobs/library.js'
+import { approveLibrary, listLibrary } from './jobs/library.js'
 import type { LibraryState } from './jobs/library.js'
 import { resolveBrainrotPaths } from './config/paths.js'
 import type { BrainrotPaths } from './config/paths.js'
@@ -410,19 +410,6 @@ library
       const approved = approveLibrary(db, jobIds)
       // approved < jobIds.length flags ids that were not in 'needs-review' state.
       console.log(`approved ${approved} of ${jobIds.length}`)
-    })
-  })
-
-library
-  .command('reject <jobIds...>')
-  .option('--root <path>', ROOT_OPTION_DESC)
-  .action(async (rawIds: string[], opts: { root?: string }) => {
-    const jobIds = parseLibraryJobIds(rawIds)
-    await withDb(opts, (db) => {
-      const rejected = rejectLibrary(db, jobIds)
-      // reject takes needs-review AND ready; those are the only two states a
-      // row can be pulled back from — there is no 'published' state any more.
-      console.log(`rejected ${rejected} of ${jobIds.length}`)
     })
   })
 

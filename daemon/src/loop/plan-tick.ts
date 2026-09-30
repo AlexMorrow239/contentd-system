@@ -79,7 +79,7 @@ export function planTick(
   // Depth gate, ahead of the daily rate gate: producing into a full backlog
   // consumes local capacity faster than videos are handled. A channel
   // with no declared platforms is gated the same way — nothing drains it, so
-  // it fills once and then waits for the operator to post or discard videos
+  // it fills once and then waits for the operator to post videos or delete their jobs
   // by hand.
   const candidates = channels
     .map((channel) => {

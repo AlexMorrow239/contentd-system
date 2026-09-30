@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from '../jobs.js'
 import { tmpDir } from '../../../../../daemon/testing/tmp.js'
+import { testChannel } from '../../../../../daemon/testing/channel.js'
 import {
   memDb,
   seedAction,
@@ -34,6 +35,87 @@ function seed(): Database {
 }
 
 describe('listJobs', () => {
+  it('combines content filters before pagination and keeps counts in agreement', () => {
+    const db = seed()
+    const channels = [testChannel({ name: 'ocean', platforms: ['youtube', 'tiktok'] })]
+    seedLibrary(db, 'j2', { state: 'needs-review', qcJson: '{broken' })
+    seedPost(db, { jobId: 'j2', platform: 'youtube', url: null })
+    const filter = {
+      channel: 'ocean',
+      status: 'done' as const,
+      review: 'needs-review' as const,
+      posting: 'partial' as const,
+      q: 'SEA',
+      limit: 1,
+      offset: 0,
+    }
+    expect(listJobs(db, filter, channels).map((j) => j.id)).toEqual(['j2'])
+    expect(countJobs(db, filter, channels)).toBe(1)
+    expect(listJobs(db, { ...filter, offset: 1 }, channels)).toEqual([])
+    expect(listJobs(db, { ...filter, q: 'J1' }, channels)).toEqual([])
+    const [job] = listJobs(db, filter, channels)
+    expect(job?.video).toMatchObject({ state: 'needs-review', qc: { kind: 'unparseable' } })
+    expect(job?.posting).toEqual({ kind: 'partial', posted: 1, total: 2 })
+  })
+
+  it('distinguishes review state from production status and searches literal substrings', () => {
+    const db = seed()
+    seedLibrary(db, 'j2', { state: 'blocked' })
+    expect(listJobs(db, { review: 'none' }).map((j) => j.id)).toEqual(['j1'])
+    expect(listJobs(db, { review: 'blocked' }).map((j) => j.id)).toEqual(['j2'])
+    expect(listJobs(db, { status: 'blocked' })).toEqual([])
+    expect(listJobs(db, { q: 'J2' }).map((j) => j.id)).toEqual(['j2'])
+    expect(listJobs(db, { q: '%' })).toEqual([])
+    expect(countJobs(db, { review: 'ready' })).toBe(0)
+  })
+
+  it('uses declared platforms for progress and preserves historical posts without links', () => {
+    const db = seed()
+    seedLibrary(db, 'j2')
+    seedPost(db, { jobId: 'j2', platform: 'instagram', url: null })
+    const channels = [testChannel({ name: 'ocean', platforms: ['youtube'] })]
+    expect(listJobs(db, { posting: 'unposted' }, channels).map((j) => j.id)).toEqual(['j2'])
+    expect(listJobs(db, { posting: 'has-posts' }, channels).map((j) => j.id)).toEqual(['j2'])
+    expect(countJobs(db, { posting: 'full' }, channels)).toBe(0)
+    seedPost(db, { jobId: 'j2', platform: 'youtube', url: null })
+    expect(listJobs(db, { posting: 'full' }, channels).map((j) => j.id)).toEqual(['j2'])
+    expect(getJobDetail(db, 'j2', channels)?.posts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ platform: 'instagram', url: null }),
+        expect.objectContaining({ platform: 'youtube', url: null }),
+      ]),
+    )
+    expect(listJobs(db, { posting: 'full' }, [])).toEqual([])
+    expect(
+      listJobs(db, { posting: 'full' }, [testChannel({ name: 'ocean', platforms: [] })]),
+    ).toEqual([])
+    expect(listJobs(db).find((j) => j.id === 'j2')?.posting?.kind).toBe('unconfigured')
+  })
+
+  it('finds active scalar, list, and linked actions without losing older pending work', () => {
+    const db = seed()
+    const id = seedAction(db, { kind: 'library.approve', args: '{"jobIds":["j1","j2"]}' })
+    seedAction(db, { kind: 'jobs.delete', args: '{"jobId":"j2"}', status: 'failed' })
+    seedAction(db, { kind: 'jobs.resume', args: '{broken' })
+    expect(listJobs(db).map((j) => j.action?.id)).toEqual([id, id])
+    db.prepare("UPDATE operator_actions SET status='done' WHERE id=?").run(id)
+    expect(getJobDetail(db, 'j2')?.job.action).toMatchObject({
+      kind: 'jobs.delete',
+      status: 'failed',
+    })
+    const linked = seedAction(db, { kind: 'jobs.produce', args: '{}' })
+    db.prepare('UPDATE operator_actions SET job_id=? WHERE id=?').run('j1', linked)
+    expect(getJobDetail(db, 'j1')?.job.action?.id).toBe(linked)
+  })
+
+  it('excludes retired jobs even when they still have content', () => {
+    const db = seed()
+    seedLibrary(db, 'j2')
+    db.prepare('UPDATE jobs SET deleted_at=? WHERE id=?').run('2026-09-30', 'j2')
+    expect(listJobs(db, { review: 'ready' })).toEqual([])
+    expect(countJobs(db, { review: 'ready' })).toBe(0)
+    expect(getJobDetail(db, 'j2')).toBeNull()
+  })
   it.each(['pending', 'running'])(
     'shows an active %s resume as queued across job views',
     (status) => {
@@ -209,19 +291,18 @@ describe('getJobDetail', () => {
   it('reports the library row when one exists', () => {
     const db = seed()
     seedLibrary(db, 'j2', { videoPath: 'runs/j2/assemble/final.mp4', state: 'ready' })
-    const detail = getJobDetail(db, 'j2')
-    expect(detail?.libraryState).toBe('ready')
-    expect(detail?.videoPath).toBe('runs/j2/assemble/final.mp4')
+    const video = getJobDetail(db, 'j2')?.job.video
+    expect(video?.state).toBe('ready')
+    expect(video?.createdAt).toBeTruthy()
+    expect(video?.qc).toEqual({ kind: 'absent' })
     db.close()
   })
 
-  it('reports null bytes and no links for a job that never finished', () => {
+  it('reports no video and no posts for a job that never finished', () => {
     const db = seed()
     const detail = getJobDetail(db, 'j1')
-    expect(detail?.libraryState).toBeNull()
-    expect(detail?.videoPath).toBeNull()
-    expect(detail?.bytes).toBeNull()
-    expect(detail?.links).toEqual([])
+    expect(detail?.job.video).toBeNull()
+    expect(detail?.posts).toEqual([])
     db.close()
   })
 
@@ -231,18 +312,18 @@ describe('getJobDetail', () => {
     const file = path.join(dir, 'out.mp4')
     writeFileSync(file, 'not really a video')
     seedLibrary(db, 'j2', { videoPath: file, state: 'ready' })
-    expect(getJobDetail(db, 'j2')?.bytes).toBe('local')
+    expect(getJobDetail(db, 'j2')?.job.video?.bytes).toBe('local')
     db.close()
   })
 
   it('reports bytes missing when the local file is gone', () => {
     const db = seed()
     seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
-    expect(getJobDetail(db, 'j2')?.bytes).toBe('missing')
+    expect(getJobDetail(db, 'j2')?.job.video?.bytes).toBe('missing')
     db.close()
   })
 
-  it('lists post links for the job, one per platform', () => {
+  it('lists post records for the job, one per platform', () => {
     const db = seed()
     seedLibrary(db, 'j2', { videoPath: '/nonexistent/runs/j2/final.mp4', state: 'ready' })
     seedPost(db, {
@@ -252,7 +333,12 @@ describe('getJobDetail', () => {
       url: 'https://youtu.be/abc',
     })
     seedPost(db, { jobId: 'j2', channel: 'ocean', platform: 'instagram', url: null })
-    expect(getJobDetail(db, 'j2')?.links).toEqual([
+    expect(
+      getJobDetail(db, 'j2')
+        ?.posts.map(({ platform, url }) => ({ platform, url }))
+        .sort((a, b) => a.platform.localeCompare(b.platform)),
+    ).toEqual([
+      { platform: 'instagram', url: null },
       { platform: 'youtube', url: 'https://youtu.be/abc' },
     ])
     db.close()

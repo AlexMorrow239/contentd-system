@@ -10,14 +10,13 @@ import {
 } from './catalog.js'
 
 describe('ACTIONS catalog', () => {
-  it('declares exactly the phase-1 fast actions plus the phase-2 slow ones and the posts trio', () => {
+  it('declares the supported operator actions', () => {
     expect(Object.keys(ACTIONS).sort()).toEqual([
       'digest.run',
       'jobs.delete',
       'jobs.produce',
       'jobs.resume',
       'library.approve',
-      'library.reject',
       'post.mark',
       'post.unmark',
       'produce.next',
@@ -40,12 +39,14 @@ describe('ACTIONS catalog', () => {
     expect(ACTIONS['library.approve'].lease).toBeUndefined()
   })
 
-  it('runs local-only discard in the fast lane', () => {
-    expect(ACTIONS['library.reject'].lane).toBe('fast')
+  it('runs deletion in the fast lane and retires the discard action', () => {
+    expect(ACTIONS['jobs.delete'].lane).toBe('fast')
+    expect(isActionKind('library.reject')).toBe(false)
   })
 
-  it('requires confirmation only for irreversible actions', () => {
-    expect(ACTIONS['jobs.resume'].confirm).toBe(true)
+  it('resumes directly but confirms retirement', () => {
+    expect(ACTIONS['jobs.delete'].confirm).toBe(true)
+    expect(ACTIONS['jobs.resume'].confirm).toBe(false)
     // A per-row interstitial would make the most-used action worse than the CLI.
     expect(ACTIONS['topics.reject'].confirm).toBe(false)
   })
@@ -164,7 +165,7 @@ describe('ACTIONS catalog', () => {
 
   it('jobs.resume takes the produce lease and offers no force escape hatch', () => {
     expect(ACTIONS['jobs.resume'].lease).toBe('produce')
-    expect(ACTIONS['jobs.resume'].confirm).toBe(true)
+    expect(ACTIONS['jobs.resume'].confirm).toBe(false)
     // Taking over a job stuck in `running` asserts no live process holds it —
     // something the dashboard cannot verify. Break-glass stays on the CLI.
     expect(actionArgNames('jobs.resume')).toEqual(['jobId'])
@@ -194,14 +195,12 @@ describe('ACTIONS catalog', () => {
 
   it('routes the destructive actions through the interstitial', () => {
     expect(ACTIONS['post.unmark'].confirm).toBe(true)
-    expect(ACTIONS['library.reject'].confirm).toBe(true)
     expect(ACTIONS['post.mark'].confirm).toBe(false)
   })
 
   it('takes no lease for any posts action', () => {
     expect(ACTIONS['post.mark'].lease).toBeUndefined()
     expect(ACTIONS['post.unmark'].lease).toBeUndefined()
-    expect(ACTIONS['library.reject'].lease).toBeUndefined()
   })
 
   it('treats a blank optional text field as absent', () => {

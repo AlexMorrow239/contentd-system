@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
 import { countTopics, topicChannels } from '../topics.js'
 import { memDb, seedTopic as seedTopicRow } from '../../../../../daemon/testing/db.js'
+import { listTopics } from '../../../../../daemon/src/scout/topics.js'
 
 let seq = 0
 function seedTopic(
@@ -42,6 +43,28 @@ describe('topicChannels', () => {
 })
 
 describe('countTopics', () => {
+  it('shares literal case-insensitive search with the ranked, paginated topic list', () => {
+    const db = memDb()
+    const first = seedTopicRow(db, { title: 'Space 100%_match', score: 90 })
+    const second = seedTopicRow(db, { title: 'SPACE 100%_MATCH again', score: 80 })
+    seedTopicRow(db, { title: 'Space 100XXmatch', score: 99 })
+    seedTopicRow(db, { title: 'Space 100%_match', channel: 'other' })
+    seedTopicRow(db, {
+      title: 'Space 100%_match',
+      status: 'rejected',
+      dedupeHash: 'rejected-match',
+    })
+    const filter = { channel: 'chan-a', status: 'candidate' as const, q: '100%_MaTcH' }
+    expect(countTopics(db, filter)).toBe(2)
+    expect(listTopics(db, { ...filter, order: 'score', limit: 1 }).map((row) => row.id)).toEqual([
+      first,
+    ])
+    expect(
+      listTopics(db, { ...filter, order: 'score', limit: 1, offset: 1 }).map((row) => row.id),
+    ).toEqual([second])
+    expect(listTopics(db, { q: String(second) }).map((row) => row.id)).toContain(second)
+  })
+
   it('counts all matching rows regardless of any limit applied elsewhere', () => {
     const db = memDb()
     seedTopic(db)

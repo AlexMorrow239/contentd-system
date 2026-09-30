@@ -138,7 +138,7 @@ open http://127.0.0.1:8787/post
    in order, so working down the page top-to-bottom keeps a series posted in
    sequence without having to track it by hand.
 2. **Play or download the video** from the inline player on its card (or from
-   `/library` — same file).
+   its job detail page — same file).
 3. **Copy the per-platform blocks.** Each still-open platform on the card has
    a readonly, copy-buttoned paste field: YouTube gets separate title,
    description and tags fields; Instagram and TikTok get one composed caption
@@ -170,10 +170,10 @@ are skipped, and invalid channel configuration prevents the entire cleanup pass.
 clears some of that backlog. Nothing ages a video out anymore — there is no
 scheduler left to time a post against, so a video the operator hasn't gotten
 to yet simply waits. If a video will never be posted (wrong take, dead
-topic), **discarding** it from `/library` (`library reject`, or the
-dashboard's "discard" action) is how it stops counting toward that cap: it
-frees backlog capacity and drops it out of the posting queue while keeping its
-local files. Discarding alone does not qualify a video for MP4 cleanup.
+topic), **Delete** on `/jobs`, job details, or `/post` removes the job and its
+posting records from the dashboard and frees backlog capacity. Recorded costs,
+daily production counts, and local files remain. It does not remove posts from
+external platforms. Deleted jobs are excluded from automatic MP4 cleanup.
 
 ### Channel config
 
@@ -407,13 +407,33 @@ webpack extension mapping preserves the CLI's NodeNext `.js` source imports.
 Build before running browser tests. `pnpm check` includes the production Next.js
 build; browser tests are an additional release check.
 
-Seven pages: `/post`, the manual posting queue described above; an overview
-(job health, spend against the global-day and per-channel-day budget caps,
-held leases); jobs with a per-stage timeline and the raw error text; the library with inline video
-playback; `/posts`, a reverse-chronological log of what has actually gone
-out (posted-at, channel, platform, topic, link); the scout topic queue; and
-an action history page (`/actions`) listing every operator action that has
-been queued, with its status, result and error.
+Five main pages: `/post`, the manual posting queue described above; an overview
+(job health, spend against daily budget caps, held leases); `/jobs`, the lifecycle
+workspace; the scout topic queue; and action history (`/actions`).
+
+Jobs shows production status, video review/QC summaries, posting progress, and
+costs in compact rows. Icon actions resume failed or budget-blocked jobs, approve
+videos needing review, and delete inactive jobs.
+Resume and Approve queue in one click; Delete opens a confirmation modal
+identifying the job and explaining what is removed and retained. Actions stay on
+the page with job-specific feedback. Running or queued actions disable conflicting
+buttons on their row.
+
+Channel, job status, video review, posting progress, and topic/job-ID search
+filters apply immediately (search after a short debounce). Filters stay in this
+browser across visits until **Clear filters** is clicked; an explicit filtered
+URL overrides the saved selection. Pages show 50 jobs, newest first. Opening a
+job and returning preserves the filtered page.
+
+Topics uses the same filter bar and pagination: channel, topic status, and
+case-insensitive title/topic-ID search. Its filters persist separately from Jobs,
+with the same URL overrides and **Clear filters** control. Topics shows 50 rows
+per page, highest score first.
+
+Job details contain the video player, complete QC issues, posting history with
+timestamps and optional links, stage errors, budget waits, and the cost ledger.
+The former `/library` and `/posts` screens redirect to Jobs; manual posting
+continues on `/post`. A post without a saved link still counts as posted.
 
 The dashboard serves the explicit production root supplied by Compose, and its
 footer names that root. Dashboard tests construct isolated databases directly.
@@ -422,16 +442,18 @@ Every page it _reads_ still opens the database through a read-only connection
 — the `brainrot-data` mount is read-write on purpose (SQLite must create the
 `-shm` file even to read a WAL database), but the guarantee lives in the
 connection flag, not the mount. What changed is that the dashboard now also
-_writes_, in one narrow way: buttons on the overview, jobs, library, topics
+_writes_, in one narrow way: buttons on the overview, jobs, topics
 and post pages queue an operator action (`POST /api/actions`) that the daemon
 executes, rather than mutating anything itself. Fast actions include topic
-reject/requeue, library approve/discard, run digest, post mark/unmark, and
-per-row **delete** in `/jobs`. Delete removes an inactive job from the dashboard
-and posting queue and stops retries; running jobs cannot be deleted. Recorded
+reject/requeue, library approve, run digest, post mark/unmark, and **Delete**.
+Delete is the only job/video removal operation on Jobs, job details, and Post;
+the former Discard action and `library reject` CLI command have been removed.
+Delete removes an inactive job from the dashboard and posting queue and stops
+retries; running jobs cannot be deleted. Recorded
 spend, daily production counts, and local artifacts are retained.
 
 `produce next` starts the next eligible topic from `/jobs`; `resume` appears on
-each failed or blocked job's detail page, alongside its stages and errors.
+each failed or blocked job's row and detail page, alongside its stages and errors.
 `scout now` is on `/topics`. Custom-topic production is available through the
 CLI, without a topic input on the dashboard. Posting uses the paste-and-click
 `/post` workflow; marking a platform posted requires no live-link input.
@@ -450,22 +472,22 @@ page you visit and your production pipeline are:
 
 Nothing wired to the dashboard posts publicly anymore — there is no upload
 adapter left to call. Three of the wired actions **render a video and spend
-real provider money** on a click: `produce next` and `produce` (a channel
-you pick and a topic you type, from `/jobs`) each run the whole pipeline —
+real provider money**: `produce next` and custom-topic `produce` (available through
+the CLI) each run the whole pipeline —
 an Anthropic call for the script, ElevenLabs narration using `[voice]`,
 and a full Remotion render — and `resume` re-runs
 whichever of those stages the job has not finished. `scout now` also
 spends real provider money without rendering anything, on topic scoring.
-A separate risk
-is workflow state, not spend: `library reject` ("discard") pulls rejected
-videos out of the posting queue but keeps their local files.
+Delete changes workflow state without spending: it retires the job and removes
+its library and posting records while keeping costs and local files. Existing
+previously discarded videos remain visible under the Discarded review filter;
+use Delete to remove those jobs too.
 
-Five actions route through a confirmation interstitial naming the
-consequence: `produce next`, `produce` and `resume`, because they spend and
-render; `library reject` and `post unmark`, because they change or remove
-operator state (`post unmark` throws away a saved live link). The rest fire on one
-click, `scout now` included — so a click can spend without a prompt. Spend
-still lands under a budget cap, but which one depends on the action.
+`produce next`, custom-topic `produce`, and `post unmark` retain their
+confirmation screen. Delete uses the same confirmation modal on Jobs, job
+details, and Post. Resume queues immediately, as do Approve,
+Mark posted, and Scout now. A resume or scout click can spend without a prompt;
+existing budget enforcement still applies.
 `produce next`, `produce` and `resume` each have a job to meter against, so
 they clear the full chain — per-video, channel-day, and global-day. `scout
 now` has no job row: its cost is ledgered under a sentinel `scout:<channel>`
