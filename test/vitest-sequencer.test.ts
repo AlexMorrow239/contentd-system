@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { SLOW_FIRST } from '../../scripts/vitest-sequencer.js'
+import { SLOW_FIRST } from './vitest-sequencer.js'
 
-const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url))
+const REPO_ROOT = fileURLToPath(new URL('../', import.meta.url))
 
 /**
  * SLOW_FIRST is a hand-maintained list of repo-relative suffixes matched

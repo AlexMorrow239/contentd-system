@@ -62,8 +62,8 @@ docker compose exec brainrot pnpm brainrot library list
 ```
 
 On macOS, `pnpm daemon:caffeinate install` installs a host LaunchAgent that keeps
-the Mac awake while this checkout's daemon container runs. `scripts/caffeinate.ts`
-owns the sleep assertion lifecycle; `scripts/caffeinate-service.ts` owns host
+the Mac awake while this checkout's daemon container runs. `daemon/caffeinate.ts`
+owns the sleep assertion lifecycle; `daemon/caffeinate-service.ts` owns host
 installation and signals. `BRAINROT_CAFFEINATE` defaults to true and is reloaded
 from `.env` every 30 seconds; false releases the assertion without restarting
 Docker. It is host-only, not a container setting. Display sleep is allowed;
@@ -458,6 +458,7 @@ new byte state: the dashboard reports the removed video as `missing`.
 ### The dashboard's read-only guarantee narrows, not disappears
 
 `dashboard/` contains the Next.js App Router frontend and its supporting code.
+`dashboard/launch.ts` launches development and production servers.
 `dashboard/lib/server/` holds query and HTTP helpers; `dashboard/lib/shared/`
 holds browser-safe helpers. Launcher configuration and CSRF utilities live in
 `dashboard/lib/`. The service runs without provider credentials and binds to host
@@ -592,8 +593,8 @@ Conventions:
 - The eslint test-tier rule relaxation covers `**/*.test.ts`, `daemon/testing/**`
   and `**/_*.fixtures.ts` — stub adapters and untyped rows live in all three.
 
-**Performance.** `scripts/vitest-sequencer.ts` starts known slow files first;
-`daemon/testing/sequencer.test.ts` verifies its entries still name real files.
+**Performance.** `test/vitest-sequencer.ts` starts known slow files first;
+`test/vitest-sequencer.test.ts` verifies its entries still name real files.
 Use short, low-resolution media fixtures for selection/branching tests. Reserve
 full-size encodes for output-contract tests, and encode shared fixtures once
 in `beforeAll`. Measure the current suite before changing its scheduling;
@@ -601,7 +602,7 @@ historical test counts and timings are not acceptance criteria.
 
 ### Test-only build
 
-Vitest global setup runs `scripts/build-test-cli.ts` to transpile `daemon/src/` into
+Vitest global setup runs `daemon/testing/build-test-cli.ts` to transpile `daemon/src/` into
 a mirrored `daemon/dist/` tree for CLI subprocess tests. Do not bundle: CLI entrypoint
 guards, schema lookup, and Remotion paths depend on `import.meta.url` and the
 preserved directory depth. `pnpm build` remains type-checking only.

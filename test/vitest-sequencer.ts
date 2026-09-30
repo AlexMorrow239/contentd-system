@@ -14,7 +14,7 @@ import type { TestSpecification } from 'vitest/node'
  * This list had gone stale: it was missing integrations/remotion/remotion.test.ts — 36
  * lines holding a real Remotion bundle, so byte-size ordering scheduled it
  * dead last, the exact failure this sequencer exists to prevent — along with
- * golden-path-loop and every CLI-spawning file. daemon/testing/sequencer.test.ts
+ * golden-path-loop and every CLI-spawning file. test/vitest-sequencer.test.ts
  * now fails if an entry stops matching a real file, so a rename cannot
  * silently re-stale it.
  *

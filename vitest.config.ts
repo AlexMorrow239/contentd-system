@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config'
-import { SlowFilesFirstSequencer } from './scripts/vitest-sequencer.js'
+import { SlowFilesFirstSequencer } from './test/vitest-sequencer.js'
 
 const contract = process.env.CONTRACT === '1'
 
@@ -10,7 +10,8 @@ function include(): string[] {
     'daemon/testing/**/*.test.ts',
     'integrations/remotion/**/*.test.ts',
     'dashboard/**/*.test.{ts,tsx}',
-    'scripts/**/*.test.ts',
+    'daemon/*.test.ts',
+    'test/**/*.test.ts',
   ]
 }
 
@@ -25,7 +26,7 @@ export default defineConfig({
     testTimeout: 30000,
     // Builds daemon/dist/ before any worker starts, so `pnpm vitest run <one-file>`
     // gets a fresh CLI too and can never read a stale build.
-    globalSetup: ['scripts/vitest-global-setup.ts'],
+    globalSetup: ['test/vitest-global-setup.ts'],
     // Runs once per test FILE. Holds the teardown every file needs:
     // vi.unstubAllEnvs() and the daemon/testing/tmp.ts cleanup sweep.
     setupFiles: ['daemon/testing/setup.ts'],

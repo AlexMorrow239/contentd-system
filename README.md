@@ -276,6 +276,9 @@ display is asleep:
 pnpm daemon:caffeinate install
 ```
 
+After upgrading from the old helper location, rerun `pnpm daemon:caffeinate install`
+to update the absolute script path stored in the LaunchAgent.
+
 The helper starts immediately and at login, independently of your terminal. It
 runs macOS `caffeinate` while this checkout's `brainrot` container is running,
 including while workers wait for new work. It releases the sleep assertion when

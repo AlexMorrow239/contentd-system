@@ -59,7 +59,7 @@ export const test = base.extend<object, { dashboard: DashboardFixture }>({
         [
           '--import',
           require.resolve('tsx'),
-          fileURLToPath(new URL('../../scripts/dashboard.ts', import.meta.url)),
+          fileURLToPath(new URL('../launch.ts', import.meta.url)),
           'start',
         ],
         {

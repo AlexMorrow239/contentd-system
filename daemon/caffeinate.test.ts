@@ -1,8 +1,8 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { tmpDir } from '../daemon/testing/tmp.js'
-import { createTestTime } from '../daemon/testing/time.js'
+import { tmpDir } from './testing/tmp.js'
+import { createTestTime } from './testing/time.js'
 import { readCaffeinateEnabled, watchDaemon } from './caffeinate.js'
 
 function fixture() {

@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { parse } from 'dotenv'
-import { systemTime, type TimeSource } from '../daemon/src/time.js'
+import { systemTime, type TimeSource } from './src/time.js'
 
 const exec = promisify(execFile)
 

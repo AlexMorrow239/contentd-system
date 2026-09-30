@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { systemTime } from '../daemon/src/time.js'
+import { systemTime } from './src/time.js'
 import {
   daemonContainerRunning,
   readCaffeinateEnabled,

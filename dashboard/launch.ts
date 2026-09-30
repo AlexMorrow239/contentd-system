@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { resolveDashboardConfig } from '../dashboard/lib/config.js'
-import { mintCsrfToken } from '../dashboard/lib/csrf.js'
+import { resolveDashboardConfig } from './lib/config.js'
+import { mintCsrfToken } from './lib/csrf.js'
 const mode = process.argv[2]
 if (mode !== 'dev' && mode !== 'start') throw new Error('Expected dev or start')
 const config = resolveDashboardConfig()
@@ -13,7 +13,7 @@ const child = spawn(
     require.resolve('next/dist/bin/next'),
     mode,
     ...(mode === 'dev' ? ['--webpack'] : []),
-    fileURLToPath(new URL('../dashboard', import.meta.url)),
+    fileURLToPath(new URL('.', import.meta.url)),
     '--port',
     String(config.port),
     '--hostname',

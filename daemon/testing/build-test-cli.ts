@@ -21,7 +21,7 @@ import { copyFileSync, readdirSync, rmSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const SRC = path.join(REPO_ROOT, 'daemon', 'src')
 const DIST = path.join(REPO_ROOT, 'daemon', 'dist')
 
