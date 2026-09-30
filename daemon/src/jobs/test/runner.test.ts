@@ -305,7 +305,7 @@ describe('runJob', () => {
     const stages: StageDef[] = STAGE_ORDER.map((name) => ({
       name,
       async run(ctx: JobContext) {
-        if (name === 'script') throw new BudgetExceededError('per-video budget exceeded')
+        if (name === 'script') throw new BudgetExceededError('global-day budget exceeded')
         writeFileSync(ctx.artifactPath(name, `${name}.txt`), 'ok')
       },
     }))
@@ -323,7 +323,7 @@ describe('runJob', () => {
         jobId,
         'script',
       ),
-    ).toEqual({ status: 'failed', error: 'per-video budget exceeded' })
+    ).toEqual({ status: 'failed', error: 'global-day budget exceeded' })
     expect(
       row<{ n: number }>(db, 'SELECT COUNT(*) AS n FROM library WHERE job_id = ?', jobId).n,
     ).toBe(0)

@@ -150,7 +150,6 @@ describe('brainrot CLI — scout', () => {
     'voice_id = "EXAVITQu4vr4xnSDxMaL"',
     '',
     '[budget]',
-    'per_video_usd = 8.0',
     'per_day_usd = 20.0',
   ].join('\n')
 
@@ -422,7 +421,7 @@ describe('brainrot CLI — digest', () => {
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('Topics (last 24h)')
       expect(result.stdout).toContain('Jobs (last 24h)')
-      expect(result.stdout).toContain('Spend today (UTC)')
+      expect(result.stdout).toContain('Spend today (UTC; includes estimates)')
       expect(result.stdout).toContain('Action items')
     },
     60000,

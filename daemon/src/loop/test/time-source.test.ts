@@ -95,18 +95,18 @@ describe('daemon time source composition', () => {
     const db = memDb(time)
     const channel = testChannel({
       videosPerDay: 1,
-      budget: { perVideoUsdMicros: 1000, perDayUsdMicros: 100 },
+      budget: { perDayUsdMicros: 100 },
     })
     const jobId = createJob(db, channel, { topic: 'yesterday', time })
     db.prepare("UPDATE jobs SET status='failed' WHERE id=?").run(jobId)
     seedTopic(db, { channel: channel.name })
     recordCost(db, jobId, 'test', 'script', 100, undefined, time)
     expect(planTick(db, [channel], time).kind).toBe('noop')
-    expect(() => assertBudget(db, channel, jobId, 1, time)).toThrow(/channel-day budget/)
+    expect(() => assertBudget(db, channel, 1, time)).toThrow(/channel-day budget/)
     expect(buildDigest(db, [channel], { time })).toContain('1 scouted')
     await time.advanceBy(1000)
     expect(planTick(db, [channel], time).kind).toBe('produce')
-    expect(() => assertBudget(db, channel, jobId, 1, time)).not.toThrow()
+    expect(() => assertBudget(db, channel, 1, time)).not.toThrow()
     markPosted(db, { jobId, platform: 'youtube', url: 'https://example.com/first', time })
     await time.advanceBy(86_400_000)
     markPosted(db, { jobId, platform: 'youtube', url: 'https://example.com/corrected', time })

@@ -39,7 +39,3 @@ subreddits = [
   "Bitcoin",
 ]
 queue_days = 3
-
-[budget]
-per_video_usd = 0.5
-per_day_usd = 25.0

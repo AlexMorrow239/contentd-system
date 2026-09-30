@@ -35,7 +35,6 @@ export function testChannel(overrides: Partial<ChannelConfig> = {}): ChannelConf
       modelId: 'eleven_multilingual_v2',
     },
     bgDir: ['assets/bg'],
-    budget: { perVideoUsdMicros: 8_000_000, perDayUsdMicros: 20_000_000 },
     scriptModel: 'claude-sonnet-5',
     scout: { ...DEFAULT_SCOUT },
     story: null,
@@ -88,8 +87,6 @@ export function channelTomlLines(opts: ChannelTomlOptions = {}): string[] {
     'voice_id = "EXAVITQu4vr4xnSDxMaL"',
     '',
     '[budget]',
-    'per_video_usd = 8.0',
-    'per_day_usd = 20.0',
   ]
   if (opts.extra?.length) lines.push('', ...opts.extra)
   return lines

@@ -71,7 +71,7 @@ describe('scriptStage', () => {
 
   it('accounts for long source context before spending on the script model', async () => {
     const ctx = makeCtx({
-      channel: testChannel({ budget: { perVideoUsdMicros: 25_000, perDayUsdMicros: 1_000_000 } }),
+      channel: testChannel({ budget: { perDayUsdMicros: 25_000 } }),
     })
     bindSourceTopic(ctx, {
       sourceContext: sourcePost({ targetUrl: null, body: 'Detailed report. '.repeat(3000) }),
@@ -184,7 +184,7 @@ describe('scriptStage', () => {
 
   it('throws BudgetExceededError before calling the API when over budget', async () => {
     const ctx = makeCtx({
-      channel: testChannel({ budget: { perVideoUsdMicros: 1, perDayUsdMicros: 1 } }),
+      channel: testChannel({ budget: { perDayUsdMicros: 1 } }),
     })
     const { client, create } = fakeClient({})
     await expect(createScriptStage(client).run(ctx)).rejects.toBeInstanceOf(BudgetExceededError)
@@ -427,7 +427,7 @@ describe('createScriptStage story mode', () => {
 
   it('throws BudgetExceededError before calling the API when over budget', async () => {
     const ctx = makeCtx({
-      channel: testChannel({ budget: { perVideoUsdMicros: 1, perDayUsdMicros: 1 } }),
+      channel: testChannel({ budget: { perDayUsdMicros: 1 } }),
       topic: 'AITA for X? (1/3)',
       story,
     })

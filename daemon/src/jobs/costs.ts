@@ -1,13 +1,13 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../config/channel.js'
+import { globalDailyCapMicros, validateChannelBudget } from '../config/budget.js'
 import { BrainrotError } from '../errors.js'
 import { systemTime, type TimeSource } from '../time.js'
 
-// Operator-level safety net across ALL channels (design spec §5).
-const DEFAULT_GLOBAL_DAILY_USD = 25
+export { globalDailyCapMicros } from '../config/budget.js'
 
 export interface BudgetExceededDetails {
-  scope: 'per-video' | 'channel-day' | 'global-day'
+  scope: 'channel-day' | 'global-day'
   upcomingUsdMicros: number
   spentUsdMicros: number
   capUsdMicros: number
@@ -38,92 +38,52 @@ export function recordCost(
   ).run(jobId, provider, operation, usdMicros, attemptId ?? null, time.now().toISOString())
 }
 
-// Parsed at call time (not module load) so tests and long-lived processes see
-// env changes without a re-import. dotenv is loaded once in daemon/src/cli.ts.
-export function globalDailyCapMicros(): number {
-  const raw = process.env.BRAINROT_GLOBAL_DAILY_USD
-  if (raw === undefined || raw.trim() === '') {
-    return DEFAULT_GLOBAL_DAILY_USD * 1_000_000
-  }
-  const usd = Number(raw)
-  // A NaN cap would make every `>` comparison false and silently disable the
-  // safety net. Fail loudly instead — a plain Error (not BudgetExceededError)
-  // so the runner records a crash ('failed'), not a budget outcome ('blocked').
-  if (!Number.isFinite(usd) || usd < 0) {
-    throw new Error(
-      `invalid BRAINROT_GLOBAL_DAILY_USD: ${JSON.stringify(raw)} (expected a non-negative number of USD)`,
-    )
-  }
-  return Math.round(usd * 1_000_000)
-}
+// Attribute each row once: job ownership first, otherwise the exact scout:
+// prefix used by historical and current scouting. Deleted jobs still count.
+const CHANNEL_SPEND_SQL = `
+  SELECT CASE WHEN j.id IS NOT NULL THEN j.channel
+    WHEN substr(c.job_id, 1, 6) = 'scout:' THEN substr(c.job_id, 7)
+    ELSE NULL END AS channel, c.usd_micros
+  FROM costs c LEFT JOIN jobs j ON c.job_id = j.id
+  WHERE substr(c.created_at, 1, 10) = ?`
 
-// Today's UTC spend attributed to one channel. costs has no channel column:
-// attribution JOINs through the jobs table, so non-job sentinel rows
-// ('scout:<channel>') are invisible here — accepted at ~$0.01/day scale.
 export function channelDaySpentMicros(
   db: Database,
   channel: string,
-  day: string = systemTime.now().toISOString().slice(0, 10),
+  day = systemTime.now().toISOString().slice(0, 10),
 ): number {
-  const row = db
-    .prepare(
-      'SELECT COALESCE(SUM(c.usd_micros), 0) AS total FROM costs c JOIN jobs j ON c.job_id = j.id ' +
-        'WHERE j.channel = ? AND substr(c.created_at, 1, 10) = ?',
-    )
-    .get(channel, day) as { total: number }
-  return row.total
+  return (
+    db
+      .prepare(
+        `SELECT COALESCE(SUM(usd_micros), 0) AS total FROM (${CHANNEL_SPEND_SQL}) WHERE channel = ?`,
+      )
+      .get(day, channel) as { total: number }
+  ).total
 }
 
-/**
- * `channelDaySpentMicros` for every channel at once — one GROUP BY instead of
- * one SUM per channel, for the surfaces that report the whole set (the
- * overview page, the digest). Same JOIN and therefore the same sentinel-row
- * blindness as the singular form.
- *
- * A channel with no spend today has NO entry: a caller reading the map must
- * default to 0 rather than treat absence as missing data.
- *
- * `day` is a 'YYYY-MM-DD' UTC date; standalone callers default to today.
- * Time-scoped operations pass their captured UTC day to every spending query.
- */
 export function channelDaySpentMicrosByChannel(
   db: Database,
-  day: string = systemTime.now().toISOString().slice(0, 10),
+  day = systemTime.now().toISOString().slice(0, 10),
 ): Map<string, number> {
   const rows = db
     .prepare(
-      'SELECT j.channel AS channel, COALESCE(SUM(c.usd_micros), 0) AS total FROM costs c ' +
-        'JOIN jobs j ON c.job_id = j.id ' +
-        'WHERE substr(c.created_at, 1, 10) = ? ' +
-        'GROUP BY j.channel',
+      `SELECT channel, SUM(usd_micros) AS total FROM (${CHANNEL_SPEND_SQL}) WHERE channel IS NOT NULL GROUP BY channel`,
     )
     .all(day) as { channel: string; total: number }[]
   return new Map(rows.map((row) => [row.channel, row.total]))
 }
 
-// One job's LIFETIME spend — the quantity the per-video caps are measured
-// against, and the single read assertBudget enforces them through. No day
-// filter: a job's per-video budget never resets, so a job parked overnight
-// resumes against everything it already spent.
-export function jobSpentMicros(db: Database, jobId: string): number {
-  const row = db
-    .prepare('SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE job_id = ?')
-    .get(jobId) as { total: number }
-  return row.total
-}
-
-// Today's UTC spend across ALL costs rows — deliberately no jobs JOIN, so
-// sentinel scout rows count toward the global cap.
 export function globalDaySpentMicros(
   db: Database,
-  day: string = systemTime.now().toISOString().slice(0, 10),
+  day = systemTime.now().toISOString().slice(0, 10),
 ): number {
-  const row = db
-    .prepare(
-      'SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE substr(created_at, 1, 10) = ?',
-    )
-    .get(day) as { total: number }
-  return row.total
+  return (
+    db
+      .prepare(
+        'SELECT COALESCE(SUM(usd_micros), 0) AS total FROM costs WHERE substr(created_at, 1, 10) = ?',
+      )
+      .get(day) as { total: number }
+  ).total
 }
 
 export interface DaySpend {
@@ -131,12 +91,6 @@ export interface DaySpend {
   micros: number
 }
 
-/**
- * Spend per UTC day over a trailing window, newest first — the `brainrot
- * costs` report. Like `globalDaySpentMicros` there is no jobs JOIN, so
- * sentinel scout rows are included; unlike it, a day with no rows is simply
- * absent rather than reported as zero.
- */
 export function daySpendBreakdown(
   db: Database,
   days: number,
@@ -145,93 +99,47 @@ export function daySpendBreakdown(
   return db
     .prepare(
       `SELECT substr(created_at, 1, 10) AS day, SUM(usd_micros) AS micros
-       FROM costs
-       WHERE created_at >= ?
-       GROUP BY day
-       ORDER BY day DESC`,
+    FROM costs WHERE created_at >= ? GROUP BY day ORDER BY day DESC`,
     )
     .all(new Date(time.now().getTime() - days * 86_400_000).toISOString()) as DaySpend[]
 }
 
-// The global-day check extracted from assertBudget so the scout — which has
-// no job and therefore cannot use assertBudget — gates its Haiku spend
-// against the same ceiling. Cap is resolved BEFORE the db read so a
-// malformed env crashes without touching the ledger, exactly as before.
-export function assertGlobalDayBudget(
-  db: Database,
-  upcomingUsdMicros: number,
-  time: TimeSource = systemTime,
-  day?: string,
+function checkCap(
+  scope: BudgetExceededDetails['scope'],
+  spent: number,
+  upcoming: number,
+  cap: number,
+  day: string,
+  channel?: string,
 ): void {
-  const globalCapMicros = globalDailyCapMicros()
-  const utcDay = day ?? time.now().toISOString().slice(0, 10)
-  const spentUsdMicros = globalDaySpentMicros(db, utcDay)
-  const globalDayProjected = spentUsdMicros + upcomingUsdMicros
-  if (globalDayProjected > globalCapMicros) {
+  if (spent + upcoming > cap) {
     throw new BudgetExceededError(
-      `global-day budget exceeded: ${globalDayProjected} > ${globalCapMicros} usdMicros (BRAINROT_GLOBAL_DAILY_USD, default ${DEFAULT_GLOBAL_DAILY_USD})`,
-      {
-        scope: 'global-day',
-        upcomingUsdMicros,
-        spentUsdMicros,
-        capUsdMicros: globalCapMicros,
-        utcDay,
-      },
+      `${scope} budget exceeded${channel === undefined ? '' : ` for "${channel}"`}: ${spent + upcoming} > ${cap} usdMicros`,
+      { scope, upcomingUsdMicros: upcoming, spentUsdMicros: spent, capUsdMicros: cap, utcDay: day },
     )
   }
 }
 
-/**
- * Pre-call budget checkpoint. Enforces, in order:
- *  1. per-video cap — channel.budget.perVideoUsdMicros, against the job's
- *     lifetime spend
- *  2. channel-day cap — today's UTC spend attributed through the jobs table
- *     vs channel.budget.perDayUsdMicros
- *  3. global-day cap — today's UTC spend across ALL channels vs
- *     BRAINROT_GLOBAL_DAILY_USD (USD, default 25)
- * All comparisons are strict `>` (equal-to-cap passes). Messages start with the
- * cap name (per-video / channel-day / global-day) — the runner surfaces them
- * verbatim as the blocked reason.
- */
+/** Estimate-based pre-call stop; concurrent calls are not reserved. */
 export function assertBudget(
   db: Database,
   channel: ChannelConfig,
-  jobId: string,
   upcomingUsdMicros: number,
-  time: TimeSource = systemTime,
+  time: Pick<TimeSource, 'now'> = systemTime,
 ): void {
-  // Invalid operator configuration must fail before a narrower cap can throw
-  // a budget refusal; otherwise failure bookkeeping could mask the config error.
-  globalDailyCapMicros()
-  const utcDay = time.now().toISOString().slice(0, 10)
-  const perVideoCap = channel.budget.perVideoUsdMicros
-  const jobProjected = jobSpentMicros(db, jobId) + upcomingUsdMicros
-  if (jobProjected > perVideoCap) {
-    throw new BudgetExceededError(
-      `per-video budget exceeded: ${jobProjected} > ${perVideoCap} usdMicros`,
-      {
-        scope: 'per-video',
-        upcomingUsdMicros,
-        spentUsdMicros: jobProjected - upcomingUsdMicros,
-        capUsdMicros: perVideoCap,
-        utcDay,
-      },
+  const global = globalDailyCapMicros()
+  const cap = channel.budget?.perDayUsdMicros
+  validateChannelBudget(channel.name, cap, global)
+  const day = time.now().toISOString().slice(0, 10)
+  checkCap('global-day', globalDaySpentMicros(db, day), upcomingUsdMicros, global, day)
+  if (cap !== undefined) {
+    checkCap(
+      'channel-day',
+      channelDaySpentMicros(db, channel.name, day),
+      upcomingUsdMicros,
+      cap,
+      day,
+      channel.name,
     )
   }
-
-  const channelDayProjected = channelDaySpentMicros(db, channel.name, utcDay) + upcomingUsdMicros
-  if (channelDayProjected > channel.budget.perDayUsdMicros) {
-    throw new BudgetExceededError(
-      `channel-day budget exceeded for "${channel.name}": ${channelDayProjected} > ${channel.budget.perDayUsdMicros} usdMicros`,
-      {
-        scope: 'channel-day',
-        upcomingUsdMicros,
-        spentUsdMicros: channelDayProjected - upcomingUsdMicros,
-        capUsdMicros: channel.budget.perDayUsdMicros,
-        utcDay,
-      },
-    )
-  }
-
-  assertGlobalDayBudget(db, upcomingUsdMicros, time, utcDay)
 }

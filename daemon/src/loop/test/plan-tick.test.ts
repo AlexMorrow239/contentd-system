@@ -132,14 +132,14 @@ describe('resume pass', () => {
 })
 
 describe('resume eligibility', () => {
-  it('parks a known unaffordable next call despite positive per-video headroom', () => {
+  it('parks a next call that exceeds the remaining channel budget', () => {
     const db = memDb(time)
-    const ch = testChannel()
+    const ch = testChannel({ budget: { perDayUsdMicros: 8_000_000 } })
     seedJob(db, { id: 'job-capped', status: 'blocked' })
-    recordCost(db, 'job-capped', 'anthropic', 'script', 7_000_000)
+    recordCost(db, 'job-capped', 'anthropic', 'script', 7_000_000, undefined, time)
     const wait = makeBudgetWait(
       new BudgetExceededError('over cap', {
-        scope: 'per-video',
+        scope: 'channel-day',
         upcomingUsdMicros: 1_500_000,
         spentUsdMicros: 7_000_000,
         capUsdMicros: 8_000_000,

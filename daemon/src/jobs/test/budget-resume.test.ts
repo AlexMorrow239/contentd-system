@@ -23,7 +23,7 @@ describe('runner budget waits and planner eligibility', () => {
 
     time.setNow(start)
     const { db, root } = fileDb(undefined, time)
-    const channel = testChannel({ budget: { perVideoUsdMicros: 100, perDayUsdMicros: 200 } })
+    const channel = testChannel({ budget: { perDayUsdMicros: 100 } })
     const jobId = createJob(db, channel, { time, topic: 'budget refusal' })
     let calls = 0
     const stages: StageDef[] = [
@@ -31,7 +31,7 @@ describe('runner budget waits and planner eligibility', () => {
         name: 'script',
         async run(ctx) {
           calls++
-          assertBudget(db, ctx.channel, jobId, 150, time)
+          assertBudget(db, ctx.channel, 150, time)
           writeFileSync(ctx.artifactPath('script', 'finished.txt'), 'paid call allowed')
           writeFileSync(
             ctx.artifactPath('qc', 'qc.json'),
@@ -56,7 +56,7 @@ describe('runner budget waits and planner eligibility', () => {
     expect(persisted.retry_after).toBe('2026-09-29T12:01:00.000Z')
     expect(parseBudgetWait(persisted.budget_wait_json)).toMatchObject({
       stage: 'script',
-      details: { scope: 'per-video', upcomingUsdMicros: 150 },
+      details: { scope: 'channel-day', upcomingUsdMicros: 150 },
     })
     const changed = { ...channel, scriptModel: 'another-model' }
     for (const seconds of [0, 30, 59]) {
@@ -73,7 +73,7 @@ describe('runner budget waits and planner eligibility', () => {
     expect(db.prepare('SELECT retry_after FROM jobs WHERE id=?').get(jobId)).toEqual({
       retry_after: '2026-09-29T14:01:00.000Z',
     })
-    const affordable = { ...changed, budget: { perVideoUsdMicros: 150, perDayUsdMicros: 200 } }
+    const affordable = { ...changed, budget: { perDayUsdMicros: 150 } }
     expect(await tick(affordable)).toEqual({ kind: 'noop', reason: 'no-eligible-work' })
     time.setNow(new Date('2026-09-29T14:01:00.000Z'))
     expect(await tick(changed)).toEqual({ kind: 'noop', reason: 'no-eligible-work' })
@@ -115,10 +115,10 @@ describe('runner budget waits and planner eligibility', () => {
     expect(calls).toBe(2)
   })
 
-  it('records invalid global configuration as terminal failure even when a per-video refusal occurs first', async () => {
+  it('records invalid global configuration as terminal failure even when a channel-day refusal occurs first', async () => {
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', 'invalid')
     const { db, root } = fileDb(undefined, time)
-    const channel = testChannel({ budget: { perVideoUsdMicros: 100, perDayUsdMicros: 200 } })
+    const channel = testChannel({ budget: { perDayUsdMicros: 100 } })
     const jobId = createJob(db, channel, { time, topic: 'invalid budget config' })
     await expect(
       runJob(
@@ -129,7 +129,7 @@ describe('runner budget waits and planner eligibility', () => {
           {
             name: 'script',
             async run() {
-              assertBudget(db, channel, jobId, 150, time)
+              assertBudget(db, channel, 150, time)
             },
           },
         ],

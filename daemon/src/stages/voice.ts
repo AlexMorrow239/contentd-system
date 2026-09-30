@@ -40,7 +40,7 @@ export const voiceStage: StageDef = {
     checkpoint(ctx)
     await fs.rm(timingsPath, { force: true })
     const elevenText = `${script.hook} ${HOOK_BREAK_TAG}\n\n${bodyText(script)}`
-    assertBudget(ctx.db, ctx.channel, ctx.jobId, estimateTtsCostMicros(elevenText), ctx.time)
+    assertBudget(ctx.db, ctx.channel, estimateTtsCostMicros(elevenText), ctx.time)
     checkpoint(ctx)
     // Missing credentials and provider failures propagate. There is no alternate TTS.
     const synth = await synthWithTimestamps({

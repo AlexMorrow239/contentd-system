@@ -13,7 +13,7 @@ import { sanitizeStory } from '../stories/sanitize.js'
 import type { StoryPart } from '../stories/types.js'
 import { collectContext, type ContextDependencies } from '../context/collect.js'
 
-// Pre-flight budget reservation for the script LLM call (~$0.02). assertBudget
+// Pre-call budget estimate for the script LLM call (~$0.02). assertBudget
 // blocks the stage if the job or day is already too close to its cap.
 //
 // This is a TYPICAL-cost reservation, not a worst-case one: at maxTokens 4096 a
@@ -251,7 +251,6 @@ async function runTopicScript(
   assertBudget(
     ctx.db,
     ctx.channel,
-    ctx.jobId,
     ESTIMATED_SCRIPT_COST_MICROS + contextInputCost(context, ctx.channel.scriptModel),
     ctx.time,
   )
@@ -285,7 +284,6 @@ async function runStoryScript(
   assertBudget(
     ctx.db,
     ctx.channel,
-    ctx.jobId,
     ESTIMATED_STORY_META_COST_MICROS + contextInputCost(context, STORY_META_MODEL),
     ctx.time,
   )

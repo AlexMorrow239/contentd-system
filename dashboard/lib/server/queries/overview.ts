@@ -30,7 +30,7 @@ export interface LeaseState {
 
 export interface SpendAgainstCap {
   spentUsdMicros: number
-  capUsdMicros: number
+  capUsdMicros: number | null
 }
 
 export interface ChannelSpend extends SpendAgainstCap {
@@ -45,14 +45,9 @@ export interface OverviewData {
   globalSpend: SpendAgainstCap
   channelSpend: ChannelSpend[]
   /**
-   * globalSpend minus the sum of channelSpend. Per-channel attribution goes
-   * through the jobs table (see channelDaySpentMicros), so it excludes cost
-   * rows with no matching jobs row — e.g. the scout's 'scout:<channel>'
-   * sentinel rows — and any job whose channel TOML has since been renamed
-   * or deleted. globalDaySpentMicros (the figure the global budget cap
-   * actually enforces) has no such filter. The two are deliberately not
-   * meant to reconcile; this field makes that gap visible instead of
-   * leaving it implied. Clamped at 0 so it never renders negative.
+   * Global spend not attributed to a configured channel, including historical
+   * channels without a current TOML and unknown job IDs. Scout rows belonging
+   * to configured channels are included in channelSpend.
    */
   unattributedUsdMicros: number
   leases: LeaseState[]
@@ -112,15 +107,15 @@ export function buildOverview(db: Database, channels: ChannelConfig[], now: Date
     expired: new Date(row.expires_at).getTime() < now.getTime(),
   }))
 
-  const globalSpentUsdMicros = globalDaySpentMicros(db)
+  const globalSpentUsdMicros = globalDaySpentMicros(db, now.toISOString().slice(0, 10))
   // One GROUP BY for every channel rather than a SUM per channel: this page
   // renders the whole set every refresh. A channel with no spend today has no
   // entry, hence the 0 default.
-  const spentByChannel = channelDaySpentMicrosByChannel(db)
+  const spentByChannel = channelDaySpentMicrosByChannel(db, now.toISOString().slice(0, 10))
   const channelSpend = channels.map((channel) => ({
     channel: channel.name,
     spentUsdMicros: spentByChannel.get(channel.name) ?? 0,
-    capUsdMicros: channel.budget.perDayUsdMicros,
+    capUsdMicros: channel.budget?.perDayUsdMicros ?? null,
   }))
   const attributedUsdMicros = channelSpend.reduce((sum, entry) => sum + entry.spentUsdMicros, 0)
 

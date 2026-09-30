@@ -386,12 +386,22 @@ schema application runs before migrations. The read-only dashboard never
 migrates; initialize/migrate through the daemon or a CLI database open before
 relying on pages that query newly added columns.
 
-### Budget enforcement is layered, not a single check
+### Budgets: global daily limit and optional channel daily limit
 
-`daemon/src/jobs/costs.ts`'s `assertBudget` is called before every paid provider call
-and checks, in order: per-video cap (`channel.budget.perVideoUsdMicros`) →
-channel-day cap (UTC) → global-day cap (`BRAINROT_GLOBAL_DAILY_USD`, spans all
-channels). A breach throws `BudgetExceededError` _before_ the call fires.
+`daemon/src/config/budget.ts` owns the $25 fallback and parsing for
+`BRAINROT_GLOBAL_DAILY_USD`. Compose and the dashboard use the same value.
+Zero stops paid work; unset/blank uses $25; invalid settings fail validation.
+Channel `[budget] per_day_usd` is optional, must be positive and strictly below
+the effective global cap. An absent cap means global-only enforcement, with
+no implicit channel default. `per_video_usd` is removed and rejected.
+
+`daemon/src/jobs/costs.ts`'s `assertBudget` checks global-day and optional
+channel-day spend (UTC) before paid calls. Production and scouting share both
+limits; channel attribution includes exact `scout:<channel>` ledger entries.
+Scouting preflights the batch and rechecks each chunk with costs accumulated
+but not yet ledgered. A breach throws `BudgetExceededError` before the call.
+These are estimate-based checks, not reservations: concurrent calls and actual
+costs can overshoot. Per-job totals remain reporting data, not lifetime caps.
 Providers that pay for a call that then fails downstream (e.g. a schema-invalid
 LLM response) still have to ledger that spend. The provider tags the thrown
 error via `tagError` (`daemon/src/errors.ts`) with `context: { costUsdMicros }`, which

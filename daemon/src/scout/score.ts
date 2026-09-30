@@ -196,6 +196,7 @@ export async function scoreCandidates(opts: {
   story?: boolean
   client?: Anthropic
   lease?: LeaseContext
+  beforeChunk?: (spentUsdMicros: number) => void
 }): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
   const byIndex = new Map<number, ScoredCandidate>()
   let totalCostUsdMicros = 0
@@ -206,6 +207,7 @@ export async function scoreCandidates(opts: {
   try {
     for (let offset = 0; offset < opts.candidates.length; offset += SCOUT_SCORE_CHUNK_SIZE) {
       opts.lease?.assertOwned()
+      opts.beforeChunk?.(totalCostUsdMicros)
       const chunk = opts.candidates.slice(offset, offset + SCOUT_SCORE_CHUNK_SIZE)
       const { data, cost } = await structuredCompletion({
         model: SCOUT_MODEL,

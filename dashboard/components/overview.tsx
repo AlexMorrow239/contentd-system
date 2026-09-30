@@ -22,8 +22,11 @@ export function Spend({ label, spend }: { label: string; spend: SpendAgainstCap 
     <tr>
       <th scope="row">{label}</th>
       <td>
-        {formatUsdMicros(spend.spentUsdMicros)} / {formatUsdMicros(spend.capUsdMicros)}
-        {spend.spentUsdMicros > spend.capUsdMicros && <span className="error"> Over cap</span>}
+        {formatUsdMicros(spend.spentUsdMicros)} /{' '}
+        {spend.capUsdMicros === null ? 'Global limit only' : formatUsdMicros(spend.capUsdMicros)}
+        {spend.capUsdMicros !== null && spend.spentUsdMicros > spend.capUsdMicros && (
+          <span className="error"> Over cap</span>
+        )}
       </td>
     </tr>
   )

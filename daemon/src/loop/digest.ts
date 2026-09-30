@@ -4,7 +4,6 @@ import {
   channelDaySpentMicrosByChannel,
   globalDailyCapMicros,
   globalDaySpentMicros,
-  jobSpentMicros,
 } from '../jobs/costs.js'
 import { parseBudgetWait } from '../jobs/budget-wait.js'
 import { pendingInventory } from '../jobs/library.js'
@@ -148,13 +147,13 @@ export function buildDigest(
   }
   pushNoneIfEmpty(lines, jobsStart, '  none')
 
-  lines.push('', 'Spend today (UTC)')
+  lines.push('', 'Spend today (UTC; includes estimates)')
   // One GROUP BY for the whole set rather than a SUM per channel. A channel
   // with no spend today is ABSENT from the map, not zero — hence the ?? 0.
   const spentByChannel = channelDaySpentMicrosByChannel(db, day)
   for (const channel of channels) {
     lines.push(
-      `  ${channel.name}: ${formatUsdMicros(spentByChannel.get(channel.name) ?? 0)} of ${formatUsdMicros(channel.budget.perDayUsdMicros)}`,
+      `  ${channel.name}: ${formatUsdMicros(spentByChannel.get(channel.name) ?? 0)} ${channel.budget === undefined ? '— Global limit only' : `of ${formatUsdMicros(channel.budget.perDayUsdMicros)}`}`,
     )
   }
   lines.push(
@@ -259,8 +258,7 @@ export function buildDigest(
     )
   }
   // Blocked jobs are current-state too, and unlike the counts above they are
-  // NOT 24h-windowed: config drift (channel TOML gone, the per-video cap
-  // fully spent) excludes a job from the resume pass forever, and after a
+  // NOT 24h-windowed: config drift (channel TOML gone) excludes a job from the resume pass forever, and after a
   // day it would otherwise vanish from every operator surface with its spend
   // sunk and its topic still 'claimed'.
   const blockedJobs = db
@@ -310,21 +308,7 @@ export function buildDigest(
         lines.push(`${head} — budget wait at ${wait.stage}: ${wait.reason}${estimate}${retry}`)
         continue
       }
-      const capMicros = channel.budget.perVideoUsdMicros
-      // The DAO's read, not a copy of it: this advice must agree with what
-      // assertBudget actually enforces and what planTick plans against. The
-      // per-video cap is lifetime — never reset by a day boundary — so a
-      // spent-out job never self-heals.
-      const spentMicros = jobSpentMicros(db, j.id)
-      if (spentMicros >= capMicros) {
-        lines.push(
-          `${head} — per-video budget spent (${formatUsdMicros(spentMicros)} of ${formatUsdMicros(capMicros)}) — raise the cap in ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
-        )
-        continue
-      }
-      lines.push(
-        `${head} — ${formatUsdMicros(capMicros - spentMicros)} of its ${formatUsdMicros(capMicros)} per-video budget left — awaiting the resume pass`,
-      )
+      lines.push(`${head} — awaiting eligibility under current daily budgets`)
     }
   }
   // Topic starvation: with autonomous supply (subreddits), an empty topic

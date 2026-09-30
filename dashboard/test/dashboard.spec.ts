@@ -1,8 +1,30 @@
 import { test, expect, resetFixture } from './fixtures'
 import { seedAction, seedDaemonState } from '../../daemon/testing/db'
 import { actionsUnit } from '../../daemon/src/loop/actions-worker'
+import { channelToml, writeChannelsDir } from '../../daemon/testing/channel'
 
 test.beforeEach(({ dashboard }) => resetFixture(dashboard))
+
+test('overview shows the global default and optional channel limits', async ({
+  page,
+  dashboard,
+}) => {
+  await page.goto(dashboard.url)
+  await expect(page.getByRole('row', { name: /^Global / })).toContainText('$25.00')
+  await expect(page.getByRole('row', { name: /^chan-a / })).toContainText('Global limit only')
+  await expect(page.getByText('Includes estimated usage costs.')).toBeVisible()
+  const original = channelToml({ name: 'chan-a', platforms: ['youtube', 'tiktok'] })
+  try {
+    writeChannelsDir(
+      { 'chan-a.toml': original + 'per_day_usd = 10\n' },
+      dashboard.paths.channelsDir,
+    )
+    await page.reload()
+    await expect(page.getByRole('row', { name: /^chan-a / })).toContainText('$10.00')
+  } finally {
+    writeChannelsDir({ 'chan-a.toml': original }, dashboard.paths.channelsDir)
+  }
+})
 
 test('all pages, navigation, filters and job details work', async ({ page, dashboard }) => {
   const errors: string[] = []

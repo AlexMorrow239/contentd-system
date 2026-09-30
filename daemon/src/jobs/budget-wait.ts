@@ -3,15 +3,10 @@ import type { Database } from 'better-sqlite3'
 import { z } from 'zod'
 import { errorMessage } from '../errors.js'
 import type { ChannelConfig } from '../config/channel.js'
-import {
-  BudgetExceededError,
-  channelDaySpentMicros,
-  globalDailyCapMicros,
-  globalDaySpentMicros,
-  jobSpentMicros,
-} from './costs.js'
+import { BudgetExceededError, assertBudget, globalDailyCapMicros } from './costs.js'
 
 const detailsSchema = z.object({
+  // Read historical refusals; new BudgetExceededError instances only use daily scopes.
   scope: z.enum(['per-video', 'channel-day', 'global-day']),
   upcomingUsdMicros: z.number().finite().nonnegative(),
   spentUsdMicros: z.number().finite().nonnegative(),
@@ -69,7 +64,6 @@ export function makeBudgetWait(
  * config-change probe. Known estimates must fit every current budget. */
 export function budgetWaitEligible(
   db: Database,
-  jobId: string,
   channel: ChannelConfig,
   raw: string | null,
   now: Date,
@@ -80,11 +74,13 @@ export function budgetWaitEligible(
   const day = now.toISOString().slice(0, 10)
   if (wait.details === null) return wait.utcDay !== day
   const upcoming = wait.details.upcomingUsdMicros
-  return (
-    jobSpentMicros(db, jobId) + upcoming <= channel.budget.perVideoUsdMicros &&
-    channelDaySpentMicros(db, channel.name, day) + upcoming <= channel.budget.perDayUsdMicros &&
-    globalDaySpentMicros(db, day) + upcoming <= globalDailyCapMicros()
-  )
+  try {
+    assertBudget(db, channel, upcoming, { now: () => now })
+    return true
+  } catch (err) {
+    if (err instanceof BudgetExceededError) return false
+    throw err
+  }
 }
 
 /** Readers tolerate legacy or corrupt metadata; a fresh runner refusal repairs it. */

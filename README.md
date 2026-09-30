@@ -31,7 +31,7 @@ Keys in `.env`:
 
 - `ANTHROPIC_API_KEY` — script generation
 - `ELEVENLABS_API_KEY` — required for voice synthesis
-- `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (Compose default 12)
+- `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (default 25)
 
 ## Seed background footage
 
@@ -495,6 +495,45 @@ id that the channel-day query can't see and there's no video to hang a
 per-video cap on, so only the global-day cap backs it. Either way the cap is
 enforced in the pipeline rather than at this endpoint: it's the backstop, not
 the gate.
+A separate risk
+is workflow state, not spend: `library reject` ("discard") pulls rejected
+videos out of the posting queue but keeps their local files.
+
+Five actions route through a confirmation interstitial naming the
+consequence: `produce next`, `produce` and `resume`, because they spend and
+render; `library reject` and `post unmark`, because they change or remove
+operator state (`post unmark` throws away a saved live link). The rest fire on one
+click, `scout now` included — so a click can spend without a prompt. Spend
+is checked before each paid call against the global daily cap and the channel's
+optional daily cap. Video production and scouting share both limits. Scouting
+costs use the existing `scout:<channel>` ledger entries and count toward that
+channel. There are no per-video limits.
+
+Set `BRAINROT_GLOBAL_DAILY_USD` in `.env` to override the $25 daily default.
+Unset or blank uses the default; zero stops paid work. Invalid values fail
+configuration validation. Recreate the Compose services after changing this
+setting (or restart a host process); `.env` is not hot-reloaded for budgets.
+The dashboard and daemon receive the same setting.
+
+A channel may add a lower daily limit:
+
+```toml
+[budget]
+per_day_usd = 10.0
+```
+
+Omit the section or field for global-only enforcement. A declared channel
+limit must be positive and strictly lower than the effective global limit;
+equal or higher values are configuration errors, not silently clamped.
+Channel TOMLs retain their normal live reload behavior. Remove the obsolete
+`per_video_usd` field from older files; it now produces a migration error.
+
+Both limits reset at UTC midnight. Checks compare recorded spend plus the
+next call's estimate with the limit; equality is allowed. Reported spend
+includes estimates, especially ElevenLabs character costs, and is not an
+invoice. Actual costs and concurrent calls already running can overshoot a
+limit; subsequent calls stop once they no longer fit. There is no reservation
+system or separate daemon-wide per-channel default.
 
 **Do not put the dashboard behind a tunnel, reverse proxy, or `0.0.0.0`
 binding.** Doing so turns it into remote code execution against your channels
@@ -628,9 +667,10 @@ their existing jobs is independent. If the linked job already finalized, the
 action result is reconstructed from its library row.
 
 Budget-blocked jobs persist the refused call's estimate and wait at least 60
-seconds. Automatic resume requires that estimate to fit the current per-video,
-channel-day and global-day limits. Day caps reset at UTC midnight; per-video
-spend does not. Changed configuration allows a probe. Unknown/legacy refusals
+seconds. Automatic resume requires that estimate to fit the current global
+and optional channel daily limits. Both reset at UTC midnight. Historical
+per-video refusals are readable but no longer enforce a lifetime cap.
+Changed configuration allows a probe. Unknown/legacy refusals
 get one probe, then wait for a configuration/day change. Job detail and digest
 show the requirement and waiting reason. Explicit resume bypasses the retry
 delay, but not budget checks or live ownership.

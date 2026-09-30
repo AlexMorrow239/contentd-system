@@ -4,6 +4,7 @@ import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
 import { BrainrotError, errorMessage } from '../errors.js'
 import { PLATFORMS, type Platform } from '../posts/types.js'
+import { validateChannelBudget } from './budget.js'
 
 function configInvalid(message: string): BrainrotError {
   return new BrainrotError(message, { domain: 'config', kind: 'invalid' })
@@ -37,7 +38,7 @@ export interface ChannelConfig {
   backlogDays: number
   voice: VoiceConfig
   bgDir: string[]
-  budget: { perVideoUsdMicros: number; perDayUsdMicros: number }
+  budget?: { perDayUsdMicros: number }
   scriptModel: string
   scout: ScoutConfig
   /**
@@ -191,14 +192,21 @@ const rawSchema = z.object({
   platforms: platformsSchema,
   publish: z.unknown().optional(),
   caption_style: z.unknown().optional(),
-  // Every cap must be strictly positive. A zero cap is a misconfiguration that
-  // reads as a legitimate one everywhere downstream — plan-tick's resume floor
-  // becomes 0, `0 < 0` is false, and the job livelocks instead of parking —
-  // so it fails loudly here rather than quietly at 3am.
-  budget: z.object({
-    per_video_usd: z.number().positive('per_video_usd must be greater than 0'),
-    per_day_usd: z.number().positive('per_day_usd must be greater than 0'),
-  }),
+  budget: z
+    .object({
+      per_video_usd: z.unknown().optional(),
+      per_day_usd: z.number().positive('per_day_usd must be greater than 0').optional(),
+    })
+    .superRefine((budget, ctx) => {
+      if (budget.per_video_usd !== undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['per_video_usd'],
+          message: 'per_video_usd was removed; remove it and optionally set [budget] per_day_usd',
+        })
+      }
+    })
+    .optional(),
   bg_dir: z.preprocess(
     (v) => (Array.isArray(v) ? (v as unknown[]) : [v]),
     z.array(z.string()).min(1),
@@ -261,6 +269,9 @@ function usdToMicros(usd: number): number {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- filename carries no weight yet, see doc comment above
 export function parseChannelToml(text: string, filename: string): ChannelConfig {
   const raw = channelSchema.parse(parseToml(text))
+  const perDayUsdMicros =
+    raw.budget?.per_day_usd === undefined ? undefined : usdToMicros(raw.budget.per_day_usd)
+  validateChannelBudget(raw.name, perDayUsdMicros)
   return {
     name: raw.name,
     niche: raw.niche,
@@ -271,10 +282,7 @@ export function parseChannelToml(text: string, filename: string): ChannelConfig 
       modelId: raw.voice.model,
     },
     bgDir: raw.bg_dir,
-    budget: {
-      perVideoUsdMicros: usdToMicros(raw.budget.per_video_usd),
-      perDayUsdMicros: usdToMicros(raw.budget.per_day_usd),
-    },
+    ...(perDayUsdMicros === undefined ? {} : { budget: { perDayUsdMicros } }),
     scriptModel: raw.script_model,
     scout: raw.scout
       ? {

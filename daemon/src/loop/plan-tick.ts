@@ -61,10 +61,7 @@ export function planTick(
   for (const job of resumable) {
     const channel = byName.get(job.channel)
     if (channel === undefined || !hasCapacity(channel)) continue
-    if (
-      job.status === 'blocked' &&
-      !budgetWaitEligible(db, job.id, channel, job.budget_wait_json, now)
-    )
+    if (job.status === 'blocked' && !budgetWaitEligible(db, channel, job.budget_wait_json, now))
       continue
     return { kind: 'resume', jobId: job.id, channel: job.channel }
   }

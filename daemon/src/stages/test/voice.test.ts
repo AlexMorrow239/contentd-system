@@ -157,7 +157,7 @@ describe('voiceStage', () => {
 
   it('enforces the budget before synthesis', async () => {
     const ctx = ctxWithScript()
-    ctx.channel.budget.perVideoUsdMicros = 1
+    ctx.channel.budget = { perDayUsdMicros: 1 }
     await expect(voiceStage.run(ctx)).rejects.toBeInstanceOf(BudgetExceededError)
     expect(synthWithTimestamps).not.toHaveBeenCalled()
     await expect(fs.access(ctx.artifactPath('voice', 'voice.json'))).rejects.toThrow()

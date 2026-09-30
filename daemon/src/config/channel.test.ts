@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, parseChannelToml } from './channel.js'
@@ -19,7 +19,7 @@ import { classify } from '../errors.js'
  * NOTE: [budget] is the last table, so a bare key appended to this array lands
  * inside [budget] rather than at top level.
  */
-const PLAN1_LINES = channelTomlLines({ name: 'legacy' })
+const PLAN1_LINES = [...channelTomlLines({ name: 'legacy' }), 'per_day_usd = 20.0']
 
 function writeToml(lines: string[]): string {
   const file = join(tmpDir('brainrot-chan-'), 'channel.toml')
@@ -79,7 +79,6 @@ describe('loadChannelConfig', () => {
     const cfg = loadChannelConfig(writeToml(PLAN1_LINES))
     expect(cfg.voice.voiceId).toBe('EXAVITQu4vr4xnSDxMaL')
     expect(cfg.budget).toEqual({
-      perVideoUsdMicros: 8_000_000,
       perDayUsdMicros: 20_000_000,
     })
   })
@@ -105,10 +104,12 @@ describe('loadChannelConfig', () => {
     expect(cfg.scriptModel).toBe('claude-sonnet-5')
   })
 
-  it('throws when a required field is missing', () => {
-    // strip the entire [budget] table
+  it('accepts omitted and empty budgets without a channel cap', () => {
     const idx = PLAN1_LINES.indexOf('[budget]')
-    expect(() => loadChannelConfig(writeToml(PLAN1_LINES.slice(0, idx)))).toThrow()
+    expect(loadChannelConfig(writeToml(PLAN1_LINES.slice(0, idx))).budget).toBeUndefined()
+    expect(
+      loadChannelConfig(writeToml([...PLAN1_LINES.slice(0, idx), '[budget]'])).budget,
+    ).toBeUndefined()
   })
 
   it('throws when the file does not exist', () => {
@@ -141,15 +142,35 @@ describe('loadChannelConfig', () => {
   it('rejects a zero or negative budget cap, naming the field', () => {
     const withBudget = (line: string): string[] =>
       PLAN1_LINES.map((l) => (l.startsWith(line.split(' ')[0] + ' ') ? line : l))
-    expect(() => loadChannelConfig(writeToml(withBudget('per_video_usd = 0')))).toThrow(
-      /per_video_usd must be greater than 0/,
-    )
     expect(() => loadChannelConfig(writeToml(withBudget('per_day_usd = 0')))).toThrow(
       /per_day_usd must be greater than 0/,
     )
-    expect(() => loadChannelConfig(writeToml(withBudget('per_video_usd = -1')))).toThrow(
-      /per_video_usd must be greater than 0/,
+    expect(() => loadChannelConfig(writeToml(withBudget('per_day_usd = -1')))).toThrow(
+      /per_day_usd must be greater than 0/,
     )
+  })
+
+  it('rejects the removed per-video setting with migration guidance', () => {
+    expect(() => parseChannelToml(channelToml() + 'per_video_usd = 1', 'example.toml')).toThrow(
+      /per_video_usd was removed/,
+    )
+  })
+
+  it.each([12, 13])('rejects a channel limit of $%s against a $12 global limit', (cap) => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
+    expect(() => parseChannelToml(channelToml() + `per_day_usd = ${cap}`, 'example.toml')).toThrow(
+      /example.*must be lower.*12/,
+    )
+  })
+
+  it('accepts a smaller optional cap and rejects a value that rounds to zero micros', () => {
+    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
+    expect(parseChannelToml(channelToml() + 'per_day_usd = 10', 'example.toml').budget).toEqual({
+      perDayUsdMicros: 10_000_000,
+    })
+    expect(() =>
+      parseChannelToml(channelToml() + 'per_day_usd = 0.0000001', 'example.toml'),
+    ).toThrow(/representable/)
   })
 })
 

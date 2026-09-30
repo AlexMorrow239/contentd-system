@@ -3,7 +3,7 @@ import { LeaseLostError, type LeaseContext } from '../loop/lease.js'
 import type { Database } from 'better-sqlite3'
 import type Anthropic from '@anthropic-ai/sdk'
 import type { ChannelConfig } from '../config/channel.js'
-import { assertGlobalDayBudget, recordCost } from '../jobs/costs.js'
+import { assertBudget, recordCost } from '../jobs/costs.js'
 import { BrainrotError, classify, errorMessage, retagWithContext } from '../errors.js'
 import { errorCostUsdMicros } from '../providers/errors.js'
 import { dedupeHash, SOURCE_FETCH_TIMEOUT_MS } from './sources/types.js'
@@ -97,11 +97,9 @@ async function scoreWithLedger(
   lease?: LeaseContext,
 ): Promise<{ scored: ScoredCandidate[]; costUsdMicros: number }> {
   try {
-    // The scout has no job row to hang assertBudget on; gate the estimated
-    // spend against the global daily cap directly (design spec §8). Scored in
-    // chunks now, so the estimate scales with how many calls this batch will
-    // actually make.
-    assertGlobalDayBudget(db, ESTIMATED_SCOUT_COST_MICROS * estimatedChunkCount(fresh.length), time)
+    // Preflight the batch, then recheck each paid chunk with its unledgered
+    // spend. Final accounting remains atomic with topic insertion below.
+    assertBudget(db, channel, ESTIMATED_SCOUT_COST_MICROS * estimatedChunkCount(fresh.length), time)
     return await scoreCandidates({
       candidates: fresh.map((f) => f.candidate),
       niche: channel.niche,
@@ -109,6 +107,7 @@ async function scoreWithLedger(
       story: channel.story !== null,
       client,
       lease,
+      beforeChunk: (spent) => assertBudget(db, channel, spent + ESTIMATED_SCOUT_COST_MICROS, time),
     })
   } catch (err) {
     const spent = errorCostUsdMicros(err)

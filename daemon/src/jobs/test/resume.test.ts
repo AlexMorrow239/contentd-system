@@ -25,7 +25,6 @@ const CHANNEL_TOML = [
   'voice_id = "EXAVITQu4vr4xnSDxMaL"',
   '',
   '[budget]',
-  'per_video_usd = 8.0',
   'per_day_usd = 20.0',
 ].join('\n')
 

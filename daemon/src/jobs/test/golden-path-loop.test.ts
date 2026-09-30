@@ -113,7 +113,6 @@ describe('golden-path loop e2e', () => {
         'voice_id = "EXAVITQu4vr4xnSDxMaL"',
         '',
         '[budget]',
-        'per_video_usd = 8.0',
         'per_day_usd = 20.0',
         '',
         '[scout]',

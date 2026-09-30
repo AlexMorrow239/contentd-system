@@ -31,6 +31,7 @@ export default function OverviewPage(props: PageProps) {
               </section>
               <section className="panel">
                 <h2>Today’s spend (UTC day)</h2>
+                <p className="muted">Includes estimated usage costs.</p>
                 <table>
                   <tbody>
                     <Spend label="Global" spend={data.globalSpend} />
@@ -41,8 +42,8 @@ export default function OverviewPage(props: PageProps) {
                       <tr>
                         <th>Unattributed</th>
                         <td>
-                          {formatUsdMicros(data.unattributedUsdMicros)} — scout spend and channels
-                          without a current TOML
+                          {formatUsdMicros(data.unattributedUsdMicros)} — costs without a configured
+                          channel
                         </td>
                       </tr>
                     )}

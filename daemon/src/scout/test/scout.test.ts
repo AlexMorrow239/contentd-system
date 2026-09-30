@@ -451,6 +451,48 @@ describe('scoutChannel', () => {
     db.close()
   })
 
+  it('gates scouting against its optional channel budget before spending', async () => {
+    const db = memDb()
+    const channel = { ...scoutedChannel(), budget: { perDayUsdMicros: 1 } }
+    const fetchImpl = fetchStub({
+      'subreddit=space': redditFeed([{ name: 't3_aaa', title: 'Moon drifting' }]),
+    })
+    const { client, create } = fakeClient(emitScores([]))
+    await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow(
+      /channel-day budget/,
+    )
+    expect(create).not.toHaveBeenCalled()
+    expect(db.prepare('SELECT COUNT(*) AS n FROM costs').get()).toEqual({ n: 0 })
+  })
+
+  it.each(['global', 'channel'])(
+    'stops a later scoring chunk at the %s cap and records earlier cost once',
+    async (scope) => {
+      vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', scope === 'global' ? '0.04' : '25')
+      const db = memDb()
+      const channel = {
+        ...scoutedChannel(),
+        budget: scope === 'channel' ? { perDayUsdMicros: 40_000 } : undefined,
+      }
+      const posts = Array.from({ length: SCOUT_SCORE_CHUNK_SIZE + 1 }, (_, i) => ({
+        name: `t3_${i}`,
+        title: `Story ${i}`,
+      }))
+      const fetchImpl = fetchStub({ 'subreddit=space': redditFeed(posts) })
+      const { client, create } = fakeClient(
+        emitScores([], { input_tokens: 10_000, output_tokens: 5_000 }),
+      )
+      await expect(scoutChannel(db, channel, { client, fetchImpl })).rejects.toThrow(
+        new RegExp(`${scope}-day budget`),
+      )
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(db.prepare('SELECT job_id, usd_micros FROM costs').all()).toEqual([
+        { job_id: 'scout:chan-a', usd_micros: 35_000 },
+      ])
+      expect(listTopics(db)).toHaveLength(0)
+    },
+  )
+
   it('ledgers spend from a paid-but-invalid scoring response, then rethrows', async () => {
     const db = memDb()
     const channel = scoutedChannel()

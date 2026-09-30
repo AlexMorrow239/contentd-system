@@ -9,10 +9,11 @@ import {
   seedLibrary,
   seedStage,
 } from '../../../../../daemon/testing/db.js'
+import { createTestTime } from '../../../../../daemon/testing/time.js'
 import { buildOverview } from '../overview.js'
 
 function channel(name: string, perDayUsdMicros: number): ChannelConfig {
-  return testChannel({ name, budget: { perVideoUsdMicros: 500_000, perDayUsdMicros } })
+  return testChannel({ name, budget: { perDayUsdMicros } })
 }
 
 const NOW = new Date('2026-07-25T12:00:00Z')
@@ -21,7 +22,7 @@ describe('buildOverview', () => {
   let db: Database
 
   beforeEach(() => {
-    db = memDb()
+    db = memDb(createTestTime(NOW))
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
   })
 
@@ -99,7 +100,17 @@ describe('buildOverview', () => {
     ])
   })
 
-  it('attributes a scout sentinel cost row (no matching jobs row) to unattributedUsdMicros', () => {
+  it('reports a global-only channel and keeps missing-channel costs unattributed', () => {
+    seedCost(db, 'scout:space', { usdMicros: 100 })
+    seedCost(db, 'scout:removed', { usdMicros: 200 })
+    const data = buildOverview(db, [testChannel({ name: 'space' })], NOW)
+    expect(data.channelSpend).toEqual([
+      { channel: 'space', spentUsdMicros: 100, capUsdMicros: null },
+    ])
+    expect(data.unattributedUsdMicros).toBe(200)
+  })
+
+  it('attributes scouting to its channel', () => {
     seedJob(db, 'j1', { channel: 'space', topic: 'a', status: 'done' })
     seedCost(db, 'j1', { provider: 'anthropic', operation: 'script', usdMicros: 250000 })
     // Scout sentinel: job_id has no matching jobs row. foreign_keys is OFF
@@ -113,9 +124,9 @@ describe('buildOverview', () => {
     const data = buildOverview(db, [channel('space', 2_000_000)], NOW)
     expect(data.globalSpend.spentUsdMicros).toBe(265000)
     expect(data.channelSpend).toEqual([
-      { channel: 'space', spentUsdMicros: 250000, capUsdMicros: 2_000_000 },
+      { channel: 'space', spentUsdMicros: 265000, capUsdMicros: 2_000_000 },
     ])
-    expect(data.unattributedUsdMicros).toBe(15000)
+    expect(data.unattributedUsdMicros).toBe(0)
   })
 
   it('reports unattributedUsdMicros as 0, not negative, when every cost row is attributed', () => {

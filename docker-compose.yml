@@ -72,7 +72,7 @@ services:
       BRAINROT_ROOT: /app/state
       WHISPERX_URL: http://whisperx:8585
       TZ: America/New_York
-      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
+      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-25}
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
@@ -141,7 +141,7 @@ services:
       BRAINROT_DASHBOARD_HOST: '0.0.0.0'
       # Read for the spend panel; must match the brainrot service so the
       # dashboard reports the cap that is actually enforced.
-      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-12}
+      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-25}
       TZ: America/New_York
     ports:
       # Loopback-bound on the HOST: unreachable from the network. There is no

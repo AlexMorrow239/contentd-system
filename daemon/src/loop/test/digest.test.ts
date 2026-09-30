@@ -94,21 +94,19 @@ describe('buildDigest — spend section', () => {
     vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '10')
     const db = memDb(time)
     const budget = {
-      perVideoUsdMicros: 8_000_000,
-      perDayUsdMicros: 20_000_000,
+      perDayUsdMicros: 8_000_000,
     }
     const chA = testChannel({ name: 'chan-a', budget })
     const chB = testChannel({ name: 'chan-b', budget })
     seedJob(db, { id: 'j-spend', status: 'done' })
     seedCost(db, 'j-spend', 1_234_567)
-    // Sentinel scout row: no jobs row behind it, so it is invisible to the
-    // channel JOIN but counts toward the global sum.
+    // Scouting shares both the channel allowance and the global allowance.
     seedCost(db, 'scout:chan-a', 20_000)
     const digest = buildDigest(db, [chA, chB], { time })
-    expect(digest).toContain('Spend today (UTC)')
-    // 1_234_567 micros → $1.23 (toFixed(2)); cap 20_000_000 → $20.00
-    expect(digest).toContain('  chan-a: $1.23 of $20.00')
-    expect(digest).toContain('  chan-b: $0.00 of $20.00')
+    expect(digest).toContain('Spend today (UTC; includes estimates)')
+    // Production + scouting rounds to $1.25; channel cap is $8.00.
+    expect(digest).toContain('  chan-a: $1.25 of $8.00')
+    expect(digest).toContain('  chan-b: $0.00 of $8.00')
     // global: 1_234_567 + 20_000 = 1_254_567 → $1.25 vs the stubbed $10 cap
     expect(digest).toContain('  global: $1.25 of $10.00')
     db.close()
@@ -304,26 +302,24 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     db.close()
   })
 
-  it('names an exhausted per-video cap', () => {
+  it('does not recommend raising a removed per-video cap', () => {
     const db = memDb(time)
     seedJob(db, { id: 'j-spent', channel: 'chan-a', status: 'blocked' })
-    // testChannel's per-video cap is $8.00.
     seedCost(db, 'j-spent', 8_000_000)
     const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], { time })
     expect(digest).toContain(
-      '  blocked job j-spent (chan-a) — per-video budget spent ($8.00 of $8.00) — raise the cap in chan-a.toml then brainrot resume j-spent',
+      '  blocked job j-spent (chan-a) — awaiting eligibility under current daily budgets',
     )
     db.close()
   })
 
-  it('reports remaining headroom for a blocked job that can still resume', () => {
+  it('reports pending eligibility for a legacy blocked job', () => {
     const db = memDb(time)
     seedJob(db, { id: 'j-wait', channel: 'chan-a', status: 'blocked' })
     seedCost(db, 'j-wait', 2_000_000)
     const digest = buildDigest(db, [testChannel({ name: 'chan-a' })], { time })
-    // per-video cap is $8.00 in testChannel.
     expect(digest).toContain(
-      '  blocked job j-wait (chan-a) — $6.00 of its $8.00 per-video budget left — awaiting the resume pass',
+      '  blocked job j-wait (chan-a) — awaiting eligibility under current daily budgets',
     )
     db.close()
   })
@@ -497,7 +493,7 @@ describe('buildDigest — section order', () => {
     const positions = [
       digest.indexOf('Topics (last 24h)'),
       digest.indexOf('Jobs (last 24h)'),
-      digest.indexOf('Spend today (UTC)'),
+      digest.indexOf('Spend today (UTC; includes estimates)'),
       digest.indexOf('Posting'),
       digest.indexOf('Action items'),
     ]
