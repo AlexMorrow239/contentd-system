@@ -28,6 +28,21 @@ describe('operator action queue', () => {
     expect(JSON.parse(row?.args ?? '{}')).toEqual({ ids: [3] })
   })
 
+  it.each(['pending', 'running'])('reuses a %s resume request for the same job', (status) => {
+    const db = memDb()
+    const existing = seedAction(db, {
+      kind: 'jobs.resume',
+      lane: 'slow',
+      args: '{"jobId":"j1"}',
+      status,
+    })
+    const opts = { kind: 'jobs.resume' as const, args: { jobId: 'j1' }, requestedBy: 'dashboard' }
+    expect(enqueueAction(db, opts)).toBe(existing)
+    expect(enqueueAction(db, { ...opts, args: { jobId: 'j2' } })).not.toBe(existing)
+    db.prepare("UPDATE operator_actions SET status = 'failed' WHERE id = ?").run(existing)
+    expect(enqueueAction(db, opts)).not.toBe(existing)
+  })
+
   it('returns pending rows for one lane only, oldest first', () => {
     const db = memDb()
     const a = seedAction(db, { lane: 'fast' })

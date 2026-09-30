@@ -6,6 +6,7 @@ import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs }
 import { tmpDir } from '../../../../../daemon/testing/tmp.js'
 import {
   memDb,
+  seedAction,
   seedCost,
   seedJob,
   seedLibrary,
@@ -33,6 +34,36 @@ function seed(): Database {
 }
 
 describe('listJobs', () => {
+  it.each(['pending', 'running'])(
+    'shows an active %s resume as queued across job views',
+    (status) => {
+      const db = seed()
+      seedAction(db, {
+        kind: 'jobs.resume',
+        lane: 'slow',
+        args: JSON.stringify({ jobId: 'j1' }),
+        status,
+      })
+      expect(getJobDetail(db, 'j1')?.job.status).toBe('queued')
+      expect(listJobs(db, { status: 'queued' }).map((job) => job.id)).toEqual(['j1'])
+      expect(countJobs(db, { status: 'queued' })).toBe(1)
+      expect(countJobs(db, { status: 'failed' })).toBe(0)
+      db.prepare("UPDATE jobs SET status = 'running' WHERE id = 'j1'").run()
+      expect(getJobDetail(db, 'j1')?.job.status).toBe('running')
+    },
+  )
+
+  it.each(['done', 'failed'])('allows retry after a resume action is %s', (status) => {
+    const db = seed()
+    seedAction(db, {
+      kind: 'jobs.resume',
+      lane: 'slow',
+      args: JSON.stringify({ jobId: 'j1' }),
+      status,
+    })
+    expect(getJobDetail(db, 'j1')?.job.status).toBe('failed')
+  })
+
   it('returns newest first', () => {
     const db = seed()
     expect(listJobs(db).map((j) => j.id)).toEqual(['j2', 'j1'])

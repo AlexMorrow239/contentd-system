@@ -41,6 +41,11 @@ test('resume is on job details and queues only after confirmation', async ({ pag
   expect(dashboard.db.prepare('SELECT kind, status FROM operator_actions').all()).toEqual([
     { kind: 'jobs.resume', status: 'pending' },
   ])
+  await expect(page.getByRole('button', { name: 'resume…', exact: true })).toHaveCount(0)
+  await expect(page.locator('dd .status-queued')).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'resume…', exact: true })).toHaveCount(0)
+  await expect(page.locator('dd .status-queued')).toBeVisible()
 })
 
 test('delete is a fast row action that preserves filters and removes the job', async ({

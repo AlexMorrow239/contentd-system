@@ -48,11 +48,19 @@ interface DbJobRow {
   cost_usd_micros: number
 }
 
+// A resume waits in the action queue without changing the persisted job until
+// the worker owns it. Reuse the job's queued status in every dashboard view.
+const JOB_STATUS = `CASE WHEN jobs.status IN ('failed', 'blocked') AND EXISTS (
+  SELECT 1 FROM operator_actions
+  WHERE kind = 'jobs.resume' AND status IN ('pending', 'running')
+    AND json_extract(CASE WHEN json_valid(args) THEN args END, '$.jobId') = jobs.id
+) THEN 'queued' ELSE jobs.status END`
+
 // COALESCE, not a bare SUM: a job with no costs rows must report 0, and the
 // LEFT JOIN would otherwise surface null through the typed interface.
 const JOB_COLUMNS =
   'jobs.id AS id, jobs.channel AS channel, jobs.tier AS tier, jobs.topic AS topic, ' +
-  'jobs.status AS status, jobs.created_at AS created_at, jobs.finished_at AS finished_at, ' +
+  `${JOB_STATUS} AS status, jobs.created_at AS created_at, jobs.finished_at AS finished_at, ` +
   'COALESCE((SELECT SUM(usd_micros) FROM costs WHERE costs.job_id = jobs.id), 0) AS cost_usd_micros'
 
 function toJobRow(row: DbJobRow): JobListRow {
@@ -75,7 +83,7 @@ function jobsWhereClause(filter?: { channel?: string; status?: JobStatus }): {
   return whereClause([
     ['jobs.deleted_at IS ?', null],
     ['jobs.channel = ?', filter?.channel],
-    ['jobs.status = ?', filter?.status],
+    [`${JOB_STATUS} = ?`, filter?.status],
   ])
 }
 

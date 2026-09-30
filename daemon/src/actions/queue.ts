@@ -37,19 +37,36 @@ export function enqueueAction(
   db: Database,
   opts: { kind: ActionKind; args: unknown; requestedBy: string; time?: TimeSource },
 ): number {
-  const info = db
-    .prepare(
-      'INSERT INTO operator_actions (kind, lane, args, status, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?)',
-    )
-    .run(
-      opts.kind,
-      ACTIONS[opts.kind].lane,
-      JSON.stringify(opts.args),
-      'pending',
-      opts.requestedBy,
-      (opts.time ?? systemTime).now().toISOString(),
-    )
-  return Number(info.lastInsertRowid)
+  return db
+    .transaction(() => {
+      // Serialize lookup + insert so concurrent submissions share one resume.
+      const args = JSON.stringify(opts.args)
+      if (opts.kind === 'jobs.resume') {
+        const existing = db
+          .prepare(
+            `SELECT id FROM operator_actions
+             WHERE kind = 'jobs.resume' AND status IN ('pending', 'running')
+               AND json_extract(CASE WHEN json_valid(args) THEN args END, '$.jobId') = json_extract(?, '$.jobId')
+             ORDER BY id LIMIT 1`,
+          )
+          .get(args) as { id: number } | undefined
+        if (existing) return existing.id
+      }
+      const info = db
+        .prepare(
+          'INSERT INTO operator_actions (kind, lane, args, status, requested_by, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        )
+        .run(
+          opts.kind,
+          ACTIONS[opts.kind].lane,
+          args,
+          'pending',
+          opts.requestedBy,
+          (opts.time ?? systemTime).now().toISOString(),
+        )
+      return Number(info.lastInsertRowid)
+    })
+    .immediate()
 }
 
 export function pendingActions(db: Database, lane: ActionLane, limit: number): ActionRow[] {
