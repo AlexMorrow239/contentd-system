@@ -1,6 +1,6 @@
 import { createDeadline, systemTime, type TimeSource } from '../time.js'
 import { readFile } from 'node:fs/promises'
-import { BrainrotError, isAbortLike, isAuthStatus } from '../errors.js'
+import { BrainrotError, errorMessage, isAbortLike, isAuthStatus } from '../errors.js'
 
 export interface WordTiming {
   word: string
@@ -70,8 +70,35 @@ export async function alignTranscript(opts: {
         cause: err,
       })
     }
-    throw err
+    if (err instanceof BrainrotError) throw err
+    const codes = new Set<string>()
+    const detail = requestErrorDetail(err, codes)
+    const hint = codes.has('UND_ERR_SOCKET')
+      ? ' The sidecar closed the connection; check its logs and Docker VM memory for a crash or out-of-memory kill.'
+      : ''
+    throw new BrainrotError(
+      `alignTranscript: request to ${opts.baseUrl}/align failed: ${detail}.${hint}`,
+      { domain: 'provider', kind: 'transient', cause: err },
+    )
   } finally {
     deadline.dispose()
   }
+}
+
+// Fetch hides socket/DNS failures in cause (sometimes an AggregateError).
+// Bound traversal and tolerate cycles; only include messages/codes, not request data.
+// Codes found along the chain are collected into `codes`.
+function requestErrorDetail(err: unknown, codes: Set<string>, seen = new Set<unknown>()): string {
+  if (seen.has(err) || seen.size >= 8) return ''
+  seen.add(err)
+  const code = err instanceof Error && 'code' in err ? String(err.code) : ''
+  if (code) codes.add(code)
+  const parts = [code ? `${code}: ${errorMessage(err)}` : errorMessage(err)]
+  if (err instanceof Error && err.cause !== undefined) {
+    parts.push(requestErrorDetail(err.cause, codes, seen))
+  }
+  if (err instanceof AggregateError) {
+    for (const nested of err.errors) parts.push(requestErrorDetail(nested, codes, seen))
+  }
+  return parts.filter(Boolean).join('; ')
 }

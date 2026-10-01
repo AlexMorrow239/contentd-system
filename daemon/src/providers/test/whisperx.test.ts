@@ -41,6 +41,25 @@ async function tmpWav(): Promise<string> {
 }
 
 describe('alignTranscript', () => {
+  it('surfaces nested socket failures with the endpoint and original cause', async () => {
+    const cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' })
+    const failure = new TypeError('fetch failed', { cause })
+    const err = await alignTranscript({
+      baseUrl,
+      wavPath: await tmpWav(),
+      transcript: 'hi',
+      fetchImpl: async () => {
+        throw failure
+      },
+    }).catch((e: unknown) => e)
+    expect(errorMessage(err)).toContain(baseUrl + '/align')
+    expect(errorMessage(err)).toContain('UND_ERR_SOCKET')
+    expect(errorMessage(err)).toContain('other side closed')
+    expect(errorMessage(err)).toContain('memory')
+    expect(err).toHaveProperty('cause', failure)
+    expect(classify(err)).toMatchObject({ domain: 'provider', kind: 'transient' })
+  })
+
   it('posts multipart audio + transcript and converts seconds to integer ms', async () => {
     const wavPath = await tmpWav()
     const words = await alignTranscript({ baseUrl, wavPath, transcript: 'hi there' })

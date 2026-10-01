@@ -179,3 +179,29 @@ def test_health_returns_ok_without_loading_the_align_model(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
+
+
+def test_model_load_failure_returns_detail(monkeypatch):
+    def fail():
+        raise RuntimeError("model cache is unreadable")
+
+    monkeypatch.setattr(app_module, "get_align_model", fail)
+    monkeypatch.setattr(app_module.whisperx, "load_audio",
+                        lambda p: np.zeros(16000, dtype=np.float32))
+    client = TestClient(app_module.app, raise_server_exceptions=False)
+    resp = client.post("/align", files={"audio": ("n.wav", _wav_bytes(), "audio/wav")},
+                       data={"transcript": "hello"})
+    assert resp.status_code == 500
+    assert "model cache is unreadable" in resp.json()["detail"]
+
+
+def test_audio_decode_failure_returns_detail(monkeypatch):
+    def fail(path):
+        raise RuntimeError("ffmpeg could not decode audio")
+
+    monkeypatch.setattr(app_module.whisperx, "load_audio", fail)
+    client = TestClient(app_module.app, raise_server_exceptions=False)
+    resp = client.post("/align", files={"audio": ("n.wav", _wav_bytes(), "audio/wav")},
+                       data={"transcript": "hello"})
+    assert resp.status_code == 500
+    assert "ffmpeg could not decode audio" in resp.json()["detail"]

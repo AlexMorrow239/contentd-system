@@ -12,7 +12,9 @@ OAuth grant and no scheduler in this codebase.
 - Node >= 22 and [pnpm](https://pnpm.io)
 - [ffmpeg](https://ffmpeg.org) + ffprobe on `PATH` (`brew install ffmpeg`)
 - Docker (for the WhisperX caption-alignment sidecar — needed for captions
-  whenever a job's voice wasn't synthesized by a successful ElevenLabs call)
+  whenever a job's voice has no usable provider word timings).
+  This installation uses 3 GiB for the Docker VM; Colima defaults to 2 GiB. See
+  Operational caveats for resizing and out-of-memory diagnosis.
 
 ## Setup
 
@@ -740,6 +742,24 @@ artifacts needed by completed checkpoints. This change adds no file-retention po
   crashes — the affected job just fails or blocks at the captions stage and
   is recoverable the normal way — but it means a reboot is not guaranteed to
   reproduce the startup ordering `docker compose up -d` gives you.
+
+- **An undersized Docker VM kills work with an opaque error.** Colima's default
+  2 GiB can let the kernel kill WhisperX during alignment (and ffmpeg/Node
+  during rendering), leaving only a socket-closed fetch error. For Colima,
+  stop the daemon gracefully, then resize and restart:
+
+  ```bash
+  docker compose stop -t 120 brainrot
+  colima stop
+  colima start --memory 3
+  docker compose start brainrot
+  ```
+
+  In Docker Desktop, set the VM memory under Settings → Resources instead.
+  A healthy WhisperX probe only checks liveness; it does not load the model.
+  If alignment closes the socket, inspect sidecar logs and VM kernel OOM logs
+  (`colima ssh -- sudo dmesg`). A global VM OOM kill may leave Docker's
+  `OOMKilled` flag false after restart.
 
 ### Timezones: two different clocks
 

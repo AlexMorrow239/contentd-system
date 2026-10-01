@@ -1,3 +1,4 @@
+import logging
 import os
 import tempfile
 
@@ -6,6 +7,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 app = FastAPI()
+logger = logging.getLogger(__name__)
 
 DEVICE = os.environ.get("WHISPERX_DEVICE", "cpu")
 SAMPLE_RATE = 16000  # whisperx.load_audio always resamples to 16 kHz
@@ -89,19 +91,22 @@ async def align(audio: UploadFile = File(...), transcript: str = Form(...)):
                 )
             tmp.write(chunk)
         tmp.flush()
-        audio_array = whisperx.load_audio(tmp.name)
-
-    duration = len(audio_array) / SAMPLE_RATE
-    # Alignment-only: one segment spanning the whole clip carries the plain
-    # transcript; whisperx places each word within it.
-    segments = [{"start": 0.0, "end": float(duration), "text": transcript}]
-    model, metadata = get_align_model()
-    try:
-        result = whisperx.align(
-            segments, model, metadata, audio_array, DEVICE, return_char_alignments=False
-        )
-    except Exception as exc:  # alignment failure -> 500 with detail
-        raise HTTPException(status_code=500, detail=f"alignment failed: {exc}")
+        try:
+            audio_array = whisperx.load_audio(tmp.name)
+            duration = len(audio_array) / SAMPLE_RATE
+            # Alignment-only: one segment spanning the whole clip carries the plain
+            # transcript; whisperx places each word within it.
+            segments = [{"start": 0.0, "end": float(duration), "text": transcript}]
+            model, metadata = get_align_model()
+            result = whisperx.align(
+                segments, model, metadata, audio_array, DEVICE, return_char_alignments=False
+            )
+        except Exception as exc:
+            logger.exception("WhisperX alignment request failed")
+            raise HTTPException(
+                status_code=500,
+                detail=f"alignment failed: {type(exc).__name__}: {exc}",
+            ) from exc
 
     words = [
         {"word": w["word"], "start": float(w["start"]), "end": float(w["end"])}
