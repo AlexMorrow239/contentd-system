@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { globalDailyCapMicros, validateChannelBudget } from '../../config/budget.js'
 import type { ChannelConfig } from '../../config/channel.js'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { systemTime, type TimeSource } from '../../shared/time.js'
 
 export { globalDailyCapMicros } from '../../config/budget.js'
@@ -14,7 +14,7 @@ export interface BudgetExceededDetails {
   utcDay: string
 }
 
-export class BudgetExceededError extends BrainrotError {
+export class BudgetExceededError extends ContentdError {
   constructor(
     reason: string,
     readonly details?: BudgetExceededDetails,

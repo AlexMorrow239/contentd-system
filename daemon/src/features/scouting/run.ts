@@ -3,7 +3,7 @@ import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../config/channel.js'
 import { LeaseLostError, type LeaseContext } from '../../infra/coordination/lease.js'
 import type { FetchLike } from '../../infra/sources/types.js'
-import { BrainrotError, classify } from '../../shared/errors.js'
+import { ContentdError, classify } from '../../shared/errors.js'
 import { resolveTime, type TimeSource } from '../../shared/time.js'
 import { emptyChannelResult, scoutChannel } from './channel.js'
 import type { ScoutChannelResult } from './types.js'
@@ -12,7 +12,7 @@ import type { ScoutChannelResult } from './types.js'
 // channel's isolation can absorb. Both carry the per-channel results so the CLI
 // can still print its one JSON line (Global Constraints: JSON even on failure
 // outcomes) before exit 1.
-export class ScoutRunFailedError extends BrainrotError {
+export class ScoutRunFailedError extends ContentdError {
   readonly results: ScoutChannelResult[]
 
   constructor(message: string, results: ScoutChannelResult[]) {

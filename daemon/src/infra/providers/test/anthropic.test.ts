@@ -154,7 +154,7 @@ describe('visionJudgment', () => {
     pngB64: string
     jpgB64: string
   } {
-    const dir = tmpDir('brainrot-vision-')
+    const dir = tmpDir('contentd-vision-')
     const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x01, 0x02, 0x03])
     const jpgBytes = Buffer.from([0xff, 0xd8, 0xff, 0x04, 0x05, 0x06])
     const pngPath = path.join(dir, 'scene-01.png')

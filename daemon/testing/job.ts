@@ -58,7 +58,7 @@ export function makeCtx(opts: MakeCtxOptions = {}): JobContext {
   // createJob is skipped when the caller pinned an id: those tests seed
   // artifacts directly and never read the jobs row back.
   const jobId = opts.jobId ?? createJob(db, channel, { topic, time })
-  const runDir = opts.runDir ?? tmpDir('brainrot-videos-')
+  const runDir = opts.runDir ?? tmpDir('contentd-videos-')
   return {
     jobId,
     time,

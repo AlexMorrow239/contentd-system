@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import type { Database } from 'better-sqlite3'
-import { resolvePaths, type BrainrotPaths } from '../src/config/paths.js'
+import { resolvePaths, type ContentdPaths } from '../src/config/paths.js'
 
 /**
  * Temp dirs and db handles created by a test file, drained by setup.ts's
@@ -19,7 +19,7 @@ const dirs: string[] = []
 const handles: Database[] = []
 
 /** A temp dir removed after the current test FILE finishes. */
-export function tmpDir(prefix = 'brainrot-'): string {
+export function tmpDir(prefix = 'contentd-'): string {
   const dir = mkdtempSync(path.join(tmpdir(), prefix))
   dirs.push(dir)
   return dir
@@ -31,7 +31,7 @@ export function tmpDir(prefix = 'brainrot-'): string {
  * layout production does not have. Removed after the current test FILE
  * finishes, like every other tmpDir.
  */
-export function testRoot(prefix = 'brainrot-root-'): BrainrotPaths {
+export function testRoot(prefix = 'contentd-root-'): ContentdPaths {
   const paths = resolvePaths(tmpDir(prefix))
   for (const dir of [path.dirname(paths.dbPath), paths.runsRoot, paths.channelsDir]) {
     mkdirSync(dir, { recursive: true })

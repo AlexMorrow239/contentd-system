@@ -1,5 +1,5 @@
 import type { WordTiming } from '../../shared/contracts/word-timing.js'
-import { BrainrotError, isAbortLike, isAuthStatus } from '../../shared/errors.js'
+import { ContentdError, isAbortLike, isAuthStatus } from '../../shared/errors.js'
 import { createDeadline, systemTime, type TimeSource } from '../../shared/time.js'
 import { encodePcmWav, parseWavDurationMs } from '../media/wav.js'
 
@@ -92,7 +92,7 @@ export async function synthWithTimestamps(opts: {
   // A missing key fails the voice stage before any network activity or spend.
   const apiKey = (opts.apiKey ?? process.env.ELEVENLABS_API_KEY)?.trim()
   if (!apiKey) {
-    throw new BrainrotError(
+    throw new ContentdError(
       'synthWithTimestamps: missing ElevenLabs API key (pass opts.apiKey or set ELEVENLABS_API_KEY)',
       { domain: 'config', kind: 'invalid' },
     )
@@ -118,7 +118,7 @@ export async function synthWithTimestamps(opts: {
     })
     if (!res.ok) {
       const raw = await res.text().catch(() => '')
-      throw new BrainrotError(`synthWithTimestamps: elevenlabs responded ${res.status}: ${raw}`, {
+      throw new ContentdError(`synthWithTimestamps: elevenlabs responded ${res.status}: ${raw}`, {
         domain: 'provider',
         kind: isAuthStatus(res.status) ? 'auth' : 'transient',
       })
@@ -128,7 +128,7 @@ export async function synthWithTimestamps(opts: {
     // A 200 without audio has nothing for the voice stage to fall back to, so it
     // is a hard failure — named so the log says which provider produced it.
     if (typeof body.audio_base64 !== 'string' || body.audio_base64.length === 0) {
-      throw new BrainrotError('synthWithTimestamps: elevenlabs response carried no audio_base64', {
+      throw new ContentdError('synthWithTimestamps: elevenlabs response carried no audio_base64', {
         domain: 'provider',
         kind: 'invalid',
       })
@@ -154,7 +154,7 @@ export async function synthWithTimestamps(opts: {
   } catch (err) {
     opts.signal?.throwIfAborted()
     if (isAbortLike(err)) {
-      throw new BrainrotError(
+      throw new ContentdError(
         `synthWithTimestamps: elevenlabs request timed out after ${TIMEOUT_MS}ms`,
         { domain: 'provider', kind: 'transient', cause: err },
       )

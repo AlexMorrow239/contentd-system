@@ -18,7 +18,7 @@ export const POSTING_LABELS: Record<(typeof POSTING_STATES)[number], string> = {
 }
 export const JOB_FILTER_KEYS = ['q', 'channel', 'status', 'review', 'posting'] as const
 export const JOBS_PAGE_SIZE = 50
-export const JOB_FILTER_STORAGE_KEY = 'brainrot.jobs.filters.v1'
+export const JOB_FILTER_STORAGE_KEY = 'contentd.jobs.filters.v1'
 
 export type JobFilters = {
   q?: string

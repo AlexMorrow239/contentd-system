@@ -8,7 +8,7 @@ let dir: string
 let fixture: string
 
 beforeAll(async () => {
-  dir = tmpDir('brainrot-ffmpeg-')
+  dir = tmpDir('contentd-ffmpeg-')
   fixture = path.join(dir, 'fixture.mp4')
   // 2s 640x360 testsrc2 video + 440Hz sine audio, H.264 + AAC.
   await execa('ffmpeg', [

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import {
-  BrainrotError,
+  ContentdError,
   classify,
   errorContext,
   errorMessage,
@@ -10,9 +10,9 @@ import {
 } from './errors.js'
 
 describe('errors', () => {
-  describe('BrainrotError', () => {
+  describe('ContentdError', () => {
     it('carries its domain, kind and derived code', () => {
-      const err = new BrainrotError('nope', { domain: 'provider', kind: 'auth' })
+      const err = new ContentdError('nope', { domain: 'provider', kind: 'auth' })
       expect(err.domain).toBe('provider')
       expect(err.kind).toBe('auth')
       expect(err.code).toBe('provider/auth')
@@ -21,9 +21,9 @@ describe('errors', () => {
     })
 
     it('freezes context and defaults it to an empty object', () => {
-      const bare = new BrainrotError('x', { domain: 'job', kind: 'internal' })
+      const bare = new ContentdError('x', { domain: 'job', kind: 'internal' })
       expect(bare.context).toEqual({})
-      const withCtx = new BrainrotError('x', {
+      const withCtx = new ContentdError('x', {
         domain: 'job',
         kind: 'budget',
         context: { usdMicros: 42 },
@@ -34,7 +34,7 @@ describe('errors', () => {
 
     it('threads cause through to the native Error.cause', () => {
       const root = new Error('root')
-      const err = new BrainrotError('wrapper', {
+      const err = new ContentdError('wrapper', {
         domain: 'provider',
         kind: 'transient',
         cause: root,
@@ -43,7 +43,7 @@ describe('errors', () => {
     })
 
     it('leaves cause undefined when none is given', () => {
-      const err = new BrainrotError('x', { domain: 'provider', kind: 'transient' })
+      const err = new ContentdError('x', { domain: 'provider', kind: 'transient' })
       expect(err.cause).toBeUndefined()
     })
   })
@@ -65,8 +65,8 @@ describe('errors', () => {
   })
 
   describe('classify', () => {
-    it('reads a BrainrotError own fields', () => {
-      const err = new BrainrotError('nope', {
+    it('reads a ContentdError own fields', () => {
+      const err = new ContentdError('nope', {
         domain: 'provider',
         kind: 'quota',
         context: { platform: 'youtube' },
@@ -110,10 +110,10 @@ describe('errors', () => {
       expect(info.context).toEqual({ costUsdMicros: 3300 })
     })
 
-    it('merges a tag context onto an already-classified BrainrotError', () => {
+    it('merges a tag context onto an already-classified ContentdError', () => {
       // The scout use case: a BudgetExceededError is thrown, then tagged
       // with partial scout-progress before being re-thrown/caught upstream.
-      const err = new BrainrotError('budget exceeded', {
+      const err = new ContentdError('budget exceeded', {
         domain: 'job',
         kind: 'budget',
         context: { a: 1 },
@@ -123,7 +123,7 @@ describe('errors', () => {
     })
 
     it("keeps the error's own context on a tag context key collision", () => {
-      const err = new BrainrotError('budget exceeded', {
+      const err = new ContentdError('budget exceeded', {
         domain: 'job',
         kind: 'budget',
         context: { a: 1 },
@@ -132,8 +132,8 @@ describe('errors', () => {
       expect(classify(err).context).toEqual({ a: 1, b: 2 })
     })
 
-    it("never lets a tag override a BrainrotError's own domain/kind", () => {
-      const err = new BrainrotError('budget exceeded', {
+    it("never lets a tag override a ContentdError's own domain/kind", () => {
+      const err = new ContentdError('budget exceeded', {
         domain: 'job',
         kind: 'budget',
         context: { a: 1 },
@@ -178,8 +178,8 @@ describe('errors', () => {
   })
 
   describe('errorContext', () => {
-    it('reads context from a BrainrotError and from a tag alike', () => {
-      const owned = new BrainrotError('x', {
+    it('reads context from a ContentdError and from a tag alike', () => {
+      const owned = new ContentdError('x', {
         domain: 'provider',
         kind: 'invalid',
         context: { costUsdMicros: 10 },

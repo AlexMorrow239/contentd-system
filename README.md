@@ -1,6 +1,7 @@
-# Brainrot Machine
+# contentd-system
 
-Automated short-form video pipeline. `brainrot produce` turns a topic into a
+The `contentd` daemon and its support harness: the operator dashboard, CLI utilities,
+and integrations for an automated short-form video pipeline. `contentd produce` turns a topic into a
 finished, QC-checked, word-captioned 9:16 MP4 in the library. The pipeline's
 job ends there — posting a finished video to YouTube Shorts, Instagram Reels
 or TikTok is a manual, per-platform step an operator does by hand from the
@@ -33,7 +34,7 @@ Keys in `.env`:
 
 - `ANTHROPIC_API_KEY` — script generation
 - `ELEVENLABS_API_KEY` — required for voice synthesis
-- `BRAINROT_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (default 25)
+- `CONTENTD_GLOBAL_DAILY_USD` — cross-channel daily spend cap in USD (default 25)
 
 ## Seed background footage
 
@@ -59,10 +60,10 @@ subfolders).
 ## Produce a video
 
 ```bash
-docker compose stop brainrot
-docker compose run --rm --no-deps brainrot pnpm brainrot produce \
+docker compose stop contentd
+docker compose run --rm --no-deps contentd pnpm contentd produce \
   --channel /app/state/channels/mvp.toml --topic "Why is Venus so hot?"
-docker compose start brainrot
+docker compose start contentd
 ```
 
 Prints the `JobResult` as one JSON line; exit code `0` on `ready`/`needs-review`,
@@ -91,7 +92,7 @@ Production uses `/app/state` inside the container:
 - Per-job artifacts: `/app/state/runs/<jobId>/attempts/<attemptId>/<stage>/`, visible on the host
   under `docker/state/runs/<jobId>/attempts/<attemptId>/<stage>/`.
 - Finished video: the committed assemble stage’s `final.mp4`, linked from the library.
-- SQLite state: `/app/state/db/brainrot.db` in the `brainrot-data` named volume.
+- SQLite state: `/app/state/db/contentd.db` in the `contentd-data` named volume.
 - Channel configuration: `docker/state/channels/*.toml`, mounted read-only at
   `/app/state/channels`.
 
@@ -120,8 +121,8 @@ part verbatim after sanitization; their metadata model now sees the full current
 part within that limit. Manual topics without sources continue without retrieval.
 
 ```bash
-docker compose exec brainrot pnpm brainrot jobs    # last 20 jobs
-docker compose exec brainrot pnpm brainrot costs   # per-day USD totals, last 7 days
+docker compose exec contentd pnpm contentd jobs    # last 20 jobs
+docker compose exec contentd pnpm contentd costs   # per-day USD totals, last 7 days
 ```
 
 ## Posting a video
@@ -204,7 +205,7 @@ it.
 
 ## Automation
 
-Production is one long-running process: `brainrot run` is the container's
+Production is one long-running process: `contentd run` is the container's
 `CMD` and starts a daemon with six workers running concurrently — there is
 no host cron, no launchd agent, and no per-worker container anymore. Each
 worker polls in a tight loop: check demand, do one unit of work if there is
@@ -283,12 +284,12 @@ helper location, rerun `pnpm daemon:caffeinate install` to update the absolute
 script path stored in the LaunchAgent.
 
 The helper starts immediately and at login, independently of your terminal. It
-runs macOS `caffeinate` while this checkout's `brainrot` container is running,
+runs macOS `caffeinate` while this checkout's `contentd` container is running,
 including while workers wait for new work. It releases the sleep assertion when
 the container stops or Docker becomes unavailable, and reacquires it after a
 restart. It checks every 30 seconds. Docker Desktop must still run on the host.
 
-Sleep prevention defaults on. Set `BRAINROT_CAFFEINATE=false` in this checkout's
+Sleep prevention defaults on. Set `CONTENTD_CAFFEINATE=false` in this checkout's
 `.env` to switch it off; the helper reloads that setting every 30 seconds without
 a Docker restart. Set it back to `true` to enable it. This host-only setting is
 not forwarded into containers. For a foreground run, use `pnpm daemon:caffeinate
@@ -308,18 +309,18 @@ in for unattended production; the idle-sleep assertion also applies on battery.
 The helper keeps existing production running; platform posting remains manual.
 
 Use `--build`, not a bare `up -d`: Compose will happily start a stale local
-`project-brainrot-brainrot:latest` image instead of rebuilding it, which
+`contentd-system:latest` image instead of rebuilding it, which
 means "start" can silently run old code. `--build` makes it always build (or
 confirm current) first.
 
 This brings up the production services: `whisperx` (the caption-alignment sidecar) and
-`brainrot` (the daemon: `brainrot run`, six workers polling for demand),
+`contentd` (the daemon: `contentd run`, six workers polling for demand),
 which waits on `whisperx`'s healthcheck before its workers start, plus the
 `dashboard`. There is
 one log stream for everything the daemon does:
 
 ```bash
-docker compose logs -f brainrot
+docker compose logs -f contentd
 ```
 
 Each worker prints one JSON line per unit of work, prefixed with which
@@ -344,7 +345,7 @@ logs `{"worker":...,"action":"worker-error","error":...}` and backs off for
 line, not an exit code, is the daemon's failure signal, since the daemon
 itself never exits under normal operation.
 
-The standalone `pnpm brainrot produce-next` / `scout` /
+The standalone `pnpm contentd produce-next` / `scout` /
 `digest` commands (useful for a manual, one-shot run outside the daemon)
 keep the old exit-code contract: exit `0` for any noop or
 successful action, exit `1` when real work failed — a `failed`/`blocked`
@@ -378,7 +379,7 @@ Times that matter are container-local (`TZ=America/New_York`, set in
 `environment:` block — an `env_file` value of the same name would otherwise
 override the image's `ENV`), regardless of the host Mac's own timezone.
 Changing any of the constants above means editing the source and running
-`docker compose build brainrot`, same as any other source change. There is
+`docker compose build contentd`, same as any other source change. There is
 no hot reload.
 
 ### Dashboard
@@ -396,14 +397,14 @@ For local development, use an explicitly initialized disposable root (never the
 production database volume from the host):
 
 ```bash
-BRAINROT_ROOT=/path/to/disposable-state pnpm dashboard:dev
+CONTENTD_ROOT=/path/to/disposable-state pnpm dashboard:dev
 pnpm dashboard:build          # builds without runtime state or provider credentials
-BRAINROT_ROOT=/path/to/disposable-state pnpm dashboard:start
+CONTENTD_ROOT=/path/to/disposable-state pnpm dashboard:start
 pnpm exec playwright install chromium
 pnpm test:dashboard           # production-server browser tests with disposable fixtures
 ```
 
-The dev/start commands use port 8787 by default (`BRAINROT_DASHBOARD_PORT`)
+The dev/start commands use port 8787 by default (`CONTENTD_DASHBOARD_PORT`)
 and bind to host loopback. Compose sets the internal bind address separately.
 The app lives in `dashboard/` and shares the root package and lockfile. Its
 webpack extension mapping preserves the CLI's NodeNext `.js` source imports.
@@ -442,7 +443,7 @@ The dashboard serves the explicit production root supplied by Compose, and its
 footer names that root. Dashboard tests construct isolated databases directly.
 
 Every page it _reads_ still opens the database through a read-only connection
-— the `brainrot-data` mount is read-write on purpose (SQLite must create the
+— the `contentd-data` mount is read-write on purpose (SQLite must create the
 `-shm` file even to read a WAL database), but the guarantee lives in the
 connection flag, not the mount. What changed is that the dashboard now also
 _writes_, in one narrow way: buttons on the overview, jobs, topics
@@ -512,7 +513,7 @@ optional daily cap. Video production and scouting share both limits. Scouting
 costs use the existing `scout:<channel>` ledger entries and count toward that
 channel. There are no per-video limits.
 
-Set `BRAINROT_GLOBAL_DAILY_USD` in `.env` to override the $25 daily default.
+Set `CONTENTD_GLOBAL_DAILY_USD` in `.env` to override the $25 daily default.
 Unset or blank uses the default; zero stops paid work. Invalid values fail
 configuration validation. Recreate the Compose services after changing this
 setting (or restart a host process); `.env` is not hot-reloaded for budgets.
@@ -589,7 +590,7 @@ For a release, run `pnpm check`, then build before restarting the services:
 ```bash
 pnpm check
 pnpm test:dashboard
-docker compose build brainrot whisperx
+docker compose build contentd whisperx
 docker compose up -d --no-build
 ```
 
@@ -606,17 +607,17 @@ in-flight render shutdown limitation.
 Operational commands run inside the container:
 
 ```bash
-docker compose exec brainrot pnpm brainrot jobs
+docker compose exec contentd pnpm contentd jobs
 ```
 
-Host CLI/dashboard entrypoints require an explicit `--root`/`BRAINROT_ROOT`;
+Host CLI/dashboard entrypoints require an explicit `--root`/`CONTENTD_ROOT`;
 omission fails before creating a database. Tests pass a disposable root. Do not
 set a persistent host root in `.env`; Compose supplies `/app/state` itself.
 
 ### Operating the database
 
 All persistent state — jobs, library, topics, costs, leases and
-posts — lives in the `brainrot-data` **named volume**,
+posts — lives in the `contentd-data` **named volume**,
 not under `data/`. `docker-compose.yml`'s mount comment carries the full
 reasoning; the short version is that SQLite's WAL mode needs coherent shared
 memory across every process that opens the file, a macOS bind mount reaches
@@ -628,23 +629,23 @@ missing while the pipeline logged success and published for real.
 Read-only inspection needs no downtime — the daemon can keep running:
 
 ```bash
-docker compose exec brainrot pnpm brainrot jobs
-docker compose exec brainrot pnpm brainrot costs
-docker compose exec brainrot pnpm brainrot topics list
+docker compose exec contentd pnpm contentd jobs
+docker compose exec contentd pnpm contentd costs
+docker compose exec contentd pnpm contentd topics list
 ```
 
 Back it up with `VACUUM INTO` rather than `cp`: it takes a crash-consistent
 snapshot of a live database, where copying a file mid-write does not.
 
 ```bash
-docker compose exec brainrot node -e "
-  new (require('better-sqlite3'))('/app/state/db/brainrot.db')
+docker compose exec contentd node -e "
+  new (require('better-sqlite3'))('/app/state/db/contentd.db')
     .exec(\"VACUUM INTO '/app/state/db/backup.db'\")"
-docker run --rm -v project-brainrot_brainrot-data:/d -v "$PWD":/out alpine \
-  sh -c 'mv /d/backup.db /out/brainrot-backup.db'
+docker run --rm -v contentd-system_contentd-data:/d -v "$PWD":/out alpine \
+  sh -c 'mv /d/backup.db /out/contentd-backup.db'
 ```
 
-`docker volume rm brainrot-data` destroys the entire posting record along with
+`docker volume rm contentd-data` destroys the entire posting record along with
 every job, library and cost row — there is no re-granting anything to get it
 back, since nothing here holds a grant anymore, but the history itself (which
 videos were already posted where) is genuinely gone. Take a snapshot before
@@ -697,15 +698,15 @@ delay, but not budget checks or live ownership.
 
 ```bash
 # A failed job can be resumed while the daemon runs, if produce is currently free.
-docker compose exec brainrot pnpm brainrot resume <jobId>
+docker compose exec contentd pnpm contentd resume <jobId>
 ```
 
 For break-glass maintenance, stop the daemon and use a one-shot container:
 
 ```bash
-docker compose stop brainrot
-docker compose run --rm --no-deps brainrot pnpm brainrot resume <jobId> --force
-docker compose start brainrot
+docker compose stop contentd
+docker compose run --rm --no-deps contentd pnpm contentd resume <jobId> --force
+docker compose start contentd
 ```
 
 SIGTERM/SIGINT stops polling and drains active work while renewing ownership.
@@ -727,7 +728,7 @@ artifacts needed by completed checkpoints. This change adds no file-retention po
 
 - **Actual Mac sleep pauses all work.** Install the optional host helper described
   under Start to prevent sleep while the daemon runs (configurable with
-  `BRAINROT_CAFFEINATE`). Demand remains queued, but a sleep longer
+  `CONTENTD_CAFFEINATE`). Demand remains queued, but a sleep longer
   than the lease TTL loses ownership. The old daemon cancels when it wakes;
   the service restart acquires new ownership and reconciles interrupted jobs.
   Recovery then obeys persisted retry delays and backlog capacity. Daily quota
@@ -738,7 +739,7 @@ artifacts needed by completed checkpoints. This change adds no file-retention po
 - **`depends_on: service_healthy` only gates a `compose up`.** It does not
   survive a Docker Desktop restart: on reboot the engine starts every
   `restart: unless-stopped` container independently of the dependency graph,
-  so `brainrot`'s workers can start polling, including a `produce` unit that
+  so `contentd`'s workers can start polling, including a `produce` unit that
   needs captions, before `whisperx`'s healthcheck reports healthy. Nothing
   crashes — the affected job just fails or blocks at the captions stage and
   is recoverable the normal way — but it means a reboot is not guaranteed to
@@ -750,10 +751,10 @@ artifacts needed by completed checkpoints. This change adds no file-retention po
   stop the daemon gracefully, then resize and restart:
 
   ```bash
-  docker compose stop -t 120 brainrot
+  docker compose stop -t 120 contentd
   colima stop
   colima start --memory 3
-  docker compose start brainrot
+  docker compose start contentd
   ```
 
   In Docker Desktop, set the VM memory under Settings → Resources instead.
@@ -791,3 +792,31 @@ pnpm test:contract  # real calls: a few cents (ElevenLabs synth, one Anthropic c
 
 Media/render tests shell out to ffmpeg and run a real Remotion render; the first
 render downloads a headless Chrome shell.
+
+## Migrating an existing installation after the rename
+
+The project is `contentd-system`; the daemon service and CLI are `contentd`.
+Environment settings use the `CONTENTD_` prefix. Update existing `.env` keys
+and any external scripts before starting the renamed services. The database
+is now `/app/state/db/contentd.db` in `contentd-system_contentd-data`.
+
+To preserve an existing installation's state:
+
+1. Using the previous checkout and its Compose configuration, stop all services
+   and uninstall its host sleep helper with `pnpm daemon:caffeinate uninstall`.
+   Record the old database volume name with `docker volume ls`. Keep that volume
+   as a backup; do not run `docker compose down -v`.
+2. Copy the stopped database volume's contents to the new named volume
+   `contentd-system_contentd-data` using a temporary container with the old volume
+   mounted read-only. Rename the database to `contentd.db`, and rename any matching
+   `-wal` and `-shm` files to `contentd.db-wal` and `contentd.db-shm` together.
+   Copy the entire set only after every old database writer and reader has stopped.
+3. Keep the existing `docker/state/runs/`, `docker/state/channels/`, and `assets/`
+   directories. If the checkout moved, update any absolute paths in channel config.
+4. Run `docker compose up -d --build`; the initializer sets database ownership.
+   Verify existing jobs with `docker compose exec contentd pnpm contentd jobs`
+   and the dashboard before removing any backup. Reinstall the host helper with
+   `pnpm daemon:caffeinate install` if desired.
+
+Starting without copying the old database creates an empty installation.
+Dashboard filter preferences use new browser storage keys and reset to defaults.

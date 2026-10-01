@@ -1,5 +1,5 @@
 import { configErrorNoop, loadChannelsDir, tryLoadChannelsDir } from '../../config/channel.js'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { linkActionJob } from '../production/jobs/execution.js'
 import { resumeJob } from '../production/jobs/resume.js'
 import { createJob, runJob } from '../production/jobs/runner.js'
@@ -35,7 +35,7 @@ export const SLOW_HANDLERS: { [K in LaneKind<'slow'>]: Handler<K> } = {
     // declared `name`, which is the invariant resume depends on.
     const channel = loadChannelsDir(ctx.channelsDir).find((c) => c.name === args.channel)
     if (channel === undefined) {
-      throw new BrainrotError(`unknown channel "${args.channel}" (checked ${ctx.channelsDir})`, {
+      throw new ContentdError(`unknown channel "${args.channel}" (checked ${ctx.channelsDir})`, {
         domain: 'config',
         kind: 'not-found',
       })

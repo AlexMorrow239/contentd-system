@@ -10,7 +10,7 @@ import { testChannel } from '../../../../../testing/channel.js'
 import { makeCtx, testScript, writeScriptJson } from '../../../../../testing/job.js'
 import { encodePcmWav } from '../../../../infra/media/wav.js'
 import { synthWithTimestamps } from '../../../../infra/providers/elevenlabs.js'
-import { BrainrotError, classify } from '../../../../shared/errors.js'
+import { ContentdError, classify } from '../../../../shared/errors.js'
 import { BudgetExceededError } from '../../../billing/costs.js'
 import { voiceStage } from '../voice.js'
 
@@ -29,7 +29,7 @@ beforeEach(() => vi.resetAllMocks())
 describe('voiceStage', () => {
   it('propagates an ElevenLabs rejection without synthesizing a replacement', async () => {
     const ctx = ctxWithScript()
-    const failure = new BrainrotError('elevenlabs responded 402: paid_plan_required', {
+    const failure = new ContentdError('elevenlabs responded 402: paid_plan_required', {
       domain: 'provider',
       kind: 'transient',
     })
@@ -50,7 +50,7 @@ describe('voiceStage', () => {
     const ctx = ctxWithScript()
     try {
       const error = await voiceStage.run(ctx).catch((err: unknown) => err)
-      expect(error).toBeInstanceOf(BrainrotError)
+      expect(error).toBeInstanceOf(ContentdError)
       expect(String(error)).toMatch(/missing ElevenLabs API key/)
       expect(classify(error)).toMatchObject({ domain: 'config', kind: 'invalid' })
       expect(fetch).not.toHaveBeenCalled()

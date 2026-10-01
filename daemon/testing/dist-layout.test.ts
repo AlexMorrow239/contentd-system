@@ -33,7 +33,7 @@ describe('dist layout (built by the Vitest globalSetup)', () => {
         '--input-type=module',
         '--eval',
         `const { openDb } = await import(${JSON.stringify(entry.href)});
-         const db = openDb('./state/brainrot.db');
+         const db = openDb('./state/contentd.db');
          console.log(db.prepare('SELECT count(*) AS count FROM jobs').get().count);
          db.close();`,
       ],

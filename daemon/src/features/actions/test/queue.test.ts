@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { memDb, seedAction } from '../../../../testing/db.js'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 import {
   completeAction,
   enqueueAction,
@@ -90,7 +90,7 @@ describe('operator action queue', () => {
     failAction(
       db,
       id,
-      new BrainrotError('no such job', { domain: 'job', kind: 'not-found' }),
+      new ContentdError('no such job', { domain: 'job', kind: 'not-found' }),
       new Date(),
     )
     const row = getAction(db, id)

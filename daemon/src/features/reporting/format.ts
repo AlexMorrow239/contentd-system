@@ -106,21 +106,21 @@ export function formatDigest(snapshot: DigestSnapshot): string {
   }
   for (const j of strandedQueued) {
     lines.push(
-      `  queued job ${j.id} (${j.channel}) — stranded before start — resume with brainrot resume ${j.id}`,
+      `  queued job ${j.id} (${j.channel}) — stranded before start — resume with contentd resume ${j.id}`,
     )
   }
   if (blockedJobs.length > 0) {
     const byName = new Map(channels.map((c) => [c.name, c]))
     const orAbandon = (jobId: string): string => {
       const topic = claimedTopicByJob.get(jobId)
-      return topic === undefined ? '' : `, or free its topic with brainrot topics requeue ${topic}`
+      return topic === undefined ? '' : `, or free its topic with contentd topics requeue ${topic}`
     }
     for (const j of blockedJobs) {
       const head = `  blocked job ${j.id} (${j.channel})`
       const channel = byName.get(j.channel)
       if (channel === undefined) {
         lines.push(
-          `${head} — no channel config named ${j.channel} in the channels dir — restore ${j.channel}.toml then brainrot resume ${j.id}${orAbandon(j.id)}`,
+          `${head} — no channel config named ${j.channel} in the channels dir — restore ${j.channel}.toml then contentd resume ${j.id}${orAbandon(j.id)}`,
         )
         continue
       }

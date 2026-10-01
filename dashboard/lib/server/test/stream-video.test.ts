@@ -19,7 +19,7 @@ function response(config: DashboardConfig, id: string, range?: string): Response
 }
 describe('streamVideo', () => {
   function configWithVideo(bytes: Buffer, videoPathInDb?: string): DashboardConfig {
-    const paths = testRoot('brainrot-vid-')
+    const paths = testRoot('contentd-vid-')
     const videoDir = join(paths.runsRoot, 'j1', 'assemble')
     mkdirSync(videoDir, { recursive: true })
     const videoFile = join(videoDir, 'final.mp4')

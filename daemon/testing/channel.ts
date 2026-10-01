@@ -109,7 +109,7 @@ export function channelToml(opts: ChannelTomlOptions = {}): string {
  */
 export function writeChannelsDir(
   files: Record<string, string | string[]>,
-  dir = tmpDir('brainrot-channels-'),
+  dir = tmpDir('contentd-channels-'),
 ): string {
   mkdirSync(dir, { recursive: true })
   for (const [filename, body] of Object.entries(files)) {

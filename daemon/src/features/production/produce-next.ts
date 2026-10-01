@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { configErrorNoop, tryLoadChannelsDir } from '../../config/channel.js'
 import { acquireManagedLease, type LeaseContext } from '../../infra/coordination/lease.js'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { resolveTime, type TimeSource } from '../../shared/time.js'
 import { claimTopic } from '../topics/mutations.js'
 import type { StageDef } from './contracts.js'
@@ -32,7 +32,7 @@ export interface TickResult {
 // Module-private by design, so its `job`/`conflict` classification is
 // currently untested — it can't be imported into arch.test.ts's
 // classification lint without exporting it for no other reason.
-class ClaimConflictError extends BrainrotError {
+class ClaimConflictError extends ContentdError {
   constructor(message: string) {
     super(message, { domain: 'job', kind: 'conflict' })
     this.name = 'ClaimConflictError'
@@ -68,7 +68,7 @@ export async function produceNextTick(
   // well, which was free under cron (one process, one line) but became spam
   // under the daemon: this tick reruns every 30 seconds, and an unstructured
   // print bypasses runWorker's idle dedupe, so a single bad TOML wrote 2,880
-  // stderr lines a day. The one-shot `brainrot produce-next` CLI prints it
+  // stderr lines a day. The one-shot `contentd produce-next` CLI prints it
   // instead (daemon/src/cli.ts), which is the surface that ever had a reader for it.
   const loaded = tryLoadChannelsDir(opts.channelsDir)
   if (loaded.error !== undefined) {

@@ -7,7 +7,7 @@ import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { BrainrotPaths } from '../../daemon/src/config/paths'
+import type { ContentdPaths } from '../../daemon/src/config/paths'
 import { openDb } from '../../daemon/src/infra/db/index'
 import { PLATFORM_META, channelToml, writeChannelsDir } from '../../daemon/testing/channel'
 import { seedDaemonState, seedJob, seedLibrary, seedTopic } from '../../daemon/testing/db'
@@ -15,7 +15,7 @@ import { sweep, testRoot } from '../../daemon/testing/tmp'
 
 interface DashboardFixture {
   db: Database
-  paths: BrainrotPaths
+  paths: ContentdPaths
   url: string
   videoPath: string
 }
@@ -68,8 +68,8 @@ export const test = base.extend<object, { dashboard: DashboardFixture }>({
             HOME: process.env.HOME,
             TMPDIR: process.env.TMPDIR,
             NODE_ENV: 'production',
-            BRAINROT_ROOT: paths.root,
-            BRAINROT_DASHBOARD_PORT: String(address.port),
+            CONTENTD_ROOT: paths.root,
+            CONTENTD_DASHBOARD_PORT: String(address.port),
             TZ: 'UTC',
           },
           stdio: ['ignore', 'pipe', 'pipe'],

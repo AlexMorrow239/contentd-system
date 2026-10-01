@@ -22,7 +22,7 @@ import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, parseChannelToml } f
 const PLAN1_LINES = [...channelTomlLines({ name: 'legacy' }), 'per_day_usd = 20.0']
 
 function writeToml(lines: string[]): string {
-  const file = join(tmpDir('brainrot-chan-'), 'channel.toml')
+  const file = join(tmpDir('contentd-chan-'), 'channel.toml')
   writeFileSync(file, lines.join('\n'))
   return file
 }
@@ -157,14 +157,14 @@ describe('loadChannelConfig', () => {
   })
 
   it.each([12, 13])('rejects a channel limit of $%s against a $12 global limit', (cap) => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '12')
     expect(() => parseChannelToml(channelToml() + `per_day_usd = ${cap}`, 'example.toml')).toThrow(
       /example.*must be lower.*12/,
     )
   })
 
   it('accepts a smaller optional cap and rejects a value that rounds to zero micros', () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '12')
     expect(parseChannelToml(channelToml() + 'per_day_usd = 10', 'example.toml').budget).toEqual({
       perDayUsdMicros: 10_000_000,
     })
@@ -278,7 +278,7 @@ describe('loadChannelsDir', () => {
   })
 
   it('returns [] for an empty directory', () => {
-    expect(loadChannelsDir(tmpDir('brainrot-chans-'))).toEqual([])
+    expect(loadChannelsDir(tmpDir('contentd-chans-'))).toEqual([])
   })
 
   it('throws naming the unparseable file', () => {

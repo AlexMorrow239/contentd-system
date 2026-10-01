@@ -1,13 +1,13 @@
 import type { Database } from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { resolveTime, systemTime, type TimeSource } from '../../shared/time.js'
 
 export const LEASE_TTL_MS = 300_000
 export const LEASE_HEARTBEAT_MS = 60_000
 export const PRODUCE_LEASE_TTL_MS = LEASE_TTL_MS
 
-export class LeaseLostError extends BrainrotError {
+export class LeaseLostError extends ContentdError {
   constructor(name: string, cause?: unknown) {
     super(`ownership of ${name} lease was lost`, { domain: 'job', kind: 'conflict', cause })
     this.name = 'LeaseLostError'
@@ -159,7 +159,7 @@ export function requireLease(
 ): LeaseContext {
   const lease = acquireManagedLease(db, name, parent, opts)
   if (lease === null)
-    throw new BrainrotError(`${name} lease is held by another operation`, {
+    throw new ContentdError(`${name} lease is held by another operation`, {
       domain: 'job',
       kind: 'conflict',
     })

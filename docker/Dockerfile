@@ -44,4 +44,4 @@ COPY --chown=node:node . .
 # Build request-rendered dashboard without provider keys or runtime state.
 RUN pnpm dashboard:build
 
-CMD ["pnpm", "brainrot", "run"]
+CMD ["pnpm", "contentd", "run"]

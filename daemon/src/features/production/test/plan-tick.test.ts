@@ -72,10 +72,10 @@ function seedTopic(
   })
 }
 
-// The global cap reads BRAINROT_GLOBAL_DAILY_USD at call time: pin the $25
+// The global cap reads CONTENTD_GLOBAL_DAILY_USD at call time: pin the $25
 // default even when the shell exports the var.
 beforeEach(() => {
-  vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', undefined)
+  vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', undefined)
 })
 afterEach(() => {
   vi.unstubAllEnvs()

@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { WordTiming } from '../../shared/contracts/word-timing.js'
-import { BrainrotError, errorMessage, isAbortLike, isAuthStatus } from '../../shared/errors.js'
+import { ContentdError, errorMessage, isAbortLike, isAuthStatus } from '../../shared/errors.js'
 import { createDeadline, systemTime, type TimeSource } from '../../shared/time.js'
 
 export async function alignTranscript(opts: {
@@ -31,7 +31,7 @@ export async function alignTranscript(opts: {
     })
     if (!res.ok) {
       const raw = await res.text().catch(() => '')
-      throw new BrainrotError(`alignTranscript: whisperx responded ${res.status}: ${raw}`, {
+      throw new ContentdError(`alignTranscript: whisperx responded ${res.status}: ${raw}`, {
         domain: 'provider',
         kind: isAuthStatus(res.status) ? 'auth' : 'transient',
       })
@@ -44,7 +44,7 @@ export async function alignTranscript(opts: {
     // timings are not finite rather than emitting NaN (or silently 0) ms.
     const body = (await res.json()) as { words?: { word: string; start: number; end: number }[] }
     if (!Array.isArray(body.words)) {
-      throw new BrainrotError(`alignTranscript: malformed response from ${opts.baseUrl}/align`, {
+      throw new ContentdError(`alignTranscript: malformed response from ${opts.baseUrl}/align`, {
         domain: 'provider',
         kind: 'invalid',
       })
@@ -59,19 +59,19 @@ export async function alignTranscript(opts: {
   } catch (err) {
     opts.signal?.throwIfAborted()
     if (isAbortLike(err)) {
-      throw new BrainrotError(`alignTranscript: whisperx align timed out after ${timeoutMs}ms`, {
+      throw new ContentdError(`alignTranscript: whisperx align timed out after ${timeoutMs}ms`, {
         domain: 'provider',
         kind: 'transient',
         cause: err,
       })
     }
-    if (err instanceof BrainrotError) throw err
+    if (err instanceof ContentdError) throw err
     const codes = new Set<string>()
     const detail = requestErrorDetail(err, codes)
     const hint = codes.has('UND_ERR_SOCKET')
       ? ' The sidecar closed the connection; check its logs and Docker VM memory for a crash or out-of-memory kill.'
       : ''
-    throw new BrainrotError(
+    throw new ContentdError(
       `alignTranscript: request to ${opts.baseUrl}/align failed: ${detail}.${hint}`,
       { domain: 'provider', kind: 'transient', cause: err },
     )

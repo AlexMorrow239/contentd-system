@@ -24,7 +24,7 @@ function wait(upcoming = 30) {
   )
 }
 
-beforeEach(() => vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0.0003'))
+beforeEach(() => vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0.0003'))
 
 describe('budgetWaitEligible', () => {
   it('reads historical per-video refusals without enforcing the retired cap', () => {
@@ -52,13 +52,13 @@ describe('budgetWaitEligible', () => {
     expect(budgetWaitEligible(db, { ...current, budget: undefined }, raw, now)).toBe(true)
   })
   it('can persist a custom refusal with malformed global configuration and detect its repair', () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', 'invalid')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', 'invalid')
     const db = memDb()
     const raw = JSON.stringify(
       makeBudgetWait(new BudgetExceededError('provider refusal'), channel, 'voice', now),
     )
     expect(budgetWaitEligible(db, channel, raw, now)).toBe(false)
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0.0003')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0.0003')
     expect(budgetWaitEligible(db, channel, raw, now)).toBe(true)
   })
 
@@ -136,7 +136,7 @@ describe('budgetWaitEligible', () => {
     const raw = wait(101)
     const reordered = Object.fromEntries(Object.entries(channel).reverse()) as typeof channel
     expect(budgetWaitEligible(db, reordered, raw, now)).toBe(false)
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0.0004')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0.0004')
     expect(budgetWaitEligible(db, channel, raw, now)).toBe(true)
   })
 

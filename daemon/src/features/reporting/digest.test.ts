@@ -91,7 +91,7 @@ describe('buildDigest — jobs section', () => {
 
 describe('buildDigest — spend section', () => {
   it('formats channel and global day spend from integer micros as $X.XX', () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '10')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '10')
     const db = memDb(time)
     const budget = {
       perDayUsdMicros: 8_000_000,
@@ -140,7 +140,7 @@ describe('buildDigest — action items', () => {
     seedJob(db, { id: 'j-fresh', status: 'queued', createdAt: isoAgo(0, time) })
     const digest = buildDigest(db, [], { time })
     expect(digest).toContain(
-      '  queued job j-stranded (chan-a) — stranded before start — resume with brainrot resume j-stranded',
+      '  queued job j-stranded (chan-a) — stranded before start — resume with contentd resume j-stranded',
     )
     expect(digest).not.toContain('j-fresh')
     db.close()
@@ -279,7 +279,7 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     seedJob(db, { id: 'j-orphan', channel: 'gone', status: 'blocked' })
     const digest = buildDigest(db, [], { time })
     expect(digest).toContain(
-      '  blocked job j-orphan (gone) — no channel config named gone in the channels dir — restore gone.toml then brainrot resume j-orphan',
+      '  blocked job j-orphan (gone) — no channel config named gone in the channels dir — restore gone.toml then contentd resume j-orphan',
     )
     // No claimed topic behind this job, so no requeue clause is offered.
     expect(digest).not.toContain('topics requeue')
@@ -297,7 +297,7 @@ describe('buildDigest — blocked jobs that cannot resume', () => {
     })
     const digest = buildDigest(db, [], { time })
     expect(digest).toContain(
-      `restore gone.toml then brainrot resume j-orphan, or free its topic with brainrot topics requeue ${topicId}`,
+      `restore gone.toml then contentd resume j-orphan, or free its topic with contentd topics requeue ${topicId}`,
     )
     db.close()
   })

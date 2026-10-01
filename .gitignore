@@ -27,7 +27,7 @@ local/
 # docker/state/ is the host side of the containers' /app/state binds.
 # docker/state/channels/ IS tracked (it is the live channel config);
 # docker/state/runs/ is disposable render output. The database is not here:
-# it lives in the brainrot-data named volume (see docker-compose.yml).
+# it lives in the contentd-data named volume (see docker-compose.yml).
 docker/state/runs/
 
 **/.next/

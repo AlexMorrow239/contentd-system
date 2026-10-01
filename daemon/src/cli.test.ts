@@ -57,11 +57,11 @@ describe('parseTopicIds', () => {
   })
 })
 
-describe('brainrot CLI — jobs and produce', () => {
+describe('contentd CLI — jobs and produce', () => {
   it('refuses operational commands without an explicit root', async () => {
-    const result = await runCli(['jobs'], { env: { BRAINROT_ROOT: '' } })
+    const result = await runCli(['jobs'], { env: { CONTENTD_ROOT: '' } })
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toMatch(/BRAINROT_ROOT.*required/)
+    expect(result.stderr).toMatch(/CONTENTD_ROOT.*required/)
   })
 
   it.concurrent(
@@ -137,7 +137,7 @@ describe('brainrot CLI — jobs and produce', () => {
   )
 })
 
-describe('brainrot CLI — scout', () => {
+describe('contentd CLI — scout', () => {
   // Plan-1-shape channel TOML with no [scout] table: loadChannelsDir parses it,
   // scoutAll skips it (DEFAULT_SCOUT has no sources) — the cheapest full E2E.
   const SCOUTLESS_TOML = [
@@ -171,7 +171,7 @@ describe('brainrot CLI — scout', () => {
       // filename must equal the channel name (loadChannelsDir invariant)
       writeFileSync(path.join(root.channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
       const result = await runCli(['scout', '--root', root.root], {
-        env: { BRAINROT_GLOBAL_DAILY_USD: '25' },
+        env: { CONTENTD_GLOBAL_DAILY_USD: '25' },
       })
       expect(result.exitCode).toBe(0)
       // exactly one cron-greppable JSON line on stdout
@@ -189,7 +189,7 @@ describe('brainrot CLI — scout', () => {
       const root = testRoot()
       writeFileSync(path.join(root.channelsDir, 'broken.toml'), 'this is not toml [')
       const result = await runCli(['scout', '--root', root.root], {
-        env: { BRAINROT_GLOBAL_DAILY_USD: '25' },
+        env: { CONTENTD_GLOBAL_DAILY_USD: '25' },
       })
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
@@ -220,7 +220,7 @@ describe('brainrot CLI — scout', () => {
       seeded.close()
 
       const args = ['scout', '--root', root.root]
-      const held = await runCli(args, { env: { BRAINROT_GLOBAL_DAILY_USD: '25' } })
+      const held = await runCli(args, { env: { CONTENTD_GLOBAL_DAILY_USD: '25' } })
       // A held lease is the normal overlap case: benign one-line noop, exit 0.
       expect(held.exitCode).toBe(0)
       expect(JSON.parse(held.stdout)).toEqual({ action: 'noop', reason: 'lease-held' })
@@ -233,7 +233,7 @@ describe('brainrot CLI — scout', () => {
       afterNoop.prepare("DELETE FROM leases WHERE name = 'scout'").run()
       afterNoop.close()
 
-      const free = await runCli(args, { env: { BRAINROT_GLOBAL_DAILY_USD: '25' } })
+      const free = await runCli(args, { env: { CONTENTD_GLOBAL_DAILY_USD: '25' } })
       expect(free.exitCode).toBe(0)
       expect(JSON.parse(free.stdout)).toEqual({ channels: [] })
       const afterRun = openDb(root.dbPath)
@@ -279,14 +279,14 @@ describe('brainrot CLI — scout', () => {
       seeded.close()
 
       const args = ['scout', '--root', root.root]
-      const gated = await runCli(args, { env: { BRAINROT_GLOBAL_DAILY_USD: '25' } })
+      const gated = await runCli(args, { env: { CONTENTD_GLOBAL_DAILY_USD: '25' } })
       expect(gated.exitCode).toBe(0)
       const gatedChannels = (JSON.parse(gated.stdout) as { channels: { skipped?: string }[] })
         .channels
       expect(gatedChannels).toEqual([expect.objectContaining({ skipped: 'recheck-not-due' })])
 
       const forced = await runCli([...args, '--force'], {
-        env: { BRAINROT_GLOBAL_DAILY_USD: '25' },
+        env: { CONTENTD_GLOBAL_DAILY_USD: '25' },
       })
       // --force bypassed the gate, so the channel was actually attempted —
       // this test does not depend on whether the real source fetch (no
@@ -301,7 +301,7 @@ describe('brainrot CLI — scout', () => {
   )
 })
 
-describe('brainrot CLI — topics', () => {
+describe('contentd CLI — topics', () => {
   it.concurrent(
     '`topics --help` lists the list/reject/requeue subcommands',
     async () => {
@@ -407,7 +407,7 @@ describe('brainrot CLI — topics', () => {
   )
 })
 
-describe('brainrot CLI — digest', () => {
+describe('contentd CLI — digest', () => {
   it.concurrent(
     '`digest --help` prints usage with --root',
     async () => {
@@ -441,7 +441,7 @@ describe('brainrot CLI — digest', () => {
       // A bare tmpDir, deliberately not testRoot(): testRoot() pre-creates
       // channels/, and this test needs it absent so tryLoadChannelsDir fails.
       // openDb still creates db/'s parent on its own.
-      const bareRoot = tmpDir('brainrot-digest-missing-')
+      const bareRoot = tmpDir('contentd-digest-missing-')
       const result = await runCli(['digest', '--root', bareRoot])
       expect(result.exitCode).toBe(0)
       expect(result.stdout).toContain('Topics (last 24h)')
@@ -469,7 +469,7 @@ describe('brainrot CLI — digest', () => {
   )
 })
 
-describe('brainrot CLI — library', () => {
+describe('contentd CLI — library', () => {
   it.concurrent(
     '`library approve` exits 0 when an id approves normally',
     async () => {

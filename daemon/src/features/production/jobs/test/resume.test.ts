@@ -8,7 +8,7 @@ import { createTestTime } from '../../../../../testing/time.js'
 import { testRoot, tmpDir } from '../../../../../testing/tmp.js'
 import { openDb } from '../../../../infra/db/index.js'
 import { STAGE_ORDER } from '../../../../shared/contracts/pipeline.js'
-import { BrainrotError, classify, errorMessage } from '../../../../shared/errors.js'
+import { ContentdError, classify, errorMessage } from '../../../../shared/errors.js'
 import type { JobContext, StageDef } from '../../contracts.js'
 import { pipelineStages } from '../../pipeline.js'
 import { ResumeError, claimJobForResume, resumeJob } from '../resume.js'
@@ -50,8 +50,8 @@ describe('resumeJob', () => {
 
   beforeEach(() => {
     db = memDb()
-    channelsDir = tmpDir('brainrot-channels-')
-    runsRoot = tmpDir('brainrot-runs-')
+    channelsDir = tmpDir('contentd-channels-')
+    runsRoot = tmpDir('contentd-runs-')
     writeFileSync(join(channelsDir, 'resume-test.toml'), CHANNEL_TOML)
   })
 
@@ -290,7 +290,7 @@ describe('resumeJob', () => {
       const err = await resumeJob(db, 'no-such-job', { runsRoot, channelsDir }).catch(
         (e: unknown) => e,
       )
-      expect(err).toBeInstanceOf(BrainrotError)
+      expect(err).toBeInstanceOf(ContentdError)
       expect(classify(err)).toMatchObject({ domain: 'job', kind: 'not-found' })
       expect(errorMessage(err)).toBe('job not found: no-such-job')
     })
@@ -313,7 +313,7 @@ describe('resumeJob', () => {
   })
 })
 
-describe('brainrot resume CLI', () => {
+describe('contentd resume CLI', () => {
   it.concurrent(
     '`resume --help` prints usage with --root/--force',
     async () => {
@@ -362,7 +362,7 @@ describe('brainrot resume CLI', () => {
       writeFileSync(join(assembleDir, 'final.mp4'), 'FAKEMP4')
 
       const result = await runCli(['resume', 'e2e-job', '--root', root.root], {
-        env: { BRAINROT_GLOBAL_DAILY_USD: '25' },
+        env: { CONTENTD_GLOBAL_DAILY_USD: '25' },
       })
       expect(result.exitCode).toBe(0)
       const line = JSON.parse(result.stdout) as {

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { testChannel } from '../../../testing/channel.js'
 import { memDb, seedCost, seedJob } from '../../../testing/db.js'
 import { createTestTime, type TestTime } from '../../../testing/time.js'
-import { BrainrotError, classify } from '../../shared/errors.js'
+import { ContentdError, classify } from '../../shared/errors.js'
 import {
   BudgetExceededError,
   assertBudget,
@@ -17,7 +17,7 @@ import {
 let time: TestTime
 beforeEach(() => {
   time = createTestTime(new Date('2026-08-01T12:00:00Z'))
-  vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', undefined)
+  vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', undefined)
 })
 
 describe('assertBudget', () => {
@@ -25,7 +25,7 @@ describe('assertBudget', () => {
     { scope: 'channel-day', budget: { perDayUsdMicros: 100 }, global: '1' },
     { scope: 'global-day', budget: undefined, global: '0.0001' },
   ] as const)('records structured $scope refusal details', ({ scope, budget, global }) => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', global)
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', global)
     const db = memDb(time)
     const channel = testChannel({ budget })
     seedJob(db, 'job', { channel: channel.name })
@@ -66,7 +66,7 @@ describe('assertBudget', () => {
     expect(() => assertBudget(db, a, 10, time)).not.toThrow()
     expect(() => assertBudget(db, a, 11, time)).toThrow(/channel-day budget/)
     expect(() => assertBudget(db, b, 100, time)).not.toThrow()
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0.00015')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0.00015')
     expect(() => assertBudget(db, b, 61, time)).toThrow(/global-day budget/)
   })
 
@@ -83,17 +83,17 @@ describe('assertBudget', () => {
   it('revalidates a channel limit after the global setting changes', () => {
     const db = memDb(time)
     const channel = testChannel({ name: 'a', budget: { perDayUsdMicros: 2_000_000 } })
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '2')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '2')
     expect(() => assertBudget(db, channel, 1, time)).toThrow(/channel "a".*must be lower/)
   })
 
   it('zero global budget blocks positive paid work', () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0')
     expect(() => assertBudget(memDb(time), testChannel(), 1, time)).toThrow(/global-day budget/)
   })
 
   it('malformed configuration is a config failure, not a budget wait', () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', 'invalid')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', 'invalid')
     let error: unknown
     try {
       assertBudget(memDb(time), testChannel(), 1, time)
@@ -152,17 +152,17 @@ describe('cost accounting', () => {
 
 describe('globalDailyCapMicros', () => {
   it.each([undefined, '', '  '])('defaults to $25 for %j', (raw) => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', raw)
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', raw)
     expect(globalDailyCapMicros()).toBe(25_000_000)
   })
   it.each(['-1', 'Infinity', 'NaN', 'invalid', '1e100', '0.0000001'])('rejects %s', (raw) => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', raw)
-    expect(() => globalDailyCapMicros()).toThrow(/BRAINROT_GLOBAL_DAILY_USD/)
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', raw)
+    expect(() => globalDailyCapMicros()).toThrow(/CONTENTD_GLOBAL_DAILY_USD/)
   })
   it('uses explicit overrides including zero', () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '12')
     expect(globalDailyCapMicros()).toBe(12_000_000)
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0')
     expect(globalDailyCapMicros()).toBe(0)
   })
 })
@@ -170,7 +170,7 @@ describe('globalDailyCapMicros', () => {
 describe('BudgetExceededError', () => {
   it('retains the job/budget classification', () => {
     const err = new BudgetExceededError('global-day cap exceeded')
-    expect(err).toBeInstanceOf(BrainrotError)
+    expect(err).toBeInstanceOf(ContentdError)
     expect(classify(err)).toMatchObject({ domain: 'job', kind: 'budget' })
   })
 })

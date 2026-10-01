@@ -24,7 +24,7 @@ function qcCtx(channelOverrides: Partial<ChannelConfig> = {}): JobContext {
     channel: testChannel(channelOverrides),
     topic: 'test topic',
     jobId: 'job-qc',
-    runDir: tmpDir('brainrot-run-'),
+    runDir: tmpDir('contentd-run-'),
   })
 }
 
@@ -41,7 +41,7 @@ function qcCtx(channelOverrides: Partial<ChannelConfig> = {}): JobContext {
 let goodSource: string
 
 beforeAll(async () => {
-  goodSource = path.join(tmpDir('brainrot-qc-fixtures-'), 'good.mp4')
+  goodSource = path.join(tmpDir('contentd-qc-fixtures-'), 'good.mp4')
   await goodClip(goodSource)
 }, 120000)
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 import {
   ACTIONS,
   actionArgFieldKind,
@@ -64,11 +64,11 @@ describe('ACTIONS catalog', () => {
   })
 
   it('rejects an empty list rather than queueing a no-op', () => {
-    expect(() => parseActionArgs('topics.reject', {})).toThrow(BrainrotError)
+    expect(() => parseActionArgs('topics.reject', {})).toThrow(ContentdError)
   })
 
   it('rejects a non-numeric topic id', () => {
-    expect(() => parseActionArgs('topics.reject', { ids: 'all' })).toThrow(BrainrotError)
+    expect(() => parseActionArgs('topics.reject', { ids: 'all' })).toThrow(ContentdError)
     expect(() => parseActionArgs('topics.reject', { ids: ['all'] })).toThrow(/ids\.0:/)
   })
 
@@ -77,9 +77,9 @@ describe('ACTIONS catalog', () => {
       parseActionArgs('jobs.resume', {})
       expect.unreachable('should have thrown')
     } catch (err) {
-      expect(err).toBeInstanceOf(BrainrotError)
-      expect((err as BrainrotError).domain).toBe('config')
-      expect((err as BrainrotError).kind).toBe('invalid')
+      expect(err).toBeInstanceOf(ContentdError)
+      expect((err as ContentdError).domain).toBe('config')
+      expect((err as ContentdError).kind).toBe('invalid')
     }
   })
 

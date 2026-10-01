@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 import type { TimeSource } from '../../../shared/time.js'
 
 /** Keep the job and its ledger for budget/quota accounting, but retire its work. */
@@ -10,7 +10,7 @@ export function deleteJob(db: Database, jobId: string, time: TimeSource): boolea
         { status: string; deleted_at: string | null } | undefined
       if (!job || job.deleted_at !== null) return false
       if (job.status === 'running') {
-        throw new BrainrotError(`job ${jobId} is running; wait until it finishes before deleting`, {
+        throw new ContentdError(`job ${jobId} is running; wait until it finishes before deleting`, {
           domain: 'job',
           kind: 'conflict',
         })

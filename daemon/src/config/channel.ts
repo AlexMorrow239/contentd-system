@@ -3,11 +3,11 @@ import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
 import { PLATFORMS, type Platform } from '../shared/contracts/platforms.js'
-import { BrainrotError, errorMessage } from '../shared/errors.js'
+import { ContentdError, errorMessage } from '../shared/errors.js'
 import { validateChannelBudget } from './budget.js'
 
-function configInvalid(message: string): BrainrotError {
-  return new BrainrotError(message, { domain: 'config', kind: 'invalid' })
+function configInvalid(message: string): ContentdError {
+  return new ContentdError(message, { domain: 'config', kind: 'invalid' })
 }
 
 export interface VoiceConfig {
@@ -390,7 +390,7 @@ export function loadChannelsDir(dir: string): ChannelConfig[] {
  * (exit 1, silence, every firing) and the digest its whole report. One broken
  * TOML — or a channels dir that is missing entirely — is still a hard config
  * error here, never a channel to skip: callers get an EMPTY list plus the
- * underlying message, and each decides how to report it. `brainrot produce` and
+ * underlying message, and each decides how to report it. `contentd produce` and
  * the other operator-facing commands keep calling loadChannelsDir directly, so
  * a human at a terminal still gets the throw.
  */

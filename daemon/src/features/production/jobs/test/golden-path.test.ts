@@ -18,7 +18,7 @@ const REPO_ROOT = process.cwd()
 
 describe('golden-path e2e', () => {
   it('resumes past seeded stages and produces a ready video', async () => {
-    const workspace = tmpDir('brainrot-e2e-')
+    const workspace = tmpDir('contentd-e2e-')
     const bgDir = path.join(workspace, 'bg')
     const runsRoot = path.join(workspace, 'runs')
     mkdirSync(bgDir, { recursive: true })
@@ -61,7 +61,7 @@ describe('golden-path e2e', () => {
     )
 
     const channel = loadChannelConfig(tomlPath)
-    const db = openDb(path.join(workspace, 'brainrot.db'))
+    const db = openDb(path.join(workspace, 'contentd.db'))
     const jobId = createJob(db, channel, { topic: 'Space facts about Venus' })
 
     // Pre-seed script/voice/captions as done.

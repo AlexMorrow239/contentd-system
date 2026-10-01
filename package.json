@@ -1,5 +1,5 @@
 {
-  "name": "brainrot-machine",
+  "name": "contentd-system",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,7 +15,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:contract": "CONTRACT=1 vitest run",
-    "brainrot": "tsx daemon/src/cli.ts",
+    "contentd": "tsx daemon/src/cli.ts",
     "daemon:caffeinate": "tsx daemon/src/app/host/caffeinate-service.ts",
     "check": "pnpm format:check && pnpm lint && pnpm build && pnpm dashboard:build && pnpm test",
     "test:config": "vitest run daemon/src/config",

@@ -381,7 +381,7 @@ test('corrupt stored filters and invalid URL values do not break the list', asyn
   page,
   dashboard,
 }) => {
-  await page.addInitScript(() => localStorage.setItem('brainrot.jobs.filters.v1', '{broken'))
+  await page.addInitScript(() => localStorage.setItem('contentd.jobs.filters.v1', '{broken'))
   await page.goto(dashboard.url + '/jobs')
   await expect(page.getByRole('link', { name: 'A video to post', exact: true })).toBeVisible()
   await page.goto(dashboard.url + '/jobs?status=invalid&review=invalid&posting=invalid&page=-5')

@@ -1,18 +1,20 @@
+name: contentd-system
+
 services:
   db-init:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: brainrot:latest
+    image: contentd-system:latest
     # Docker creates a fresh named volume as root:root. The application image
-    # runs as the unprivileged `node` user, so it cannot create brainrot.db in
+    # runs as the unprivileged `node` user, so it cannot create contentd.db in
     # that volume until ownership is handed over once. Keep root confined to
     # this one-shot initializer; the daemon and dashboard remain unprivileged.
     user: root
     command: ['sh', '-c', 'chown -R node:node /app/state/db']
     restart: 'no'
     volumes:
-      - brainrot-data:/app/state/db
+      - contentd-data:/app/state/db
 
   whisperx:
     build: ./integrations/whisperx
@@ -44,13 +46,13 @@ services:
       retries: 3
       start_period: 30s
 
-  brainrot:
+  contentd:
     build:
       context: .
       dockerfile: docker/Dockerfile
     # Named so the dashboard service can reuse this exact image rather than
     # building a second copy of a ~2 GB layer stack.
-    image: brainrot:latest
+    image: contentd-system:latest
     restart: unless-stopped
     # PID 1 here is pnpm, which reaps nothing. Every Remotion render forks a
     # headless Chrome (plus ffmpeg), and any that outlives its parent is
@@ -69,10 +71,10 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      BRAINROT_ROOT: /app/state
+      CONTENTD_ROOT: /app/state
       WHISPERX_URL: http://whisperx:8585
       TZ: America/New_York
-      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-25}
+      CONTENTD_GLOBAL_DAILY_USD: ${CONTENTD_GLOBAL_DAILY_USD:-25}
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
@@ -91,7 +93,7 @@ services:
       # one kernel on one real filesystem.
       #
       # The cost is that the host can no longer open this file: operator
-      # commands run `docker exec project-brainrot-brainrot-1 pnpm brainrot
+      # commands run `docker exec contentd-system-contentd-1 pnpm contentd
       # <cmd>`. See README "Operating the database" for that and for the
       # backup one-liner. `runs/` below stays a bind mount — plain file I/O
       # over virtiofs is fine, and host-inspectable artifacts are worth it.
@@ -102,7 +104,7 @@ services:
       #
       # /app/state mirrors ./docker/state on the host, except db/: that one
       # subdirectory is this named volume, for the reason above.
-      - brainrot-data:/app/state/db
+      - contentd-data:/app/state/db
       - ./docker/state/runs:/app/state/runs # per-job artifacts, inspectable from the host
       - ./docker/state/channels:/app/state/channels:ro # channel config, re-read every tick
     # Chrome's default 64 MB /dev/shm in Docker is the classic renderer crash.
@@ -114,14 +116,14 @@ services:
         max-file: '5'
 
   dashboard:
-    # Same build context and image name as `brainrot`: compose builds the
+    # Same build context and image name as `contentd`: compose builds the
     # image once and both services run it. Declaring only `image:` here would
-    # make `docker compose up -d` try to PULL brainrot:latest from a registry
+    # make `docker compose up -d` try to PULL contentd-system:latest from a registry
     # on a machine that has not built it yet.
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: brainrot:latest
+    image: contentd-system:latest
     command: pnpm dashboard:start
     restart: unless-stopped
     # Depend only on volume initialization, not whisperx. The dashboard reads
@@ -136,12 +138,12 @@ services:
     # — into it for no reason: every variable the dashboard actually reads is
     # already pinned below.
     environment:
-      BRAINROT_ROOT: /app/state
-      BRAINROT_DASHBOARD_PORT: '8787'
-      BRAINROT_DASHBOARD_HOST: '0.0.0.0'
-      # Read for the spend panel; must match the brainrot service so the
+      CONTENTD_ROOT: /app/state
+      CONTENTD_DASHBOARD_PORT: '8787'
+      CONTENTD_DASHBOARD_HOST: '0.0.0.0'
+      # Read for the spend panel; must match the contentd service so the
       # dashboard reports the cap that is actually enforced.
-      BRAINROT_GLOBAL_DAILY_USD: ${BRAINROT_GLOBAL_DAILY_USD:-25}
+      CONTENTD_GLOBAL_DAILY_USD: ${CONTENTD_GLOBAL_DAILY_USD:-25}
       TZ: America/New_York
     ports:
       # Loopback-bound on the HOST: unreachable from the network. There is no
@@ -164,9 +166,9 @@ services:
       # no migrate); the one write path is POST /api/actions, a single
       # `INSERT INTO operator_actions` through openDbActions (also no mkdir,
       # no schema exec, no migrate — see daemon/src/infra/db/dashboard.ts). Same named volume
-      # as the brainrot service, for the WAL/virtiofs reason documented there
+      # as the contentd service, for the WAL/virtiofs reason documented there
       # — and doubly so here, since this is a SECOND concurrent opener.
-      - brainrot-data:/app/state/db
+      - contentd-data:/app/state/db
       - ./docker/state/runs:/app/state/runs:ro # video playback only
       - ./docker/state/channels:/app/state/channels:ro
     logging:
@@ -178,9 +180,9 @@ services:
 volumes:
   whisperx-cache:
   # All persistent state: jobs, library, topics, costs, leases and posts (the
-  # manual-posting record). Not a bind mount — see the brainrot
+  # manual-posting record). Not a bind mount — see the contentd
   # service's mount comment for why, and treat `docker volume rm
-  # brainrot-data` as destroying that entire record along with the run
+  # contentd-data` as destroying that entire record along with the run
   # history — there is no credential to re-grant to get it back, but the
   # history of what was already posted where is genuinely gone.
-  brainrot-data:
+  contentd-data:

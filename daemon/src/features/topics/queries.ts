@@ -135,7 +135,7 @@ export function eligibleTopic(db: Database, channel: string): TopicRow | null {
 
 /**
  * The story payload for a job, resolved through the topic row `claimTopic`
- * bound to it. Null for a topic-mode job, for a manual `brainrot produce` job
+ * bound to it. Null for a topic-mode job, for a manual `contentd produce` job
  * (no topic row at all), and for a story row missing its body — all three are
  * the same thing to the caller: run the ordinary script path.
  *

@@ -34,14 +34,14 @@ Cross-table production transactions retain their original atomic boundaries.
 
 ## 1. System boundary
 
-Brainrot converts a topic into a captioned vertical video. One Node/TypeScript package contains the CLI, daemon, pipeline, and Remotion composition. Next.js runs as a separate dashboard process using the same application image. WhisperX is a separate Python alignment service.
+Contentd converts a topic into a captioned vertical video. One Node/TypeScript package contains the CLI, daemon, pipeline, and Remotion composition. Next.js runs as a separate dashboard process using the same application image. WhisperX is a separate Python alignment service.
 
 ```mermaid
 flowchart TB
   User[Operator browser] --> Dashboard[Next.js dashboard\nlocalhost:8787]
-  Dashboard -->|GET queries| DB[(SQLite WAL\nbrainrot-data volume)]
+  Dashboard -->|GET queries| DB[(SQLite WAL\ncontentd-data volume)]
   Dashboard -->|POST inserts operator action| DB
-  subgraph Daemon[Brainrot daemon - one Node process]
+  subgraph Daemon[Contentd daemon - one Node process]
     Produce[produce loop]
     Scout[scout loop]
     Digest[digest loop]
@@ -72,7 +72,7 @@ Compose mounts:
 
 | Resource                                         | Daemon                  | Dashboard        | Purpose                                                                         |
 | ------------------------------------------------ | ----------------------- | ---------------- | ------------------------------------------------------------------------------- |
-| `brainrot-data` at `/app/state/db`               | Read/write              | Read/write mount | SQLite and WAL shared-memory files; GET queries use a read-only database handle |
+| `contentd-data` at `/app/state/db`               | Read/write              | Read/write mount | SQLite and WAL shared-memory files; GET queries use a read-only database handle |
 | `docker/state/runs` at `/app/state/runs`         | Read/write              | Read-only        | Stage artifacts and video playback                                              |
 | `docker/state/channels` at `/app/state/channels` | Read-only               | Read-only        | Live channel configuration                                                      |
 | `assets` at `/app/assets`                        | Read-only               | Not mounted      | Video backgrounds                                                               |
@@ -160,7 +160,7 @@ The quota counts **all jobs created today**, including failed jobs; it is not a 
 
 Interrupted and budget-blocked jobs precede new production, oldest first within each group, and obey backlog capacity. They reuse the existing daily quota slot. A blocked job waits at least 60 seconds and resumes only when its recorded upcoming estimate fits the global and optional channel daily caps, or once to probe changed configuration. Unknown requirements wait for a config/day change after the first probe. Both caps reset at UTC midnight; there is no per-video budget.
 
-New-job selection itself does not preflight budgets. Paid stages enforce the global-day limit and an optional channel-day limit before provider calls; a selected job can therefore become blocked. Scout scoring records spend under `scout:<channel>`, sharing both daily limits with production. It preflights the full batch and rechecks each scoring chunk, including unledgered batch costs. The global limit is `BRAINROT_GLOBAL_DAILY_USD` (default $25); a channel's optional `[budget] per_day_usd` must be strictly lower. These checks are not an atomic reservation of all future spend across concurrent work.
+New-job selection itself does not preflight budgets. Paid stages enforce the global-day limit and an optional channel-day limit before provider calls; a selected job can therefore become blocked. Scout scoring records spend under `scout:<channel>`, sharing both daily limits with production. It preflights the full batch and rechecks each scoring chunk, including unledgered batch costs. The global limit is `CONTENTD_GLOBAL_DAILY_USD` (default $25); a channel's optional `[budget] per_day_usd` must be strictly lower. These checks are not an atomic reservation of all future spend across concurrent work.
 
 `jobs.produce` executes an operator-supplied topic directly. It acquires the production lease through the action worker but bypasses candidate selection, planner quota, and backlog gates. Paid-stage budget checks still apply. Its created job subsequently counts toward that day's job total. `jobs.resume` similarly bypasses automatic planner selection.
 

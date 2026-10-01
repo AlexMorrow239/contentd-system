@@ -187,18 +187,18 @@ describe('readCaffeinateEnabled', () => {
   it('defaults on and reloads the file without modifying process environment', () => {
     const root = tmpDir()
     expect(readCaffeinateEnabled(root, {})).toBe(true)
-    writeFileSync(join(root, '.env'), 'BRAINROT_CAFFEINATE=false\n')
+    writeFileSync(join(root, '.env'), 'CONTENTD_CAFFEINATE=false\n')
     expect(readCaffeinateEnabled(root, {})).toBe(false)
-    writeFileSync(join(root, '.env'), 'BRAINROT_CAFFEINATE=true\n')
+    writeFileSync(join(root, '.env'), 'CONTENTD_CAFFEINATE=true\n')
     expect(readCaffeinateEnabled(root, {})).toBe(true)
   })
 
   it('honors explicit environment overrides and rejects invalid values', () => {
     const root = tmpDir()
-    writeFileSync(join(root, '.env'), 'BRAINROT_CAFFEINATE=true\n')
-    expect(readCaffeinateEnabled(root, { BRAINROT_CAFFEINATE: 'false' })).toBe(false)
-    expect(() => readCaffeinateEnabled(root, { BRAINROT_CAFFEINATE: 'typo' })).toThrow(
-      'BRAINROT_CAFFEINATE',
+    writeFileSync(join(root, '.env'), 'CONTENTD_CAFFEINATE=true\n')
+    expect(readCaffeinateEnabled(root, { CONTENTD_CAFFEINATE: 'false' })).toBe(false)
+    expect(() => readCaffeinateEnabled(root, { CONTENTD_CAFFEINATE: 'typo' })).toThrow(
+      'CONTENTD_CAFFEINATE',
     )
   })
 })

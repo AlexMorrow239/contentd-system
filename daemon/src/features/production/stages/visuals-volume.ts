@@ -2,7 +2,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { cropAndLoopToDuration, loopToDuration, probe } from '../../../infra/media/ffmpeg.js'
 import { VIDEO_HEIGHT, VIDEO_WIDTH } from '../../../shared/contracts/video.js'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 import type { VoiceMeta } from '../artifacts/voice.js'
 import type { JobContext, StageDef } from '../contracts.js'
 import { checkpoint } from '../ownership.js'
@@ -47,7 +47,7 @@ export const visualsVolumeStage: StageDef = {
     const bgDirs = ctx.channel.bgDir
     const all = listMp4sRecursively(bgDirs)
     if (all.length === 0) {
-      throw new BrainrotError(
+      throw new ContentdError(
         `visuals: no .mp4 background clips found under bgDir(s): ${bgDirs.join(', ')}`,
         { domain: 'config', kind: 'invalid' },
       )

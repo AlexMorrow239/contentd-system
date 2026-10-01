@@ -55,7 +55,7 @@ export const SCOUT_MIN_SCORE = 80
 // The floor between two scout attempts for ONE channel, so a quiet subreddit
 // isn't refetched on every 30-second daemon poll. Persisted in `scout_state`
 // (not in-memory) so the gate survives a daemon restart and is shared with a
-// manual `brainrot scout` run — see `--force` on that command to bypass it.
+// manual `contentd scout` run — see `--force` on that command to bypass it.
 export const SCOUT_RECHECK_MS = 1_200_000 // 20 min
 
 // Scoring with the ledger-complete error path: gate first; if the call spent

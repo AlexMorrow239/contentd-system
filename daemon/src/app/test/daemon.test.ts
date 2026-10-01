@@ -118,8 +118,8 @@ describe('runDaemon', () => {
     const time = createTestTime(0)
     const running = runDaemon(db, {
       time,
-      channelsDir: tmpDir('brainrot-daemon-'),
-      runsRoot: tmpDir('brainrot-runs-'),
+      channelsDir: tmpDir('contentd-daemon-'),
+      runsRoot: tmpDir('contentd-runs-'),
       emit: () => {},
       signal: controller.signal,
     })
@@ -137,8 +137,8 @@ describe('runDaemon', () => {
     const time = createTestTime(0)
     const running = runDaemon(db, {
       time,
-      channelsDir: tmpDir('brainrot-daemon-'),
-      runsRoot: tmpDir('brainrot-runs-'),
+      channelsDir: tmpDir('contentd-daemon-'),
+      runsRoot: tmpDir('contentd-runs-'),
       emit: () => {},
       signal: controller.signal,
     })
@@ -162,8 +162,8 @@ describe('runDaemon', () => {
     const time = createTestTime(0)
     const running = runDaemon(db, {
       time,
-      channelsDir: tmpDir('brainrot-daemon-'),
-      runsRoot: tmpDir('brainrot-runs-'),
+      channelsDir: tmpDir('contentd-daemon-'),
+      runsRoot: tmpDir('contentd-runs-'),
       emit: () => {},
       signal: controller.signal,
     })

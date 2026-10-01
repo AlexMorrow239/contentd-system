@@ -1,4 +1,4 @@
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { approveLibrary } from '../library/library.js'
 import { markPosted, unmarkPosted } from '../posting/posts.js'
 import { deleteJob } from '../production/jobs/delete.js'
@@ -57,7 +57,7 @@ export const FAST_HANDLERS: { [K in LaneKind<'fast'>]: Handler<K> } = {
             : outcome.reason === 'not-claimed'
               ? { status: outcome.status }
               : undefined
-        throw new BrainrotError(`topic ${args.id} not requeued: ${outcome.reason}`, {
+        throw new ContentdError(`topic ${args.id} not requeued: ${outcome.reason}`, {
           domain: 'job',
           kind,
           context,

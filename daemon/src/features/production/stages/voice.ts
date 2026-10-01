@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { parseWavDurationMs } from '../../../infra/media/wav.js'
 import { estimateTtsCostMicros, synthWithTimestamps } from '../../../infra/providers/elevenlabs.js'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 import { assertBudget, recordCost } from '../../billing/costs.js'
 import type { ScriptArtifact } from '../artifacts/script.js'
 import { VoiceMeta } from '../artifacts/voice.js'
@@ -55,7 +55,7 @@ export const voiceStage: StageDef = {
     const words = countWords(narrationText(script))
     const minPlausibleMs = minPlausibleNarrationMs(words)
     if (durationMs < minPlausibleMs) {
-      throw new BrainrotError(
+      throw new ContentdError(
         `voice synthesis produced implausibly short audio: ${durationMs}ms for ${words} words ` +
           `(minimum ${minPlausibleMs}ms at ${MAX_PLAUSIBLE_WORDS_PER_SEC} words/sec); ` +
           'narration was likely truncated by provider "elevenlabs"',

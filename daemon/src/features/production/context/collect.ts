@@ -7,7 +7,7 @@ import {
   type ContextSnapshot,
   type SourcePost,
 } from '../../../shared/contracts/source-context.js'
-import { BrainrotError, errorMessage } from '../../../shared/errors.js'
+import { ContentdError, errorMessage } from '../../../shared/errors.js'
 import { sanitizeStory } from '../../../shared/stories/sanitize.js'
 import { topicForJob } from '../../topics/queries.js'
 import type { JobContext } from '../contracts.js'
@@ -42,7 +42,7 @@ export async function collectContext(
     try {
       return contextSnapshotSchema.parse(JSON.parse(job.source_context_json))
     } catch {
-      throw new BrainrotError(
+      throw new ContentdError(
         'Invalid saved source context; refusing to replace the job snapshot',
         { domain: 'job', kind: 'invalid' },
       )

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { PLATFORMS } from '../../shared/contracts/platforms.js'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 
 /**
  * The action catalog: pure metadata, no behaviour. This module is imported by
@@ -262,7 +262,7 @@ export function actionArgFieldKind(kind: ActionKind, name: string): ActionArgFie
 
 /**
  * Validates raw (form- or JSON-derived) args against the catalog schema.
- * A zod failure becomes a BrainrotError so both callers — the dashboard's POST
+ * A zod failure becomes a ContentdError so both callers — the dashboard's POST
  * route and the worker's dispatcher — get one classifiable error shape instead
  * of a ZodError leaking into a 500.
  */
@@ -275,7 +275,7 @@ export function parseActionArgs(kind: ActionKind, raw: unknown): unknown {
         return `${path === '' ? '(root)' : path}: ${i.message}`
       })
       .join('; ')
-    throw new BrainrotError(`invalid arguments for ${kind} — ${detail}`, {
+    throw new ContentdError(`invalid arguments for ${kind} — ${detail}`, {
       domain: 'config',
       kind: 'invalid',
     })

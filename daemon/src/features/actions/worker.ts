@@ -7,7 +7,7 @@ import {
   type LeaseContext,
 } from '../../infra/coordination/lease.js'
 import type { UnitResult } from '../../shared/contracts/worker.js'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { resolveTime, type TimeSource } from '../../shared/time.js'
 import { ACTIONS, isActionKind, type ActionLane, type ActionLease } from './catalog.js'
 import { type ActionContext } from './handler-contract.js'
@@ -167,7 +167,7 @@ async function executeOne(
         failAction(
           db,
           row.id,
-          new BrainrotError(`unknown action kind ${JSON.stringify(row.kind)}`, {
+          new ContentdError(`unknown action kind ${JSON.stringify(row.kind)}`, {
             domain: 'config',
             kind: 'invalid',
           }),
@@ -211,7 +211,7 @@ async function executeOne(
       try {
         args = JSON.parse(row.args)
       } catch {
-        throw new BrainrotError('args column is not valid JSON', {
+        throw new ContentdError('args column is not valid JSON', {
           domain: 'config',
           kind: 'invalid',
         })

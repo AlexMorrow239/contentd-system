@@ -14,7 +14,7 @@ describe('dashboard to daemon action round trip', () => {
     // The unit tests stub each side of the seam; this one proves a real
     // file-backed SQLite database carries an action from the dashboard's
     // write handle to the daemon's worker.
-    const paths = resolvePaths(tmpDir('brainrot-e2e-'))
+    const paths = resolvePaths(tmpDir('contentd-e2e-'))
     mkdirSync(join(paths.root, 'db'), { recursive: true })
     mkdirSync(paths.channelsDir, { recursive: true })
     const db = openDb(paths.dbPath)

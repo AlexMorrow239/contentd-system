@@ -55,7 +55,7 @@ describe('migrate — topics.target_url', () => {
   // OTHER steps depend on any table besides the one they name, and each is
   // its own tableExists-guarded no-op when that table is absent.
   function topicsDb(ddl: string): Database {
-    const dir = tmpDir('brainrot-migrate-')
+    const dir = tmpDir('contentd-migrate-')
     cleanupDirs.push(dir)
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS library (
 describe('migrate — library.qc_json', () => {
   // Bare handle, same rationale as the topics fixtures above.
   function bareDb(ddl: string): Database {
-    const dir = tmpDir('brainrot-migrate-')
+    const dir = tmpDir('contentd-migrate-')
     cleanupDirs.push(dir)
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
@@ -206,7 +206,7 @@ CREATE TABLE topics (
 
 describe('addTopicStoryColumns', () => {
   it('adds the story columns to a topics table that predates them', () => {
-    const dir = tmpDir('brainrot-migrate-')
+    const dir = tmpDir('contentd-migrate-')
     cleanupDirs.push(dir)
     const db = new BetterSqlite3(join(dir, 'test.db'))
     db.pragma('foreign_keys = OFF')
@@ -251,7 +251,7 @@ describe('addTopicStoryColumns', () => {
     // a regression to a single-sentinel probe like
     // `if (!hasColumn(db,'topics','body_text')) { add all five }`, which would
     // pass the none-present and fresh-database tests while failing on partial.
-    const dir = tmpDir('brainrot-migrate-')
+    const dir = tmpDir('contentd-migrate-')
     cleanupDirs.push(dir)
     const dbPath = join(dir, 'test.db')
     const raw = new BetterSqlite3(dbPath)
@@ -300,7 +300,7 @@ describe('addTopicStoryColumns', () => {
     // not just one.
     const dir = tmpDir('migrate-openDb')
     cleanupDirs.push(dir)
-    const dbPath = join(dir, 'brainrot.db')
+    const dbPath = join(dir, 'contentd.db')
     const old = new BetterSqlite3(dbPath)
     old.exec(`CREATE TABLE topics (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

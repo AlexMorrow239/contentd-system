@@ -615,7 +615,7 @@ describe('error handling conventions', () => {
   })
 
   it('declares no Error subclass outside the errors module', async () => {
-    // Every classifiable error extends BrainrotError, which is the only thing
+    // Every classifiable error extends ContentdError, which is the only thing
     // in the repo permitted to extend Error directly (or any of its standard
     // built-in subtypes — TypeError, RangeError, etc.). This is the guard
     // that stops a new module from re-rolling its own hierarchy — which is

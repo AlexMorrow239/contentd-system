@@ -53,12 +53,12 @@ const CHANNEL_TOML = [
 ].join('\n')
 
 // One shared read-only channels dir; each test gets a fresh db and runs root.
-const channelsDir = tmpDir('brainrot-loop-channels-')
+const channelsDir = tmpDir('contentd-loop-channels-')
 writeFileSync(join(channelsDir, 'loop-chan.toml'), CHANNEL_TOML)
 
 function setup() {
   const db = memDb(time)
-  const runsRoot = join(tmpDir('brainrot-loop-run-'), 'runs')
+  const runsRoot = join(tmpDir('contentd-loop-run-'), 'runs')
   return { db, runsRoot }
 }
 
@@ -115,7 +115,7 @@ function failingStages(): StageDef[] {
 beforeEach(() => {
   // Deterministic regardless of the developer's shell or .env: the default
   // $25 global cap.
-  vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '')
+  vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '')
 })
 afterEach(() => {
   vi.unstubAllEnvs()
@@ -222,7 +222,7 @@ describe('produceNextTick — lease', () => {
 describe('produceNextTick — config errors', () => {
   it('no-ops with reason config-error on an unparseable channel TOML, naming the file', async () => {
     const { db, runsRoot } = setup()
-    const brokenDir = tmpDir('brainrot-loop-broken-')
+    const brokenDir = tmpDir('contentd-loop-broken-')
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = await produceNextTick(db, {
@@ -249,7 +249,7 @@ describe('produceNextTick — config errors', () => {
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
     const result = await produceNextTick(db, {
       time,
-      channelsDir: join(tmpdir(), 'brainrot-no-such-channels-dir'),
+      channelsDir: join(tmpdir(), 'contentd-no-such-channels-dir'),
       runsRoot,
       stagesFor: neverStages,
     })
@@ -261,7 +261,7 @@ describe('produceNextTick — config errors', () => {
 
   it('never takes the produce lease on a broken config', async () => {
     const { db, runsRoot } = setup()
-    const brokenDir = tmpDir('brainrot-loop-broken-lease-')
+    const brokenDir = tmpDir('contentd-loop-broken-lease-')
     writeFileSync(join(brokenDir, 'broken.toml'), 'this is not toml [')
     const stderr = vi.spyOn(console, 'error').mockImplementation(() => {})
     await produceNextTick(db, { time, channelsDir: brokenDir, runsRoot, stagesFor: neverStages })
@@ -676,7 +676,7 @@ describe('produce-next CLI', () => {
   it.concurrent(
     '`produce-next` with no eligible work prints one noop JSON line and exits 0',
     async () => {
-      const root = testRoot('brainrot-loop-cli-')
+      const root = testRoot('contentd-loop-cli-')
       writeFileSync(join(root.channelsDir, 'loop-chan.toml'), CHANNEL_TOML)
       const result = await runCli(['produce-next', '--root', root.root])
       expect(result.exitCode).toBe(0)
@@ -692,7 +692,7 @@ describe('produce-next CLI', () => {
   it.concurrent(
     '`produce-next` over a broken channels dir still prints one JSON line and exits 0',
     async () => {
-      const root = testRoot('brainrot-loop-cli-broken-')
+      const root = testRoot('contentd-loop-cli-broken-')
       writeFileSync(join(root.channelsDir, 'broken.toml'), 'this is not toml [')
       const result = await runCli(['produce-next', '--root', root.root])
       expect(result.exitCode).toBe(0)

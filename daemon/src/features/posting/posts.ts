@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
 import type { Platform } from '../../shared/contracts/platforms.js'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { systemTime, type TimeSource } from '../../shared/time.js'
 
 /**
@@ -25,7 +25,7 @@ function jobChannel(db: Database, jobId: string): string {
     .prepare('SELECT channel FROM jobs WHERE id = ? AND deleted_at IS NULL')
     .get(jobId) as { channel: string } | undefined
   if (row === undefined) {
-    throw new BrainrotError(`no such job: ${jobId}`, { domain: 'job', kind: 'not-found' })
+    throw new ContentdError(`no such job: ${jobId}`, { domain: 'job', kind: 'not-found' })
   }
   return row.channel
 }

@@ -19,7 +19,7 @@ import {
 import { createTestTime } from '../../../../testing/time.js'
 import { tmpDir } from '../../../../testing/tmp.js'
 import { LeaseLostError, acquireManagedLease } from '../../../infra/coordination/lease.js'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 import { channelDaySpentMicros } from '../../billing/costs.js'
 import { markPosted, postedPlatforms } from '../../posting/posts.js'
 import { beginAttempt } from '../../production/jobs/execution.js'
@@ -147,7 +147,7 @@ describe('action handlers', () => {
 
   it('validates args before touching the database', async () => {
     const db = memDb()
-    await expect(runAction(ctx(db), 'topics.reject', { ids: [] })).rejects.toThrow(BrainrotError)
+    await expect(runAction(ctx(db), 'topics.reject', { ids: [] })).rejects.toThrow(ContentdError)
   })
 
   it('requeues a claimed topic', async () => {
@@ -178,8 +178,8 @@ describe('action handlers', () => {
     } catch (err) {
       caught = err
     }
-    expect(caught).toBeInstanceOf(BrainrotError)
-    const err = caught as BrainrotError
+    expect(caught).toBeInstanceOf(ContentdError)
+    const err = caught as ContentdError
     expect(err.kind).toBe('conflict')
     expect(err.context).toEqual({ jobId: 'j1', jobStatus: 'running' })
   })

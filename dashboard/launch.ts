@@ -21,7 +21,7 @@ const child = spawn(
   ],
   {
     stdio: 'inherit',
-    env: { ...process.env, BRAINROT_DASHBOARD_CSRF: mintCsrfToken() },
+    env: { ...process.env, CONTENTD_DASHBOARD_CSRF: mintCsrfToken() },
   },
 )
 for (const signal of ['SIGTERM', 'SIGINT'] as const) process.on(signal, () => child.kill(signal))

@@ -14,7 +14,7 @@ import {
 
 // src/ and the mirrored dist/ tree have the same depth beneath the checkout.
 export const checkoutRoot = fileURLToPath(new URL('../../../..', import.meta.url))
-const label = 'com.brainrot.caffeinate'
+const label = 'com.contentd.caffeinate'
 const plistPath = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`)
 
 function xml(value: string): string {
@@ -89,7 +89,7 @@ async function main(): Promise<void> {
     await bootstrap(domain)
     console.log(`Installed ${label}. Starts now and at login. Log: ${log}`)
     console.log(
-      'Set BRAINROT_CAFFEINATE=false in .env to disable sleep prevention within 30 seconds.',
+      'Set CONTENTD_CAFFEINATE=false in .env to disable sleep prevention within 30 seconds.',
     )
     return
   }

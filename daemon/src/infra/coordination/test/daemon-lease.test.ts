@@ -11,7 +11,7 @@ import { LEASE_TTL_MS, acquireLease, releaseLease } from '../lease.js'
 describe('requireDaemonLease', () => {
   it('refuses a live owner without changing its lease', async () => {
     const time = createTestTime(0)
-    const { db } = fileDb('brainrot.db', time)
+    const { db } = fileDb('contentd.db', time)
     const owner = await requireDaemonLease(db, time)
     try {
       await expect(requireDaemonLease(db, time)).rejects.toThrow('held by another operation')
@@ -24,7 +24,7 @@ describe('requireDaemonLease', () => {
 
   it('reclaims an unexpired lease whose owner has gone and fences its old token', async () => {
     const time = createTestTime(0)
-    const { db } = fileDb('brainrot.db', time)
+    const { db } = fileDb('contentd.db', time)
     const old = await requireDaemonLease(db, time)
     old.release()
     acquireLease(db, 'daemon', old.token, LEASE_TTL_MS, time)
@@ -41,7 +41,7 @@ describe('requireDaemonLease', () => {
 
   it('allows exactly one concurrent startup to reclaim a dead owner', async () => {
     const time = createTestTime(0)
-    const { db } = fileDb('brainrot.db', time)
+    const { db } = fileDb('contentd.db', time)
     const old = await requireDaemonLease(db, time)
     old.release()
     acquireLease(db, 'daemon', old.token, LEASE_TTL_MS, time)
@@ -127,7 +127,7 @@ describe('requireDaemonLease', () => {
 
   it('honors unexpired legacy leases but permits takeover after expiry', async () => {
     const time = createTestTime(0)
-    const { db } = fileDb('brainrot.db', time)
+    const { db } = fileDb('contentd.db', time)
     acquireLease(db, 'daemon', `pid:${process.pid}:daemon:legacy`, LEASE_TTL_MS, time)
     await expect(requireDaemonLease(db, time)).rejects.toThrow('held by another operation')
     time.setNow(LEASE_TTL_MS)

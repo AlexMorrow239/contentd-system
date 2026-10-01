@@ -1,11 +1,11 @@
 import type { Database } from 'better-sqlite3'
-import type { BrainrotPaths } from '../../config/paths.js'
-import { resolveBrainrotPaths } from '../../config/paths.js'
+import type { ContentdPaths } from '../../config/paths.js'
+import { resolveContentdPaths } from '../../config/paths.js'
 import { openDb } from '../../infra/db/index.js'
 
 // Production pins the root in Compose; test subprocesses supply a temp root.
 export const ROOT_OPTION_DESC =
-  'runtime root holding db/, runs/ and channels/ (required: flag or $BRAINROT_ROOT)'
+  'runtime root holding db/, runs/ and channels/ (required: flag or $CONTENTD_ROOT)'
 
 /**
  * The one resolve → open → work → close sequence every db-touching command
@@ -21,9 +21,9 @@ export const ROOT_OPTION_DESC =
  */
 export async function withDb<T>(
   opts: { root?: string },
-  fn: (db: Database, paths: BrainrotPaths) => T | Promise<T>,
+  fn: (db: Database, paths: ContentdPaths) => T | Promise<T>,
 ): Promise<T> {
-  const paths = resolveBrainrotPaths(opts.root)
+  const paths = resolveContentdPaths(opts.root)
   const db = openDb(paths.dbPath)
   try {
     return await fn(db, paths)
@@ -43,7 +43,7 @@ export function printJson(value: unknown): void {
  * `action` would otherwise see a bare `config-error` and no file name.
  *
  * This lives at the ONE-SHOT CLI, not inside the tick functions, and that is
- * the whole point: the same ticks now run under `brainrot run` every 30
+ * the whole point: the same ticks now run under `contentd run` every 30
  * seconds, where an unstructured print bypasses runWorker's idle dedupe and
  * turns one bad channel TOML into 2,880 stderr lines a day. The daemon
  * reports these through the deduped `{"action":"noop","reason":...}` line

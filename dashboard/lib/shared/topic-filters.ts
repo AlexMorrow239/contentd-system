@@ -2,7 +2,7 @@ import { TOPIC_STATUSES, type TopicStatus } from '../../../daemon/src/features/t
 import { filterText, filtersUrl } from './filters.js'
 
 export const TOPIC_FILTER_KEYS = ['q', 'channel', 'status'] as const
-export const TOPIC_FILTER_STORAGE_KEY = 'brainrot.topics.filters.v1'
+export const TOPIC_FILTER_STORAGE_KEY = 'contentd.topics.filters.v1'
 export const TOPICS_PAGE_SIZE = 50
 export type TopicFilters = { q?: string; channel?: string; status?: TopicStatus }
 

@@ -8,7 +8,7 @@ import { createTestTime } from '../../../../testing/time.js'
 import type { ChannelConfig, ScoutConfig } from '../../../config/channel.js'
 import { DEFAULT_SCOUT } from '../../../config/channel.js'
 import { LeaseLostError, acquireManagedLease } from '../../../infra/coordination/lease.js'
-import { BrainrotError, classify } from '../../../shared/errors.js'
+import { ContentdError, classify } from '../../../shared/errors.js'
 import { BudgetExceededError } from '../../billing/costs.js'
 import { listTopics } from '../../topics/queries.js'
 import { SCOUT_RECHECK_MS, scoutChannel } from '../channel.js'
@@ -433,7 +433,7 @@ describe('scoutChannel', () => {
   })
 
   it('gates on the global day budget BEFORE spending', async () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0')
     const db = memDb()
     const channel = scoutedChannel()
     const fetchImpl = fetchStub({
@@ -467,7 +467,7 @@ describe('scoutChannel', () => {
   it.each(['global', 'channel'])(
     'stops a later scoring chunk at the %s cap and records earlier cost once',
     async (scope) => {
-      vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', scope === 'global' ? '0.04' : '25')
+      vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', scope === 'global' ? '0.04' : '25')
       const db = memDb()
       const channel = {
         ...scoutedChannel(),
@@ -651,7 +651,7 @@ describe('scoutChannel', () => {
   })
 
   it('records the attempt even when scoring later throws', async () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0')
     const db = memDb()
     const channel = scoutedChannel()
     const now = new Date(2026, 6, 28, 12, 0, 0)
@@ -783,7 +783,7 @@ describe('scoutAll', () => {
   // the same gate — and the cap working is not a failed run. Treating it as
   // one meant every scout firing exited 1 for the rest of the UTC day.
   it('stays healthy when every channel is blocked by the global day budget', async () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0')
     const db = memDb()
     const stderrSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     const a = scoutedChannel({ subreddits: ['one'] }, 'a')
@@ -803,7 +803,7 @@ describe('scoutAll', () => {
     // progress rides to scoutAll as a `partial` ScoutChannelResult tagged
     // onto the (already-classified) BudgetExceededError. classify() used to
     // discard a tag entirely once the thrown value was already a
-    // BrainrotError, which silently zeroed these counts back to the
+    // ContentdError, which silently zeroed these counts back to the
     // no-progress fallback — exactly the data the scout CLI's stdout JSON
     // line reports to cron.
     expect(results.every((r) => r.fetched === 1)).toBe(true)
@@ -827,7 +827,7 @@ describe('scoutAll', () => {
     // Cap set to exactly one scout reservation ($0.02): channel "a" clears the
     // gate and then dies on a paid-but-invalid response, whose ledgered spend
     // leaves "b" short of a reservation and blocked on the global-day budget.
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '0.02')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '0.02')
     const { client } = fakeClient(
       emitToolUse({ scores: 'nope' }, { input_tokens: 10, output_tokens: 5 }),
     )
@@ -1239,7 +1239,7 @@ describe('scout error classification', () => {
       new AllSourcesFailedError('all 3 trend source(s) failed', results),
       new AllChannelsScoringFailedError('all 2 scouted channel(s) failed', results),
     ]) {
-      expect(err).toBeInstanceOf(BrainrotError)
+      expect(err).toBeInstanceOf(ContentdError)
       expect(err).toBeInstanceOf(ScoutRunFailedError)
       expect(err.results).toBe(results)
       expect(classify(err)).toMatchObject({ domain: 'scout', kind: 'transient' })

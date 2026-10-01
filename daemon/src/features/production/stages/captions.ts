@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { alignTranscript } from '../../../infra/providers/whisperx.js'
 import { type WordTiming } from '../../../shared/contracts/word-timing.js'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 import { CaptionsArtifact } from '../artifacts/captions.js'
 import type { ScriptArtifact } from '../artifacts/script.js'
 import type { JobContext, StageDef } from '../contracts.js'
@@ -51,7 +51,7 @@ async function alignedWords(ctx: JobContext): Promise<WordTiming[]> {
     transcript: narrationText(script),
   })
   if (words.length === 0) {
-    throw new BrainrotError('captions: whisperx returned no word timings', {
+    throw new ContentdError('captions: whisperx returned no word timings', {
       domain: 'provider',
       kind: 'invalid',
     })

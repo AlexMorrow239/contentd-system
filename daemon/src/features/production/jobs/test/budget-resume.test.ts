@@ -18,7 +18,7 @@ const start = new Date('2026-09-29T12:00:00.000Z')
 
 describe('runner budget waits and planner eligibility', () => {
   it('does not call an unchanged blocked stage again; each configuration probe observes a new cooldown', async () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '25')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '25')
 
     time.setNow(start)
     const { db, root } = fileDb(undefined, time)
@@ -84,7 +84,7 @@ describe('runner budget waits and planner eligibility', () => {
   })
 
   it('parks a legacy refusal after its first probe and records a fresh wait when the UTC day changes', async () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '25')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '25')
 
     time.setNow(start)
     const { db, root } = fileDb(undefined, time)
@@ -115,7 +115,7 @@ describe('runner budget waits and planner eligibility', () => {
   })
 
   it('records invalid global configuration as terminal failure even when a channel-day refusal occurs first', async () => {
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', 'invalid')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', 'invalid')
     const { db, root } = fileDb(undefined, time)
     const channel = testChannel({ budget: { perDayUsdMicros: 100 } })
     const jobId = createJob(db, channel, { time, topic: 'invalid budget config' })

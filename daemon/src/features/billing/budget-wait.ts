@@ -32,7 +32,7 @@ function fingerprint(channel: ChannelConfig): string {
   } catch {
     // Failure bookkeeping must still work for a custom budget refusal when
     // operator configuration is malformed. Repairing that value allows a probe.
-    globalBudget = { invalid: process.env.BRAINROT_GLOBAL_DAILY_USD }
+    globalBudget = { invalid: process.env.CONTENTD_GLOBAL_DAILY_USD }
   }
   const serialized = JSON.stringify(
     { channel, globalDailyCapMicros: globalBudget },

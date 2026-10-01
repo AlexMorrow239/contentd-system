@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS posts (
 -- `leases`' PK-keyed shape) recording when a channel was last actually
 -- scouted. Backs the SCOUT_RECHECK_MS gate in daemon/src/features/scouting/channel.ts, so the gate
 -- survives a daemon restart and is shared between the daemon's scout worker
--- and a manual `brainrot scout` run.
+-- and a manual `contentd scout` run.
 CREATE TABLE IF NOT EXISTS scout_state (
   channel TEXT PRIMARY KEY, last_attempt_at TEXT NOT NULL
 );

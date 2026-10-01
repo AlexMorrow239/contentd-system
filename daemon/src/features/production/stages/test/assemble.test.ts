@@ -25,11 +25,11 @@ function assembleCtx(): JobContext {
   return makeCtx({
     channel: testChannel({
       name: 'testchan',
-      bgDir: [tmpDir('brainrot-bg-')],
+      bgDir: [tmpDir('contentd-bg-')],
     }),
     topic: 'test topic',
     jobId: `job-assemble-${process.pid}-${ctxSeq++}`,
-    runDir: tmpDir('brainrot-run-'),
+    runDir: tmpDir('contentd-run-'),
   })
 }
 
@@ -153,7 +153,7 @@ function mockRenderer(): void {
 
 describe('assembleStage bundle robustness', () => {
   it('cancels an in-flight render and cleans only its attempt assets', async () => {
-    const serveUrl = tmpDir('brainrot-serveurl-')
+    const serveUrl = tmpDir('contentd-serveurl-')
     vi.doMock('@remotion/bundler', () => ({ bundle: vi.fn().mockResolvedValue(serveUrl) }))
     const controller = new AbortController()
     const lost = new Error('lease lost')
@@ -187,7 +187,7 @@ describe('assembleStage bundle robustness', () => {
   })
 
   it('does not render when ownership is lost while selecting composition', async () => {
-    const serveUrl = tmpDir('brainrot-serveurl-')
+    const serveUrl = tmpDir('contentd-serveurl-')
     vi.doMock('@remotion/bundler', () => ({ bundle: vi.fn().mockResolvedValue(serveUrl) }))
     let owned = true
     const lost = new Error('lease lost')
@@ -218,7 +218,7 @@ describe('assembleStage bundle robustness', () => {
   })
 
   it('retries bundle() after a rejection instead of memoizing the failure', async () => {
-    const serveUrl = tmpDir('brainrot-serveurl-')
+    const serveUrl = tmpDir('contentd-serveurl-')
     const bundleMock = vi
       .fn()
       .mockRejectedValueOnce(new Error('esbuild exploded'))
@@ -245,7 +245,7 @@ describe('assembleStage bundle robustness', () => {
       new URL('../../../../../dist/features/production/stages/assemble.js', import.meta.url),
     ],
   ] as const)('passes a cwd-independent entry point to bundle() from %s', async (_, entry) => {
-    const bundleMock = vi.fn().mockResolvedValue(tmpDir('brainrot-serveurl-'))
+    const bundleMock = vi.fn().mockResolvedValue(tmpDir('contentd-serveurl-'))
     vi.doMock('@remotion/bundler', () => ({ bundle: bundleMock }))
     mockRenderer()
     vi.resetModules()
@@ -254,7 +254,7 @@ describe('assembleStage bundle robustness', () => {
 
     // Simulate the CLI being launched from anywhere but the repo root.
     const repoCwd = process.cwd()
-    process.chdir(tmpDir('brainrot-elsewhere-'))
+    process.chdir(tmpDir('contentd-elsewhere-'))
     try {
       const { assembleStage: freshStage } = (await import(
         entry.href

@@ -89,7 +89,7 @@ function fakeStagesFor(calls: StageName[]): () => StageDef[] {
 
 describe('golden-path loop e2e', () => {
   it('scouts a fixture feed into the topic queue, then one tick produces it into the library', async () => {
-    const workspace = tmpDir('brainrot-loop-e2e-')
+    const workspace = tmpDir('contentd-loop-e2e-')
     const channelsDir = path.join(workspace, 'channels')
     const runsRoot = path.join(workspace, 'runs')
     mkdirSync(channelsDir, { recursive: true })
@@ -123,8 +123,8 @@ describe('golden-path loop e2e', () => {
     )
 
     // Determinism regardless of the developer shell: the default global cap.
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '25')
-    const db = openDb(path.join(workspace, 'brainrot.db'))
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '25')
+    const db = openDb(path.join(workspace, 'contentd.db'))
     const channels = loadChannelsDir(channelsDir)
     expect(channels.map((c) => c.name)).toEqual(['example'])
 

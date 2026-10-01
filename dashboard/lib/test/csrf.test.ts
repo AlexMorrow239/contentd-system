@@ -16,7 +16,7 @@ describe('csrfFailure', () => {
           host: '127.0.0.1:8787',
           origin: 'http://127.0.0.1:8787',
           'sec-fetch-site': 'same-origin',
-          'x-brainrot-csrf': token,
+          'x-contentd-csrf': token,
         }),
         token,
       ),
@@ -32,7 +32,7 @@ describe('csrfFailure', () => {
           host: '127.0.0.1:8787',
           origin: 'http://evil.example',
           'sec-fetch-site': 'cross-site',
-          'x-brainrot-csrf': token,
+          'x-contentd-csrf': token,
         }),
         token,
       ),
@@ -42,7 +42,7 @@ describe('csrfFailure', () => {
   it('rejects an Origin whose host is not our own', () => {
     expect(
       csrfFailure(
-        req({ host: '127.0.0.1:8787', origin: 'http://evil.example', 'x-brainrot-csrf': token }),
+        req({ host: '127.0.0.1:8787', origin: 'http://evil.example', 'x-contentd-csrf': token }),
         token,
       ),
     ).toContain('origin')
@@ -50,7 +50,7 @@ describe('csrfFailure', () => {
 
   it('rejects a request with neither Origin nor Sec-Fetch-Site', () => {
     // curl sends neither. Scripting is what the CLI is for.
-    expect(csrfFailure(req({ host: '127.0.0.1:8787', 'x-brainrot-csrf': token }), token)).toContain(
+    expect(csrfFailure(req({ host: '127.0.0.1:8787', 'x-contentd-csrf': token }), token)).toContain(
       'origin',
     )
   })
@@ -62,13 +62,13 @@ describe('csrfFailure', () => {
       'sec-fetch-site': 'same-origin',
     }
     expect(csrfFailure(req(headers), token)).toContain('token')
-    expect(csrfFailure(req({ ...headers, 'x-brainrot-csrf': 'old' }), token)).toContain('token')
+    expect(csrfFailure(req({ ...headers, 'x-contentd-csrf': 'old' }), token)).toContain('token')
   })
 
   it('rejects an unparseable Origin', () => {
     expect(
       csrfFailure(
-        req({ host: '127.0.0.1:8787', origin: 'not a url', 'x-brainrot-csrf': token }),
+        req({ host: '127.0.0.1:8787', origin: 'not a url', 'x-contentd-csrf': token }),
         token,
       ),
     ).toContain('origin')
@@ -84,7 +84,7 @@ describe('csrfFailure', () => {
           host: '127.0.0.1:8787',
           origin: 'http://127.0.0.1:8787',
           'sec-fetch-site': 'same-site',
-          'x-brainrot-csrf': token,
+          'x-contentd-csrf': token,
         }),
         token,
       ),
@@ -93,7 +93,7 @@ describe('csrfFailure', () => {
 
   it('rejects an opaque Origin: null (the sandboxed-iframe form)', () => {
     expect(
-      csrfFailure(req({ host: '127.0.0.1:8787', origin: 'null', 'x-brainrot-csrf': token }), token),
+      csrfFailure(req({ host: '127.0.0.1:8787', origin: 'null', 'x-contentd-csrf': token }), token),
     ).toContain('origin')
   })
 
@@ -108,7 +108,7 @@ describe('csrfFailure', () => {
             host: 'localhost:9999',
             origin: 'http://localhost:9999',
             'sec-fetch-site': 'same-origin',
-            'x-brainrot-csrf': token,
+            'x-contentd-csrf': token,
           }),
           token,
         ),
@@ -122,7 +122,7 @@ describe('csrfFailure', () => {
             host: '[::1]:8787',
             origin: 'http://[::1]:8787',
             'sec-fetch-site': 'same-origin',
-            'x-brainrot-csrf': token,
+            'x-contentd-csrf': token,
           }),
           token,
         ),
@@ -141,7 +141,7 @@ describe('csrfFailure', () => {
             host: 'evil.example:8787',
             origin: 'http://evil.example:8787',
             'sec-fetch-site': 'same-origin',
-            'x-brainrot-csrf': token,
+            'x-contentd-csrf': token,
           }),
           token,
         ),
@@ -154,7 +154,7 @@ describe('csrfFailure', () => {
       // origin layer entirely.
       expect(new URL('file:///x').host).toBe('')
       expect(
-        csrfFailure(req({ host: '', origin: 'file:///x', 'x-brainrot-csrf': token }), token),
+        csrfFailure(req({ host: '', origin: 'file:///x', 'x-contentd-csrf': token }), token),
       ).toContain('loopback')
     })
   })

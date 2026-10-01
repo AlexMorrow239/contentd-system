@@ -23,7 +23,7 @@ describe('buildOverview', () => {
 
   beforeEach(() => {
     db = memDb(createTestTime(NOW))
-    vi.stubEnv('BRAINROT_GLOBAL_DAILY_USD', '12')
+    vi.stubEnv('CONTENTD_GLOBAL_DAILY_USD', '12')
   })
 
   afterEach(() => {

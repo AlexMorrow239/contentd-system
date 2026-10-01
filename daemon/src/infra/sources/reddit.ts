@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import type { SourcePost } from '../../shared/contracts/source-context.js'
-import { BrainrotError } from '../../shared/errors.js'
+import { ContentdError } from '../../shared/errors.js'
 import { storyBody } from '../../shared/stories/body.js'
 import { createDeadline, systemTime, type TimeSource } from '../../shared/time.js'
 import { REDDIT_HOSTS, classifyTarget } from './post-kind.js'
@@ -38,7 +38,7 @@ export function isAutomatedAuthor(author: string | undefined): boolean {
 // A descriptive UA: Arctic Shift is a free service whose operator asks callers
 // to be considerate, and naming the caller is the courteous minimum.
 export const REDDIT_USER_AGENT =
-  'brainrot-machine/0.1 (personal short-form pipeline; single operator)'
+  'contentd-system/0.1 (personal short-form pipeline; single operator)'
 
 // Reddit itself is unreachable keyless: it 403s hot.json unauthenticated
 // (observed live 2026-07-21), rate-limits the public Atom feed to about one
@@ -144,14 +144,14 @@ function apiError(body: unknown): string | undefined {
 
 export function redditSource(subreddit: string, fetchImpl: FetchLike = fetch): TrendSource {
   if (!SUBREDDIT_NAME.test(subreddit)) {
-    throw new BrainrotError(`redditSource: "${subreddit}" is not a subreddit name`, {
+    throw new ContentdError(`redditSource: "${subreddit}" is not a subreddit name`, {
       domain: 'config',
       kind: 'invalid',
     })
   }
   const id = `reddit:r/${subreddit}`
-  const fail = (detail: string): BrainrotError =>
-    new BrainrotError(`redditSource: r/${subreddit} ${detail}`, {
+  const fail = (detail: string): ContentdError =>
+    new ContentdError(`redditSource: r/${subreddit} ${detail}`, {
       domain: 'scout',
       kind: 'transient',
     })

@@ -34,7 +34,7 @@ beforeEach(async () => {
 afterEach(() => new Promise<void>((resolve) => server.close(() => resolve())))
 
 async function tmpWav(): Promise<string> {
-  const dir = tmpDir('brainrot-wx-')
+  const dir = tmpDir('contentd-wx-')
   const p = path.join(dir, 'narration.wav')
   await writeFile(p, Buffer.from('RIFFxxxxWAVEdummy'))
   return p

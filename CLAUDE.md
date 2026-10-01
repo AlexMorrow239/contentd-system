@@ -4,7 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Brainrot Machine: an automated pipeline that turns a topic into a finished,
+contentd-system contains the `contentd` daemon and its support harness: the
+operator dashboard, CLI utilities, and integrations. Its automated pipeline turns a topic into a finished,
 QC-checked, word-captioned 9:16 short video, ready to post to YouTube Shorts,
 Instagram Reels and/or TikTok — per channel, per declared platform. The
 pipeline's job ends at a finished video in the library; posting it is a
@@ -29,7 +30,7 @@ pnpm install
 pnpm check                  # formatting, lint, CLI/Remotion types, Next build, default suite
 pnpm build                  # CLI/Remotion type-check only
 pnpm dashboard:build        # production Next.js build, including dashboard type-check
-pnpm dashboard:dev          # explicit BRAINROT_ROOT required
+pnpm dashboard:dev          # explicit CONTENTD_ROOT required
 pnpm test:dashboard         # Playwright; build + install Chromium first
 pnpm test                   # mocked providers, real ffmpeg/Remotion
 pnpm test:config             # schema, path rules, tracked channel TOMLs
@@ -55,16 +56,16 @@ Production runs through Compose. `.env.example` documents its settings;
 create `.env` only if absent, and fill in the provider keys. Read-only examples:
 
 ```bash
-docker compose exec brainrot pnpm brainrot jobs
-docker compose exec brainrot pnpm brainrot costs
-docker compose exec brainrot pnpm brainrot topics list
-docker compose exec brainrot pnpm brainrot library list
+docker compose exec contentd pnpm contentd jobs
+docker compose exec contentd pnpm contentd costs
+docker compose exec contentd pnpm contentd topics list
+docker compose exec contentd pnpm contentd library list
 ```
 
 On macOS, `pnpm daemon:caffeinate install` installs a host LaunchAgent that keeps
 the Mac awake while this checkout's daemon container runs. `daemon/src/app/host/caffeinate.ts`
 owns the sleep assertion lifecycle; `daemon/src/app/host/caffeinate-service.ts` owns host
-installation and signals. `BRAINROT_CAFFEINATE` defaults to true and is reloaded
+installation and signals. `CONTENTD_CAFFEINATE` defaults to true and is reloaded
 from `.env` every 30 seconds; false releases the assertion without restarting
 Docker. It is host-only, not a container setting. Display sleep is allowed;
 actual system sleep still pauses work. See README Start for removal and limits.
@@ -74,22 +75,22 @@ For break-glass CLI work, stop the daemon first, then use a one-shot container;
 `docker compose exec` cannot run against a stopped service:
 
 ```bash
-docker compose stop brainrot
-docker compose run --rm --no-deps brainrot pnpm brainrot resume JOB_ID
-docker compose start brainrot
+docker compose stop contentd
+docker compose run --rm --no-deps contentd pnpm contentd resume JOB_ID
+docker compose start contentd
 ```
 
 Replace `JOB_ID` with the affected job. Use `--force` for a `running` job only
 when no live process owns it. SIGTERM stops polling but does not cancel an
 active render; Docker can kill it after the stop timeout. See README Recovery.
-Host entrypoints require an explicit `--root`/`BRAINROT_ROOT`; tests use temp
+Host entrypoints require an explicit `--root`/`CONTENTD_ROOT`; tests use temp
 roots. Compose supplies `/app/state` and a container-only SQLite volume.
 
-Release commands (both images; the dashboard shares the brainrot image):
+Release commands (both images; the dashboard shares the contentd image):
 
 ```bash
 pnpm check
-docker compose build brainrot whisperx
+docker compose build contentd whisperx
 docker compose up -d --no-build
 ```
 
@@ -316,10 +317,10 @@ Caption styling is shared in code via `CAPTION_STYLE` in `daemon/src/shared/cont
 `[scout] queue_days` (default 3) caps candidate depth before a fetch. Neither
 is an expiry timer. A channel without scout sources is fed manually.
 
-`BRAINROT_ROOT` is required unless `--root` is supplied. `daemon/src/config/paths.ts`
-derives `db/brainrot.db`, `runs/`, and `channels/` beneath it. There is no
+`CONTENTD_ROOT` is required unless `--root` is supplied. `daemon/src/config/paths.ts`
+derives `db/contentd.db`, `runs/`, and `channels/` beneath it. There is no
 implicit host root. Compose supplies `/app/state`; tests supply temporary roots.
-Only `BRAINROT_ROOT` selects paths; obsolete path variables are ignored.
+Only `CONTENTD_ROOT` selects paths; obsolete path variables are ignored.
 
 ### The scout: subreddits through Arctic Shift, filtered before scoring
 
@@ -424,7 +425,7 @@ relying on pages that query newly added columns.
 ### Budgets: global daily limit and optional channel daily limit
 
 `daemon/src/config/budget.ts` owns the $25 fallback and parsing for
-`BRAINROT_GLOBAL_DAILY_USD`. Compose and the dashboard use the same value.
+`CONTENTD_GLOBAL_DAILY_USD`. Compose and the dashboard use the same value.
 Zero stops paid work; unset/blank uses $25; invalid settings fail validation.
 Channel `[budget] per_day_usd` is optional, must be positive and strictly below
 the effective global cap. An absent cap means global-only enforcement, with
@@ -453,7 +454,7 @@ backlog capacity and reuse the original daily job slot.
 
 ### Errors: one vocabulary, two axes
 
-`daemon/src/shared/errors.ts` owns `BrainrotError`, `errorMessage`, `classify`, `tagError`,
+`daemon/src/shared/errors.ts` owns `ContentdError`, `errorMessage`, `classify`, `tagError`,
 `errorContext`, and `isAbortLike`. It imports nothing from `daemon/src/`; an architecture
 lint protects that boundary. Domain classes stay with their owning modules.
 
@@ -570,7 +571,7 @@ install/version.
 
 ### Data flow summary
 
-SQLite lives at `<root>/db/brainrot.db`, in the `brainrot-data` named volume
+SQLite lives at `<root>/db/contentd.db`, in the `contentd-data` named volume
 in production. Never replace it with a macOS bind mount: WAL requires coherent
 shared memory across all openers, and mixing host/VM kernels over virtiofs
 previously corrupted state. Use container CLI commands for production access.

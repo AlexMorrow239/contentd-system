@@ -2,7 +2,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
-import { BrainrotError, tagError } from '../../shared/errors.js'
+import { ContentdError, tagError } from '../../shared/errors.js'
 
 export interface LlmUsageCost {
   usdMicros: number
@@ -97,7 +97,7 @@ async function forcedToolCompletion<T>(opts: {
   // ledger.
   const price = PRICE_TABLE[opts.model]
   if (!price) {
-    throw new BrainrotError(`${opts.label}: no price table entry for model "${opts.model}"`, {
+    throw new ContentdError(`${opts.label}: no price table entry for model "${opts.model}"`, {
       domain: 'config',
       kind: 'invalid',
     })
@@ -232,7 +232,7 @@ export async function visionJudgment<T>(opts: {
     const ext = path.extname(imagePath).toLowerCase()
     const mediaType = IMAGE_MEDIA_TYPES[ext]
     if (!mediaType) {
-      throw new BrainrotError(
+      throw new ContentdError(
         `visionJudgment: unsupported image extension "${ext}" for "${imagePath}" (expected .png, .jpg, or .jpeg)`,
         { domain: 'provider', kind: 'invalid' },
       )

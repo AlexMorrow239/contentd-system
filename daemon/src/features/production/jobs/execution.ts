@@ -1,7 +1,7 @@
 import type { Database } from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { LeaseLostError, ownsLease, type LeaseContext } from '../../../infra/coordination/lease.js'
-import { BrainrotError } from '../../../shared/errors.js'
+import { ContentdError } from '../../../shared/errors.js'
 
 export function beginAttempt(db: Database, jobId: string, lease: LeaseContext): string {
   return db
@@ -13,13 +13,13 @@ export function beginAttempt(db: Database, jobId: string, lease: LeaseContext): 
         .get(jobId) as { status: string; active_attempt_id: string | null } | undefined
       if (!job) throw new Error(`job not found: ${jobId}`)
       if (job.status === 'done')
-        throw new BrainrotError(`job ${jobId} is already done`, { domain: 'job', kind: 'refused' })
+        throw new ContentdError(`job ${jobId} is already done`, { domain: 'job', kind: 'refused' })
       if (job.active_attempt_id !== null) {
         const attempt = db
           .prepare('SELECT owner_token FROM execution_attempts WHERE id=? AND status=?')
           .get(job.active_attempt_id, 'running') as { owner_token: string } | undefined
         if (attempt && ownsLease(db, 'produce', attempt.owner_token, lease.time))
-          throw new BrainrotError(`job ${jobId} already has a live attempt`, {
+          throw new ContentdError(`job ${jobId} already has a live attempt`, {
             domain: 'job',
             kind: 'conflict',
           })

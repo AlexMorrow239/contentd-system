@@ -11,7 +11,7 @@ import { registerTopicsCommands } from './topics.js'
  * Command callbacks dynamically import their execution graphs. */
 export function createProgram(): Command {
   const program = new Command()
-  program.name('brainrot').description('Brainrot Machine CLI')
+  program.name('contentd').description('contentd daemon and utilities for contentd-system')
   registerProductionCommands(program)
   registerScoutingCommands(program)
   registerBillingCommands(program)

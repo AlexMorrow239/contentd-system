@@ -1,6 +1,6 @@
 import { Command } from 'commander'
 import { configErrorNoop, tryLoadChannelsDir } from '../../config/channel.js'
-import { resolveBrainrotPaths } from '../../config/paths.js'
+import { resolveContentdPaths } from '../../config/paths.js'
 import { acquireManagedLease } from '../../infra/coordination/lease.js'
 import { ROOT_OPTION_DESC, printJson, reportBlockedTick, withDb } from './context.js'
 export function registerScoutingCommands(program: Command): void {
@@ -9,7 +9,7 @@ export function registerScoutingCommands(program: Command): void {
     .option('--root <path>', ROOT_OPTION_DESC)
     .option('--force', 'bypass the per-channel scout recheck cooldown (SCOUT_RECHECK_MS)')
     .action(async (opts: { root?: string; force?: boolean }) => {
-      const paths = resolveBrainrotPaths(opts.root)
+      const paths = resolveContentdPaths(opts.root)
       // Config load precedes the db handle AND the lease, exactly as in
       // produce-next: a broken channel TOML blocks the whole run either way,
       // and letting it throw meant exit 1 with NO JSON line every

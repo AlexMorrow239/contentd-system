@@ -116,7 +116,7 @@ export const requestPublicPage: PageRequest = (url, signal) => {
         agent: false,
         lookup: publicLookup,
         headers: {
-          'User-Agent': 'brainrot-machine/0.1 (article context)',
+          'User-Agent': 'contentd-system/0.1 (article context)',
           Accept: 'text/html, application/xhtml+xml',
           'Accept-Encoding': 'gzip, deflate, br',
         },

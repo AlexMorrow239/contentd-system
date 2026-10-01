@@ -56,9 +56,9 @@ export interface ErrorTag {
  * so it can never collide with a provider SDK's own fields, and so it stays
  * out of `Object.keys` and `JSON.stringify`.
  */
-const TAG = Symbol.for('brainrot.errorTag')
+const TAG = Symbol.for('contentd.errorTag')
 
-export class BrainrotError extends Error {
+export class ContentdError extends Error {
   readonly domain: ErrorDomain
   readonly kind: ErrorKind
   readonly context: Readonly<Record<string, unknown>>
@@ -75,7 +75,7 @@ export class BrainrotError extends Error {
     // Passing `{ cause: undefined }` would define an own `cause` property set
     // to undefined, which reads differently from "no cause" in a log dump.
     super(message, opts.cause === undefined ? undefined : { cause: opts.cause })
-    this.name = 'BrainrotError'
+    this.name = 'ContentdError'
     this.domain = opts.domain
     this.kind = opts.kind
     this.context = Object.freeze({ ...opts.context })
@@ -109,7 +109,7 @@ export function errorMessage(err: unknown): string {
  * `ZodError` so its callers and tests still match `instanceof z.ZodError`.
  * Returns the same object, unchanged apart from a non-enumerable symbol.
  *
- * Prefer throwing a `BrainrotError` when you own the error. Reach for this
+ * Prefer throwing a `ContentdError` when you own the error. Reach for this
  * only when you don't.
  *
  * Unlike `classify`, this is NOT total: `Object.defineProperty` throws on a
@@ -147,19 +147,19 @@ const EMPTY_CONTEXT: Readonly<Record<string, unknown>> = Object.freeze({})
 /**
  * Classify any thrown value. Total: never throws, accepts anything, and is
  * safe at the top-level catch sites where the thrown value genuinely is
- * unknown. A `BrainrotError` reports its own fields; a tagged foreign error
+ * unknown. A `ContentdError` reports its own fields; a tagged foreign error
  * reports the tag's; everything else is `internal/internal`.
  *
- * `domain`/`kind` always come from the BrainrotError's own fields — a tag can
+ * `domain`/`kind` always come from the ContentdError's own fields — a tag can
  * never override an error's classification. A tag's `context` DOES merge in,
- * though: tagging an already-thrown `BrainrotError` (e.g. scout tagging a
+ * though: tagging an already-thrown `ContentdError` (e.g. scout tagging a
  * `BudgetExceededError` with its partial progress before re-throwing) is how
  * that extra context reaches `errorContext()`. On a key collision the error's
  * own `context` wins, since it is the more authoritative, original source.
  */
 export function classify(err: unknown): ErrorInfo {
   const message = errorMessage(err)
-  if (err instanceof BrainrotError) {
+  if (err instanceof ContentdError) {
     const tag = readErrorTag(err)
     return {
       domain: err.domain,

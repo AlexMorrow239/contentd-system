@@ -34,10 +34,10 @@ export function memDb(time: TimeSource = systemTime): Database {
  * asserts on WAL/concurrency behavior.
  */
 export function fileDb(
-  name = 'brainrot.db',
+  name = 'contentd.db',
   time: TimeSource = systemTime,
 ): { db: Database; dbPath: string; root: string } {
-  const root = tmpDir('brainrot-db-')
+  const root = tmpDir('contentd-db-')
   const dbPath = path.join(root, name)
   const db = trackDb(openDb(dbPath))
   fixtureTimes.set(db, time)

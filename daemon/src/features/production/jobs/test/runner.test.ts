@@ -18,7 +18,7 @@ import { createJob, runJob } from '../runner.js'
 
 /** A real on-disk db plus a runs root beside it; both cleaned up per file. */
 function setup() {
-  const { db, root } = fileDb('data/brainrot.db')
+  const { db, root } = fileDb('data/contentd.db')
   return { db, runsRoot: join(root, 'runs') }
 }
 

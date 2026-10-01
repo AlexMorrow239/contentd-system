@@ -3,7 +3,7 @@ import type { ChannelConfig } from '../../../config/channel.js'
 import { loadChannelByName } from '../../../config/channel.js'
 import { requireLease, type LeaseContext } from '../../../infra/coordination/lease.js'
 import { sqlPlaceholders } from '../../../infra/db/sql.js'
-import { BrainrotError, errorMessage } from '../../../shared/errors.js'
+import { ContentdError, errorMessage } from '../../../shared/errors.js'
 import { resolveTime, type TimeSource } from '../../../shared/time.js'
 import type { StageDef } from '../contracts.js'
 import { pipelineStages } from '../pipeline.js'
@@ -21,7 +21,7 @@ import { runJob } from './runner.js'
 // race it used to report for all three.
 export type ResumeErrorKind = 'not-found' | 'refused' | 'conflict'
 
-export class ResumeError extends BrainrotError {
+export class ResumeError extends ContentdError {
   // `declare` is mandatory under useDefineForClassFields — without it, the
   // base class's field initializer runs after this one and overwrites it
   // with `undefined`.

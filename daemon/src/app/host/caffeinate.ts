@@ -15,10 +15,10 @@ export function readCaffeinateEnabled(root: string, env: NodeJS.ProcessEnv = pro
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
-  const value = env.BRAINROT_CAFFEINATE ?? file.BRAINROT_CAFFEINATE ?? 'true'
+  const value = env.CONTENTD_CAFFEINATE ?? file.CONTENTD_CAFFEINATE ?? 'true'
   if (value === 'true') return true
   if (value === 'false') return false
-  throw new Error('BRAINROT_CAFFEINATE must be true or false')
+  throw new Error('CONTENTD_CAFFEINATE must be true or false')
 }
 
 interface Assertion {
@@ -73,7 +73,7 @@ export async function watchDaemon(opts: {
 export async function daemonContainerRunning(root: string, signal: AbortSignal): Promise<boolean> {
   const { stdout } = await exec(
     'docker',
-    ['compose', '--project-directory', root, 'ps', '--status', 'running', '--quiet', 'brainrot'],
+    ['compose', '--project-directory', root, 'ps', '--status', 'running', '--quiet', 'contentd'],
     { cwd: root, signal, timeout: 10_000, maxBuffer: 64 * 1024 },
   )
   return stdout.trim().length > 0

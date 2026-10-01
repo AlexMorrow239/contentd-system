@@ -7,8 +7,8 @@ import { openDbActions, openDbReadonly } from '../dashboard.js'
 import { openDb } from '../index.js'
 
 function tempDbPath(): string {
-  const dir = tmpDir('brainrot-db-')
-  return join(dir, 'nested', 'brainrot.db') // 'nested' does not exist yet
+  const dir = tmpDir('contentd-db-')
+  return join(dir, 'nested', 'contentd.db') // 'nested' does not exist yet
 }
 
 describe('openDb', () => {
@@ -88,7 +88,7 @@ describe('openDbReadonly', () => {
   it('throws on a missing file instead of creating one', () => {
     // A viewer that conjures the database it failed to find reports zeroes
     // instead of "missing", which is worse than an error.
-    const path = join(tmpDir('brainrot-ro-'), 'absent.db')
+    const path = join(tmpDir('contentd-ro-'), 'absent.db')
     expect(() => openDbReadonly(path)).toThrow()
     expect(existsSync(path)).toBe(false)
   })
@@ -104,9 +104,9 @@ describe('openDbReadonly', () => {
 
 describe('openDbActions', () => {
   it('throws on a missing path without creating its parent directory', () => {
-    const root = tmpDir('brainrot-actions-')
+    const root = tmpDir('contentd-actions-')
     const missingParent = join(root, 'nope')
-    const missing = join(missingParent, 'brainrot.db')
+    const missing = join(missingParent, 'contentd.db')
     // fileMustExist: a viewer pointed at the wrong root must report, not create.
     expect(() => openDbActions(missing)).toThrow(/cannot open database/i)
     // And it must not have mkdir'd the parent while failing to open.
@@ -114,7 +114,7 @@ describe('openDbActions', () => {
   })
 
   it('opens an existing empty file without execing schema.sql or running migrations', () => {
-    const root = tmpDir('brainrot-actions-')
+    const root = tmpDir('contentd-actions-')
     const path = join(root, 'empty.db')
     writeFileSync(path, '') // a valid, empty SQLite file: zero tables
     const db = openDbActions(path)
@@ -126,8 +126,8 @@ describe('openDbActions', () => {
   })
 
   it('is genuinely writable: can insert into operator_actions', () => {
-    const root = tmpDir('brainrot-actions-')
-    const path = join(root, 'brainrot.db')
+    const root = tmpDir('contentd-actions-')
+    const path = join(root, 'contentd.db')
     openDb(path).close() // creates schema, including operator_actions
 
     const db = openDbActions(path)

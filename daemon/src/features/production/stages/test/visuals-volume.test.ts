@@ -53,7 +53,7 @@ let outputSource: string
 let selectionSource: string
 
 beforeAll(async () => {
-  const dir = tmpDir('brainrot-clip-src-')
+  const dir = tmpDir('contentd-clip-src-')
   outputSource = path.join(dir, 'output.mp4')
   selectionSource = path.join(dir, 'selection.mp4')
   await Promise.all([
@@ -81,7 +81,7 @@ function channelFor(bgDir: string | string[]): ChannelConfig {
 
 /** A ctx whose narration is short enough that the loop step is near-free. */
 function selectionCtx(channel: ChannelConfig): JobContext {
-  const ctx = makeCtx({ channel, jobId: 'job-visuals', runDir: tmpDir('brainrot-run-') })
+  const ctx = makeCtx({ channel, jobId: 'job-visuals', runDir: tmpDir('contentd-run-') })
   seedVoiceJson(ctx, 100)
   return ctx
 }
@@ -96,7 +96,7 @@ function usedFile(ctx: JobContext): string {
 
 describe('visualsVolumeStage', () => {
   it('checks ownership inside the background-usage transaction', async () => {
-    const bgDir = tmpDir('brainrot-bg-')
+    const bgDir = tmpDir('contentd-bg-')
     placeClip(path.join(bgDir, 'clip.mp4'))
     const ctx = selectionCtx(channelFor(bgDir))
     const lost = new Error('lease lost before background usage commit')
@@ -114,13 +114,13 @@ describe('visualsVolumeStage', () => {
   })
 
   it('crops+loops a chosen clip to background.mp4 and records bg_usage', async () => {
-    const bgDir = tmpDir('brainrot-bg-')
+    const bgDir = tmpDir('contentd-bg-')
     placeClip(path.join(bgDir, 'clip1.mp4'), outputSource)
     placeClip(path.join(bgDir, 'clip2.mp4'), outputSource)
     const ctx = makeCtx({
       channel: channelFor(bgDir),
       jobId: 'job-visuals',
-      runDir: tmpDir('brainrot-run-'),
+      runDir: tmpDir('contentd-run-'),
     })
     seedVoiceJson(ctx, 2000)
 
@@ -141,7 +141,7 @@ describe('visualsVolumeStage', () => {
   }, 60000)
 
   it('excludes recently used clips (chooses the unused one)', async () => {
-    const bgDir = tmpDir('brainrot-bg-')
+    const bgDir = tmpDir('contentd-bg-')
     const clip1 = path.join(bgDir, 'clip1.mp4')
     const clip2 = path.join(bgDir, 'clip2.mp4')
     placeClip(clip1)
@@ -157,12 +157,12 @@ describe('visualsVolumeStage', () => {
   }, 60000)
 
   it('throws when bgDir has no mp4 clips', async () => {
-    const ctx = selectionCtx(channelFor(tmpDir('brainrot-bg-empty-')))
+    const ctx = selectionCtx(channelFor(tmpDir('contentd-bg-empty-')))
     await expect(visualsVolumeStage.run(ctx)).rejects.toThrow(/no .mp4 background clips/)
   })
 
   it('discovers clips nested in subfolders', async () => {
-    const bgDir = tmpDir('brainrot-bg-')
+    const bgDir = tmpDir('contentd-bg-')
     const nestedClip = path.join(bgDir, 'minecraft-parkour', 'clip1.mp4')
     placeClip(nestedClip)
     const ctx = selectionCtx(channelFor(bgDir))
@@ -173,7 +173,7 @@ describe('visualsVolumeStage', () => {
   }, 60000)
 
   it('ignores non-mp4 files in subfolders', async () => {
-    const bgDir = tmpDir('brainrot-bg-')
+    const bgDir = tmpDir('contentd-bg-')
     const sub = path.join(bgDir, 'sub')
     mkdirSync(sub, { recursive: true })
     writeFileSync(path.join(sub, 'notes.txt'), 'not a clip')
@@ -187,8 +187,8 @@ describe('visualsVolumeStage', () => {
   }, 60000)
 
   it('pools clips from multiple configured roots', async () => {
-    const rootA = tmpDir('brainrot-bg-a-')
-    const rootB = tmpDir('brainrot-bg-b-')
+    const rootA = tmpDir('contentd-bg-a-')
+    const rootB = tmpDir('contentd-bg-b-')
     const clipA = path.join(rootA, 'clipA.mp4')
     const clipB = path.join(rootB, 'clipB.mp4')
     placeClip(clipA)
@@ -201,8 +201,8 @@ describe('visualsVolumeStage', () => {
   }, 60000)
 
   it('treats same-basename clips in different roots as distinct pool entries', async () => {
-    const rootA = tmpDir('brainrot-bg-a-')
-    const rootB = tmpDir('brainrot-bg-b-')
+    const rootA = tmpDir('contentd-bg-a-')
+    const rootB = tmpDir('contentd-bg-b-')
     const clipA = path.join(rootA, 'clip.mp4') // same basename, different roots
     const clipB = path.join(rootB, 'clip.mp4')
     placeClip(clipA)
@@ -220,8 +220,8 @@ describe('visualsVolumeStage', () => {
   }, 60000)
 
   it('tolerates a missing root as long as another configured root has clips', async () => {
-    const goodRoot = tmpDir('brainrot-bg-good-')
-    const missingRoot = path.join(tmpdir(), 'brainrot-bg-does-not-exist')
+    const goodRoot = tmpDir('contentd-bg-good-')
+    const missingRoot = path.join(tmpdir(), 'contentd-bg-does-not-exist')
     const clip = path.join(goodRoot, 'clip1.mp4')
     placeClip(clip)
     const ctx = selectionCtx(channelFor([missingRoot, goodRoot]))
