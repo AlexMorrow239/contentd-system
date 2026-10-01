@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { countTopics, topicChannels } from '../topics.js'
+import { describe, expect, it } from 'vitest'
+import { listTopics } from '../../../../../daemon/src/features/topics/queries.js'
 import { memDb, seedTopic as seedTopicRow } from '../../../../../daemon/testing/db.js'
-import { listTopics } from '../../../../../daemon/src/scout/topics.js'
+import { countTopics, topicChannels } from '../topics.js'
 
 let seq = 0
 function seedTopic(

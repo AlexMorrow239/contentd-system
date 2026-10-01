@@ -1,0 +1,62 @@
+import type { Database } from 'better-sqlite3'
+import { requireDaemonLease } from '../infra/coordination/daemon-lease.js'
+import { requireLease } from '../infra/coordination/lease.js'
+import { runWorkers } from '../runtime/worker-supervisor.js'
+import type { WorkerDeps, WorkerSpec } from '../shared/contracts/worker.js'
+import { systemTime, type TimeSource } from '../shared/time.js'
+import { createDaemonWorkers, initializeDaemonWork } from './workers.js'
+
+/** Process lifecycle and production wiring. Work and polling live elsewhere. */
+export async function runDaemon(
+  db: Database,
+  opts: {
+    channelsDir: string
+    runsRoot: string
+    time?: TimeSource
+    emit?: WorkerDeps['emit']
+    signal?: AbortSignal
+    workers?: readonly WorkerSpec[]
+  },
+): Promise<void> {
+  const time = opts.time ?? systemTime
+  const daemonLease = db.memory
+    ? requireLease(db, 'daemon', undefined, { time })
+    : await requireDaemonLease(db, time)
+  const controller = new AbortController()
+  const abort = (): void => controller.abort()
+  try {
+    daemonLease.signal.addEventListener('abort', abort, { once: true })
+    if (opts.signal === undefined) {
+      process.once('SIGTERM', abort)
+      process.once('SIGINT', abort)
+    } else if (opts.signal.aborted) {
+      abort()
+    } else {
+      opts.signal.addEventListener('abort', abort, { once: true })
+    }
+    // Injected workers bypass production startup work as well as construction.
+    if (opts.workers === undefined) initializeDaemonWork(db, daemonLease)
+    const workers = opts.workers ?? createDaemonWorkers(db, { ...opts, time, daemonLease })
+    const emit =
+      opts.emit ??
+      ((line: Record<string, unknown>) => process.stdout.write(JSON.stringify(line) + '\n'))
+    emit({ action: 'daemon-started', pid: process.pid })
+    await runWorkers(
+      workers.map((worker) => ({
+        ...worker,
+        unit: () => {
+          daemonLease.assertOwned()
+          return worker.unit()
+        },
+      })),
+      { signal: controller.signal, emit, time },
+    )
+    if (daemonLease.signal.aborted) throw daemonLease.signal.reason
+  } finally {
+    process.removeListener('SIGTERM', abort)
+    process.removeListener('SIGINT', abort)
+    opts.signal?.removeEventListener('abort', abort)
+    daemonLease.signal.removeEventListener('abort', abort)
+    daemonLease.release()
+  }
+}

@@ -2,7 +2,8 @@ import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Database } from 'better-sqlite3'
-import { countJobs, DASHBOARD_STAGE_ORDER, getJobDetail, jobChannels, listJobs } from '../jobs.js'
+import { STAGE_ORDER } from '../../../../../daemon/src/shared/contracts/pipeline.js'
+import { countJobs, getJobDetail, jobChannels, listJobs } from '../jobs.js'
 import { tmpDir } from '../../../../../daemon/testing/tmp.js'
 import { testChannel } from '../../../../../daemon/testing/channel.js'
 import {
@@ -259,7 +260,7 @@ describe('getJobDetail', () => {
     })
 
     const detail = getJobDetail(db, 'j1')
-    expect(detail?.stages.map((s) => s.stage)).toEqual([...DASHBOARD_STAGE_ORDER])
+    expect(detail?.stages.map((s) => s.stage)).toEqual([...STAGE_ORDER])
     expect(detail?.stages[0]?.status).toBe('done')
     expect(detail?.stages[1]?.status).toBe('failed')
     expect(detail?.stages[1]?.error).toBe('elevenlabs 401')

@@ -1,5 +1,5 @@
-import { TOPIC_STATUSES, type TopicStatus } from '../../../daemon/src/scout/topic-status.js'
-import { filtersUrl, filterText } from './filters.js'
+import { TOPIC_STATUSES, type TopicStatus } from '../../../daemon/src/features/topics/status.js'
+import { filterText, filtersUrl } from './filters.js'
 
 export const TOPIC_FILTER_KEYS = ['q', 'channel', 'status'] as const
 export const TOPIC_FILTER_STORAGE_KEY = 'brainrot.topics.filters.v1'

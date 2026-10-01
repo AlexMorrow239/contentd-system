@@ -1,5 +1,5 @@
 import { createClock } from '@sinonjs/fake-timers'
-import { sleepWithTime, type TimeSource } from '../src/time.js'
+import { sleepWithTime, type TimeSource } from '../src/shared/time.js'
 
 export interface TestTime extends TimeSource {
   advanceBy(ms: number): Promise<void>

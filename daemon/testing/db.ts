@@ -1,8 +1,8 @@
-import path from 'node:path'
 import type { Database } from 'better-sqlite3'
-import { openDb } from '../src/db/index.js'
+import path from 'node:path'
+import { openDb } from '../src/infra/db/index.js'
+import { systemTime, type TimeSource } from '../src/shared/time.js'
 import { tmpDir, trackDb } from './tmp.js'
-import { systemTime, type TimeSource } from '../src/time.js'
 
 const fixtureTimes = new WeakMap<Database, TimeSource>()
 export function fixtureTime(db: Database): TimeSource {

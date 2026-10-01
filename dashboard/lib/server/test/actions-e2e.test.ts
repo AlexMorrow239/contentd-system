@@ -1,13 +1,13 @@
-import { describe, expect, it } from 'vitest'
-import { openDb } from '../../../../daemon/src/db/index.js'
-import { actionsUnit } from '../../../../daemon/src/loop/actions-worker.js'
-import { resolvePaths } from '../../../../daemon/src/config/paths.js'
-import { seedDaemonState, seedTopic } from '../../../../daemon/testing/db.js'
-import { tmpDir } from '../../../../daemon/testing/tmp.js'
-import { submitAction } from '../submission.js'
-import type { DashboardConfig } from '../../config.js'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { resolvePaths } from '../../../../daemon/src/config/paths.js'
+import { actionsUnit } from '../../../../daemon/src/features/actions/worker.js'
+import { openDb } from '../../../../daemon/src/infra/db/index.js'
+import { seedDaemonState, seedTopic } from '../../../../daemon/testing/db.js'
+import { tmpDir } from '../../../../daemon/testing/tmp.js'
+import type { DashboardConfig } from '../../config.js'
+import { submitAction } from '../submission.js'
 
 describe('dashboard to daemon action round trip', () => {
   it('enqueues from an HTTP form and executes in the worker against one file db', async () => {

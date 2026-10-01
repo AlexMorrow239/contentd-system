@@ -10,7 +10,6 @@ function include(): string[] {
     'daemon/testing/**/*.test.ts',
     'integrations/remotion/**/*.test.ts',
     'dashboard/**/*.test.{ts,tsx}',
-    'daemon/*.test.ts',
     'test/**/*.test.ts',
   ]
 }
@@ -63,7 +62,7 @@ export default defineConfig({
         'daemon/testing/**',
         // Type-only modules: erased at runtime, so they can only ever read 0%.
         '**/types.ts',
-        'daemon/src/remotion-types.ts',
+        'daemon/src/shared/contracts/video.ts',
         'integrations/remotion/index.ts',
       ],
     },

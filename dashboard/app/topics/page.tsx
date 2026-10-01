@@ -1,12 +1,12 @@
-import { countTopics, topicChannels } from '../../lib/server/queries/topics'
-import { listTopics } from '../../../daemon/src/scout/topics'
 import { redirect } from 'next/navigation'
-import { TopicFiltersControl } from '../../components/topic-filters'
-import { parseTopicFilters, topicsUrl, TOPICS_PAGE_SIZE } from '../../lib/shared/topic-filters'
-import { pageNumber } from '../../lib/shared/filters'
+import { listTopics } from '../../../daemon/src/features/topics/queries.js'
 import { ActionForm } from '../../components/action-form'
 import { DashboardPage, type PageProps } from '../../components/page'
-import { Pagination, JobLink, SafeLink, Status, Table, formatTime } from '../../components/ui'
+import { TopicFiltersControl } from '../../components/topic-filters'
+import { JobLink, Pagination, SafeLink, Status, Table, formatTime } from '../../components/ui'
+import { countTopics, topicChannels } from '../../lib/server/queries/topics'
+import { pageNumber } from '../../lib/shared/filters'
+import { TOPICS_PAGE_SIZE, parseTopicFilters, topicsUrl } from '../../lib/shared/topic-filters'
 export default function TopicsPage(props: PageProps) {
   return (
     <DashboardPage {...props}>

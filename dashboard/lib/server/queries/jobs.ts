@@ -1,29 +1,17 @@
 import type { Database } from 'better-sqlite3'
-import { parseBudgetWait, type BudgetWait } from '../../../../daemon/src/jobs/budget-wait.js'
-import { sqlPlaceholders, whereClause } from '../../../../daemon/src/db/sql.js'
-import { fullyPostedClause } from '../../../../daemon/src/posts/posts.js'
-import { hasActiveAction } from './actions.js'
-import { jobContents, type JobContent, type JobChannels, type JobPost } from './job-content.js'
+import {
+  parseBudgetWait,
+  type BudgetWait,
+} from '../../../../daemon/src/features/billing/budget-wait.js'
+import { fullyPostedClause } from '../../../../daemon/src/features/posting/posts.js'
+import { sqlPlaceholders, whereClause } from '../../../../daemon/src/infra/db/sql.js'
+import { STAGE_ORDER } from '../../../../daemon/src/shared/contracts/pipeline.js'
 import type { JOB_STATUSES, JobFilters } from '../../shared/job-filters.js'
+import { hasActiveAction } from './actions.js'
+import { jobContents, type JobChannels, type JobContent, type JobPost } from './job-content.js'
 
 export type JobStatus = (typeof JOB_STATUSES)[number]
 export type StageStatus = 'pending' | 'running' | 'done' | 'failed'
-
-/**
- * Stage order for the drill-in timeline. Hardcoded rather than imported from
- * jobs/pipeline.ts because that module transitively imports remotion
- * and the ffmpeg wrappers — a read-only viewer must not pull the renderer
- * into memory. queries/jobs.test.ts asserts this equals
- * pipelineStages().map(s => s.name), so it cannot silently drift.
- */
-export const DASHBOARD_STAGE_ORDER = [
-  'script',
-  'voice',
-  'captions',
-  'visuals',
-  'assemble',
-  'qc',
-] as const
 
 export interface JobListRow extends Omit<JobContent, 'posts'> {
   id: string
@@ -220,7 +208,7 @@ export function getJobDetail(
   // Render the FULL pipeline every time, synthesizing 'pending' for stages
   // with no row yet. A timeline that only shows rows that exist hides exactly
   // the information you came for: how far the job got before it stopped.
-  const stages: StageRow[] = DASHBOARD_STAGE_ORDER.map((stage) => {
+  const stages: StageRow[] = STAGE_ORDER.map((stage) => {
     const found = byStage.get(stage)
     return {
       stage,

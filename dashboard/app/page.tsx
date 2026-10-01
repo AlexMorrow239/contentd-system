@@ -1,10 +1,10 @@
 import { tryLoadChannelsDir } from '../../daemon/src/config/channel'
-import { buildOverview } from '../lib/server/queries/overview'
-import { formatUsdMicros } from '../../daemon/src/money'
+import { formatUsdMicros } from '../../daemon/src/shared/money'
 import { ActionForm } from '../components/action-form'
 import { Counts, Spend } from '../components/overview'
 import { DashboardPage, type PageProps } from '../components/page'
 import { JobLink, Status, Table, formatTime } from '../components/ui'
+import { buildOverview } from '../lib/server/queries/overview'
 export default function OverviewPage(props: PageProps) {
   return (
     <DashboardPage {...props} refreshSeconds={30}>

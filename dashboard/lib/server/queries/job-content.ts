@@ -1,9 +1,9 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../../../daemon/src/config/channel.js'
-import type { LibraryState } from '../../../../daemon/src/jobs/library.js'
-import type { ActionRow } from '../../../../daemon/src/actions/queue.js'
-import type { Platform } from '../../../../daemon/src/posts/types.js'
-import { sqlPlaceholders } from '../../../../daemon/src/db/sql.js'
+import type { ActionRow } from '../../../../daemon/src/features/actions/types.js'
+import type { LibraryState } from '../../../../daemon/src/features/library/library.js'
+import { sqlPlaceholders } from '../../../../daemon/src/infra/db/sql.js'
+import type { Platform } from '../../../../daemon/src/shared/contracts/platforms.js'
 import { libraryBytes, summarizeQc, type LibraryBytes, type QcSummary } from './library.js'
 
 export type JobChannels = readonly Pick<ChannelConfig, 'name' | 'platforms'>[]

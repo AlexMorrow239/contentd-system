@@ -1,4 +1,4 @@
-import { BrainrotError } from '../errors.js'
+import { BrainrotError } from '../shared/errors.js'
 
 export const DEFAULT_GLOBAL_DAILY_USD = 25
 

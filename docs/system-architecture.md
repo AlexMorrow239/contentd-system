@@ -1,6 +1,36 @@
 # Current system architecture and queue map
 
-Source snapshot: 2026-09-29. This maps the checked-out implementation and Compose configuration, not observed production queue depths or deployed image versions. Historical design documents and obsolete comments are not authoritative.
+Source snapshot: 2026-10-01. This maps the checked-out implementation and Compose configuration, not observed production queue depths or deployed image versions. Historical design documents and obsolete comments are not authoritative.
+
+## Source organization
+
+The daemon uses feature ownership within the existing single package. `app/`
+composes the daemon and CLI; `runtime/` polls and supervises generic units;
+`shared/` contains contracts and reusable primitives; `config/` validates
+configuration; and `infra/` implements database, coordination, provider, media,
+and source access. Host caffeinate support lives in `app/host/`.
+
+| Feature    | Owns                                                        | Other feature dependencies        |
+| ---------- | ----------------------------------------------------------- | --------------------------------- |
+| Billing    | Cost accounting and budget waits                            | None                              |
+| Topics     | Queries, insertion, claims, and operator transitions        | None                              |
+| Posting    | Platform metadata and posted state                          | None                              |
+| Library    | Inventory, approval, capacity, and cleanup                  | Posting                           |
+| Production | Jobs, recovery, planning, artifacts, context, and stages    | Billing, topics, library, posting |
+| Scouting   | Channel filtering/scoring and run coordination              | Billing, topics                   |
+| Reporting  | Digest data collection and formatting                       | Billing, topics, library, posting |
+| Actions    | Catalog, persistence, reconciliation, handlers, and workers | Feature operations above          |
+
+The runner reads shared artifact contracts without loading stage implementations.
+Pipeline composition supplies those implementations. Stage order, word timings,
+video properties, source snapshots, and platform names have lightweight contracts
+independent of providers. CLI registration defers execution imports until a command
+runs. Dashboard imports remain limited to metadata, queries, queue insertion, and
+its database handles.
+
+[Architecture tests](../daemon/src/arch.test.ts) enforce these dependency directions,
+absence of source cycles, browser-safe contracts, and dashboard/CLI isolation.
+Cross-table production transactions retain their original atomic boundaries.
 
 ## 1. System boundary
 
@@ -50,7 +80,7 @@ Compose mounts:
 
 The dashboard has no provider credentials. Its HTTP boundary validates same-origin/Host and CSRF token, validates action arguments, checks daemon liveness, and inserts an action. It never executes pipeline handlers. Compose's daemon/dashboard timezone is America/New_York; daily production and spend accounting use UTC.
 
-Sources: [Compose](../docker-compose.yml), [daemon](../daemon/src/loop/daemon.ts), [submission](../dashboard/lib/server/submission.ts), [database opening](../daemon/src/db/index.ts), [architecture boundary checks](../daemon/src/arch.test.ts).
+Sources: [Compose](../docker-compose.yml), [daemon](../daemon/src/app/daemon.ts), [submission](../dashboard/lib/server/submission.ts), [database opening](../daemon/src/infra/db/index.ts), [architecture boundary checks](../daemon/src/arch.test.ts).
 
 ## 2. What “queue” means here
 
@@ -102,7 +132,7 @@ The checked-in [mvp configuration](../docker/state/channels/mvp.toml) declares 1
 
 An empty platform list never qualifies as fully posted. Such videos can fill the backlog while the channel has no posting cards. The current platform configuration determines completion; changing that list can change which existing videos count as unconsumed.
 
-Sources: [scout gates](../daemon/src/scout/scout.ts), [topic selection](../daemon/src/scout/topics.ts), [planner](../daemon/src/loop/plan-tick.ts), [inventory](../daemon/src/jobs/library.ts), [shared fully-posted predicate](../daemon/src/posts/posts.ts), [posting query](../dashboard/lib/server/queries/post.ts).
+Sources: [scout gates](../daemon/src/features/scouting/channel.ts), [topic selection](../daemon/src/features/topics/queries.ts), [planner](../daemon/src/features/production/plan-tick.ts), [inventory](../daemon/src/features/library/library.ts), [shared fully-posted predicate](../daemon/src/features/posting/posts.ts), [posting query](../dashboard/lib/server/queries/post.ts).
 
 ## 4. Automatic production decisions
 
@@ -134,7 +164,7 @@ New-job selection itself does not preflight budgets. Paid stages enforce the glo
 
 `jobs.produce` executes an operator-supplied topic directly. It acquires the production lease through the action worker but bypasses candidate selection, planner quota, and backlog gates. Paid-stage budget checks still apply. Its created job subsequently counts toward that day's job total. `jobs.resume` similarly bypasses automatic planner selection.
 
-Sources: [planTick](../daemon/src/loop/plan-tick.ts), [produceNextTick](../daemon/src/loop/produce-next.ts), [budget checks](../daemon/src/jobs/costs.ts), [handlers](../daemon/src/actions/handlers.ts).
+Sources: [planTick](../daemon/src/features/production/plan-tick.ts), [produceNextTick](../daemon/src/features/production/produce-next.ts), [budget checks](../daemon/src/features/billing/costs.ts), [handlers](../daemon/src/features/actions/handlers.ts).
 
 ## 5. Operator actions and lease coordination
 
@@ -194,7 +224,7 @@ Each poll inspects at most 50 pending rows. A lease-blocked action remains pendi
 
 `produce.next` has distinct behavior: because the handler takes its own lease, contention returns a **done action with a lease-held noop result**, rather than a pending action waiting for a lease. Likewise, a returned pipeline result of failed/blocked is stored as a done action; only an exception makes the action failed. Inspect the result and referenced job, not just action status.
 
-Sources: [catalog](../daemon/src/actions/catalog.ts), [queue persistence](../daemon/src/actions/queue.ts), [action worker](../daemon/src/loop/actions-worker.ts), [lease implementation](../daemon/src/loop/lease.ts), [handlers](../daemon/src/actions/handlers.ts).
+Sources: [catalog](../daemon/src/features/actions/catalog.ts), [queue persistence](../daemon/src/features/actions/queue.ts), [action worker](../daemon/src/features/actions/worker.ts), [lease implementation](../daemon/src/infra/coordination/lease.ts), [handlers](../daemon/src/features/actions/handlers.ts).
 
 ## 6. Pipeline and state transitions
 
@@ -243,7 +273,7 @@ Posting does not change ready into a published state. The existence of a `posts`
 
 Story mode expands one source post into multiple topics/jobs/videos with a shared series key and individual part numbers. The production selector uses normal score/time/ID ordering; the posting page uses creation ordering. There is no per-platform predecessor enforcement, so the human must post parts in sequence.
 
-Sources: [pipeline order](../daemon/src/jobs/pipeline.ts), [runner](../daemon/src/jobs/runner.ts), [resume](../daemon/src/jobs/resume.ts), [stages](../daemon/src/stages), [posting records](../daemon/src/posts/posts.ts).
+Sources: [pipeline order](../daemon/src/features/production/pipeline.ts), [runner](../daemon/src/features/production/jobs/runner.ts), [resume](../daemon/src/features/production/jobs/resume.ts), [stages](../daemon/src/features/production/stages), [posting records](../daemon/src/features/posting/posts.ts).
 
 ## 7. Persistence map
 
@@ -282,7 +312,7 @@ file is deleted, the application cannot recover it.
 
 The schema is applied and migrations run by the daemon/normal CLI opener. Dashboard read/action handles never initialize or migrate. The production SQLite file lives on the Linux named volume so all WAL users share coherent filesystem memory.
 
-Sources: [schema](../daemon/src/db/schema.sql), [migrations](../daemon/src/db/migrate.ts), [database opener](../daemon/src/db/index.ts), [dashboard handles](../daemon/src/db/dashboard.ts), [library operations](../daemon/src/jobs/library.ts).
+Sources: [schema](../daemon/src/infra/db/schema.sql), [migrations](../daemon/src/infra/db/migrate.ts), [database opener](../daemon/src/infra/db/index.ts), [dashboard handles](../daemon/src/infra/db/dashboard.ts), [library operations](../daemon/src/features/library/library.ts).
 
 ## 8. Scheduling, failures, and practical limits
 
@@ -324,7 +354,7 @@ Direct CLI produce/resume/scout now coordinate through managed leases. Other
 break-glass mutations still follow the operator runbook. This remains a single-daemon
 system with serial production and serial slow actions, not a distributed scheduler.
 
-Sources: [worker loops](../daemon/src/loop/daemon.ts), [action execution](../daemon/src/loop/actions-worker.ts), [heartbeat](../daemon/src/loop/daemon-state.ts), [scout attempt gating](../daemon/src/scout/scout.ts), [production lease use](../daemon/src/loop/produce-next.ts), [operator runbook](../README.md).
+Sources: [worker loops](../daemon/src/app/daemon.ts), [action execution](../daemon/src/features/actions/worker.ts), [heartbeat](../daemon/src/infra/coordination/daemon-state.ts), [scout attempt gating](../daemon/src/features/scouting/channel.ts), [production lease use](../daemon/src/features/production/produce-next.ts), [operator runbook](../README.md).
 
 ## 9. Reading a stalled system
 

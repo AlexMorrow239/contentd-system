@@ -1,7 +1,11 @@
-import { openDbActions } from '../../../daemon/src/db/dashboard.js'
-import { enqueueAction } from '../../../daemon/src/actions/queue.js'
-import { formToArgs, isActionKind, parseActionArgs } from '../../../daemon/src/actions/catalog.js'
-import { errorMessage } from '../../../daemon/src/errors.js'
+import {
+  formToArgs,
+  isActionKind,
+  parseActionArgs,
+} from '../../../daemon/src/features/actions/catalog.js'
+import { enqueueAction } from '../../../daemon/src/features/actions/queue.js'
+import { openDbActions } from '../../../daemon/src/infra/db/dashboard.js'
+import { errorMessage } from '../../../daemon/src/shared/errors.js'
 import type { DashboardConfig } from '../config.js'
 import { CSRF_FIELD, CSRF_HEADER, csrfFailure } from '../csrf.js'
 import { daemonStaleFor, withDashboardDb } from './runtime.js'

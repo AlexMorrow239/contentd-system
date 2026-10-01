@@ -1,4 +1,4 @@
-import { openDb } from '../src/db/index.js'
+import { openDb } from '../src/infra/db/index.js'
 import { seedJob, seedLibrary } from './db.js'
 
 /**

@@ -1,9 +1,9 @@
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import type { QcResult } from '../../../../../daemon/src/stages/qc.js'
-import { libraryBytes, summarizeQc } from '../library.js'
+import type { QcResult } from '../../../../../daemon/src/features/production/artifacts/qc.js'
 import { tmpDir } from '../../../../../daemon/testing/tmp.js'
+import { libraryBytes, summarizeQc } from '../library.js'
 
 describe('summarizeQc', () => {
   it('summarizes a fully passing qc verdict as ok', () => {

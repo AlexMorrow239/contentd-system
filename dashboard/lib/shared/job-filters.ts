@@ -1,5 +1,5 @@
-import type { LibraryState } from '../../../daemon/src/jobs/library.js'
-import { filtersUrl, filterText } from './filters.js'
+import type { LibraryState } from '../../../daemon/src/features/library/library.js'
+import { filterText, filtersUrl } from './filters.js'
 
 export const JOB_STATUSES = ['queued', 'running', 'failed', 'done', 'blocked'] as const
 export const REVIEW_STATES = ['none', 'ready', 'needs-review', 'blocked'] as const

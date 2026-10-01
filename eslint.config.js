@@ -29,7 +29,6 @@ export default tseslint.config(
       'daemon/testing/**/*.ts',
       'integrations/remotion/**/*.ts',
       'docker/*.ts',
-      'daemon/*.ts',
       'test/**/*.ts',
       'dashboard/**/*.ts',
       'vitest.config.ts',

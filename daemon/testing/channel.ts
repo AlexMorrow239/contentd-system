@@ -9,7 +9,7 @@ import { tmpDir } from './tmp.js'
  * object, and the on-disk TOML that `loadChannelConfig`/`loadChannelsDir`
  * consume.
  *
- * `testChannel` moved here from daemon/src/stages/_testkit.ts. It was imported by
+ * `testChannel` moved here from the old daemon/src/stages/_testkit.ts. It was imported by
  * fifteen files across every module, so a *stages* file had become a
  * repo-wide dependency. The TOML builders replace a ~20-line string-array
  * literal that had been copy-pasted into eight files, two of which had

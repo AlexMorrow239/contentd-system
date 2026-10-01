@@ -1,5 +1,5 @@
 import 'server-only'
-import { ACTIONS } from '../../daemon/src/actions/catalog'
+import { ACTIONS } from '../../daemon/src/features/actions/catalog'
 import { ActionFormControl, type ActionFormControlProps } from './action-control'
 
 export function ActionForm({

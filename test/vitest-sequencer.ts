@@ -1,5 +1,5 @@
-import { BaseSequencer } from 'vitest/node'
 import type { TestSpecification } from 'vitest/node'
+import { BaseSequencer } from 'vitest/node'
 
 /**
  * Vitest orders files by byte size, which correlates poorly with runtime here:
@@ -21,12 +21,12 @@ import type { TestSpecification } from 'vitest/node'
  * Suffix matching, not exact paths: moduleId is an absolute path.
  */
 export const SLOW_FIRST = [
-  'daemon/src/jobs/test/golden-path.test.ts', // one indivisible e2e render — the suite's floor
-  'daemon/src/stages/test/assemble.test.ts', // real Remotion render
-  'daemon/src/stages/test/visuals-volume.test.ts', // ffmpeg crop+loop
-  'daemon/src/stages/test/qc.test.ts', // ffmpeg analysis passes
+  'daemon/src/features/production/jobs/test/golden-path.test.ts', // one indivisible e2e render — the suite's floor
+  'daemon/src/features/production/stages/test/assemble.test.ts', // real Remotion render
+  'daemon/src/features/production/stages/test/visuals-volume.test.ts', // ffmpeg crop+loop
+  'daemon/src/features/production/stages/test/qc.test.ts', // ffmpeg analysis passes
   'integrations/remotion/remotion.test.ts', // bundle() + selectComposition
-  'daemon/src/jobs/test/golden-path-loop.test.ts', // scout -> produce e2e
+  'daemon/src/features/production/jobs/test/golden-path-loop.test.ts', // scout -> produce e2e
   // Every CLI-spawning file: a cold `node daemon/dist/cli.js` costs seconds, not the
   // ~0.34s the runCli docstring once claimed, because the entry point pulls in
   // the whole pipeline. cli.test.ts holds every subcommand's subprocess tests
@@ -34,9 +34,9 @@ export const SLOW_FIRST = [
   // split.
   'daemon/src/cli.test.ts',
   'daemon/testing/run-cli.test.ts',
-  'daemon/src/jobs/test/resume.test.ts',
-  'daemon/src/loop/test/produce-next.test.ts',
-  'daemon/src/media/ffmpeg.test.ts', // real ffmpeg encodes
+  'daemon/src/features/production/jobs/test/resume.test.ts',
+  'daemon/src/features/production/test/produce-next.test.ts',
+  'daemon/src/infra/media/ffmpeg.test.ts', // real ffmpeg encodes
 ]
 
 function rank(spec: TestSpecification): number {

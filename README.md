@@ -278,8 +278,9 @@ display is asleep:
 pnpm daemon:caffeinate install
 ```
 
-After upgrading from the old helper location, rerun `pnpm daemon:caffeinate install`
-to update the absolute script path stored in the LaunchAgent.
+The host helper lives in `daemon/src/app/host/`. After upgrading from an older
+helper location, rerun `pnpm daemon:caffeinate install` to update the absolute
+script path stored in the LaunchAgent.
 
 The helper starts immediately and at login, independently of your terminal. It
 runs macOS `caffeinate` while this checkout's `brainrot` container is running,
@@ -352,7 +353,7 @@ produce, or a scout run whose every channel died.
 ### Cadence
 
 There is no schedule to configure — throughput comes from the poll loop
-itself (`daemon/src/loop/daemon.ts`). Each of the daemon's three pipeline workers
+itself (`daemon/src/app/daemon.ts`). Each of the daemon's three pipeline workers
 (produce, scout, digest) checks demand, does one unit of work if
 there is any, and re-checks immediately; an idle worker sleeps 30 seconds
 (`IDLE_SLEEP_MS`) before its next check, and a worker whose unit throws

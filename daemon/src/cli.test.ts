@@ -1,18 +1,18 @@
-import { describe, expect, it } from 'vitest'
-import { writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { parseTopicIds } from './cli.js'
+import { fileURLToPath } from 'node:url'
+import { describe, expect, it } from 'vitest'
+import { parseTopicIds } from './app/cli/arguments.js'
 // Straight from the module that owns it: cli.ts reaches pipelineStages through
 // a dynamic import inside the commands that render, so it no longer re-exports
 // it — a static re-export would put Remotion back on every command's startup.
-import { pipelineStages } from './jobs/pipeline.js'
-import { visualsVolumeStage } from './stages/visuals-volume.js'
-import { openDb } from './db/index.js'
-import { runCli } from '../testing/run-cli.js'
 import { countJobs, seedLibraryRow } from '../testing/cli.js'
-import { tmpDir, testRoot } from '../testing/tmp.js'
+import { runCli } from '../testing/run-cli.js'
+import { testRoot, tmpDir } from '../testing/tmp.js'
+import { pipelineStages } from './features/production/pipeline.js'
+import { visualsVolumeStage } from './features/production/stages/visuals-volume.js'
+import { openDb } from './infra/db/index.js'
 
 // Mirrors run-cli.ts's CLI_ENTRY resolution (daemon/dist/cli.js, built by the Vitest
 // globalSetup) — duplicated here rather than imported because the `run`
@@ -170,7 +170,9 @@ describe('brainrot CLI — scout', () => {
       const root = testRoot()
       // filename must equal the channel name (loadChannelsDir invariant)
       writeFileSync(path.join(root.channelsDir, 'cli-scout-test.toml'), SCOUTLESS_TOML)
-      const result = await runCli(['scout', '--root', root.root])
+      const result = await runCli(['scout', '--root', root.root], {
+        env: { BRAINROT_GLOBAL_DAILY_USD: '25' },
+      })
       expect(result.exitCode).toBe(0)
       // exactly one cron-greppable JSON line on stdout
       expect(JSON.parse(result.stdout)).toEqual({ channels: [] })
@@ -186,7 +188,9 @@ describe('brainrot CLI — scout', () => {
     async () => {
       const root = testRoot()
       writeFileSync(path.join(root.channelsDir, 'broken.toml'), 'this is not toml [')
-      const result = await runCli(['scout', '--root', root.root])
+      const result = await runCli(['scout', '--root', root.root], {
+        env: { BRAINROT_GLOBAL_DAILY_USD: '25' },
+      })
       expect(result.exitCode).toBe(0)
       expect(result.stdout.trim().split('\n')).toHaveLength(1)
       const line = JSON.parse(result.stdout) as { action: string; reason: string; error: string }
@@ -216,7 +220,7 @@ describe('brainrot CLI — scout', () => {
       seeded.close()
 
       const args = ['scout', '--root', root.root]
-      const held = await runCli(args)
+      const held = await runCli(args, { env: { BRAINROT_GLOBAL_DAILY_USD: '25' } })
       // A held lease is the normal overlap case: benign one-line noop, exit 0.
       expect(held.exitCode).toBe(0)
       expect(JSON.parse(held.stdout)).toEqual({ action: 'noop', reason: 'lease-held' })
@@ -229,7 +233,7 @@ describe('brainrot CLI — scout', () => {
       afterNoop.prepare("DELETE FROM leases WHERE name = 'scout'").run()
       afterNoop.close()
 
-      const free = await runCli(args)
+      const free = await runCli(args, { env: { BRAINROT_GLOBAL_DAILY_USD: '25' } })
       expect(free.exitCode).toBe(0)
       expect(JSON.parse(free.stdout)).toEqual({ channels: [] })
       const afterRun = openDb(root.dbPath)
@@ -275,13 +279,15 @@ describe('brainrot CLI — scout', () => {
       seeded.close()
 
       const args = ['scout', '--root', root.root]
-      const gated = await runCli(args)
+      const gated = await runCli(args, { env: { BRAINROT_GLOBAL_DAILY_USD: '25' } })
       expect(gated.exitCode).toBe(0)
       const gatedChannels = (JSON.parse(gated.stdout) as { channels: { skipped?: string }[] })
         .channels
       expect(gatedChannels).toEqual([expect.objectContaining({ skipped: 'recheck-not-due' })])
 
-      const forced = await runCli([...args, '--force'])
+      const forced = await runCli([...args, '--force'], {
+        env: { BRAINROT_GLOBAL_DAILY_USD: '25' },
+      })
       // --force bypassed the gate, so the channel was actually attempted —
       // this test does not depend on whether the real source fetch (no
       // network in this sandbox) succeeds or fails the whole run; either way

@@ -1,11 +1,11 @@
 'use client'
-import { FilterBar } from './filter-bar'
+import { TOPIC_STATUSES } from '../../daemon/src/features/topics/status'
 import {
   TOPIC_FILTER_KEYS,
   TOPIC_FILTER_STORAGE_KEY,
   parseTopicFilters,
 } from '../lib/shared/topic-filters'
-import { TOPIC_STATUSES } from '../../daemon/src/scout/topic-status'
+import { FilterBar } from './filter-bar'
 
 export function TopicFiltersControl({ channels }: { channels: string[] }) {
   return (

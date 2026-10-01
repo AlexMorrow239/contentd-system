@@ -1,4 +1,4 @@
-import type { FetchLike } from '../src/scout/sources/types.js'
+import type { FetchLike } from '../src/infra/sources/types.js'
 
 /**
  * Arctic Shift `/api/posts/search` wire-shape fixtures.
@@ -11,7 +11,7 @@ import type { FetchLike } from '../src/scout/sources/types.js'
  * `selftext` is empty. An error is `{"data":null,"error":"…"}`.
  *
  * Lives here rather than in a scout-tree `_*.fixtures.ts` because
- * `daemon/src/jobs/test/golden-path-loop.test.ts` is a consumer too.
+ * `daemon/src/features/production/jobs/test/golden-path-loop.test.ts` is a consumer too.
  */
 
 export interface ArcticShiftPostSpec {

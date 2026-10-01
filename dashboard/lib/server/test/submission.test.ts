@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { openDb } from '../../../../daemon/src/db/index.js'
+import { describe, expect, it } from 'vitest'
+import { openDb } from '../../../../daemon/src/infra/db/index.js'
 import { seedDaemonState } from '../../../../daemon/testing/db.js'
 import { testRoot, trackDb } from '../../../../daemon/testing/tmp.js'
 import { submitAction } from '../submission.js'

@@ -1,7 +1,7 @@
-import { test, expect, resetFixture } from './fixtures'
-import { seedAction, seedDaemonState, seedJob, seedPost } from '../../daemon/testing/db'
-import { actionsUnit } from '../../daemon/src/loop/actions-worker'
 import { existsSync } from 'node:fs'
+import { actionsUnit } from '../../daemon/src/features/actions/worker'
+import { seedAction, seedDaemonState, seedJob, seedPost } from '../../daemon/testing/db'
+import { expect, resetFixture, test } from './fixtures'
 
 test.beforeEach(({ dashboard }) => resetFixture(dashboard))
 
@@ -365,6 +365,7 @@ test('Jobs fits narrow viewports and keeps icons reachable with tooltips', async
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto(dashboard.url + '/jobs')
   const resume = page.getByRole('button', { name: 'resume', exact: true })
+  await expect(resume).toHaveClass(/\baction-jobs-resume\b/)
   await resume.focus()
   await expect(page.getByRole('tooltip', { name: 'resume', exact: true })).toBeVisible()
   await page.screenshot({ path: 'test-results/jobs-desktop.png', fullPage: true })

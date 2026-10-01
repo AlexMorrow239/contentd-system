@@ -1,4 +1,4 @@
-import type { ActionKind } from '../../daemon/src/actions/catalog'
+import type { ActionKind } from '../../daemon/src/features/actions/catalog'
 
 export function ActionIcon({ kind }: { kind: ActionKind }) {
   const paths: Partial<Record<ActionKind, string>> = {

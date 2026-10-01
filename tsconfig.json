@@ -15,13 +15,6 @@
     "outDir": "daemon/dist",
     "rootDir": "."
   },
-  "include": [
-    "daemon/src",
-    "daemon/testing",
-    "vitest.config.ts",
-    "docker/*.ts",
-    "daemon/*.ts",
-    "test"
-  ],
+  "include": ["daemon/src", "daemon/testing", "vitest.config.ts", "docker/*.ts", "test"],
   "exclude": ["node_modules", "daemon/dist"]
 }

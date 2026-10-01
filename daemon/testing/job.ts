@@ -1,21 +1,21 @@
+import type { Database } from 'better-sqlite3'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import pino from 'pino'
-import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../src/config/channel.js'
-import { createJob } from '../src/jobs/runner.js'
-import type { JobContext } from '../src/jobs/types.js'
-import type { ScriptOutput } from '../src/stages/script.js'
-import type { StoryPart } from '../src/stories/types.js'
-import { testChannel, PLATFORM_META } from './channel.js'
+import type { ScriptOutput } from '../src/features/production/artifacts/script.js'
+import type { JobContext } from '../src/features/production/contracts.js'
+import { createJob } from '../src/features/production/jobs/runner.js'
+import type { StoryPart } from '../src/shared/stories/types.js'
+import { systemTime, type TimeSource } from '../src/shared/time.js'
+import { PLATFORM_META, testChannel } from './channel.js'
 import { memDb } from './db.js'
 import { tmpDir } from './tmp.js'
-import { systemTime, type TimeSource } from '../src/time.js'
 
 /**
  * JobContext and stage-artifact fixtures.
  *
- * `makeCtx` and `testScript` moved here from daemon/src/stages/_testkit.ts. The old
+ * `makeCtx` and `testScript` moved here from the old daemon/src/stages/_testkit.ts. The old
  * `makeCtx` hardcoded its db, jobId and runDir, which is why qc, visuals-volume
  * and assemble each carried a byte-identical private fork of it — the options
  * bag below is what those three actually needed. It also leaked its runDir on

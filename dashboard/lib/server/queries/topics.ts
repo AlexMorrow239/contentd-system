@@ -1,5 +1,5 @@
 import type { Database } from 'better-sqlite3'
-export { countTopics } from '../../../../daemon/src/scout/topics.js'
+export { countTopics } from '../../../../daemon/src/features/topics/queries.js'
 
 /**
  * Distinct channels straight off the topics table, for the filter dropdown.

@@ -1,13 +1,16 @@
 import type { Database } from 'better-sqlite3'
 import type { ChannelConfig } from '../../../../daemon/src/config/channel.js'
 import {
-  normalizePlatformMeta,
   PASTE_FIELDS,
+  normalizePlatformMeta,
   platformEntrySchema,
   type PlatformMeta,
-} from '../../../../daemon/src/posts/meta.js'
-import { fullyPostedClause, postedPlatforms } from '../../../../daemon/src/posts/posts.js'
-import type { Platform } from '../../../../daemon/src/posts/types.js'
+} from '../../../../daemon/src/features/posting/meta.js'
+import {
+  fullyPostedClause,
+  postedPlatforms,
+} from '../../../../daemon/src/features/posting/posts.js'
+import type { Platform } from '../../../../daemon/src/shared/contracts/platforms.js'
 import { libraryBytes, type LibraryBytes } from './library.js'
 
 export interface PostCardPlatform {

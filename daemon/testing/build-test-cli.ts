@@ -10,10 +10,10 @@
  * codebase all survive the mirrored layout that `outbase: SRC` produces:
  *
  *   daemon/src/cli.ts               main-module guard   -> daemon/dist/cli.js vs process.argv[1]
- *   daemon/src/db/index.ts          ./schema.sql        -> daemon/dist/db/schema.sql (copied below)
- *   daemon/src/stages/assemble.ts   ../../../integrations/remotion/...  -> <repo>/integrations/remotion/index.ts
+ *   daemon/src/infra/db/index.ts          ./schema.sql        -> daemon/dist/infra/db/schema.sql (copied below)
+ *   daemon/src/features/production/stages/assemble.ts   ../../../../../integrations/remotion/...  -> <repo>/integrations/remotion/index.ts
  *
- * The last is why outbase matters: daemon/dist/stages/assemble.js walking ../../../
+ * The last is why outbase matters: daemon/dist/features/production/stages/assemble.js walking ../../../../../
  * lands on the repo root, so Remotion bundles from real source, not a copy.
  */
 import { build } from 'esbuild'
@@ -24,6 +24,8 @@ import { fileURLToPath } from 'node:url'
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url))
 const SRC = path.join(REPO_ROOT, 'daemon', 'src')
 const DIST = path.join(REPO_ROOT, 'daemon', 'dist')
+// infra/db/index.ts reads this via import.meta.url; esbuild only emits JS.
+const SCHEMA = path.join('infra', 'db', 'schema.sql')
 
 /** Every non-test .ts module under daemon/src/. */
 function entryPoints(dir: string = SRC, acc: string[] = []): string[] {
@@ -41,7 +43,7 @@ function entryPoints(dir: string = SRC, acc: string[] = []): string[] {
 /** Every emitted file, as a dist-relative path. */
 function expectedOutputs(sources: string[]): Set<string> {
   const out = new Set(sources.map((f) => path.relative(SRC, f).replace(/\.ts$/, '.js')))
-  out.add(path.join('db', 'schema.sql')) // copied below, not emitted
+  out.add(SCHEMA) // copied below, not emitted
   return out
 }
 
@@ -85,7 +87,6 @@ export async function buildTestCli(): Promise<void> {
     format: 'esm',
     target: 'node22',
   })
-  // db/index.ts reads this via import.meta.url; esbuild only emits JS.
-  copyFileSync(path.join(SRC, 'db', 'schema.sql'), path.join(DIST, 'db', 'schema.sql'))
+  copyFileSync(path.join(SRC, SCHEMA), path.join(DIST, SCHEMA))
   pruneOrphans(expectedOutputs(sources))
 }

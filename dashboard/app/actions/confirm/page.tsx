@@ -3,10 +3,10 @@ import {
   actionArgFieldKind,
   actionArgNames,
   isActionKind,
-} from '../../../../daemon/src/actions/catalog'
-import { sameSitePath } from '../../../lib/shared/navigation'
+} from '../../../../daemon/src/features/actions/catalog'
 import { ActionForm } from '../../../components/action-form'
 import { DashboardPage, value, type PageProps } from '../../../components/page'
+import { sameSitePath } from '../../../lib/shared/navigation'
 export default function ConfirmPage(props: PageProps) {
   return (
     <DashboardPage {...props}>

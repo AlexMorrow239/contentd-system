@@ -1,14 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, parseChannelToml } from './channel.js'
+import { describe, expect, it, vi } from 'vitest'
 import {
   channelToml,
   channelTomlLines,
   writeChannelsDir as writeChannels,
 } from '../../testing/channel.js'
 import { tmpDir } from '../../testing/tmp.js'
-import { classify } from '../errors.js'
+import { classify } from '../shared/errors.js'
+import { DEFAULT_SCOUT, loadChannelConfig, loadChannelsDir, parseChannelToml } from './channel.js'
 
 /**
  * This file's subject IS the TOML text, so it works in line arrays and edits

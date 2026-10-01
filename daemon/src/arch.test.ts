@@ -1,25 +1,25 @@
-import { readdir, readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import ts from 'typescript'
+import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
-import { DASHBOARD_STAGE_ORDER } from '../../dashboard/lib/server/queries/jobs.js'
-import { classify } from './errors.js'
-import { BudgetExceededError } from './jobs/costs.js'
-import { pipelineStages } from './jobs/pipeline.js'
-import { ResumeError } from './jobs/resume.js'
+import { BudgetExceededError } from './features/billing/costs.js'
+import { ResumeError } from './features/production/jobs/resume.js'
+import { pipelineStages } from './features/production/pipeline.js'
 import {
   AllChannelsScoringFailedError,
   AllSourcesFailedError,
   ScoutRunFailedError,
-} from './scout/scout.js'
+} from './features/scouting/run.js'
+import { STAGE_ORDER } from './shared/contracts/pipeline.js'
+import { classify } from './shared/errors.js'
 
 // Every .ts file under daemon/src/, as paths relative to daemon/src/. Used by the error
 // convention lints below, which are source-text greps rather than import
 // checks — the thing being guarded is "nobody writes this expression", which
 // no amount of importing can observe.
-const SRC_ROOT = fileURLToPath(new URL('.', import.meta.url))
+const SRC_ROOT = fileURLToPath(new URL('./', import.meta.url))
 
 // Every lint below walks the same tree and greps the same files, so both the
 // listings and the file contents are memoized per directory/path: the whole
@@ -108,12 +108,7 @@ async function findImportChain(
     if (file === target) return chain
     if (visited.has(file)) return null
     visited.add(file)
-    const source = await readSource(file)
-    if (source === null) return null
-    const imports = sourceSpecifiers(source, includeTypes, file)
-    for (const spec of imports) {
-      const resolved = resolveRelativeSpecifier(file, spec)
-      if (resolved === undefined) continue
+    for (const resolved of await importEdges(file, includeTypes)) {
       const found = await walk(resolved, [...chain, resolved])
       if (found !== null) return found
     }
@@ -126,8 +121,35 @@ async function findImportChain(
   return null
 }
 
+const edges = new Map<string, Promise<string[]>>()
+
+/**
+ * A file's in-repo import edges, resolved to paths and memoized per mode: the
+ * walkers run once per forbidden target, and each file should still be parsed
+ * once, not once per target.
+ */
+function importEdges(file: string, includeTypes: boolean): Promise<string[]> {
+  const key = `${includeTypes}:${file}`
+  const cached = edges.get(key)
+  if (cached !== undefined) return cached
+  const resolved = readSource(file).then((source) =>
+    source === null
+      ? []
+      : sourceSpecifiers(source, includeTypes, file).flatMap(
+          (spec) => resolveRelativeSpecifier(file, spec) ?? [],
+        ),
+  )
+  edges.set(key, resolved)
+  return resolved
+}
+
 /** Include erased edges when checking architectural, rather than runtime, dependencies. */
-function sourceSpecifiers(source: string, includeTypes = false, file = 'imports.ts'): string[] {
+function sourceSpecifiers(
+  source: string,
+  includeTypes = false,
+  file = 'imports.ts',
+  includeDynamic = true,
+): string[] {
   const imports: string[] = []
   const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
   function visit(node: ts.Node): void {
@@ -157,7 +179,7 @@ function sourceSpecifiers(source: string, includeTypes = false, file = 'imports.
     }
     if (
       ts.isCallExpression(node) &&
-      (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
+      ((includeDynamic && node.expression.kind === ts.SyntaxKind.ImportKeyword) ||
         (ts.isIdentifier(node.expression) && node.expression.text === 'require')) &&
       node.arguments[0] &&
       ts.isStringLiteral(node.arguments[0])
@@ -189,7 +211,7 @@ describe('application time isolation', () => {
   it('keeps native clocks, timers and SQL current time behind the time adapter', async () => {
     const offenders: string[] = []
     for (const file of await moduleFiles(SRC_ROOT)) {
-      if (file === join(SRC_ROOT, 'time.ts')) continue
+      if (file === join(SRC_ROOT, 'shared/time.ts')) continue
       const source = (await readSource(file))!
       const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
       const report = (node: ts.Node): void => {
@@ -257,9 +279,11 @@ describe('application time isolation', () => {
 })
 
 describe('daemon runtime isolation', () => {
-  const runtime = ['worker-contract.ts', 'worker-loop.ts', 'worker-supervisor.ts'].map((file) =>
-    join(SRC_ROOT, 'loop', file),
-  )
+  const runtime = [
+    'shared/contracts/worker.ts',
+    'runtime/worker-loop.ts',
+    'runtime/worker-supervisor.ts',
+  ].map((file) => join(SRC_ROOT, file))
 
   it('keeps the shared contract type-only with only the shared time type dependency', async () => {
     const source = await readSource(runtime[0])
@@ -276,7 +300,11 @@ describe('daemon runtime isolation', () => {
   })
 
   it('limits generic runtime dependencies to its own modules and shared errors', async () => {
-    const allowed = new Set([...runtime, join(SRC_ROOT, 'errors.ts'), join(SRC_ROOT, 'time.ts')])
+    const allowed = new Set([
+      ...runtime,
+      join(SRC_ROOT, 'shared/errors.ts'),
+      join(SRC_ROOT, 'shared/time.ts'),
+    ])
     const offenders: string[] = []
     for (const file of allowed) {
       const source = await readSource(file)
@@ -290,31 +318,9 @@ describe('daemon runtime isolation', () => {
     expect(offenders).toEqual([])
   })
 
-  it('prevents work from depending on polling, supervision or daemon composition', async () => {
-    const forbidden = [
-      'daemon.ts',
-      'daemon-workers.ts',
-      'worker-loop.ts',
-      'worker-supervisor.ts',
-    ].map((file) => join(SRC_ROOT, 'loop', file))
-    const roots = (
-      await Promise.all(
-        ['loop', 'actions', 'jobs', 'scout', 'stages', 'providers'].map((dir) =>
-          moduleFiles(join(SRC_ROOT, dir)),
-        ),
-      )
-    )
-      .flat()
-      .filter((file) => !forbidden.includes(file) && !runtime.includes(file))
-    for (const target of forbidden) {
-      const chain = await findImportChain(roots, target, true)
-      expect(chain?.map((file) => relative(SRC_ROOT, file))).toBeUndefined()
-    }
-  })
-
   it('keeps direct recurring timer creation inside the timer adapter', async () => {
-    for (const name of ['actions-worker.ts', 'lease.ts']) {
-      const source = (await readSource(join(SRC_ROOT, 'loop', name)))!
+    for (const name of ['features/actions/worker.ts', 'infra/coordination/lease.ts']) {
+      const source = (await readSource(join(SRC_ROOT, name)))!
       const parsed = ts.createSourceFile(name, source, ts.ScriptTarget.Latest, true)
       const offenders: string[] = []
       function visit(node: ts.Node): void {
@@ -332,12 +338,12 @@ describe('daemon runtime isolation', () => {
 
   it('positive control: follows erased contract imports and transitive runtime edges', async () => {
     expect(
-      await findImportChain([join(SRC_ROOT, 'loop/actions-worker.ts')], runtime[0], true),
+      await findImportChain([join(SRC_ROOT, 'features/actions/worker.ts')], runtime[0], true),
     ).not.toBeNull()
     expect(
       await findImportChain(
-        [join(SRC_ROOT, 'loop/daemon.ts')],
-        join(SRC_ROOT, 'loop/worker-loop.ts'),
+        [join(SRC_ROOT, 'app/daemon.ts')],
+        join(SRC_ROOT, 'runtime/worker-loop.ts'),
       ),
     ).not.toBeNull()
   })
@@ -373,74 +379,224 @@ describe('daemon runtime isolation', () => {
  * a behavior test file, that cost lands on every run of a file that has no
  * other reason to pay it.
  */
-describe('dashboard stage order', () => {
+describe('shared stage order', () => {
   it('matches the real pipeline order', () => {
-    // The dashboard hardcodes the order rather than importing pipelineStages()
-    // at runtime — that module pulls in remotion and the ffmpeg
-    // wrappers, which a read-only viewer has no business loading. This is the
-    // anti-drift guard, and it pays the heavy import once, in test only.
-    //
-    // It was previously inside dashboard/lib/server/queries/test/jobs.test.ts, which is
-    // otherwise a set of instant in-memory SQL assertions.
-    expect([...DASHBOARD_STAGE_ORDER]).toEqual(pipelineStages().map((s) => s.name))
+    // The shared vocabulary the dashboard reads must match the concrete
+    // pipeline composition it may not import.
+    expect([...STAGE_ORDER]).toEqual(pipelineStages().map((s) => s.name))
   })
 })
 
-describe('dashboard action isolation', () => {
-  it('never directly or transitively imports daemon/src/actions/handlers.ts from dashboard/', async () => {
-    // handlers.ts transitively imports Remotion and the provider clients. The
-    // dashboard is the one process terminating unauthenticated HTTP; it reads
-    // daemon/src/actions/catalog.ts, which is pure metadata, and enqueues. Same rule,
-    // same reason, as DASHBOARD_STAGE_ORDER above.
-    //
-    // This walks the import graph rather than grepping for the literal
-    // substring "actions/handlers": a dashboard file importing a module that
-    // itself imports handlers.ts — or a barrel re-exporting from it — would
-    // pass a one-hop text grep while still pulling Remotion and the provider
-    // clients into the dashboard process. Same specifier-parsing shape as the
-    // "daemon/src/stories purity" lint below.
-    const target = join(SRC_ROOT, 'actions', 'handlers.ts')
-    const files = await dashboardRuntimeFiles()
-    expect(files.length).toBeGreaterThan(0)
+describe('job execution dependency boundary', () => {
+  it.each(['infra/providers/anthropic.ts', 'infra/media/ffmpeg.ts'])(
+    'does not load %s merely to read completed artifacts',
+    async (target) => {
+      expect(existsSync(join(SRC_ROOT, target)), target).toBe(true)
+      const chain = await findImportChain(
+        [join(SRC_ROOT, 'features/production/jobs/runner.ts')],
+        join(SRC_ROOT, target),
+        true,
+      )
+      expect(chain?.map((file) => relative(SRC_ROOT, file))).toBeUndefined()
+    },
+  )
+})
 
-    const chain = await findImportChain(files, target)
-    expect(chain === null ? null : chain.map((f) => relative(SRC_ROOT, f)).join(' -> ')).toBeNull()
+const featureDependencies: Record<string, readonly string[]> = {
+  billing: [],
+  topics: [],
+  posting: [],
+  library: ['posting'],
+  production: ['billing', 'topics', 'library', 'posting'],
+  scouting: ['billing', 'topics'],
+  reporting: ['billing', 'topics', 'library', 'posting'],
+  actions: ['billing', 'topics', 'posting', 'library', 'production', 'scouting', 'reporting'],
+}
+
+function boundaryAllows(from: string, to: string): boolean {
+  const [layer, feature] = from.split('/')
+  const [target, targetFeature] = to.split('/')
+  if (layer === 'shared') return target === 'shared'
+  if (layer === 'config') return ['config', 'shared'].includes(target)
+  if (layer === 'infra') return ['infra', 'shared', 'config'].includes(target)
+  if (layer === 'runtime') return ['runtime', 'shared'].includes(target)
+  if (layer === 'features') {
+    if (['shared', 'config', 'infra'].includes(target)) return true
+    return (
+      target === 'features' &&
+      (feature === targetFeature || featureDependencies[feature]?.includes(targetFeature) === true)
+    )
+  }
+  return layer === 'app' || from === 'cli.ts'
+}
+
+describe('feature architecture', () => {
+  it('enforces dependency direction, including erased imports', async () => {
+    const files = await moduleFiles(SRC_ROOT)
+    const offenders: string[] = []
+    for (const file of files) {
+      const from = relative(SRC_ROOT, file)
+      if (from.startsWith('features/'))
+        expect(featureDependencies).toHaveProperty(from.split('/')[1])
+      for (const spec of sourceSpecifiers((await readSource(file))!, true, file)) {
+        if (!spec.startsWith('.')) continue
+        const resolved = resolveRelativeSpecifier(file, spec)
+        if (!resolved) {
+          offenders.push(`${from} -> unresolved ${spec}`)
+          continue
+        }
+        const to = relative(SRC_ROOT, resolved)
+        if (!boundaryAllows(from, to)) offenders.push(`${from} -> ${to}`)
+      }
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('rejects upward edges and allows deliberate feature dependencies', () => {
+    expect(boundaryAllows('shared/contracts/video.ts', 'infra/providers/whisperx.ts')).toBe(false)
+    expect(
+      boundaryAllows('features/scouting/channel.ts', 'features/production/jobs/runner.ts'),
+    ).toBe(false)
+    expect(boundaryAllows('features/production/worker.ts', 'app/workers.ts')).toBe(false)
+    expect(boundaryAllows('runtime/worker-loop.ts', 'infra/coordination/lease.ts')).toBe(false)
+    expect(boundaryAllows('features/production/plan-tick.ts', 'features/library/capacity.ts')).toBe(
+      true,
+    )
+  })
+
+  it('has no source import cycles, including type-only edges', async () => {
+    const files = await moduleFiles(SRC_ROOT)
+    const sourceSet = new Set(files)
+    const visiting = new Set<string>()
+    const visited = new Set<string>()
+    const cycles: string[][] = []
+    async function walk(file: string, chain: string[]): Promise<void> {
+      if (visiting.has(file)) {
+        cycles.push([...chain.slice(chain.indexOf(file)), file].map((f) => relative(SRC_ROOT, f)))
+        return
+      }
+      if (visited.has(file)) return
+      visiting.add(file)
+      for (const resolved of await importEdges(file, true)) {
+        if (sourceSet.has(resolved)) await walk(resolved, [...chain, file])
+      }
+      visiting.delete(file)
+      visited.add(file)
+    }
+    for (const file of files) await walk(file, [])
+    expect(cycles).toEqual([])
+  })
+
+  it('keeps browser-facing contracts free of Node and execution dependencies', async () => {
+    const roots = [
+      ...(await moduleFiles(join(SRC_ROOT, 'shared/contracts'))),
+      join(SRC_ROOT, 'features/actions/catalog.ts'),
+      join(SRC_ROOT, 'features/topics/status.ts'),
+    ]
+    const visited = new Set<string>()
+    async function inspect(file: string): Promise<void> {
+      if (visited.has(file)) return
+      visited.add(file)
+      for (const spec of sourceSpecifiers((await readSource(file))!, false, file)) {
+        const resolved = resolveRelativeSpecifier(file, spec)
+        if (resolved) await inspect(resolved)
+        else expect(spec, relative(SRC_ROOT, file)).toBe('zod')
+      }
+    }
+    for (const file of roots) await inspect(file)
+  })
+})
+
+describe('dashboard runtime isolation', () => {
+  it('cannot reach any execution adapter, stage, handler, worker, or daemon composition', async () => {
+    // The dashboard is the one process terminating unauthenticated HTTP; it
+    // reads features/actions/catalog.ts, which is pure metadata, and enqueues.
+    // The handlers, pipeline and provider clients pull Remotion and credential
+    // code, and the full db opener migrates; none may load in that process.
+    //
+    // This walks the import graph rather than grepping for a literal path: a
+    // dashboard file importing a module that itself imports a handler — or a
+    // barrel re-exporting from it — would pass a one-hop text grep while still
+    // pulling the execution graph into the dashboard process.
+    const roots = await dashboardRuntimeFiles()
+    expect(roots.length).toBeGreaterThan(0)
+    const named = [
+      'features/actions/handlers.ts',
+      'features/actions/handlers-fast.ts',
+      'features/actions/handlers-slow.ts',
+      'features/actions/worker.ts',
+      'features/actions/recovery.ts',
+      'features/production/pipeline.ts',
+      'features/production/jobs/runner.ts',
+      'features/production/jobs/resume.ts',
+      'infra/db/index.ts',
+      'infra/db/migrate.ts',
+    ].map((file) => join(SRC_ROOT, file))
+    for (const file of named) expect(existsSync(file), file).toBe(true)
+    const forbidden = [
+      ...(await moduleFiles(join(SRC_ROOT, 'infra/providers'))),
+      ...(await moduleFiles(join(SRC_ROOT, 'infra/media'))),
+      ...(await moduleFiles(join(SRC_ROOT, 'infra/sources'))),
+      ...(await moduleFiles(join(SRC_ROOT, 'features/production/stages'))),
+      ...(await moduleFiles(join(SRC_ROOT, 'features/production/context'))),
+      ...(await moduleFiles(join(SRC_ROOT, 'app'))),
+      ...(await moduleFiles(join(SRC_ROOT, 'runtime'))),
+      ...named,
+    ]
+    const offenders: string[] = []
+    for (const target of forbidden) {
+      const chain = await findImportChain(roots, target)
+      if (chain !== null) offenders.push(chain.map((f) => relative(SRC_ROOT, f)).join(' -> '))
+    }
+    expect(offenders).toEqual([])
   })
 
   it('positive control: the walker does find actions/catalog.ts reachable from the dashboard', async () => {
-    // The test above proves handlers.ts is UNREACHABLE — a claim that only
-    // means something if findImportChain can also find things that ARE
+    // The test above proves the execution graph is UNREACHABLE — a claim that
+    // only means something if findImportChain can also find things that ARE
     // reachable. Without this, a walker silently broken to always return null
-    // (a bad edit to the regex, the visited-set, or resolveRelativeSpecifier)
+    // (a bad edit to the parser, the visited-set, or resolveRelativeSpecifier)
     // would make the isolation test above pass for the wrong reason: "found
     // nothing" instead of "checked everything and found nothing". catalog.ts
     // is real, known-reachable metadata the dashboard is expected to import.
-    const target = join(SRC_ROOT, 'actions', 'catalog.ts')
-    const files = await dashboardRuntimeFiles()
-    const chain = await findImportChain(files, target)
+    const target = join(SRC_ROOT, 'features/actions/catalog.ts')
+    const chain = await findImportChain(await dashboardRuntimeFiles(), target)
     expect(chain).not.toBeNull()
   })
 })
 
-describe('Next dashboard runtime isolation', () => {
-  // actions/handlers.ts has its own test above, with a positive control.
-  it.each([
-    'jobs/pipeline.ts',
-    'providers/anthropic.ts',
-    'providers/elevenlabs.ts',
-    'db/index.ts',
-    'db/migrate.ts',
-  ])('does not reach %s from HTTP code', async (target) => {
-    const files = await dashboardRuntimeFiles()
-    const chain = await findImportChain(files, join(SRC_ROOT, target))
-    expect(chain?.map((f) => relative(SRC_ROOT, f))).toBeUndefined()
+describe('CLI startup isolation', () => {
+  it('loads command registration without loading execution graphs', async () => {
+    const visited = new Set<string>()
+    const forbidden =
+      /^(infra\/(providers|media|sources)\/|features\/(production\/(stages|context)\/|scouting\/|actions\/handlers)|app\/(daemon|workers)\.ts)/
+    async function walk(file: string): Promise<void> {
+      if (visited.has(file)) return
+      visited.add(file)
+      expect(relative(SRC_ROOT, file)).not.toMatch(forbidden)
+      for (const spec of sourceSpecifiers((await readSource(file))!, false, file, false)) {
+        expect(spec).not.toMatch(/^(@remotion\/|@anthropic-ai\/)/)
+        const resolved = resolveRelativeSpecifier(file, spec)
+        if (resolved) await walk(resolved)
+      }
+    }
+    await walk(join(SRC_ROOT, 'cli.ts'))
+    expect(visited.has(join(SRC_ROOT, 'app/cli/program.ts'))).toBe(true)
+    expect(
+      sourceSpecifiers(
+        "const deferred = import('./heavy.js'); const loaded = require('./sync.js')",
+        false,
+        'sample.ts',
+        false,
+      ),
+    ).toEqual(['./sync.js'])
   })
 })
 
 describe('error handling conventions', () => {
   it('no module re-rolls the message-extraction ternary', async () => {
     // This exact expression had been copied into 13 files. `errorMessage()`
-    // in daemon/src/errors.ts is the one implementation, and daemon/src/errors.ts is the
+    // in daemon/src/shared/errors.ts is the one implementation, and daemon/src/shared/errors.ts is the
     // one place it legitimately appears — so it is the only exemption.
     //
     // The needle is built from two pieces rather than written as one literal
@@ -451,7 +607,7 @@ describe('error handling conventions', () => {
     const offenders: string[] = []
     for (const file of await srcFiles()) {
       const rel = relative(SRC_ROOT, file)
-      if (rel === 'errors.ts') continue
+      if (rel === 'shared/errors.ts') continue
       const src = (await readSource(file)) ?? ''
       if (src.includes(BANNED_IDIOM)) offenders.push(rel)
     }
@@ -488,7 +644,7 @@ describe('error handling conventions', () => {
     const offenders: string[] = []
     for (const file of await srcFiles()) {
       const rel = relative(SRC_ROOT, file)
-      if (rel === 'errors.ts') continue
+      if (rel === 'shared/errors.ts') continue
       const src = (await readSource(file)) ?? ''
       if (EXTENDS_BUILTIN_ERROR.test(src)) offenders.push(rel)
     }
@@ -496,9 +652,9 @@ describe('error handling conventions', () => {
   })
 
   it('imports nothing from daemon/src/ into the errors module', async () => {
-    // Every layer imports daemon/src/errors.ts, so a dependency here becomes a
+    // Every layer imports daemon/src/shared/errors.ts, so a dependency here becomes a
     // dependency everywhere. Only node: builtins are allowed.
-    const src = (await readSource(join(SRC_ROOT, 'errors.ts'))) ?? ''
+    const src = (await readSource(join(SRC_ROOT, 'shared/errors.ts'))) ?? ''
     const imports = [...src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
     expect(imports.filter((s) => s !== undefined && !s.startsWith('node:'))).toEqual([])
   })
@@ -525,7 +681,7 @@ describe('error handling conventions', () => {
 describe('path resolution conventions', () => {
   it('imports only node builtins into config/paths.ts', async () => {
     // Every entrypoint resolves its paths through this module, so a dependency
-    // here becomes a dependency everywhere — the same reason daemon/src/errors.ts has
+    // here becomes a dependency everywhere — the same reason daemon/src/shared/errors.ts has
     // its own version of this lint.
     const src = (await readSource(join(SRC_ROOT, 'config', 'paths.ts'))) ?? ''
     const imports = [...src.matchAll(/^\s*import\s[^'"]*['"]([^'"]+)['"]/gm)].map((m) => m[1])
@@ -533,9 +689,9 @@ describe('path resolution conventions', () => {
   })
 })
 
-describe('daemon/src/stories purity', () => {
+describe('daemon/src/shared/stories purity', () => {
   it('imports nothing from daemon/src/ except errors.ts', async () => {
-    const files = await moduleFiles(join(SRC_ROOT, 'stories'))
+    const files = await moduleFiles(join(SRC_ROOT, 'shared/stories'))
     expect(files.length).toBeGreaterThan(0)
     const offenders: string[] = []
     for (const file of files) {
@@ -553,7 +709,7 @@ describe('daemon/src/stories purity', () => {
   })
 
   it('never touches the database, filesystem, or network', async () => {
-    const files = await moduleFiles(join(SRC_ROOT, 'stories'))
+    const files = await moduleFiles(join(SRC_ROOT, 'shared/stories'))
     const offenders: string[] = []
     for (const file of files) {
       const source = (await readSource(file)) ?? ''

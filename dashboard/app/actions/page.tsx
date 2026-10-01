@@ -1,11 +1,11 @@
-import { listRecentActions } from '../../../daemon/src/actions/queue'
+import { listRecentActions } from '../../../daemon/src/features/actions/queue'
+import { DashboardPage, type PageProps } from '../../components/page'
+import { ActionDetail } from '../../components/ui'
 import {
   ACTIONS_PAGE_LIMIT,
   actionsTableExists,
   hasActiveAction,
 } from '../../lib/server/queries/actions'
-import { DashboardPage, type PageProps } from '../../components/page'
-import { ActionDetail } from '../../components/ui'
 export default function ActionsPage(props: PageProps) {
   return (
     <DashboardPage

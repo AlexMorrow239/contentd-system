@@ -1,10 +1,10 @@
 'use client'
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import type { ActionKind } from '../../daemon/src/actions/catalog'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import type { ActionKind } from '../../daemon/src/features/actions/catalog'
 import { sameSitePath } from '../lib/shared/navigation'
-import { useJobActionState } from './job-action-state'
 import { ActionIcon } from './action-icon'
+import { useJobActionState } from './job-action-state'
 
 export interface ActionFormControlProps {
   kind: ActionKind

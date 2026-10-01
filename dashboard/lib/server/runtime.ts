@@ -1,9 +1,12 @@
-import { existsSync } from 'node:fs'
 import type { Database } from 'better-sqlite3'
-import { openDbReadonly } from '../../../daemon/src/db/dashboard.js'
-import { daemonIsStale, readDaemonState } from '../../../daemon/src/loop/daemon-state.js'
+import { existsSync } from 'node:fs'
+import {
+  daemonIsStale,
+  readDaemonState,
+} from '../../../daemon/src/infra/coordination/daemon-state.js'
+import { openDbReadonly } from '../../../daemon/src/infra/db/dashboard.js'
+import { errorMessage } from '../../../daemon/src/shared/errors.js'
 import { actionsTableExists } from './queries/actions.js'
-import { errorMessage } from '../../../daemon/src/errors.js'
 
 export function daemonStaleFor(db: Database, now: Date): boolean {
   return !actionsTableExists(db) || daemonIsStale(readDaemonState(db), now)

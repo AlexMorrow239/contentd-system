@@ -36,7 +36,7 @@ pnpm test:config             # schema, path rules, tracked channel TOMLs
 pnpm test:scout              # sources, scoring, filtering, queues
 pnpm test:pipeline           # stages, lifecycle, real render tests
 pnpm test:coverage           # report-only coverage; no thresholds
-pnpm vitest run daemon/src/jobs/test/runner.test.ts
+pnpm vitest run daemon/src/features/production/jobs/test/runner.test.ts
 ```
 
 Opt-in tiers:
@@ -62,8 +62,8 @@ docker compose exec brainrot pnpm brainrot library list
 ```
 
 On macOS, `pnpm daemon:caffeinate install` installs a host LaunchAgent that keeps
-the Mac awake while this checkout's daemon container runs. `daemon/caffeinate.ts`
-owns the sleep assertion lifecycle; `daemon/caffeinate-service.ts` owns host
+the Mac awake while this checkout's daemon container runs. `daemon/src/app/host/caffeinate.ts`
+owns the sleep assertion lifecycle; `daemon/src/app/host/caffeinate-service.ts` owns host
 installation and signals. `BRAINROT_CAFFEINATE` defaults to true and is reloaded
 from `.env` every 30 seconds; false releases the assertion without restarting
 Docker. It is host-only, not a container setting. Display sleep is allowed;
@@ -99,15 +99,48 @@ production operations, and recovery.
 
 ## Architecture
 
+### Module ownership and dependency direction
+
+`daemon/src/cli.ts` is the executable bootstrap. `app/cli/` registers command
+families with lazy imports for execution; `app/daemon.ts` owns lifecycle and
+`app/workers.ts` composes the six feature workers. Host-only caffeinate code
+lives in `app/host/`. `runtime/` contains generic polling and supervision.
+
+`shared/` owns errors, time, money, pure story helpers, and lightweight contracts
+for stage order, platforms, source snapshots, video, word timings, and workers.
+`config/` validates inputs. `infra/` owns database connections/migrations,
+coordination (leases and heartbeat state), providers, media helpers, and source
+retrieval. These modules never import feature workflows.
+
+`features/` is organized by behavior:
+
+- `billing`: costs and budget waits; `topics`: types, queries, and mutations.
+- `posting`: metadata and posted-state operations; `library`: inventory,
+  approval, capacity, and cleanup.
+- `production`: job lifecycle, planning, recovery, stages, context collection,
+  artifact readers, and its worker. The runner reads artifacts without importing
+  concrete stages; `pipeline.ts` composes stage implementations.
+- `scouting`: per-channel filtering/scoring and whole-run coordination.
+- `actions`: catalog, queue, recovery, fast/slow handlers, and worker.
+- `reporting`: digest collection, formatting, and scheduled worker.
+
+Architecture tests enforce the feature DAG, including type-only imports:
+library → posting; production → billing/topics/library/posting; scouting →
+billing/topics; reporting → billing/topics/library/posting; actions → these
+operations. Features never import `app/` or `runtime/`; worker types come from
+`shared/contracts/worker.ts`. Shared modules never import higher layers. Source
+imports must be acyclic. Keep cross-table lifecycle transactions intact rather
+than splitting their commits to follow table ownership.
+
 ### The pipeline: stages over a JobContext
 
-`daemon/src/jobs/pipeline.ts` owns stage order for produce, resume, and produce-next:
+`daemon/src/features/production/pipeline.ts` owns stage order for produce, resume, and produce-next:
 
 ```
 script -> voice -> captions -> visuals -> assemble -> qc
 ```
 
-A `StageDef` runs against `JobContext` (`daemon/src/jobs/types.ts`). Read/write artifacts
+A `StageDef` runs against `JobContext` (`daemon/src/features/production/contracts.ts`). Read/write artifacts
 through `ctx.artifactPath(stage, file)`, under `runs/<jobId>/attempts/<attemptId>/<stage>/`.
 Completed inputs resolve through persisted `job_stages.artifact_dir`; legacy null
 references resolve to `runs/<jobId>/<stage>/`. Never write replacement outputs
@@ -128,19 +161,19 @@ failures fail the job; there is no alternate voice provider.
 
 ### One daemon, six workers share one SQLite file
 
-`daemon/src/loop/daemon.ts` starts `produce`, `scout`, `digest`, `actions-fast`,
+`daemon/src/app/daemon.ts` starts `produce`, `scout`, `digest`, `actions-fast`,
 `actions-slow`, and `cleanup`. It owns process signals, singleton ownership and startup logging;
-`daemon-workers.ts` owns production composition and exposes startup reconciliation
+`app/workers.ts` owns production composition and exposes startup reconciliation
 as `initializeDaemonWork`. Both production units and startup work can be called
 directly without polling. An explicit `workers` override bypasses production
 construction/reconciliation while retaining daemon ownership and lifecycle.
 
-`worker-contract.ts` contains types only. `worker-loop.ts` owns polling and log
+`shared/contracts/worker.ts` contains types only. `runtime/worker-loop.ts` owns polling and log
 deduplication; `worker-supervisor.ts` joins workers on cancellation/failure without
-knowing about SQLite or domain work. `daemon/src/time.ts` owns `TimeSource` clock reads,
+knowing about SQLite or domain work. `daemon/src/shared/time.ts` owns `TimeSource` clock reads,
 abortable sleeps, cancellable timeouts, unref'd intervals and request deadlines.
-`produce-unit.ts`, `scout-unit.ts`, `digest-unit.ts`, `cleanup-unit.ts` and
-`actions-worker.ts` expose independently callable units. Construct stateful units
+Each feature's `worker.ts`, plus `library/cleanup.ts`, exposes independently callable
+units. Construct stateful units
 once and reuse them: digest day, cleanup cadence and action heartbeat throttle belong to the unit.
 Architecture tests forbid work importing daemon composition, polling or supervision,
 including erased type imports. Import shared types from the contract instead.
@@ -160,7 +193,7 @@ Idle/error sleeps are 30s/60s; fast actions poll at 1s. Identical idle messages
 are deduplicated. Digest runs at/after 08:00 local time once per process-day;
 a same-day restart can produce another report. There is no publishing worker.
 
-`produceNextTick` (`daemon/src/loop/produce-next.ts`) loads channels fresh each tick,
+`produceNextTick` (`daemon/src/features/production/produce-next.ts`) loads channels fresh each tick,
 reports malformed config as a structured noop, and acquires the `produce`
 lease before mutation. It repairs historical claimed-topic/library mismatches,
 then reconciles abandoned jobs and executes `planTick`. Managed leases renew
@@ -170,7 +203,7 @@ in the same process; labels and PIDs are diagnostic only. Job, stage, finalizati
 and action writes verify ownership inside their transaction. Losing ownership cancels supported work and fences
 late results; known provider charges remain associated with the attempt.
 
-`planTick` (`daemon/src/loop/plan-tick.ts`) prefers due recovered jobs, then eligible
+`planTick` (`daemon/src/features/production/plan-tick.ts`) prefers due recovered jobs, then eligible
 budget-blocked jobs, then claims
 new topics subject to daily production limits, budgets, and backlog capacity.
 A channel holding `ceil(videos_per_day * backlog_days)` unconsumed videos
@@ -182,7 +215,7 @@ doubles to 30 minutes, and resets on completed stage progress. Ordinary provider
 failures still require explicit resume. Paid-stage replay warns about duplicate
 charges and incomplete accounting.
 
-`fullyPostedClause` (`daemon/src/posts/posts.ts`) is shared by inventory, post-queue,
+`fullyPostedClause` (`daemon/src/features/posting/posts.ts`) is shared by inventory, post-queue,
 and digest readers. Empty `platforms` means nothing is fully posted.
 
 The three lease names are `daemon`, `produce`, and `scout`, all managed with
@@ -204,11 +237,13 @@ scout sources and target platforms has neither candidates nor unposted videos.
 ### The operator-action queue: two more workers, drained fast and slow
 
 The dashboard inserts `operator_actions`; daemon workers execute them.
-Keep `daemon/src/actions/` separated by import boundary:
+Keep `daemon/src/features/actions/` separated by import boundary:
 
 - `catalog.ts`: lightweight metadata and argument schemas, shared with dashboard.
 - `queue.ts`: action persistence and guarded state transitions.
-- `handlers.ts`: daemon-only implementations; never import into the dashboard.
+- `recovery.ts`: interrupted-action reconciliation, outside the dashboard graph.
+- `handlers.ts`: dispatches `handlers-fast.ts` and `handlers-slow.ts`; never import
+  these implementations into the dashboard.
 
 `daemon/src/arch.test.ts` checks the dashboard's transitive runtime imports, including TSX and dynamic imports. Pipeline,
 Remotion, and paid-provider clients must stay outside the HTTP process.
@@ -274,7 +309,7 @@ Keep top-level TOML keys before section headers. `platforms` is a top-level
 array of unique `youtube`, `instagram`, and/or `tiktok` entries; empty means no
 posting checklist and no inventory can count as fully posted. Removed
 `[publish]`, `slots`, `[caption_style]`, and `[scout] min_score` settings fail validation.
-Caption styling is shared in code via `CAPTION_STYLE` in `daemon/src/remotion-types.ts`.
+Caption styling is shared in code via `CAPTION_STYLE` in `daemon/src/shared/contracts/video.ts`.
 `videos_per_day` limits production; it is not a platform upload quota.
 
 `backlog_days` (default 2) caps unconsumed finished inventory.
@@ -328,8 +363,8 @@ other non-Arctic Shift scouting code.
 ### Story mode: channels that narrate reddit posts verbatim
 
 `[story]` channels narrate Reddit self-post bodies from Arctic Shift's
-`selftext_html` (`storyBody` in `daemon/src/stories/body.ts`).
-The body is assembled locally by `runStoryScript` (`daemon/src/stages/script.ts`);
+`selftext_html` (`storyBody` in `daemon/src/shared/stories/body.ts`).
+The body is assembled locally by `runStoryScript` (`daemon/src/features/production/stages/script.ts`);
 the model response schema accepts only platform metadata, not narration.
 The hook is still the scout's model-authored topic title. “Verbatim” refers to
 the body source, with sanitization applied before narration.
@@ -338,7 +373,7 @@ the body source, with sanitization applied before narration.
 
 `topics.source_context_json` stores versioned post snapshots independently of
 story eligibility, including bodies shorter than the narration minimum.
-`daemon/src/context/` collects a selected topic's post and directly linked
+`daemon/src/features/production/context/` collects a selected topic's post and directly linked
 external article inside the script stage. Legacy Reddit rows recover through
 Arctic Shift's ID lookup, never Reddit page scraping. Article retrieval uses
 Readability with scripts/resources disabled, public-address checks at connection
@@ -354,7 +389,7 @@ context's estimated input cost; actual provider usage remains authoritative.
 Story metadata sees the sanitized current part rather than a 60-word preview;
 the deterministic narration path and `body_text` meaning remain unchanged.
 
-`daemon/src/stories/` is pure: the architecture lint permits only `errors.ts` imports
+`daemon/src/shared/stories/` is pure: the architecture lint permits only `errors.ts` imports
 from `daemon/src/` and bans direct database, filesystem, and network access.
 
 Each story part is a separate `topics` row/job/video. Parts share `series_key`,
@@ -395,7 +430,7 @@ Channel `[budget] per_day_usd` is optional, must be positive and strictly below
 the effective global cap. An absent cap means global-only enforcement, with
 no implicit channel default. `per_video_usd` is removed and rejected.
 
-`daemon/src/jobs/costs.ts`'s `assertBudget` checks global-day and optional
+`daemon/src/features/billing/costs.ts`'s `assertBudget` checks global-day and optional
 channel-day spend (UTC) before paid calls. Production and scouting share both
 limits; channel attribution includes exact `scout:<channel>` ledger entries.
 Scouting preflights the batch and rechecks each chunk with costs accumulated
@@ -404,9 +439,9 @@ These are estimate-based checks, not reservations: concurrent calls and actual
 costs can overshoot. Per-job totals remain reporting data, not lifetime caps.
 Providers that pay for a call that then fails downstream (e.g. a schema-invalid
 LLM response) still have to ledger that spend. The provider tags the thrown
-error via `tagError` (`daemon/src/errors.ts`) with `context: { costUsdMicros }`, which
+error via `tagError` (`daemon/src/shared/errors.ts`) with `context: { costUsdMicros }`, which
 leaves the error's identity intact — anthropic keeps throwing a real `ZodError`
-so callers still match `instanceof z.ZodError` — and `daemon/src/providers/errors.ts`'s
+so callers still match `instanceof z.ZodError` — and `daemon/src/infra/providers/errors.ts`'s
 `errorCostUsdMicros` reads it back.
 
 Budget refusals persist stage, scope, upcoming cost, observed spend, cap, UTC
@@ -418,7 +453,7 @@ backlog capacity and reuse the original daily job slot.
 
 ### Errors: one vocabulary, two axes
 
-`daemon/src/errors.ts` owns `BrainrotError`, `errorMessage`, `classify`, `tagError`,
+`daemon/src/shared/errors.ts` owns `BrainrotError`, `errorMessage`, `classify`, `tagError`,
 `errorContext`, and `isAbortLike`. It imports nothing from `daemon/src/`; an architecture
 lint protects that boundary. Domain classes stay with their owning modules.
 
@@ -435,9 +470,9 @@ base constructor's assignment with undefined.
 
 ### Providers and the sidecar
 
-`daemon/src/providers/*.ts` wrap external APIs (Anthropic for scripts, ElevenLabs for
+`daemon/src/infra/providers/*.ts` wrap external APIs (Anthropic for scripts, ElevenLabs for
 voice synthesis).
-`daemon/src/providers/whisperx.ts` talks to the Dockerized WhisperX sidecar
+`daemon/src/infra/providers/whisperx.ts` talks to the Dockerized WhisperX sidecar
 (`docker-compose.yml`) for caption word-level alignment — needed whenever
 historical audio has no timings or ElevenLabs returns missing/invalid alignment.
 ElevenLabs normally returns word timings directly, with no alignment pass needed.
@@ -447,7 +482,7 @@ ElevenLabs normally returns word timings directly, with no alignment pass needed
 Posting happens by hand from `/post`. There is no upload adapter, OAuth grant,
 credential store, publishing worker, or platform retry state machine.
 
-`daemon/src/posts/types.ts` declares the platform vocabulary; `meta.ts` validates and
+`daemon/src/shared/contracts/platforms.ts` declares the platform vocabulary; `meta.ts` validates and
 normalizes titles/descriptions/hashtags and composes paste fields. YouTube has
 separate title/body/tags; Instagram and TikTok use one caption block.
 
@@ -457,7 +492,7 @@ refresh `posted_at`. `unmarkPosted` deletes the row. The dashboard presents
 paste fields for unposted platforms and saved links/unmark controls for posted
 ones.
 
-`cleanup-unit.ts` deletes only the finished `library.video_path` MP4 once all
+`features/library/cleanup.ts` deletes only the finished `library.video_path` MP4 once all
 currently declared platforms are posted and the latest required `posted_at` is
 at least 24 hours old. It runs at startup and every five minutes using `TimeSource`,
 including historical posts. Empty platforms, missing channel configurations,
@@ -512,13 +547,14 @@ blocked library rows remain readable; deleting them uses ordinary `jobs.delete`.
 Row actions share a submission lock and refresh in place; the existing operator
 queue, CSRF checks, and resume deduplication remain authoritative.
 
-Database openers live in `daemon/src/db/dashboard.ts` without schema or migration
-imports; the dashboard must not import `daemon/src/db/index.ts`. Next reads
+Database openers live in `daemon/src/infra/db/dashboard.ts` without schema or migration
+imports; the dashboard must not import `daemon/src/infra/db/index.ts`. Next reads
 config and state at request time, never while building. Its launcher mints one
 CSRF token shared through the server environment across Next bundles/workers.
 Use webpack extension aliases for shared NodeNext `.js` source imports.
-The lightweight `DASHBOARD_STAGE_ORDER` must agree with the pipeline (tested),
-but importing `pipelineStages()` would pull rendering/provider code into HTTP.
+The dashboard reads stage order from `shared/contracts/pipeline.ts`'s `STAGE_ORDER`.
+Architecture tests check the concrete pipeline agrees; importing `pipelineStages()`
+would pull rendering/provider code into HTTP.
 
 Library byte states are `local` and `missing`, based only on whether the local
 video path exists. Missing local files cannot be recovered by the application.
@@ -527,8 +563,8 @@ The library's QC verdict comes from `library.qc_json`.
 ### Remotion rendering
 
 `integrations/remotion/` is the actual video composition (React components rendered to
-frames by `@remotion/renderer`), driven by `daemon/src/stages/assemble.ts` and
-`daemon/src/stages/captions.ts`. It has its own `tsconfig.json` and is type-checked
+frames by `@remotion/renderer`), driven by `daemon/src/features/production/stages/assemble.ts` and
+`daemon/src/features/production/stages/captions.ts`. It has its own `tsconfig.json` and is type-checked
 separately in `pnpm build`, but is not a separate package — no independent
 install/version.
 
@@ -545,8 +581,8 @@ costs, leases, posting records, operator actions, and daemon liveness. Artifacts
 live under `<root>/runs/<jobId>/attempts/<attemptId>/<stage>/`, bound to host
 `docker/state/runs/`. Legacy canonical stage directories remain readable.
 
-`daemon/src/db/schema.sql` describes a fresh database and is executed on each
-`openDb`. Existing-database changes belong in `daemon/src/db/migrate.ts`, called after
+`daemon/src/infra/db/schema.sql` describes a fresh database and is executed on each
+`openDb`. Existing-database changes belong in `daemon/src/infra/db/migrate.ts`, called after
 schema application. Each migration probes its precondition and must be
 idempotent. Table rebuilds reuse schema.sql rather than duplicating DDL.
 Data-dependent indexes and indexes over newly migrated columns belong in
@@ -635,7 +671,7 @@ a mirrored `daemon/dist/` tree for CLI subprocess tests. Do not bundle: CLI entr
 guards, schema lookup, and Remotion paths depend on `import.meta.url` and the
 preserved directory depth. `pnpm build` remains type-checking only.
 
-The builder copies `db/schema.sql`. CLI production runs source through `tsx`;
+The builder copies `infra/db/schema.sql`. CLI production runs source through `tsx`;
 the dashboard uses its separate Next.js production build in `dashboard/.next`. No current spawned CLI
 test reaches assembly; real rendering is exercised through stage/pipeline tests.
 

@@ -1,7 +1,7 @@
+import { errorMessage } from '../../../../../daemon/src/shared/errors'
 import { resolveDashboardConfig } from '../../../../lib/config'
 import { withDashboardDb } from '../../../../lib/server/runtime'
 import { streamVideo } from '../../../../lib/server/stream-video'
-import { errorMessage } from '../../../../../daemon/src/errors'
 export const runtime = 'nodejs'
 export async function GET(
   request: Request,

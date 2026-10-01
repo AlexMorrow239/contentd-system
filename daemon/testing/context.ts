@@ -1,6 +1,8 @@
-import type { SourcePost } from '../src/context/types.js'
-import type { JobContext } from '../src/jobs/types.js'
-import { claimTopic, insertTopics, listTopics, type NewTopic } from '../src/scout/topics.js'
+import type { JobContext } from '../src/features/production/contracts.js'
+import { claimTopic, insertTopics } from '../src/features/topics/mutations.js'
+import { listTopics } from '../src/features/topics/queries.js'
+import { type NewTopic } from '../src/features/topics/types.js'
+import type { SourcePost } from '../src/shared/contracts/source-context.js'
 
 export function sourcePost(overrides: Partial<SourcePost> = {}): SourcePost {
   return {

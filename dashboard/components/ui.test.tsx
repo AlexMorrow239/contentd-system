@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { ActionDetail, SafeLink, Video } from './ui'
+import { describe, expect, it } from 'vitest'
+import { getAction } from '../../daemon/src/features/actions/queue'
 import { memDb, seedAction } from '../../daemon/testing/db'
-import { getAction } from '../../daemon/src/actions/queue'
+import { ActionDetail, SafeLink, Video } from './ui'
 
 describe('dashboard components', () => {
   it('escapes untrusted text and refuses executable external links', () => {

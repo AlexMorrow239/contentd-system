@@ -1,7 +1,7 @@
-import { test, expect, resetFixture } from './fixtures'
-import { seedAction, seedDaemonState } from '../../daemon/testing/db'
-import { actionsUnit } from '../../daemon/src/loop/actions-worker'
+import { actionsUnit } from '../../daemon/src/features/actions/worker'
 import { channelToml, writeChannelsDir } from '../../daemon/testing/channel'
+import { seedAction, seedDaemonState } from '../../daemon/testing/db'
+import { expect, resetFixture, test } from './fixtures'
 
 test.beforeEach(({ dashboard }) => resetFixture(dashboard))
 

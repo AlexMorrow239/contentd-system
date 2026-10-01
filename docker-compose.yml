@@ -76,7 +76,7 @@ services:
     volumes:
       - ./assets:/app/assets:ro # 21 GB, never copied, never written
       # A NAMED VOLUME, deliberately not a bind mount. SQLite runs in WAL
-      # mode (daemon/src/db/index.ts), and WAL coordinates readers/writers through a
+      # mode (daemon/src/infra/db/index.ts), and WAL coordinates readers/writers through a
       # shared-memory `-shm` file that every process touching the database
       # must mmap coherently. A bind mount from macOS reaches the Linux VM
       # over virtiofs, so the daemon (VM kernel) and any host-side CLI (macOS
@@ -150,8 +150,8 @@ services:
       # Since the dashboard gained POST /api/actions this binding is load-bearing
       # for more than privacy: a reachable dashboard can already spend real
       # provider budget and queue real renders — produce/resume/scout are
-      # wired into the same queue (daemon/src/actions/catalog.ts;
-      # daemon/src/actions/handlers.ts). There is no upload path behind
+      # wired into the same queue (daemon/src/features/actions/catalog.ts;
+      # daemon/src/features/actions/handlers.ts). There is no upload path behind
       # any of them anymore, but the render/spend exposure alone is reason
       # enough. Do not change this to 0.0.0.0 or front it with a reverse
       # proxy. See README, "The dashboard queues renders and spends money".
@@ -163,7 +163,7 @@ services:
       # route opens the db through openDbReadonly (no mkdir, no schema exec,
       # no migrate); the one write path is POST /api/actions, a single
       # `INSERT INTO operator_actions` through openDbActions (also no mkdir,
-      # no schema exec, no migrate — see daemon/src/db/dashboard.ts). Same named volume
+      # no schema exec, no migrate — see daemon/src/infra/db/dashboard.ts). Same named volume
       # as the brainrot service, for the WAL/virtiofs reason documented there
       # — and doubly so here, since this is a SECOND concurrent opener.
       - brainrot-data:/app/state/db

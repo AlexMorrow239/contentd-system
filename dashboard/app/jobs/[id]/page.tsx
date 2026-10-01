@@ -1,15 +1,15 @@
-import { notFound, redirect } from 'next/navigation'
 import Link from 'next/link'
+import { notFound, redirect } from 'next/navigation'
 import { tryLoadChannelsDir } from '../../../../daemon/src/config/channel'
-import { sameSitePath } from '../../../lib/shared/navigation'
-import { REVIEW_LABELS } from '../../../lib/shared/job-filters'
-import { JobActions } from '../../../components/job-actions'
+import { formatUsdMicros } from '../../../../daemon/src/shared/money'
 import { JobWorkspace } from '../../../components/job-action-state'
-import { QcResult, PostingSummary } from '../../../components/job-summary'
-import { getJobDetail, jobsRefreshSeconds } from '../../../lib/server/queries/jobs'
-import { formatUsdMicros } from '../../../../daemon/src/money'
+import { JobActions } from '../../../components/job-actions'
+import { PostingSummary, QcResult } from '../../../components/job-summary'
 import { DashboardPage, value, type PageProps } from '../../../components/page'
 import { SafeLink, Status, Table, Video, formatDuration, formatTime } from '../../../components/ui'
+import { getJobDetail, jobsRefreshSeconds } from '../../../lib/server/queries/jobs'
+import { REVIEW_LABELS } from '../../../lib/shared/job-filters'
+import { sameSitePath } from '../../../lib/shared/navigation'
 export default async function JobPage(props: PageProps & { params: Promise<{ id: string }> }) {
   const { id } = await props.params
   return (

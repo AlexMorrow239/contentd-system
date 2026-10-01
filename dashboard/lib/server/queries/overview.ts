@@ -4,7 +4,7 @@ import {
   channelDaySpentMicrosByChannel,
   globalDailyCapMicros,
   globalDaySpentMicros,
-} from '../../../../daemon/src/jobs/costs.js'
+} from '../../../../daemon/src/features/billing/costs.js'
 
 export interface StatusCount {
   status: string

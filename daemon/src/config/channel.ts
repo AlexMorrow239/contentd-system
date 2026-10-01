@@ -1,9 +1,9 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { z } from 'zod'
-import { BrainrotError, errorMessage } from '../errors.js'
-import { PLATFORMS, type Platform } from '../posts/types.js'
+import { PLATFORMS, type Platform } from '../shared/contracts/platforms.js'
+import { BrainrotError, errorMessage } from '../shared/errors.js'
 import { validateChannelBudget } from './budget.js'
 
 function configInvalid(message: string): BrainrotError {
@@ -74,7 +74,7 @@ export const DEFAULT_SCOUT: ScoutConfig = Object.freeze({
 
 /**
  * Story mode's only channel dial. Everything else about splitting is a code
- * constant (STORY_WORDS_PER_PART, daemon/src/stories/split.ts) — max_parts is
+ * constant (STORY_WORDS_PER_PART, daemon/src/shared/stories/split.ts) — max_parts is
  * per-channel because it is the one number that trades story completeness
  * against how long a single post occupies the channel.
  */
@@ -87,7 +87,7 @@ export interface StoryConfig {
 const DEFAULT_ELEVENLABS_MODEL_ID = 'eleven_multilingual_v2'
 
 // min_score used to gate which scored topics got stored. It is now a
-// constant in code (SCOUT_MIN_SCORE, in daemon/src/scout/scout.ts) rather than a
+// constant in code (SCOUT_MIN_SCORE, in daemon/src/features/scouting/channel.ts) rather than a
 // per-channel dial, so a channel TOML that still sets it is a load error
 // naming the replacement rather than a silently ignored key.
 const REMOVED_MIN_SCORE_MESSAGE =
@@ -400,4 +400,9 @@ export function tryLoadChannelsDir(dir: string): { channels: ChannelConfig[]; er
   } catch (err) {
     return { channels: [], error: errorMessage(err) }
   }
+}
+
+/** The structured noop every unattended surface reports for a tryLoadChannelsDir error. */
+export function configErrorNoop(error: string) {
+  return { action: 'noop' as const, reason: 'config-error' as const, error }
 }
