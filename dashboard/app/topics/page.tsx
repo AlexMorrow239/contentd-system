@@ -1,10 +1,10 @@
 import { redirect } from 'next/navigation'
-import Link from 'next/link'
 import { listTopics } from '../../../daemon/src/features/topics/queries.js'
 import { ActionForm } from '../../components/action-form'
+import { ListHeading, ListResults, ListTitleCell } from '../../components/list-page'
 import { DashboardPage, type PageProps } from '../../components/page'
 import { TopicFiltersControl } from '../../components/topic-filters'
-import { Pagination, Status, Table, formatTime } from '../../components/ui'
+import { Status, formatTime } from '../../components/ui'
 import { JobWorkspace } from '../../components/job-action-state'
 import { TopicActions } from '../../components/topic-actions'
 import { TopicSource } from '../../components/topic-source'
@@ -34,77 +34,66 @@ export default function TopicsPage(props: PageProps) {
         const from = topicsUrl(filter, page)
         return (
           <JobWorkspace>
-            <div className="jobs-heading">
-              <div>
-                <h1>Topics</h1>
-                <p className="subtitle">Scout candidates and the production queue.</p>
-              </div>
-              <ActionForm kind="scout.run" token={ctx.token} disabled={ctx.stale} />
-            </div>
-            <TopicFiltersControl channels={topicChannels(db)} />
-            <div className="list-meta">
-              <span>
-                {total.toLocaleString()} {total === 1 ? 'topic' : 'topics'}
-              </span>
-              <span>Highest score first</span>
-            </div>
-            {topics.length === 0 ? (
-              <p className="empty">No topics match these filters.</p>
-            ) : (
-              <div className="jobs-table">
-                <Table
-                  headings={[
-                    'Topic',
-                    'Score',
-                    'Channel',
-                    'Status',
-                    'Source material',
-                    'Found',
-                    'Actions',
-                  ]}
-                >
-                  {topics.map((topic) => (
-                    <tr key={topic.id}>
-                      <td className="job-topic">
-                        <Link
-                          className="job-topic-link"
-                          href={`/topics/${topic.id}?from=${encodeURIComponent(from)}`}
-                        >
-                          {topic.title}
-                        </Link>
-                        <p className="job-secondary">
-                          Topic #{topic.id} · {topic.source}
-                        </p>
-                      </td>
-                      <td>{topic.score}/100</td>
-                      <td>{topic.channel}</td>
-                      <td>
-                        <Status value={topic.status} />
-                      </td>
-                      <td>
-                        <TopicSource topic={topic} />
-                      </td>
-                      <td className="job-created">{formatTime(topic.createdAt)}</td>
-                      <td className="job-actions-cell">
-                        <TopicActions
-                          topic={topic}
-                          action={actions.get(topic.id) ?? null}
-                          token={ctx.token}
-                          disabled={ctx.stale}
-                          icons
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </Table>
-              </div>
-            )}
-            <Pagination
-              label="Topics pages"
-              page={page}
-              pageCount={pageCount}
-              href={(target) => topicsUrl(filter, target)}
+            <ListHeading
+              title="Topics"
+              subtitle="Scout candidates and the production queue."
+              action={<ActionForm kind="scout.run" token={ctx.token} disabled={ctx.stale} />}
             />
+            <TopicFiltersControl channels={topicChannels(db)} />
+            <ListResults
+              summary={
+                <>
+                  {total.toLocaleString()} {total === 1 ? 'topic' : 'topics'}
+                </>
+              }
+              order="Highest score first"
+              empty={topics.length === 0}
+              emptyMessage="No topics match these filters."
+              headings={[
+                'Topic',
+                'Score',
+                'Channel',
+                'Status',
+                'Source material',
+                'Found',
+                'Actions',
+              ]}
+              pagination={{
+                label: 'Topics pages',
+                page,
+                pageCount,
+                href: (target) => topicsUrl(filter, target),
+              }}
+            >
+              {topics.map((topic) => (
+                <tr key={topic.id}>
+                  <ListTitleCell
+                    href={`/topics/${topic.id}?from=${encodeURIComponent(from)}`}
+                    title={topic.title}
+                  >
+                    Topic #{topic.id} · {topic.source}
+                  </ListTitleCell>
+                  <td>{topic.score}/100</td>
+                  <td>{topic.channel}</td>
+                  <td>
+                    <Status value={topic.status} />
+                  </td>
+                  <td>
+                    <TopicSource topic={topic} />
+                  </td>
+                  <td className="job-created">{formatTime(topic.createdAt)}</td>
+                  <td className="job-actions-cell">
+                    <TopicActions
+                      topic={topic}
+                      action={actions.get(topic.id) ?? null}
+                      token={ctx.token}
+                      disabled={ctx.stale}
+                      icons
+                    />
+                  </td>
+                </tr>
+              ))}
+            </ListResults>
           </JobWorkspace>
         )
       }}
