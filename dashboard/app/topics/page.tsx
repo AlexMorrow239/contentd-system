@@ -1,15 +1,19 @@
 import { redirect } from 'next/navigation'
+import Link from 'next/link'
 import { listTopics } from '../../../daemon/src/features/topics/queries.js'
 import { ActionForm } from '../../components/action-form'
 import { DashboardPage, type PageProps } from '../../components/page'
 import { TopicFiltersControl } from '../../components/topic-filters'
-import { JobLink, Pagination, SafeLink, Status, Table, formatTime } from '../../components/ui'
-import { countTopics, topicChannels } from '../../lib/server/queries/topics'
+import { Pagination, Status, Table, formatTime } from '../../components/ui'
+import { JobWorkspace } from '../../components/job-action-state'
+import { TopicActions } from '../../components/topic-actions'
+import { TopicSource } from '../../components/topic-source'
+import { countTopics, topicChannels, topicActions } from '../../lib/server/queries/topics'
 import { pageNumber } from '../../lib/shared/filters'
 import { TOPICS_PAGE_SIZE, parseTopicFilters, topicsUrl } from '../../lib/shared/topic-filters'
 export default function TopicsPage(props: PageProps) {
   return (
-    <DashboardPage {...props}>
+    <DashboardPage {...props} refreshSeconds={3} compactActions>
       {(db, ctx) => {
         const filter = parseTopicFilters(ctx.search)
         const total = countTopics(db, filter)
@@ -23,11 +27,18 @@ export default function TopicsPage(props: PageProps) {
           limit: TOPICS_PAGE_SIZE,
           offset: (page - 1) * TOPICS_PAGE_SIZE,
         })
+        const actions = topicActions(
+          db,
+          topics.map((topic) => topic.id),
+        )
+        const from = topicsUrl(filter, page)
         return (
-          <>
-            <h1>Topics</h1>
-            <p className="subtitle">Scout candidates and the production queue.</p>
-            <div className="page-actions">
+          <JobWorkspace>
+            <div className="jobs-heading">
+              <div>
+                <h1>Topics</h1>
+                <p className="subtitle">Scout candidates and the production queue.</p>
+              </div>
               <ActionForm kind="scout.run" token={ctx.token} disabled={ctx.stale} />
             </div>
             <TopicFiltersControl channels={topicChannels(db)} />
@@ -40,57 +51,53 @@ export default function TopicsPage(props: PageProps) {
             {topics.length === 0 ? (
               <p className="empty">No topics match these filters.</p>
             ) : (
-              <Table
-                headings={[
-                  'Score',
-                  'Title',
-                  'Channel',
-                  'Status',
-                  'Job',
-                  'Source',
-                  'Reason',
-                  'Found',
-                  'Actions',
-                ]}
-              >
-                {topics.map((topic) => (
-                  <tr key={topic.id}>
-                    <td>{topic.score}</td>
-                    <td>
-                      <span>{topic.title}</span>
-                      <p className="job-secondary">Topic #{topic.id}</p>
-                    </td>
-                    <td>{topic.channel}</td>
-                    <td>
-                      <Status value={topic.status} />
-                    </td>
-                    <td>{topic.jobId ? <JobLink id={topic.jobId} /> : '—'}</td>
-                    <td>
-                      <SafeLink url={topic.url}>{topic.source}</SafeLink>
-                    </td>
-                    <td>{topic.reason}</td>
-                    <td>{formatTime(topic.createdAt)}</td>
-                    <td>
-                      {topic.status === 'candidate' && (
-                        <ActionForm
-                          kind="topics.reject"
+              <div className="jobs-table">
+                <Table
+                  headings={[
+                    'Topic',
+                    'Score',
+                    'Channel',
+                    'Status',
+                    'Source material',
+                    'Found',
+                    'Actions',
+                  ]}
+                >
+                  {topics.map((topic) => (
+                    <tr key={topic.id}>
+                      <td className="job-topic">
+                        <Link
+                          className="job-topic-link"
+                          href={`/topics/${topic.id}?from=${encodeURIComponent(from)}`}
+                        >
+                          {topic.title}
+                        </Link>
+                        <p className="job-secondary">
+                          Topic #{topic.id} · {topic.source}
+                        </p>
+                      </td>
+                      <td>{topic.score}/100</td>
+                      <td>{topic.channel}</td>
+                      <td>
+                        <Status value={topic.status} />
+                      </td>
+                      <td>
+                        <TopicSource topic={topic} />
+                      </td>
+                      <td className="job-created">{formatTime(topic.createdAt)}</td>
+                      <td className="job-actions-cell">
+                        <TopicActions
+                          topic={topic}
+                          action={actions.get(topic.id) ?? null}
                           token={ctx.token}
-                          fields={{ ids: String(topic.id) }}
                           disabled={ctx.stale}
+                          icons
                         />
-                      )}
-                      {topic.status === 'claimed' && (
-                        <ActionForm
-                          kind="topics.requeue"
-                          token={ctx.token}
-                          fields={{ id: String(topic.id) }}
-                          disabled={ctx.stale}
-                        />
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </Table>
+                      </td>
+                    </tr>
+                  ))}
+                </Table>
+              </div>
             )}
             <Pagination
               label="Topics pages"
@@ -98,7 +105,7 @@ export default function TopicsPage(props: PageProps) {
               pageCount={pageCount}
               href={(target) => topicsUrl(filter, target)}
             />
-          </>
+          </JobWorkspace>
         )
       }}
     </DashboardPage>

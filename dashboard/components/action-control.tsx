@@ -92,7 +92,10 @@ export function ActionFormControl({
       actionId = data.actionId
       dialog.current?.close()
       if (inPlace) {
-        notify(actionId, `Queued ${label} for ${fields.jobId ?? fields.jobIds ?? 'job'}`)
+        const target = kind.startsWith('topics.')
+          ? `topic #${fields.id ?? fields.ids}`
+          : (fields.jobId ?? fields.jobIds ?? 'job')
+        notify(actionId, `Queued ${label} for ${target}`)
         router.refresh()
       } else {
         const target = new URL(destination, window.location.origin)

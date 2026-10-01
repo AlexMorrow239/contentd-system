@@ -408,6 +408,18 @@ pre {
   color: var(--fg);
   font-weight: 550;
 }
+.topic-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
+.source-present {
+  color: var(--fg);
+}
+.facts dd {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
 .job-secondary {
   font-size: 11px;
   color: var(--muted);

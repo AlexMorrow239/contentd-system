@@ -2,7 +2,29 @@ import type { Database } from 'better-sqlite3'
 import { describe, expect, it } from 'vitest'
 import { listTopics } from '../../../../../daemon/src/features/topics/queries.js'
 import { memDb, seedTopic as seedTopicRow } from '../../../../../daemon/testing/db.js'
-import { countTopics, topicChannels } from '../topics.js'
+import { countTopics, getTopic, topicActions, topicChannels } from '../topics.js'
+
+it('loads topic details and matches bulk and single-topic actions, preferring active work', () => {
+  const db = memDb()
+  const first = seedTopicRow(db, { title: 'First' })
+  const second = seedTopicRow(db, { title: 'Second' })
+  const insert = db.prepare(
+    'INSERT INTO operator_actions (kind, lane, args, status, requested_by) VALUES (?, ?, ?, ?, ?)',
+  )
+  const active = Number(
+    insert.run('topics.reject', 'fast', JSON.stringify({ ids: [first, second] }), 'pending', 'test')
+      .lastInsertRowid,
+  )
+  insert.run('topics.requeue', 'fast', JSON.stringify({ id: first }), 'done', 'test')
+  insert.run('topics.reject', 'fast', 'invalid json', 'pending', 'test')
+  expect(getTopic(db, first)?.title).toBe('First')
+  expect(getTopic(db, 999999)).toBeNull()
+  expect(topicActions(db, [first, second]).get(first)?.id).toBe(active)
+  expect(topicActions(db, [first, second]).get(second)?.id).toBe(active)
+  db.prepare('UPDATE operator_actions SET status = ? WHERE id = ?').run('done', active)
+  expect(topicActions(db, [first]).get(first)?.kind).toBe('topics.requeue')
+  expect(topicActions(db, []).size).toBe(0)
+})
 
 let seq = 0
 function seedTopic(
