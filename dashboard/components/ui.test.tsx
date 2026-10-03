@@ -25,6 +25,12 @@ describe('dashboard components', () => {
     expect(html).toContain('Local video file is missing')
     expect(html).not.toContain('<video')
   })
+  it('treats absent artifacts after posting as expected', () => {
+    const html = renderToStaticMarkup(<Video bytes="not-retained" jobId="job-a" />)
+    expect(html).toContain('Local files are not retained after posting')
+    expect(html).not.toContain('missing')
+    expect(html).not.toContain('<video')
+  })
   it('keeps recovery notices visible alongside failures', () => {
     const db = memDb()
     const id = seedAction(db, {

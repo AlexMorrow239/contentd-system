@@ -101,7 +101,7 @@ export function jobContents(
             state: video.state,
             createdAt: video.created_at,
             qc: summarizeQc(video.qc_json),
-            bytes: libraryBytes(video),
+            bytes: libraryBytes(video, platforms.length > 0 && posted === platforms.length),
           }
         : null,
       posting: video

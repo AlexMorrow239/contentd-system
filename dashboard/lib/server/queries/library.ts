@@ -7,7 +7,7 @@ export type QcSummary =
   | { kind: 'unparseable' }
   | { kind: 'absent' }
 
-export type LibraryBytes = 'local' | 'missing'
+export type LibraryBytes = 'local' | 'missing' | 'not-retained'
 
 /**
  * qc_json is runs/<jobId>/qc/qc.json (stages/qc.ts's QcResult), persisted
@@ -39,8 +39,8 @@ export function summarizeQc(qcJson: string | null): QcSummary {
   return issues.length === 0 ? { kind: 'ok' } : { kind: 'issues', issues }
 }
 
-export function libraryBytes(row: { video_path: string }): LibraryBytes {
-  return existsSync(row.video_path) ? 'local' : 'missing'
+export function libraryBytes(row: { video_path: string }, fullyPosted = false): LibraryBytes {
+  return existsSync(row.video_path) ? 'local' : fullyPosted ? 'not-retained' : 'missing'
 }
 
 export function findLibraryVideoPath(db: Database, jobId: string): string | null {

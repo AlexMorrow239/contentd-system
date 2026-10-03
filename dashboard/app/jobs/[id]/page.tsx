@@ -65,12 +65,16 @@ export default async function JobPage(props: PageProps & { params: Promise<{ id:
                 <dd>
                   <PostingSummary posting={job.posting} />
                 </dd>
-                <dt>Artifacts</dt>
-                <dd>
-                  <code>
-                    {ctx.config.paths.runsRoot}/{job.id}/
-                  </code>
-                </dd>
+                {job.posting?.kind !== 'full' && (
+                  <>
+                    <dt>Artifacts</dt>
+                    <dd>
+                      <code>
+                        {ctx.config.paths.runsRoot}/{job.id}/
+                      </code>
+                    </dd>
+                  </>
+                )}
               </dl>
             </section>
             {detail.budgetWait && (
@@ -106,9 +110,11 @@ export default async function JobPage(props: PageProps & { params: Promise<{ id:
                 <p className="muted">Created {formatTime(job.video.createdAt)}</p>
                 <h3>Quality checks</h3>
                 <QcResult qc={job.video.qc} />
-                <p>
-                  <Link href="/post">Open manual posting queue</Link>
-                </p>
+                {job.posting?.kind !== 'full' && (
+                  <p>
+                    <Link href="/post">Open manual posting queue</Link>
+                  </p>
+                )}
               </section>
             )}
             <section className="panel">

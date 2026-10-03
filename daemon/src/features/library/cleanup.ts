@@ -1,6 +1,6 @@
 import type { Database } from 'better-sqlite3'
-import { lstatSync, realpathSync, unlinkSync } from 'node:fs'
-import { dirname, extname, resolve, sep } from 'node:path'
+import { lstatSync, realpathSync, rmSync } from 'node:fs'
+import { basename, dirname, resolve } from 'node:path'
 import { configErrorNoop, tryLoadChannelsDir } from '../../config/channel.js'
 import type { LeaseContext } from '../../infra/coordination/lease.js'
 import type { UnitResult, WorkerUnit } from '../../shared/contracts/worker.js'
@@ -16,35 +16,25 @@ interface Video {
   videoPath: string
 }
 
-/** Validate both lexical and real paths: a job or stage symlink must never
- * redirect deletion into shared assets, another job, or outside runs/. */
-function removeVideo(runsRoot: string, video: Video): void {
+/** Delete only a direct child of runs/. Recursive rm unlinks nested symlinks
+ * without following them; a symlink replacing the run itself is rejected. */
+function removeRun(runsRoot: string, jobId: string): void {
   const root = resolve(runsRoot)
-  const jobRoot = resolve(root, video.jobId)
-  const candidate = resolve(video.videoPath)
-  if (
-    dirname(jobRoot) !== root ||
-    !candidate.startsWith(jobRoot + sep) ||
-    extname(candidate).toLowerCase() !== '.mp4'
-  ) {
-    throw new Error('video path is not an MP4 within its job directory')
+  const jobRoot = resolve(root, jobId)
+  if (basename(jobRoot) !== jobId || dirname(jobRoot) !== root) {
+    throw new Error('run path is not a direct job directory within runs')
   }
-  if (!lstatSync(candidate).isFile()) throw new Error('video path is not a regular file')
-  const realJobRoot = realpathSync(jobRoot)
-  const realCandidate = realpathSync(candidate)
-  if (
-    realJobRoot !== resolve(realpathSync(root), video.jobId) ||
-    !realCandidate.startsWith(realJobRoot + sep)
-  ) {
-    throw new Error('video path escapes its job directory through a symlink')
+  if (!lstatSync(jobRoot).isDirectory()) throw new Error('run path is not a regular directory')
+  if (realpathSync(jobRoot) !== resolve(realpathSync(root), jobId)) {
+    throw new Error('run path escapes runs through a symlink')
   }
-  unlinkSync(realCandidate)
+  rmSync(jobRoot, { recursive: true })
 }
 
-/** Background retention for finished library MP4s. Persisted posting times
- * make restarts catch up without another table; only sweep throttling is local.
- * Each small synchronous deletion is guarded by an immediate transaction so
- * no posting mutation can slip between the eligibility recheck and unlink. */
+/** Background retention for fully posted runs. Persisted posting times make
+ * restarts catch up without another table; only sweep throttling is local.
+ * Deletion is guarded by an immediate transaction so no posting mutation can
+ * slip between the eligibility recheck and removal. */
 export function cleanupUnit(
   db: Database,
   opts: {
@@ -85,7 +75,7 @@ export function cleanupUnit(
           opts.daemonLease?.assertOwned()
           if (eligible.get(...params, video.jobId, video.videoPath) === undefined) return
           try {
-            removeVideo(opts.runsRoot, video)
+            removeRun(opts.runsRoot, video.jobId)
             deleted.push(video)
           } catch (err) {
             // Missing bytes already satisfy retention, including prior sweeps.

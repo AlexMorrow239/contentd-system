@@ -156,11 +156,12 @@ open http://127.0.0.1:8787/post
 A video is not fully done until every platform the channel declares has been
 marked.
 
-The daemon automatically deletes the finished local MP4 **24 hours after the
+The daemon automatically deletes the entire run directory **24 hours after the
 last required platform is marked posted**. It checks on startup and every five
 minutes while running, including videos posted before this feature was enabled.
-The library entry, posting links, metadata, and intermediate render files remain;
-the dashboard shows the local video as missing after cleanup. Unmarking a required
+All local artifacts, including the finished video and every attempt, are removed.
+Database records retain the library entry, posting links, metadata, QC, and costs;
+the dashboard treats absent local files as expected for fully posted jobs. Unmarking a required
 platform before cleanup prevents deletion, and marking it again starts a new
 24-hour wait. Correcting a posting URL does not reset the timer. Cleanup uses the
 channel's current platform list; channels with no platforms or missing configuration
@@ -176,7 +177,7 @@ to yet simply waits. If a video will never be posted (wrong take, dead
 topic), **Delete** on `/jobs`, job details, or `/post` removes the job and its
 posting records from the dashboard and frees backlog capacity. Recorded costs,
 daily production counts, and local files remain. It does not remove posts from
-external platforms. Deleted jobs are excluded from automatic MP4 cleanup.
+external platforms. Deleted jobs are excluded from automatic run cleanup.
 
 ### Channel config
 
@@ -214,9 +215,9 @@ checking again, and a worker whose unit throws logs the error and sleeps 60
 seconds rather than taking the daemon down. `scout` fills the topic queue,
 `produce` performs one unit of work per pass (resume one interrupted/budget-blocked job or
 produce one video), and `digest` prints a daily report once per local day.
-`cleanup` checks every five minutes for fully posted MP4s past the 24-hour retention
-period. Its JSON log lists deleted files and individual errors; failed deletions
-are retried on the next cleanup pass. Missing files need no further action.
+`cleanup` checks every five minutes for fully posted runs past the 24-hour retention
+period. Its JSON log lists cleaned jobs and individual errors; failed deletions
+are retried on the next cleanup pass. Missing run directories need no further action.
 There is no `publish` worker — nothing in this codebase uploads to a
 platform, so there is nothing left to schedule; posting is the manual `/post`
 workflow above. The remaining two, `actions-fast` and

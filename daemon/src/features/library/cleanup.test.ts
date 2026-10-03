@@ -68,7 +68,7 @@ function fixture(platforms = ['youtube', 'tiktok']) {
 }
 
 describe('cleanupUnit', () => {
-  it('deletes only the library MP4 at 24 hours and preserves records and other artifacts', async () => {
+  it('deletes the entire run at 24 hours and preserves database records', async () => {
     const f = fixture()
     const expired = f.video()
     const recent = f.video('recent', { age: 86_399_999 })
@@ -76,15 +76,19 @@ describe('cleanupUnit', () => {
     const metadata = join(dirname(expired), 'metadata.json')
     writeFileSync(intermediate, 'keep intermediate')
     writeFileSync(metadata, '{}')
+    const oldAttempt = join(f.runsRoot, 'job-1', 'attempts', 'old', 'voice')
+    mkdirSync(oldAttempt, { recursive: true })
+    writeFileSync(join(oldAttempt, 'voice.wav'), 'old audio')
     const library = f.db.prepare('SELECT * FROM library').all()
     const posts = f.db.prepare('SELECT * FROM posts').all()
 
     const result = await f.makeUnit()()
 
+    expect(existsSync(join(f.runsRoot, 'job-1'))).toBe(false)
     expect(existsSync(expired)).toBe(false)
     expect(existsSync(recent)).toBe(true)
-    expect(existsSync(intermediate)).toBe(true)
-    expect(existsSync(metadata)).toBe(true)
+    expect(existsSync(intermediate)).toBe(false)
+    expect(existsSync(metadata)).toBe(false)
     expect(f.db.prepare('SELECT * FROM library').all()).toEqual(library)
     expect(f.db.prepare('SELECT * FROM posts').all()).toEqual(posts)
     expect(result.line).toMatchObject({
@@ -92,7 +96,15 @@ describe('cleanupUnit', () => {
       deleted: [{ jobId: 'job-1', videoPath: expired }],
       errors: [],
     })
-    expect(getJobDetail(f.db, 'job-1')?.job.video?.bytes).toBe('missing')
+    expect(
+      getJobDetail(f.db, 'job-1', [{ name: 'alpha', platforms: ['youtube', 'tiktok'] }])?.job.video
+        ?.bytes,
+    ).toBe('not-retained')
+    unmarkPosted(f.db, 'job-1', 'youtube')
+    expect(
+      getJobDetail(f.db, 'job-1', [{ name: 'alpha', platforms: ['youtube', 'tiktok'] }])?.job.video
+        ?.bytes,
+    ).toBe('missing')
     expect(
       streamVideo(new Request('http://localhost/video'), f.db, f.runsRoot, 'job-1').status,
     ).toBe(404)
@@ -203,54 +215,48 @@ describe('cleanupUnit', () => {
     const unit = f.makeUnit()
     expect((await unit()).line).toMatchObject({ errors: [] })
     expect(existsSync(present)).toBe(false)
+    expect(existsSync(join(f.runsRoot, 'missing'))).toBe(false)
     await f.time.advanceBy(300_000)
     expect(await unit()).toEqual({ worked: false })
   })
 
-  it.each([
-    'outside',
-    'other-job',
-    'extension',
-    'directory',
-    'file-symlink',
-    'parent-symlink',
-    'job-symlink',
-  ])('rejects unsafe file paths: %s', async (kind) => {
+  it('rejects a symlink replacing the job directory', async () => {
     const f = fixture()
-    const original = f.video()
-    const target = f.video('other')
-    unmarkPosted(f.db, 'other', 'youtube')
-    let unsafe = original
-    if (kind === 'outside') {
-      unsafe = join(f.channelsDir, 'final.mp4')
-      writeFileSync(unsafe, 'keep')
-    } else if (kind === 'other-job') {
-      unsafe = target
-    } else if (kind === 'extension') {
-      unsafe = join(dirname(original), 'metadata.json')
-      writeFileSync(unsafe, '{}')
-    } else if (kind === 'directory') {
-      rmSync(original)
-      mkdirSync(original)
-    } else if (kind === 'file-symlink') {
-      rmSync(original)
-      symlinkSync(target, original)
-    } else if (kind === 'parent-symlink') {
-      rmSync(dirname(original), { recursive: true })
-      symlinkSync(dirname(target), dirname(original))
-    } else {
-      const jobRoot = join(f.runsRoot, 'job-1')
-      renameSync(jobRoot, join(f.channelsDir, 'moved-job'))
-      symlinkSync(join(f.channelsDir, 'moved-job'), jobRoot)
-    }
-    f.db.prepare("UPDATE library SET video_path = ? WHERE job_id = 'job-1'").run(unsafe)
-    const result = await f.makeUnit()()
-    expect(existsSync(unsafe)).toBe(true)
-    expect(existsSync(target)).toBe(true)
-    expect(result.line).toMatchObject({
+    f.video()
+    const jobRoot = join(f.runsRoot, 'job-1')
+    const moved = join(f.channelsDir, 'moved-job')
+    renameSync(jobRoot, moved)
+    symlinkSync(moved, jobRoot)
+    expect((await f.makeUnit()()).line).toMatchObject({
       deleted: [],
-      errors: [{ jobId: 'job-1', videoPath: unsafe, error: expect.any(String) }],
+      errors: [{ jobId: 'job-1', error: expect.any(String) }],
     })
+    expect(existsSync(moved)).toBe(true)
+  })
+
+  it.each(['file', 'directory'])(
+    'removes internal %s symlinks without touching their targets',
+    async (kind) => {
+      const f = fixture()
+      const original = f.video()
+      const target = f.video('other', { posted: [] })
+      const link = kind === 'file' ? original : dirname(original)
+      rmSync(link, { recursive: true })
+      symlinkSync(kind === 'file' ? target : dirname(target), link)
+      await f.makeUnit()()
+      expect(existsSync(join(f.runsRoot, 'job-1'))).toBe(false)
+      expect(existsSync(target)).toBe(true)
+    },
+  )
+
+  it.each(['../escape', '.', 'nested/job'])('rejects unsafe job IDs: %s', async (id) => {
+    const f = fixture()
+    const path = f.video(id)
+    expect((await f.makeUnit()()).line).toMatchObject({
+      deleted: [],
+      errors: [{ jobId: id, error: expect.any(String) }],
+    })
+    expect(existsSync(path)).toBe(true)
   })
 
   it('logs deletion failures, continues, and retries on the next pass', async () => {

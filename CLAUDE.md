@@ -493,16 +493,18 @@ refresh `posted_at`. `unmarkPosted` deletes the row. The dashboard presents
 paste fields for unposted platforms and saved links/unmark controls for posted
 ones.
 
-`features/library/cleanup.ts` deletes only the finished `library.video_path` MP4 once all
+`features/library/cleanup.ts` deletes the entire `runs/<jobId>/` directory once all
 currently declared platforms are posted and the latest required `posted_at` is
 at least 24 hours old. It runs at startup and every five minutes using `TimeSource`,
 including historical posts. Empty platforms, missing channel configurations,
 unfinished/retired jobs are skipped; invalid channel configuration skips the pass.
 Each deletion rechecks daemon ownership and posting eligibility in an immediate
-transaction, and validates lexical and real containment within that job's runs
-directory. Missing files are harmless; other file failures are logged and retried
-on the next pass. Library/post records and intermediate files remain. There is no
-new byte state: the dashboard reports the removed video as `missing`.
+transaction, and validates that the run is a direct, non-symlink child of runs.
+Nested symlinks are removed without following their targets. Missing directories
+are harmless; other failures are logged and retried on the next pass, including
+partially removed runs. All attempts and intermediate files are removed. Database
+records remain. Fully posted jobs with absent video bytes display `not-retained`
+and no artifact path; incomplete posting still reports absent bytes as `missing`.
 
 ### The dashboard's read-only guarantee narrows, not disappears
 
@@ -557,8 +559,8 @@ The dashboard reads stage order from `shared/contracts/pipeline.ts`'s `STAGE_ORD
 Architecture tests check the concrete pipeline agrees; importing `pipelineStages()`
 would pull rendering/provider code into HTTP.
 
-Library byte states are `local` and `missing`, based only on whether the local
-video path exists. Missing local files cannot be recovered by the application.
+Library byte states are `local`, `missing`, and `not-retained`. Absent video
+bytes are expected (`not-retained`) when every currently declared platform is posted. Missing local files cannot be recovered by the application.
 The library's QC verdict comes from `library.qc_json`.
 
 ### Remotion rendering

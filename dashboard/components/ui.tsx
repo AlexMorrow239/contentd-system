@@ -35,6 +35,8 @@ export function JobLink({ id }: { id: string }) {
 export function Video({ bytes, jobId }: { bytes: LibraryBytes; jobId: string }) {
   if (bytes === 'local')
     return <video controls preload="metadata" src={`/library/${encodeURIComponent(jobId)}/video`} />
+  if (bytes === 'not-retained')
+    return <p className="muted">Local files are not retained after posting.</p>
   return <p className="muted">Local video file is missing</p>
 }
 export function Table({ headings, children }: { headings: string[]; children: ReactNode }) {
